@@ -53,7 +53,10 @@ class CookieJWTAuthentication(BaseAuthentication):
 
     def enforce_csrf(self, request):
         """Enforce CSRF for cookie-authenticated requests (safe methods are skipped internally)."""
-        check = _CSRFCheck(request)
+        def dummy_get_response(req):  # pragma: no cover
+            return None
+
+        check = _CSRFCheck(dummy_get_response)
         check.process_request(request)
         reason = check.process_view(request, None, (), {})
         if reason:

@@ -1040,6 +1040,20 @@ class CookieLoginTest(TestCase):
         response = self.client.post(self.url, self.creds, format='json')
         self.assertIn('detail', response.json())
 
+    def test_login_access_cookie_max_age(self):
+        """Access cookie max-age must match ACCESS_TOKEN_LIFETIME (30 min = 1800 s)."""
+        response = self.client.post(self.url, self.creds, format='json')
+        from django.conf import settings as django_settings
+        expected = int(django_settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds())
+        self.assertEqual(response.cookies['blackdog_access']['max-age'], expected)
+
+    def test_login_refresh_cookie_max_age(self):
+        """Refresh cookie max-age must match REFRESH_TOKEN_LIFETIME (7 days = 604800 s)."""
+        response = self.client.post(self.url, self.creds, format='json')
+        from django.conf import settings as django_settings
+        expected = int(django_settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds())
+        self.assertEqual(response.cookies['blackdog_refresh']['max-age'], expected)
+
     def test_login_wrong_password_still_returns_401(self):
         response = self.client.post(self.url, {'username': 'cookielogin', 'password': 'wrong'}, format='json')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -1100,6 +1114,13 @@ class CookieRefreshTest(TestCase):
         response = self.client.post('/api/auth/refresh/', format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('blackdog_access', response.cookies)
+
+    def test_refresh_rotates_refresh_cookie(self):
+        """With ROTATE_REFRESH_TOKENS=True, refresh also issues a new refresh cookie."""
+        self.client.cookies['blackdog_refresh'] = self._get_refresh_token()
+        response = self.client.post('/api/auth/refresh/', format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('blackdog_refresh', response.cookies)
 
     def test_refresh_without_cookie_returns_401(self):
         response = self.client.post('/api/auth/refresh/', format='json')
