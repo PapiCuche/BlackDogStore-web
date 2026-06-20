@@ -5,6 +5,7 @@ Phase 1 (+16 tests): checkout flow, inventory, webhook, payment status.
 Audit Phase 1 (+8 tests): Stripe error path, OrderViewSet access control, cross-user isolation.
 Phase 2.0 (+22 tests): register/login security, cart PATCH validation, review permissions.
 Phase 2.1 (+19 tests): cookie JWT auth, CSRF enforcement, refresh/logout/csrf endpoints.
+Phase 2.2 (+10 tests): logout CSRF enforcement, token blacklist after rotation and logout.
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -1223,3 +1224,148 @@ class CookieJWTCSRFTest(TestCase):
         result = CookieJWTAuthentication().authenticate(DRFRequest(raw))
         self.assertIsNotNone(result)
         self.assertEqual(result[0], user)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.2 — Logout CSRF enforcement
+# ---------------------------------------------------------------------------
+
+class LogoutCSRFTest(TestCase):
+    """LogoutView: CSRF must be enforced when auth cookies are present."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='logoutcsrf', password='ValidPass123!')
+
+    def _get_tokens(self):
+        from rest_framework_simplejwt.tokens import RefreshToken as RT
+        rt = RT.for_user(self.user)
+        return str(rt.access_token), str(rt)
+
+    def _post_logout_no_csrf_bypass(self, cookies):
+        """POST to LogoutView via django.test.RequestFactory.
+        Django's RequestFactory does NOT set _dont_enforce_csrf_checks, so our
+        manual enforce_csrf() call inside LogoutView.post() runs for real."""
+        from django.test import RequestFactory
+        from store.auth_views import LogoutView
+        req = RequestFactory().post('/api/auth/logout/', content_type='application/json', data='{}')
+        for k, v in cookies.items():
+            req.COOKIES[k] = v
+        return LogoutView.as_view()(req)
+
+    def test_logout_without_auth_cookies_returns_200(self):
+        """No auth cookies present — CSRF is not required, logout always succeeds."""
+        response = self.client.post('/api/auth/logout/', format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_logout_with_access_cookie_no_csrf_returns_403(self):
+        """blackdog_access present but no X-CSRFToken → 403."""
+        access, _ = self._get_tokens()
+        response = self._post_logout_no_csrf_bypass({'blackdog_access': access})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_logout_with_refresh_cookie_no_csrf_returns_403(self):
+        """blackdog_refresh present but no X-CSRFToken → 403."""
+        _, refresh = self._get_tokens()
+        response = self._post_logout_no_csrf_bypass({'blackdog_refresh': refresh})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_logout_with_auth_cookies_clears_both_cookies(self):
+        """Auth cookies + CSRF valid (APIClient bypasses) → 200 + cookies cleared."""
+        access, refresh = self._get_tokens()
+        self.client.cookies['blackdog_access'] = access
+        self.client.cookies['blackdog_refresh'] = refresh
+        response = self.client.post('/api/auth/logout/', format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.cookies['blackdog_access']['max-age'], 0)
+        self.assertEqual(response.cookies['blackdog_refresh']['max-age'], 0)
+
+    def test_logout_with_expired_access_and_refresh_succeeds(self):
+        """Access token expired (or invalid string) but refresh present → still 200.
+        LogoutView must not reject the request just because the access token is stale."""
+        _, refresh = self._get_tokens()
+        self.client.cookies['blackdog_access'] = 'expired.access.token'
+        self.client.cookies['blackdog_refresh'] = refresh
+        response = self.client.post('/api/auth/logout/', format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.2 — Token blacklist
+# ---------------------------------------------------------------------------
+
+class TokenBlacklistTest(TestCase):
+    """BLACKLIST_AFTER_ROTATION=True + blacklist on logout."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+
+    def _create_user(self, username):
+        return User.objects.create_user(username=username, password='ValidPass123!')
+
+    def _get_refresh_token(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken as RT
+        return str(RT.for_user(user))
+
+    def test_rotation_blacklists_old_refresh_token(self):
+        """After a successful refresh, the old token is blacklisted and returns 401."""
+        user = self._create_user('bl_rotate')
+        old_refresh = self._get_refresh_token(user)
+
+        self.client.cookies['blackdog_refresh'] = old_refresh
+        r1 = self.client.post('/api/auth/refresh/', format='json')
+        self.assertEqual(r1.status_code, status.HTTP_200_OK)
+
+        # Old token must be blacklisted now
+        self.client.cookies['blackdog_refresh'] = old_refresh
+        r2 = self.client.post('/api/auth/refresh/', format='json')
+        self.assertEqual(r2.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_logout_blacklists_refresh_token(self):
+        """After logout, the refresh token is blacklisted and cannot refresh a new session."""
+        user = self._create_user('bl_logout')
+        refresh = self._get_refresh_token(user)
+
+        self.client.cookies['blackdog_refresh'] = refresh
+        logout_resp = self.client.post('/api/auth/logout/', format='json')
+        self.assertEqual(logout_resp.status_code, status.HTTP_200_OK)
+
+        # The blacklisted refresh must now be rejected
+        self.client.cookies['blackdog_refresh'] = refresh
+        refresh_resp = self.client.post('/api/auth/refresh/', format='json')
+        self.assertEqual(refresh_resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_refresh_after_logout_returns_401(self):
+        """Attempting /auth/refresh/ after logout (cookie cleared) returns 401."""
+        user = self._create_user('bl_postlogout')
+        refresh = self._get_refresh_token(user)
+
+        self.client.cookies['blackdog_refresh'] = refresh
+        self.client.post('/api/auth/logout/', format='json')
+
+        # No refresh cookie (cleared by logout) — RefreshView should return 401
+        response = self.client.post('/api/auth/refresh/', format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_logout_with_invalid_refresh_still_clears_cookies(self):
+        """Invalid or expired refresh token does not break logout — cookies are still cleared."""
+        self.client.cookies['blackdog_refresh'] = 'not.a.real.token'
+        response = self.client.post('/api/auth/logout/', format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.cookies['blackdog_refresh']['max-age'], 0)
+
+    def test_logout_with_already_blacklisted_token_still_succeeds(self):
+        """Blacklisting an already-blacklisted token is silenced — logout still returns 200."""
+        from rest_framework_simplejwt.tokens import RefreshToken as RT
+        user = self._create_user('bl_double')
+        refresh = self._get_refresh_token(user)
+
+        # Blacklist manually first
+        RT(refresh).blacklist()
+
+        # Second logout attempt with the same (now-blacklisted) token must not raise
+        self.client.cookies['blackdog_refresh'] = refresh
+        response = self.client.post('/api/auth/logout/', format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.cookies['blackdog_access']['max-age'], 0)

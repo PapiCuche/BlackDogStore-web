@@ -14,6 +14,24 @@ class _CSRFCheck(CsrfViewMiddleware):
         return reason
 
 
+def enforce_csrf(request):
+    """
+    Run a CSRF check on *request* and raise PermissionDenied if it fails.
+
+    Reusable by any view that needs CSRF enforcement outside of the normal
+    CookieJWTAuthentication flow (e.g. LogoutView).  Safe methods (GET, HEAD,
+    OPTIONS, TRACE) are automatically skipped by the underlying middleware.
+    """
+    def dummy_get_response(req):  # pragma: no cover
+        return None
+
+    check = _CSRFCheck(dummy_get_response)
+    check.process_request(request)
+    reason = check.process_view(request, None, (), {})
+    if reason:
+        raise exceptions.PermissionDenied(f'CSRF Failed: {reason}')
+
+
 class CookieJWTAuthentication(BaseAuthentication):
     """
     Authenticates via HttpOnly JWT access cookie (blackdog_access) instead of
@@ -31,7 +49,7 @@ class CookieJWTAuthentication(BaseAuthentication):
         except TokenError as exc:
             raise exceptions.AuthenticationFailed(str(exc))
 
-        self.enforce_csrf(request)
+        enforce_csrf(request)
 
         user_id = validated_token.get(jwt_settings.USER_ID_CLAIM)
         if user_id is None:
@@ -52,12 +70,5 @@ class CookieJWTAuthentication(BaseAuthentication):
         return 'Cookie realm="blackdog"'
 
     def enforce_csrf(self, request):
-        """Enforce CSRF for cookie-authenticated requests (safe methods are skipped internally)."""
-        def dummy_get_response(req):  # pragma: no cover
-            return None
-
-        check = _CSRFCheck(dummy_get_response)
-        check.process_request(request)
-        reason = check.process_view(request, None, (), {})
-        if reason:
-            raise exceptions.PermissionDenied(f'CSRF Failed: {reason}')
+        """Delegate to module-level enforce_csrf() (kept for DRF interface compatibility)."""
+        enforce_csrf(request)

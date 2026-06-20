@@ -249,10 +249,35 @@ SECURE_HSTS_SECONDS=31536000
 | `blackdog_refresh` | ✓ | Lax | Prod only | 7 días |
 | `csrftoken` | ✗ | Lax | Prod only | sesión |
 
+### Seguridad JWT — Token Blacklist + CSRF en logout (Fase 2.2)
+
+**Token blacklist (invalidación de refresh tokens):**
+- `rest_framework_simplejwt.token_blacklist` está instalado y activo
+- `BLACKLIST_AFTER_ROTATION=True`: el refresh token anterior queda invalidado después de cada rotación
+- Al hacer logout, el refresh token activo es **blacklisteado inmediatamente** — no puede reutilizarse aunque no haya expirado
+- Un token ya blacklisteado o expirado no rompe el logout — los errores se silencian
+- Requiere ejecutar `python manage.py migrate` (13 migraciones de `token_blacklist` incluidas)
+
+```
+Flujo de rotación:
+  1. Cliente tiene refresh_token_A (TTL 7 días)
+  2. POST /auth/refresh/ → refresh_token_A es blacklisteado; se emite refresh_token_B
+  3. Intentar usar refresh_token_A → 401 (blacklisted)
+
+Flujo de logout:
+  1. POST /auth/logout/ → refresh_token actual es blacklisteado + cookies borradas (max-age=0)
+  2. Intentar usar ese refresh_token → 401 (blacklisted)
+```
+
+**Logout CSRF:**
+- `LogoutView` usa `authentication_classes=[]` — el acceso se permite siempre (incluso con token expirado)
+- Si la request trae `blackdog_access` **o** `blackdog_refresh`, se exige `X-CSRFToken` válido
+- Si no hay cookies auth presentes (ya deslogueado), la limpieza de cookies ocurre sin CSRF
+- El frontend ya envía `X-CSRFToken` en todas las llamadas a `logout()` — compatible sin cambios
+
 ### Pendientes explícitos (fases futuras)
 
-- **Fase 2.2**: Verificación de correo electrónico tras registro
-- **Fase 2.2**: Verificación de correo electrónico tras registro
+- **Fase 2.3**: Verificación de correo electrónico tras registro
 - **Fase 3**: Roles avanzados (staff/admin/cliente); auditoría de acciones administrativas
 - **Fase 4**: Dirección de envío en checkout; emails transaccionales
 - **Fase 5**: Paginación en API; fix N+1 en `average_rating`/`review_count`

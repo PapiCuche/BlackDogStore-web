@@ -6,8 +6,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from .auth_serializers import RegisterSerializer, UserSerializer
+from .authentication import enforce_csrf
 from .throttles import LoginThrottle, RegisterThrottle
 
 
@@ -91,10 +93,44 @@ class RefreshView(APIView):
 
 
 class LogoutView(APIView):
-    """Clears both JWT cookies, ending the session."""
+    """
+    Clears both JWT cookies, ending the session.
+
+    authentication_classes = [] so that CookieJWTAuthentication never runs
+    for this endpoint.  This allows logout to succeed even when the access
+    token has already expired or is otherwise invalid.  CSRF is enforced
+    manually in post() instead.
+
+    CSRF enforcement: if any auth cookie is present in the request, a valid
+    X-CSRFToken header is required.  This prevents logout-CSRF attacks where
+    an attacker forces an authenticated user to log out.  When no auth cookies
+    are present (already logged out or expired) the request is allowed through
+    unconditionally so the cookie cleanup still runs.
+
+    Blacklisting: the refresh token is blacklisted before clearing cookies so
+    it cannot be reused after logout, even within its remaining TTL.
+    """
+    authentication_classes = []
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        has_auth_cookie = bool(
+            request.COOKIES.get(settings.JWT_COOKIE_ACCESS_NAME) or
+            request.COOKIES.get(settings.JWT_COOKIE_REFRESH_NAME)
+        )
+        if has_auth_cookie:
+            enforce_csrf(request)  # raises PermissionDenied → 403 on failure
+
+        # Blacklist the refresh token so it cannot be reused after logout.
+        # Failures (expired, invalid, already blacklisted) are silenced — cookie
+        # clearing must always succeed regardless of token state.
+        refresh_cookie = request.COOKIES.get(settings.JWT_COOKIE_REFRESH_NAME)
+        if refresh_cookie:
+            try:
+                RefreshToken(refresh_cookie).blacklist()
+            except TokenError:
+                pass
+
         response = Response({'detail': 'Sesión cerrada.'})
         response.delete_cookie(settings.JWT_COOKIE_ACCESS_NAME, path='/', samesite=settings.JWT_COOKIE_SAMESITE)
         response.delete_cookie(settings.JWT_COOKIE_REFRESH_NAME, path='/', samesite=settings.JWT_COOKIE_SAMESITE)
