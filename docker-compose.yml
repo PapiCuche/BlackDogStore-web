@@ -9,7 +9,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - '5432:5432'
+      - '5433:5432'
 
   backend:
     build:
@@ -20,6 +20,13 @@ services:
       - ./backend:/app
     environment:
       - DATABASE_URL=postgres://postgres:postgres@postgres:5432/blackdog
+      - SECRET_KEY=${SECRET_KEY:-changeme-dev-only}
+      - DEBUG=${DEBUG:-1}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - STRIPE_DOMAIN=${STRIPE_DOMAIN:-http://localhost:3002}
+      - STRIPE_CURRENCY=${STRIPE_CURRENCY:-pen}
     depends_on:
       - postgres
     ports:
@@ -29,8 +36,11 @@ services:
     build: ./frontend
     volumes:
       - ./frontend:/app
+    environment:
+      - NEXT_PUBLIC_API_BASE=http://localhost:8000/api
+      - API_BASE=http://backend:8000/api
     ports:
-      - '3000:3000'
+      - '3002:3000'
     command: sh -c "npm install && npm run dev"
 
 volumes:

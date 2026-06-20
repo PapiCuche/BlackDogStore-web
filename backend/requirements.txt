@@ -1,4 +1,26 @@
-Django>=4.2
-djangorestframework
-django-environ
-psycopg2-binary
+# Core framework — LTS release (security support until April 2028)
+# Requires Python 3.10-3.13 officially; also works on 3.14 (no breaking changes)
+# Compatible with Docker python:3.12-slim and local Python 3.14
+Django==5.2.15
+djangorestframework==3.17.1
+
+# JWT authentication
+djangorestframework-simplejwt==5.5.1
+
+# Environment variable management
+django-environ==0.14.0
+
+# Database adapters
+psycopg2-binary==2.9.12
+
+# CORS headers middleware
+django-cors-headers==4.9.0
+
+# Stripe payments SDK
+stripe==15.2.1
+
+# Image processing (used by Django for ImageField validation and admin thumbnails)
+Pillow==12.2.0
+
+# WSGI server for production (replaces runserver)
+gunicorn==26.0.0

@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+:root {
+  --background: #080808;
+  --foreground: #ffffff;
+  --surface: #111111;
+  --surface-2: #1a1a1a;
+  --border: #272727;
+  --muted: #6b7280;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-bd-border: var(--border);
+  --color-muted: var(--muted);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-body), Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+/* Display headings use the condensed bold font */
+.font-display {
+  font-family: var(--font-display), 'Barlow Condensed', 'Oswald', Impact, sans-serif;
+}
+
+/* Dot grid pattern — used as decorative corner elements */
+.dot-grid {
+  background-image: radial-gradient(circle, rgba(255,255,255,0.22) 1.5px, transparent 1.5px);
+  background-size: 18px 18px;
+}
+
+.dot-grid-dark {
+  background-image: radial-gradient(circle, rgba(0,0,0,0.18) 1.5px, transparent 1.5px);
+  background-size: 18px 18px;
+}
+
+/* Topographic contour line texture (very subtle background) */
+.topo-bg {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600'%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='0.7' opacity='0.045'%3E%3Cpath d='M0 300 Q150 200 300 300 Q450 400 600 300'/%3E%3Cpath d='M0 260 Q150 160 300 260 Q450 360 600 260'/%3E%3Cpath d='M0 340 Q150 240 300 340 Q450 440 600 340'/%3E%3Cpath d='M0 220 Q150 120 300 220 Q450 320 600 220'/%3E%3Cpath d='M0 380 Q150 280 300 380 Q450 480 600 380'/%3E%3Cpath d='M0 180 Q150 80 300 180 Q450 280 600 180'/%3E%3Cpath d='M0 420 Q150 320 300 420 Q450 520 600 420'/%3E%3Cpath d='M0 140 Q150 40 300 140 Q450 240 600 140'/%3E%3Cpath d='M0 460 Q150 360 300 460 Q450 560 600 460'/%3E%3Cpath d='M0 500 Q150 400 300 500 Q450 600 600 500'/%3E%3Cpath d='M0 100 Q150 0 300 100 Q450 200 600 100'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 600px 600px;
+}
+
+/* Badge / pill labels */
+.bd-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9ca3af;
+}
+
+/* Black section label (like "REPARACIONES" labels in the flyers) */
+.section-label {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.45);
+}
+
+img { display: block; max-width: 100%; }
+
+/* Marquee animation for the products strip */
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-33.333%); }
+}
+
+/* Smooth transitions globally */
+*, *::before, *::after {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
