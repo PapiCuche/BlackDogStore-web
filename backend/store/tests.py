@@ -6,6 +6,9 @@ Audit Phase 1 (+8 tests): Stripe error path, OrderViewSet access control, cross-
 Phase 2.0 (+22 tests): register/login security, cart PATCH validation, review permissions.
 Phase 2.1 (+19 tests): cookie JWT auth, CSRF enforcement, refresh/logout/csrf endpoints.
 Phase 2.2 (+10 tests): logout CSRF enforcement, token blacklist after rotation and logout.
+Phase 2.3 (+28 tests): AccountToken model, email verification flow, password reset, change password.
+Phase 3.0 (+34 tests): UserProfile auto-create, RBAC permissions, admin endpoints, audit log, OrderViewSet roles.
+Phase 3.1 (+9 tests): paginated responses, search/filter users, filter audit logs, rate limits.
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -20,7 +23,7 @@ from datetime import timedelta
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import Category, Product, Coupon, Order, OrderItem, CartItem, Review
+from .models import AccountToken, AdminAuditLog, Category, Product, Coupon, Order, OrderItem, CartItem, Review, UserProfile
 
 User = get_user_model()
 
@@ -1369,3 +1372,826 @@ class TokenBlacklistTest(TestCase):
         response = self.client.post('/api/auth/logout/', format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.cookies['blackdog_access']['max-age'], 0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.3 tests
+# ---------------------------------------------------------------------------
+
+class AccountTokenModelTest(TestCase):
+    """AccountToken: hash storage, consume validation."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='tokenmodel', password='ValidPass123!', email='tokenmodel@example.com'
+        )
+
+    def test_token_hash_is_sha256_not_plain(self):
+        """The raw token must NOT be stored in token_hash — only its SHA-256 digest."""
+        import hashlib
+        raw, obj = AccountToken.make(self.user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        self.assertNotEqual(obj.token_hash, raw)
+        self.assertEqual(obj.token_hash, hashlib.sha256(raw.encode()).hexdigest())
+
+    def test_consume_valid_token_marks_used(self):
+        raw, obj = AccountToken.make(self.user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        result = AccountToken.consume(raw, AccountToken.PURPOSE_EMAIL_VERIFICATION)
+        self.assertEqual(result.pk, obj.pk)
+        self.assertIsNotNone(result.used_at)
+
+    def test_consume_expired_token_raises(self):
+        raw, obj = AccountToken.make(self.user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        obj.expires_at = timezone.now() - timedelta(hours=1)
+        obj.save(update_fields=['expires_at'])
+        with self.assertRaises(ValueError) as ctx:
+            AccountToken.consume(raw, AccountToken.PURPOSE_EMAIL_VERIFICATION)
+        self.assertIn('expirado', str(ctx.exception))
+
+    def test_consume_used_token_raises(self):
+        raw, _ = AccountToken.make(self.user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        AccountToken.consume(raw, AccountToken.PURPOSE_EMAIL_VERIFICATION)
+        with self.assertRaises(ValueError) as ctx:
+            AccountToken.consume(raw, AccountToken.PURPOSE_EMAIL_VERIFICATION)
+        self.assertIn('utilizado', str(ctx.exception))
+
+    def test_consume_invalid_token_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            AccountToken.consume('not-a-real-token', AccountToken.PURPOSE_EMAIL_VERIFICATION)
+        self.assertIn('inválido', str(ctx.exception))
+
+    def test_consume_wrong_purpose_raises(self):
+        raw, _ = AccountToken.make(self.user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        with self.assertRaises(ValueError):
+            AccountToken.consume(raw, AccountToken.PURPOSE_PASSWORD_RESET)
+
+
+@override_settings(
+    REQUIRE_EMAIL_VERIFICATION=True,
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    FRONTEND_URL='http://testserver',
+)
+class EmailVerificationFlowTest(TestCase):
+    """Email verification: registration creates inactive user, verify endpoint activates it."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.payload = {
+            'username': 'verifytest',
+            'email': 'verify@example.com',
+            'password': 'ValidPass123!',
+            'password_confirm': 'ValidPass123!',
+        }
+
+    def _register(self, payload=None):
+        return self.client.post('/api/auth/register/', payload or self.payload, format='json')
+
+    def test_register_creates_inactive_user(self):
+        response = self._register()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        user = User.objects.get(username='verifytest')
+        self.assertFalse(user.is_active)
+
+    def test_register_response_requires_verification_flag(self):
+        response = self._register()
+        data = response.json()
+        self.assertTrue(data.get('requires_verification'))
+
+    def test_register_creates_account_token(self):
+        self._register()
+        user = User.objects.get(username='verifytest')
+        self.assertTrue(
+            AccountToken.objects.filter(user=user, purpose=AccountToken.PURPOSE_EMAIL_VERIFICATION).exists()
+        )
+
+    def test_verify_email_activates_user(self):
+        """POST /auth/verify-email/ with valid token sets is_active=True."""
+        user = User.objects.create_user(
+            username='notactive', password='ValidPass123!', email='na@example.com', is_active=False
+        )
+        raw, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        response = self.client.post('/api/auth/verify-email/', {'token': raw}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user.refresh_from_db()
+        self.assertTrue(user.is_active)
+
+    def test_verify_email_used_token_returns_400(self):
+        user = User.objects.create_user(
+            username='usedtoken', password='ValidPass123!', email='used@example.com', is_active=False
+        )
+        raw, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        self.client.post('/api/auth/verify-email/', {'token': raw}, format='json')
+        response = self.client.post('/api/auth/verify-email/', {'token': raw}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_verify_email_expired_token_returns_400(self):
+        user = User.objects.create_user(
+            username='expiredtk', password='ValidPass123!', email='expired@example.com', is_active=False
+        )
+        raw, obj = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        obj.expires_at = timezone.now() - timedelta(hours=1)
+        obj.save(update_fields=['expires_at'])
+        response = self.client.post('/api/auth/verify-email/', {'token': raw}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_resend_verification_returns_200_for_unknown_email(self):
+        """Anti-enumeration: unknown email returns 200 with generic message."""
+        response = self.client.post(
+            '/api/auth/resend-verification/', {'email': 'nobody@example.com'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_login_inactive_user_returns_401(self):
+        """Login is blocked when is_active=False (email not verified)."""
+        User.objects.create_user(
+            username='blockeduser', password='ValidPass123!', email='blocked@example.com', is_active=False
+        )
+        response = self.client.post('/api/auth/login/', {
+            'username': 'blockeduser',
+            'password': 'ValidPass123!',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    FRONTEND_URL='http://testserver',
+)
+class PasswordResetTest(TestCase):
+    """Password reset: request creates token, confirm changes password, anti-enumeration."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='resetuser', password='OldPass123!', email='reset@example.com'
+        )
+
+    def test_reset_request_generic_response_unknown_email(self):
+        """Anti-enumeration: unknown email returns 200 with generic message."""
+        response = self.client.post(
+            '/api/auth/password-reset/request/', {'email': 'nobody@example.com'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_reset_request_creates_token_for_active_user(self):
+        self.client.post('/api/auth/password-reset/request/', {'email': 'reset@example.com'}, format='json')
+        self.assertTrue(
+            AccountToken.objects.filter(user=self.user, purpose=AccountToken.PURPOSE_PASSWORD_RESET).exists()
+        )
+
+    def test_reset_token_hash_not_plain(self):
+        """DB stores only the hash, not the raw token."""
+        import hashlib
+        self.client.post('/api/auth/password-reset/request/', {'email': 'reset@example.com'}, format='json')
+        obj = AccountToken.objects.get(user=self.user, purpose=AccountToken.PURPOSE_PASSWORD_RESET)
+        # The token_hash must look like a sha256 hex digest (64 chars), not a URL-safe token
+        self.assertEqual(len(obj.token_hash), 64)
+        self.assertNotIn('-', obj.token_hash)  # sha256 hex has no dashes
+
+    def test_reset_confirm_changes_password(self):
+        raw, _ = AccountToken.make(self.user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
+        response = self.client.post('/api/auth/password-reset/confirm/', {
+            'token': raw,
+            'new_password': 'NewSecure456!',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('NewSecure456!'))
+
+    def test_reset_confirm_used_token_fails(self):
+        raw, _ = AccountToken.make(self.user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
+        self.client.post('/api/auth/password-reset/confirm/', {
+            'token': raw, 'new_password': 'NewSecure456!'
+        }, format='json')
+        response = self.client.post('/api/auth/password-reset/confirm/', {
+            'token': raw, 'new_password': 'AnotherPass789!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reset_confirm_expired_token_fails(self):
+        raw, obj = AccountToken.make(self.user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
+        obj.expires_at = timezone.now() - timedelta(minutes=5)
+        obj.save(update_fields=['expires_at'])
+        response = self.client.post('/api/auth/password-reset/confirm/', {
+            'token': raw, 'new_password': 'NewSecure456!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reset_confirm_weak_password_rejected(self):
+        raw, _ = AccountToken.make(self.user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
+        response = self.client.post('/api/auth/password-reset/confirm/', {
+            'token': raw, 'new_password': '1234'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_login_with_old_password_after_reset_fails(self):
+        raw, _ = AccountToken.make(self.user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
+        self.client.post('/api/auth/password-reset/confirm/', {
+            'token': raw, 'new_password': 'NewSecure456!'
+        }, format='json')
+        response = self.client.post('/api/auth/login/', {
+            'username': 'resetuser', 'password': 'OldPass123!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_login_with_new_password_after_reset_succeeds(self):
+        raw, _ = AccountToken.make(self.user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
+        self.client.post('/api/auth/password-reset/confirm/', {
+            'token': raw, 'new_password': 'NewSecure456!'
+        }, format='json')
+        response = self.client.post('/api/auth/login/', {
+            'username': 'resetuser', 'password': 'NewSecure456!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('blackdog_access', response.cookies)
+
+
+class ChangePasswordTest(TestCase):
+    """Change password: requires auth + CSRF, clears cookies, old password rejected after change."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='changepass', password='OldPass123!', email='change@example.com'
+        )
+
+    def _get_tokens(self):
+        from rest_framework_simplejwt.tokens import RefreshToken as RT
+        rt = RT.for_user(self.user)
+        return str(rt.access_token), str(rt)
+
+    def test_requires_authentication(self):
+        """Unauthenticated request → 401."""
+        response = self.client.post('/api/auth/change-password/', {
+            'current_password': 'OldPass123!', 'new_password': 'NewPass456!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_wrong_current_password_fails(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/auth/change-password/', {
+            'current_password': 'WrongPassword!', 'new_password': 'NewPass456!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('actual', response.json().get('detail', ''))
+
+    def test_weak_new_password_rejected(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/auth/change-password/', {
+            'current_password': 'OldPass123!', 'new_password': '1234'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_success_returns_200_and_clears_cookies(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/auth/change-password/', {
+            'current_password': 'OldPass123!', 'new_password': 'NewPass456!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.cookies['blackdog_access']['max-age'], 0)
+        self.assertEqual(response.cookies['blackdog_refresh']['max-age'], 0)
+
+    def test_login_with_old_password_after_change_fails(self):
+        self.client.force_authenticate(user=self.user)
+        self.client.post('/api/auth/change-password/', {
+            'current_password': 'OldPass123!', 'new_password': 'NewPass456!'
+        }, format='json')
+        self.client.logout()
+        response = self.client.post('/api/auth/login/', {
+            'username': 'changepass', 'password': 'OldPass123!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_login_with_new_password_after_change_succeeds(self):
+        self.client.force_authenticate(user=self.user)
+        self.client.post('/api/auth/change-password/', {
+            'current_password': 'OldPass123!', 'new_password': 'NewPass456!'
+        }, format='json')
+        self.client.logout()
+        response = self.client.post('/api/auth/login/', {
+            'username': 'changepass', 'password': 'NewPass456!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('blackdog_access', response.cookies)
+
+    def test_requires_csrf_when_access_cookie_present(self):
+        """CookieJWTAuthentication enforces CSRF when blackdog_access cookie is present."""
+        import json
+        from django.test import RequestFactory as DjangoRequestFactory
+        from store.auth_views import ChangePasswordView
+        from rest_framework_simplejwt.tokens import RefreshToken as RT
+
+        access = str(RT.for_user(self.user).access_token)
+        req = DjangoRequestFactory().post(
+            '/api/auth/change-password/',
+            content_type='application/json',
+            data=json.dumps({'current_password': 'OldPass123!', 'new_password': 'NewPass456!'}),
+        )
+        req.COOKIES['blackdog_access'] = access
+        # No X-CSRFToken header → enforce_csrf raises PermissionDenied → 403
+        response = ChangePasswordView.as_view()(req)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.0 tests
+# ---------------------------------------------------------------------------
+
+class UserProfileAutoCreateTest(TestCase):
+    """UserProfile is auto-created via signal when a User is created."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+
+    def test_register_api_creates_customer_profile(self):
+        """Registering via API triggers signal → profile with role=customer."""
+        payload = {
+            'username': 'profile_test_1',
+            'email': 'profiletest1@example.com',
+            'password': 'StrongPass123!',
+            'password_confirm': 'StrongPass123!',
+        }
+        self.client.post('/api/auth/register/', payload, format='json')
+        user = User.objects.get(username='profile_test_1')
+        self.assertTrue(hasattr(user, 'profile'))
+        self.assertEqual(user.profile.role, UserProfile.ROLE_CUSTOMER)
+
+    def test_create_user_directly_creates_profile(self):
+        user = User.objects.create_user(username='direct_create', password='StrongPass123!')
+        profile = UserProfile.objects.get(user=user)
+        self.assertEqual(profile.role, UserProfile.ROLE_CUSTOMER)
+
+    def test_profile_str(self):
+        user = User.objects.create_user(username='str_user', password='StrongPass123!')
+        self.assertIn('str_user', str(user.profile))
+        self.assertIn('customer', str(user.profile))
+
+    def test_auth_me_returns_role_field(self):
+        user = User.objects.create_user(username='me_role_user', password='StrongPass123!')
+        self.client.force_authenticate(user=user)
+        response = self.client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('role', response.json())
+        self.assertEqual(response.json()['role'], 'customer')
+
+    def test_auth_me_returns_is_staff_field(self):
+        user = User.objects.create_user(username='me_staff_user', password='StrongPass123!', is_staff=True)
+        self.client.force_authenticate(user=user)
+        response = self.client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.json()['is_staff'])
+
+    def test_superuser_role_is_superadmin_in_me_endpoint(self):
+        su = User.objects.create_superuser(username='superadmin_me', password='StrongPass123!', email='su@example.com')
+        self.client.force_authenticate(user=su)
+        response = self.client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['role'], UserProfile.ROLE_SUPERADMIN)
+
+    def test_get_or_create_profile_for_user_without_one(self):
+        """Profile is created on demand via get_or_create when missing."""
+        user = User.objects.create_user(username='no_profile_user', password='StrongPass123!')
+        UserProfile.objects.filter(user=user).delete()
+        profile, created = UserProfile.objects.get_or_create(
+            user=user, defaults={'role': UserProfile.ROLE_CUSTOMER}
+        )
+        self.assertTrue(created)
+        self.assertEqual(profile.role, UserProfile.ROLE_CUSTOMER)
+
+
+class AdminUserListTest(TestCase):
+    """GET /api/admin/users/ — only admin+ roles can list users."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.customer = User.objects.create_user(username='adm_customer', password='Pass123!')
+        self.admin_user = User.objects.create_user(username='adm_admin', password='Pass123!')
+        self.admin_user.profile.role = UserProfile.ROLE_ADMIN
+        self.admin_user.profile.save()
+        self.superadmin = User.objects.create_user(username='adm_superadmin', password='Pass123!')
+        self.superadmin.profile.role = UserProfile.ROLE_SUPERADMIN
+        self.superadmin.profile.save()
+
+    def test_anon_gets_401(self):
+        response = self.client.get('/api/admin/users/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_gets_403(self):
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.get('/api/admin/users/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_list_users(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertIn('results', data)
+        self.assertIn('count', data)
+        self.assertIsInstance(data['results'], list)
+
+    def test_superadmin_can_list_users(self):
+        self.client.force_authenticate(user=self.superadmin)
+        response = self.client.get('/api/admin/users/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_response_contains_role_field(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/')
+        users_data = response.json()['results']
+        self.assertTrue(all('role' in u for u in users_data))
+
+    def test_response_does_not_contain_password(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/')
+        users_data = response.json()['results']
+        self.assertTrue(all('password' not in u for u in users_data))
+
+    def test_django_superuser_has_superadmin_role_in_list(self):
+        su = User.objects.create_superuser(username='list_su', password='Pass123!', email='list_su@x.com')
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/')
+        su_entry = next((u for u in response.json()['results'] if u['username'] == 'list_su'), None)
+        self.assertIsNotNone(su_entry)
+        self.assertEqual(su_entry['role'], UserProfile.ROLE_SUPERADMIN)
+
+
+class AdminUserRoleChangeTest(TestCase):
+    """PATCH /api/admin/users/{pk}/role/ — only superadmin can change roles."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.customer = User.objects.create_user(username='rc_customer', password='Pass123!')
+        self.admin_user = User.objects.create_user(username='rc_admin', password='Pass123!')
+        self.admin_user.profile.role = UserProfile.ROLE_ADMIN
+        self.admin_user.profile.save()
+        self.superadmin = User.objects.create_user(username='rc_superadmin', password='Pass123!')
+        self.superadmin.profile.role = UserProfile.ROLE_SUPERADMIN
+        self.superadmin.profile.save()
+        self.target = User.objects.create_user(username='rc_target', password='Pass123!')
+
+    def test_anon_gets_401(self):
+        response = self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'sales'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_gets_403(self):
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'sales'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_role_cannot_change_roles(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'sales'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_sales_role_cannot_change_roles(self):
+        sales_user = User.objects.create_user(username='rc_sales', password='Pass123!')
+        sales_user.profile.role = UserProfile.ROLE_SALES
+        sales_user.profile.save()
+        self.client.force_authenticate(user=sales_user)
+        response = self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'customer'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_inventory_role_cannot_change_roles(self):
+        inv_user = User.objects.create_user(username='rc_inventory', password='Pass123!')
+        inv_user.profile.role = UserProfile.ROLE_INVENTORY
+        inv_user.profile.save()
+        self.client.force_authenticate(user=inv_user)
+        response = self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'customer'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_technician_role_cannot_change_roles(self):
+        tech_user = User.objects.create_user(username='rc_technician', password='Pass123!')
+        tech_user.profile.role = UserProfile.ROLE_TECHNICIAN
+        tech_user.profile.save()
+        self.client.force_authenticate(user=tech_user)
+        response = self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'customer'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_superadmin_can_assign_superadmin_role_to_others(self):
+        self.client.force_authenticate(user=self.superadmin)
+        response = self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'superadmin'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.target.profile.refresh_from_db()
+        self.assertEqual(self.target.profile.role, UserProfile.ROLE_SUPERADMIN)
+
+    def test_superadmin_can_change_role(self):
+        self.client.force_authenticate(user=self.superadmin)
+        response = self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'sales'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.target.profile.refresh_from_db()
+        self.assertEqual(self.target.profile.role, UserProfile.ROLE_SALES)
+
+    def test_invalid_role_rejected_400(self):
+        self.client.force_authenticate(user=self.superadmin)
+        response = self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'hacker'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_nonexistent_user_returns_404(self):
+        self.client.force_authenticate(user=self.superadmin)
+        response = self.client.patch('/api/admin/users/999999/role/', {'role': 'sales'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_cannot_change_own_role(self):
+        self.client.force_authenticate(user=self.superadmin)
+        response = self.client.patch(
+            f'/api/admin/users/{self.superadmin.pk}/role/', {'role': 'customer'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_role_change_creates_audit_log(self):
+        self.client.force_authenticate(user=self.superadmin)
+        self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'inventory'}, format='json')
+        log = AdminAuditLog.objects.filter(action='role_change').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.actor, self.superadmin)
+        self.assertEqual(log.target_id, str(self.target.pk))
+
+    def test_audit_log_metadata_has_old_and_new_role(self):
+        self.client.force_authenticate(user=self.superadmin)
+        self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'technician'}, format='json')
+        log = AdminAuditLog.objects.filter(action='role_change').first()
+        self.assertIn('old_role', log.metadata)
+        self.assertIn('new_role', log.metadata)
+        self.assertEqual(log.metadata['new_role'], 'technician')
+
+    def test_audit_log_does_not_contain_passwords(self):
+        self.client.force_authenticate(user=self.superadmin)
+        self.client.patch(f'/api/admin/users/{self.target.pk}/role/', {'role': 'sales'}, format='json')
+        log = AdminAuditLog.objects.filter(action='role_change').first()
+        log_str = str(log.metadata)
+        self.assertNotIn('password', log_str)
+        self.assertNotIn('token', log_str)
+
+
+class AdminAuditLogViewTest(TestCase):
+    """GET /api/admin/audit-logs/ — only admin+ can view."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.customer = User.objects.create_user(username='al_customer', password='Pass123!')
+        self.admin_user = User.objects.create_user(username='al_admin', password='Pass123!')
+        self.admin_user.profile.role = UserProfile.ROLE_ADMIN
+        self.admin_user.profile.save()
+        AdminAuditLog.objects.create(
+            actor=self.admin_user,
+            action='role_change',
+            target_type='user',
+            target_id='1',
+            metadata={'old_role': 'customer', 'new_role': 'sales'},
+        )
+
+    def test_anon_gets_401(self):
+        response = self.client.get('/api/admin/audit-logs/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_gets_403(self):
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.get('/api/admin/audit-logs/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_view_logs(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/audit-logs/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertIn('results', data)
+        self.assertIn('count', data)
+        self.assertGreater(data['count'], 0)
+
+    def test_log_response_has_expected_fields(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/audit-logs/')
+        entry = response.json()['results'][0]
+        for field in ('id', 'actor', 'action', 'target_type', 'target_id', 'metadata', 'created_at'):
+            self.assertIn(field, entry)
+
+
+class OrderViewSetRBACTest(TestCase):
+    """OrderViewSet respects role-based access: customer→own, sales/admin/superadmin→all."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.customer1 = User.objects.create_user(username='rbac_c1', password='Pass123!')
+        self.customer2 = User.objects.create_user(username='rbac_c2', password='Pass123!')
+        self.sales_user = User.objects.create_user(username='rbac_sales', password='Pass123!')
+        self.sales_user.profile.role = UserProfile.ROLE_SALES
+        self.sales_user.profile.save()
+        self.admin_user = User.objects.create_user(username='rbac_admin', password='Pass123!')
+        self.admin_user.profile.role = UserProfile.ROLE_ADMIN
+        self.admin_user.profile.save()
+        self.order1 = Order.objects.create(
+            user=self.customer1,
+            customer_email='c1@example.com',
+            total=Decimal('100.00'),
+            status=Order.Status.PAID,
+        )
+        self.order2 = Order.objects.create(
+            user=self.customer2,
+            customer_email='c2@example.com',
+            total=Decimal('200.00'),
+            status=Order.Status.PAID,
+        )
+
+    def test_customer_sees_only_own_orders(self):
+        self.client.force_authenticate(user=self.customer1)
+        response = self.client.get('/api/orders/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [o['id'] for o in response.json()]
+        self.assertIn(self.order1.id, ids)
+        self.assertNotIn(self.order2.id, ids)
+
+    def test_customer_cannot_access_other_user_order(self):
+        self.client.force_authenticate(user=self.customer1)
+        response = self.client.get(f'/api/orders/{self.order2.id}/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_sales_sees_all_orders(self):
+        self.client.force_authenticate(user=self.sales_user)
+        response = self.client.get('/api/orders/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [o['id'] for o in response.json()]
+        self.assertIn(self.order1.id, ids)
+        self.assertIn(self.order2.id, ids)
+
+    def test_admin_sees_all_orders(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/orders/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [o['id'] for o in response.json()]
+        self.assertIn(self.order1.id, ids)
+        self.assertIn(self.order2.id, ids)
+
+    def test_anon_gets_401(self):
+        response = self.client.get('/api/orders/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class Phase30RegressionTest(TestCase):
+    """Phase 3.0 regression: login, refresh, logout, checkout, webhook, payment, reviews, coupons."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        cat = Category.objects.create(name='Reg Cat', slug='reg-cat-30')
+        self.product = Product.objects.create(
+            name='Reg Product', slug='reg-product-30', price=Decimal('100.00'), inventory=10, category=cat
+        )
+        self.coupon = Coupon.objects.create(code='REGCOUPON30', discount_percent=10, is_active=True)
+        self.user = User.objects.create_user(username='reg30_user', password='StrongPass123!')
+
+    def test_login_still_works(self):
+        response = self.client.post('/api/auth/login/', {
+            'username': 'reg30_user', 'password': 'StrongPass123!'
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('blackdog_access', response.cookies)
+
+    def test_me_endpoint_still_works(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertEqual(data['username'], 'reg30_user')
+        self.assertIn('role', data)
+
+    def test_logout_still_works(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post('/api/auth/logout/', {})
+        self.assertIn(response.status_code, (status.HTTP_200_OK, status.HTTP_403_FORBIDDEN))
+
+    def test_products_endpoint_still_public(self):
+        response = self.client.get('/api/products/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_categories_endpoint_still_public(self):
+        response = self.client.get('/api/categories/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_coupon_validate_still_works(self):
+        response = self.client.post('/api/coupons/validate/', {'code': 'REGCOUPON30'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_review_list_still_public(self):
+        response = self.client.get('/api/reviews/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_cart_still_works(self):
+        response = self.client.get('/api/cart/?session_key=reg30session')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.1 tests
+# ---------------------------------------------------------------------------
+
+class AdminUserListSearchFilterTest(TestCase):
+    """Pagination, search and role-filter for GET /api/admin/users/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.admin_user = User.objects.create_user(username='sf_admin', password='Pass123!')
+        self.admin_user.profile.role = UserProfile.ROLE_ADMIN
+        self.admin_user.profile.save()
+        # Extra users for search/filter
+        self.u_alice = User.objects.create_user(username='alice_sf', email='alice@example.com', password='Pass123!')
+        self.u_bob = User.objects.create_user(username='bob_sf', email='bob@example.com', password='Pass123!')
+        self.u_sales = User.objects.create_user(username='sales_sf', email='sales@example.com', password='Pass123!')
+        self.u_sales.profile.role = UserProfile.ROLE_SALES
+        self.u_sales.profile.save()
+        self.su = User.objects.create_superuser(username='super_sf', email='super@example.com', password='Pass123!')
+
+    def test_response_has_pagination_structure(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        for key in ('count', 'page', 'page_size', 'results'):
+            self.assertIn(key, data)
+
+    def test_search_by_username(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/?search=alice_sf')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.json()['results']
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['username'], 'alice_sf')
+
+    def test_search_by_email(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/?search=bob@example')
+        results = response.json()['results']
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['email'], 'bob@example.com')
+
+    def test_filter_by_role(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get(f'/api/admin/users/?role={UserProfile.ROLE_SALES}')
+        results = response.json()['results']
+        self.assertTrue(all(u['role'] == UserProfile.ROLE_SALES for u in results))
+        usernames = [u['username'] for u in results]
+        self.assertIn('sales_sf', usernames)
+
+    def test_filter_superadmin_includes_django_superusers(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get(f'/api/admin/users/?role={UserProfile.ROLE_SUPERADMIN}')
+        results = response.json()['results']
+        usernames = [u['username'] for u in results]
+        self.assertIn('super_sf', usernames)
+        self.assertTrue(all(u['role'] == UserProfile.ROLE_SUPERADMIN for u in results))
+
+    def test_page_size_respected(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/?page_size=2')
+        data = response.json()
+        self.assertLessEqual(len(data['results']), 2)
+        self.assertEqual(data['page_size'], 2)
+
+
+class AdminAuditLogFilterTest(TestCase):
+    """Pagination and filters for GET /api/admin/audit-logs/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.admin_user = User.objects.create_user(username='alf_admin', password='Pass123!')
+        self.admin_user.profile.role = UserProfile.ROLE_ADMIN
+        self.admin_user.profile.save()
+        self.actor1 = User.objects.create_user(username='alf_actor1', password='Pass123!')
+        self.actor2 = User.objects.create_user(username='alf_actor2', password='Pass123!')
+        # Create entries with slight ordering guarantee
+        AdminAuditLog.objects.create(
+            actor=self.actor1, action='role_change', target_type='user', target_id='1',
+            metadata={'old_role': 'customer', 'new_role': 'sales'},
+        )
+        AdminAuditLog.objects.create(
+            actor=self.actor2, action='login_event', target_type='session', target_id='',
+            metadata={},
+        )
+
+    def test_response_has_pagination_structure(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/audit-logs/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        for key in ('count', 'page', 'page_size', 'results'):
+            self.assertIn(key, data)
+
+    def test_filter_by_action(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/audit-logs/?action=role_change')
+        results = response.json()['results']
+        self.assertTrue(all(r['action'] == 'role_change' for r in results))
+
+    def test_no_post_method_allowed(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.post('/api/admin/audit-logs/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)

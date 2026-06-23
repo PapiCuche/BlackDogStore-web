@@ -275,11 +275,89 @@ Flujo de logout:
 - Si no hay cookies auth presentes (ya deslogueado), la limpieza de cookies ocurre sin CSRF
 - El frontend ya envía `X-CSRFToken` en todas las llamadas a `logout()` — compatible sin cambios
 
+### Seguridad de cuenta — Verificación de correo y recuperación de contraseña (Fase 2.3)
+
+**Decisión de implementación:** Se usa `is_active=False` (User estándar de Django) para email no verificado. No se reemplaza el modelo de User para evitar romper todas las migraciones existentes.
+
+**Configuración de email:**
+
+```bash
+# Desarrollo (por consola, sin SMTP real):
+EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+FRONTEND_URL=http://localhost:3000
+REQUIRE_EMAIL_VERIFICATION=False  # cambiar a True para activar el flujo
+
+# Producción (SMTP real):
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.tu-proveedor.com
+EMAIL_PORT=587
+EMAIL_HOST_USER=tu_usuario
+EMAIL_HOST_PASSWORD=tu_contraseña
+EMAIL_USE_TLS=True
+```
+
+**Modelo `AccountToken` — tokens hasheados:**
+- Token plano generado con `secrets.token_urlsafe(48)` — 64 bytes de entropía
+- Solo el SHA-256 del token se almacena en DB — una brecha de DB no permite verificar cuentas ni resetear contraseñas
+- Token de verificación: expira en 24 horas
+- Token de reset: expira en 1 hora
+- Un solo uso — `used_at` se llena al consumir
+
+**Flujo de verificación de correo:**
+```
+REQUIRE_EMAIL_VERIFICATION=True:
+  1. POST /api/auth/register/ → usuario creado con is_active=False
+  2. Email con link: FRONTEND_URL/auth/verify-email?token=<raw>
+  3. Frontend POSTea token a POST /api/auth/verify-email/
+  4. is_active=True → puede iniciar sesión
+
+REQUIRE_EMAIL_VERIFICATION=False (default dev):
+  1. POST /api/auth/register/ → usuario activo directamente
+```
+
+**Flujo de recuperación de contraseña:**
+```
+  1. POST /api/auth/password-reset/request/ {email} → respuesta genérica (anti-enumeración)
+  2. Email con link: FRONTEND_URL/auth/reset-password?token=<raw>
+  3. POST /api/auth/password-reset/confirm/ {token, new_password}
+  4. Contraseña cambiada, refresh token blacklisteado, cookies borradas
+  5. Usuario debe iniciar sesión con nueva contraseña
+```
+
+**Flujo de cambio de contraseña (autenticado):**
+```
+  1. POST /api/auth/change-password/ {current_password, new_password}
+  2. Verifica contraseña actual → valida nueva → cambia
+  3. Refresh token blacklisteado, cookies borradas — sesión cerrada en todos los dispositivos
+  4. Usuario debe iniciar sesión nuevamente
+```
+
+**Endpoints nuevos:**
+
+| Endpoint | Método | Auth | Rate limit | Propósito |
+|----------|--------|------|------------|-----------|
+| `/api/auth/verify-email/` | POST | No | - | Verificar correo con token |
+| `/api/auth/resend-verification/` | POST | No | 3/min | Reenviar correo de verificación |
+| `/api/auth/password-reset/request/` | POST | No | 3/min | Solicitar reset de contraseña |
+| `/api/auth/password-reset/confirm/` | POST | No | 5/min | Confirmar reset con token |
+| `/api/auth/change-password/` | POST | Sí (cookie) | 5/min | Cambiar contraseña autenticado |
+
+**Anti-enumeración:** `resend-verification` y `password-reset/request` siempre devuelven la misma respuesta genérica independientemente de si el correo existe o no.
+
+**Migraciones requeridas:**
+```bash
+python manage.py migrate  # aplica store.0007_account_token
+```
+
+**Páginas frontend nuevas:**
+- `/auth/verify-email` — verifica el token al cargar (desde URL)
+- `/auth/forgot-password` — formulario con correo
+- `/auth/reset-password` — formulario con nueva contraseña (token desde URL)
+
 ### Pendientes explícitos (fases futuras)
 
-- **Fase 2.3**: Verificación de correo electrónico tras registro
 - **Fase 3**: Roles avanzados (staff/admin/cliente); auditoría de acciones administrativas
-- **Fase 4**: Dirección de envío en checkout; emails transaccionales
+- **Fase 4**: Dirección de envío en checkout; emails transaccionales avanzados
 - **Fase 5**: Paginación en API; fix N+1 en `average_rating`/`review_count`
 
 ## Flujo de checkout seguro (Fase 1)
@@ -330,3 +408,66 @@ Flujo de logout:
 - El inventario se decrementa **solo** en el webhook, usando `F()` expressions atómicas
 - La página de éxito consulta el backend antes de mostrar cualquier mensaje positivo
 - El webhook es idempotente: un segundo evento `completed` no decrementa inventario dos veces
+
+---
+
+## Fase 3.0 — RBAC y Auditoría de Acciones Admin
+
+### Decisiones de diseño
+
+- **Sin custom User model**: se usa `UserProfile` (OneToOne con Django's `User`) para no romper migraciones ni integraciones futuras.
+- **Django `is_superuser=True`** siempre equivale a `superadmin`, sin importar el valor en `UserProfile.role`. Esto garantiza compatibilidad con la cuenta de superusuario creada con `createsuperuser`.
+- **`is_staff=True`** solo controla acceso al admin de Django; el acceso a la API se gestiona exclusivamente por `UserProfile.role`.
+- **Señal `post_save`** en `store/signals.py` crea automáticamente un `UserProfile(role='customer')` al crear cualquier `User`.
+- **`AdminAuditLog`** almacena actor, acción, tipo/ID objetivo, metadata JSON, IP y user-agent. El método de clase `AdminAuditLog.log()` simplifica el registro desde cualquier vista.
+
+### Roles de negocio
+
+| Rol | Código | Puede ver todas las órdenes | Puede cambiar roles | Puede listar usuarios |
+|-----|--------|-----------------------------|--------------------|-----------------------|
+| Cliente | `customer` | ✗ (solo propias) | ✗ | ✗ |
+| Vendedor | `sales` | ✓ | ✗ | ✗ |
+| Inventario | `inventory` | ✗ | ✗ | ✗ |
+| Técnico | `technician` | ✗ | ✗ | ✗ |
+| Administrador | `admin` | ✓ | ✗ | ✓ |
+| Superadministrador | `superadmin` | ✓ | ✓ | ✓ |
+
+### Nuevos endpoints
+
+| Método | URL | Permiso | Descripción |
+|--------|-----|---------|-------------|
+| `GET` | `/api/admin/users/` | Admin+ | Lista todos los usuarios con su rol |
+| `PATCH` | `/api/admin/users/{id}/role/` | Superadmin | Cambia el rol de un usuario |
+| `GET` | `/api/admin/audit-logs/` | Admin+ | Lista últimas 200 entradas del audit log |
+
+### `/auth/me/` — campos nuevos
+
+El endpoint ahora incluye `role` e `is_staff` en su respuesta:
+
+```json
+{
+  "id": 1,
+  "username": "carlos",
+  "email": "carlos@example.com",
+  "first_name": "Carlos",
+  "last_name": "",
+  "role": "admin",
+  "is_staff": false
+}
+```
+
+### Archivos nuevos/modificados
+
+- `backend/store/models.py` — `UserProfile`, `AdminAuditLog`
+- `backend/store/permissions.py` — `get_user_role()`, `IsAdminRole`, `IsSuperAdminRole`, `CanManageOrders`
+- `backend/store/admin_views.py` — `AdminUserListView`, `AdminUserRoleView`, `AdminAuditLogListView`
+- `backend/store/signals.py` — señal `post_save` para auto-crear `UserProfile`
+- `backend/store/apps.py` — registra señal en `StoreConfig.ready()`
+- `backend/store/views.py` — `OrderViewSet.get_queryset()` actualizado con roles
+- `backend/store/auth_views.py` — `UserDetailView.get()` incluye `role` e `is_staff`
+- `backend/store/admin.py` — registra `UserProfile` y `AdminAuditLog`
+- `backend/store/urls.py` — rutas `/api/admin/*`
+- `backend/backend/settings.py` — `INSTALLED_APPS` usa `store.apps.StoreConfig`
+- `frontend/app/lib/auth.ts` — tipo `AuthUser` incluye `role` e `is_staff`, helper `isAdminRole()`
+- `frontend/app/components/Header.tsx` — muestra enlace "Admin" solo para roles admin/superadmin
+- `backend/store/migrations/0008_adminauditlog_userprofile.py` — migración nueva

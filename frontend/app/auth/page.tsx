@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { login, logout, getCurrentUser, register, AuthUser } from "../lib/auth";
+import { login, logout, getCurrentUser, register, AuthUser, changePassword } from "../lib/auth";
 
 export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
@@ -35,9 +35,13 @@ export default function AuthPage() {
         window.dispatchEvent(new Event("authChange"));
         router.push("/");
       } else {
-        await register({ username, email, password, password_confirm: passwordConfirm });
-        setSuccess("Registro completado. Ahora inicia sesión.");
-        setIsLogin(true);
+        const result = await register({ username, email, password, password_confirm: passwordConfirm });
+        if (result.requires_verification) {
+          setSuccess("Registro completado. Revisa tu correo para verificar tu cuenta antes de iniciar sesión.");
+        } else {
+          setSuccess("Registro completado. Ahora inicia sesión.");
+          setIsLogin(true);
+        }
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "No se pudo completar la acción.");
@@ -150,15 +154,24 @@ export default function AuthPage() {
             </button>
           </form>
 
-          <div className="mt-6 text-center text-sm text-slate-400">
-            {isLogin ? "¿No tienes cuenta?" : "¿Ya tienes cuenta?"}{" "}
-            <button
-              type="button"
-              onClick={() => { setError(null); setSuccess(null); setIsLogin(!isLogin); }}
-              className="font-semibold text-emerald-400 hover:text-emerald-300"
-            >
-              {isLogin ? "Crear una ahora" : "Iniciar sesión"}
-            </button>
+          <div className="mt-6 space-y-3 text-center text-sm text-slate-400">
+            <div>
+              {isLogin ? "¿No tienes cuenta?" : "¿Ya tienes cuenta?"}{" "}
+              <button
+                type="button"
+                onClick={() => { setError(null); setSuccess(null); setIsLogin(!isLogin); }}
+                className="font-semibold text-white hover:text-slate-300"
+              >
+                {isLogin ? "Crear una ahora" : "Iniciar sesión"}
+              </button>
+            </div>
+            {isLogin && (
+              <div>
+                <a href="/auth/forgot-password" className="text-slate-400 hover:text-white transition">
+                  ¿Olvidaste tu contraseña?
+                </a>
+              </div>
+            )}
           </div>
         </div>
       </div>

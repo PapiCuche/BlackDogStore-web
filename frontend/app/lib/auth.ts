@@ -6,7 +6,38 @@ export type AuthUser = {
   email: string;
   first_name: string;
   last_name: string;
+  role: string;
+  is_staff: boolean;
 };
+
+export type BusinessRole =
+  | 'customer'
+  | 'sales'
+  | 'inventory'
+  | 'technician'
+  | 'admin'
+  | 'superadmin';
+
+export function isAdminRole(user: AuthUser | null): boolean {
+  return user?.role === 'admin' || user?.role === 'superadmin';
+}
+
+export function isSuperAdmin(user: AuthUser | null): boolean {
+  return user?.role === 'superadmin';
+}
+
+const ROLE_LABELS: Record<string, string> = {
+  customer: 'Cliente',
+  sales: 'Vendedor',
+  inventory: 'Inventario',
+  technician: 'Técnico',
+  admin: 'Administrador',
+  superadmin: 'Superadministrador',
+};
+
+export function roleLabel(role: string): string {
+  return ROLE_LABELS[role] ?? role;
+}
 
 function getCsrfTokenFromCookie(): string | null {
   if (typeof document === "undefined") return null;
@@ -133,7 +164,7 @@ export async function register(data: {
   password_confirm: string;
   first_name?: string;
   last_name?: string;
-}): Promise<Record<string, unknown>> {
+}): Promise<{ detail: string; requires_verification: boolean; user?: AuthUser }> {
   const res = await fetch(`${API_BASE}/auth/register/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -150,6 +181,92 @@ export async function register(data: {
       err?.username?.[0] ||
       "Error en el registro.";
     throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+  }
+  return res.json();
+}
+
+export async function verifyEmail(token: string): Promise<{ detail: string }> {
+  const csrf = await ensureCsrfToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrf) headers["X-CSRFToken"] = csrf;
+  const res = await fetch(`${API_BASE}/auth/verify-email/`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "No se pudo verificar el correo.");
+  }
+  return res.json();
+}
+
+export async function resendVerification(email: string): Promise<{ detail: string }> {
+  const csrf = await ensureCsrfToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrf) headers["X-CSRFToken"] = csrf;
+  const res = await fetch(`${API_BASE}/auth/resend-verification/`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "No se pudo enviar el correo.");
+  }
+  return res.json();
+}
+
+export async function requestPasswordReset(email: string): Promise<{ detail: string }> {
+  const csrf = await ensureCsrfToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrf) headers["X-CSRFToken"] = csrf;
+  const res = await fetch(`${API_BASE}/auth/password-reset/request/`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "No se pudo procesar la solicitud.");
+  }
+  return res.json();
+}
+
+export async function confirmPasswordReset(
+  token: string,
+  new_password: string
+): Promise<{ detail: string }> {
+  const csrf = await ensureCsrfToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrf) headers["X-CSRFToken"] = csrf;
+  const res = await fetch(`${API_BASE}/auth/password-reset/confirm/`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify({ token, new_password }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "No se pudo restablecer la contraseña.");
+  }
+  return res.json();
+}
+
+export async function changePassword(
+  current_password: string,
+  new_password: string
+): Promise<{ detail: string }> {
+  const res = await fetchWithAuth(`${API_BASE}/auth/change-password/`, {
+    method: "POST",
+    body: JSON.stringify({ current_password, new_password }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "No se pudo cambiar la contraseña.");
   }
   return res.json();
 }

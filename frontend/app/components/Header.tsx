@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { logout, getCurrentUser } from "../lib/auth";
+import { logout, getCurrentUser, isAdminRole, type AuthUser } from "../lib/auth";
 import { getSessionKey } from "../lib/cart";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api";
@@ -14,9 +14,10 @@ const CART_ICON = (
 );
 
 export function Header() {
-  const [userLoggedIn, setUserLoggedIn] = useState(false);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  const userLoggedIn = Boolean(user);
 
   async function fetchCartCount() {
     try {
@@ -29,9 +30,9 @@ export function Header() {
   }
 
   useEffect(() => {
-    getCurrentUser().then((u) => setUserLoggedIn(Boolean(u)));
+    getCurrentUser().then((u) => setUser(u));
 
-    const handleAuthChange = () => getCurrentUser().then((u) => setUserLoggedIn(Boolean(u)));
+    const handleAuthChange = () => getCurrentUser().then((u) => setUser(u));
     fetchCartCount();
     window.addEventListener("authChange", handleAuthChange);
     window.addEventListener("cartChange", fetchCartCount);
@@ -43,7 +44,7 @@ export function Header() {
 
   function handleLogout() {
     logout().finally(() => {
-      setUserLoggedIn(false);
+      setUser(null);
       window.location.href = "/";
     });
   }
@@ -107,6 +108,11 @@ export function Header() {
               <Link href="/orders" className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
                 Pedidos
               </Link>
+              {isAdminRole(user) && (
+                <Link href="/admin" className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
+                  Admin
+                </Link>
+              )}
               <button
                 onClick={handleLogout}
                 className="ml-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-zinc-400 transition hover:border-white/25 hover:text-white"
@@ -176,6 +182,15 @@ export function Header() {
                 >
                   Mis pedidos
                 </Link>
+                {isAdminRole(user) && (
+                  <Link
+                    href="/admin"
+                    onClick={() => setMenuOpen(false)}
+                    className="rounded-lg px-3 py-2.5 text-zinc-400 hover:bg-white/5 hover:text-white"
+                  >
+                    Admin
+                  </Link>
+                )}
                 <button
                   onClick={handleLogout}
                   className="mt-2 w-full rounded-full border border-white/10 py-2.5 text-xs font-semibold text-zinc-400"

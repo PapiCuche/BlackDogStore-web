@@ -11,7 +11,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon
+from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon, UserProfile
+from .permissions import get_user_role
 from .serializers import (
     CategorySerializer,
     ProductSerializer,
@@ -96,11 +97,12 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_authenticated:
-            if user.is_staff:
-                return Order.objects.prefetch_related('items__product').all()
-            return Order.objects.prefetch_related('items__product').filter(user=user)
-        return Order.objects.none()
+        if not user.is_authenticated:
+            return Order.objects.none()
+        role = get_user_role(user)
+        if role in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN, UserProfile.ROLE_SALES) or user.is_staff:
+            return Order.objects.prefetch_related('items__product').all()
+        return Order.objects.prefetch_related('items__product').filter(user=user)
 
 
 class CreateCheckoutSessionView(APIView):

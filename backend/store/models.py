@@ -1,6 +1,11 @@
-from django.db import models
+import hashlib
+import secrets
+from datetime import timedelta
+
 from django.conf import settings
+from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.utils import timezone
 
 
 class Category(models.Model):
@@ -110,3 +115,148 @@ class Review(models.Model):
 
     def __str__(self):
         return f"Review {self.rating}★ — {self.product.name}"
+
+
+class UserProfile(models.Model):
+    ROLE_CUSTOMER = 'customer'
+    ROLE_SALES = 'sales'
+    ROLE_INVENTORY = 'inventory'
+    ROLE_TECHNICIAN = 'technician'
+    ROLE_ADMIN = 'admin'
+    ROLE_SUPERADMIN = 'superadmin'
+
+    ROLE_CHOICES = [
+        (ROLE_CUSTOMER, 'Cliente'),
+        (ROLE_SALES, 'Vendedor'),
+        (ROLE_INVENTORY, 'Inventario'),
+        (ROLE_TECHNICIAN, 'Técnico'),
+        (ROLE_ADMIN, 'Administrador'),
+        (ROLE_SUPERADMIN, 'Superadministrador'),
+    ]
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='profile',
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_CUSTOMER, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Profile({self.user.username}, {self.role})"
+
+
+class AdminAuditLog(models.Model):
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_actions',
+    )
+    action = models.CharField(max_length=100)
+    target_type = models.CharField(max_length=50)
+    target_id = models.CharField(max_length=50, blank=True)
+    metadata = models.JSONField(default=dict)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"AuditLog[{self.action}] by={self.actor_id} on {self.target_type}:{self.target_id}"
+
+    @classmethod
+    def log(cls, actor, action, target_type, target_id='', metadata=None, request=None):
+        ip = None
+        ua = ''
+        if request:
+            xff = request.META.get('HTTP_X_FORWARDED_FOR', '')
+            ip = xff.split(',')[0].strip() if xff else request.META.get('REMOTE_ADDR')
+            ua = request.META.get('HTTP_USER_AGENT', '')[:500]
+        return cls.objects.create(
+            actor=actor,
+            action=action,
+            target_type=target_type,
+            target_id=str(target_id),
+            metadata=metadata or {},
+            ip_address=ip or None,
+            user_agent=ua,
+        )
+
+
+class AccountToken(models.Model):
+    """
+    Single-use, time-limited token for account actions (email verification, password reset).
+
+    Only the SHA-256 hash of the raw token is stored. The raw token is sent by email
+    and never persisted, so a DB compromise cannot be used to verify emails or reset
+    passwords without access to the user's inbox.
+    """
+    PURPOSE_EMAIL_VERIFICATION = 'email_verification'
+    PURPOSE_PASSWORD_RESET = 'password_reset'
+    PURPOSE_CHOICES = [
+        (PURPOSE_EMAIL_VERIFICATION, 'Email Verification'),
+        (PURPOSE_PASSWORD_RESET, 'Password Reset'),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='account_tokens',
+    )
+    token_hash = models.CharField(max_length=64, db_index=True)
+    purpose = models.CharField(max_length=32, choices=PURPOSE_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['token_hash', 'purpose']),
+            models.Index(fields=['user', 'purpose']),
+        ]
+
+    def __str__(self):
+        return f"AccountToken [{self.purpose}] user={self.user_id} used={self.used_at is not None}"
+
+    @classmethod
+    def make(cls, user, purpose, ttl_hours):
+        """Generate a raw token, store its hash, and return (raw_token, AccountToken)."""
+        raw = secrets.token_urlsafe(48)
+        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        obj = cls.objects.create(
+            user=user,
+            token_hash=token_hash,
+            purpose=purpose,
+            expires_at=timezone.now() + timedelta(hours=ttl_hours),
+        )
+        return raw, obj
+
+    @classmethod
+    def consume(cls, raw_token, purpose):
+        """
+        Look up the token by hash, validate it, mark it used, and return the instance.
+        Raises ValueError with a safe message on any failure.
+        """
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        try:
+            obj = cls.objects.select_related('user').get(
+                token_hash=token_hash,
+                purpose=purpose,
+            )
+        except cls.DoesNotExist:
+            raise ValueError('Token inválido.')
+
+        now = timezone.now()
+        if obj.expires_at < now:
+            raise ValueError('El token ha expirado.')
+        if obj.used_at is not None:
+            raise ValueError('Este token ya fue utilizado.')
+
+        obj.used_at = now
+        obj.save(update_fields=['used_at'])
+        return obj

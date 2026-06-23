@@ -28,3 +28,31 @@ class CartThrottle(AnonRateThrottle):
 
 class PaymentStatusThrottle(AnonRateThrottle):
     scope = 'payment_status'
+
+
+class ResendVerificationThrottle(AnonRateThrottle):
+    scope = 'resend_verification'
+
+
+class PasswordResetRequestThrottle(AnonRateThrottle):
+    scope = 'password_reset_request'
+
+
+class PasswordResetConfirmThrottle(AnonRateThrottle):
+    scope = 'password_reset_confirm'
+
+
+class ChangePasswordThrottle(UserRateThrottle):
+    scope = 'change_password'
+
+
+class AdminUsersThrottle(UserRateThrottle):
+    scope = 'admin_users'
+
+
+class AdminRoleChangeThrottle(UserRateThrottle):
+    scope = 'admin_role_change'
+
+
+class AdminAuditLogsThrottle(UserRateThrottle):
+    scope = 'admin_audit_logs'

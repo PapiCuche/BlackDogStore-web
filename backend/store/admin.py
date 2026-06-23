@@ -1,5 +1,8 @@
 from django.contrib import admin
-from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon
+from .models import (
+    AccountToken, AdminAuditLog, Category, Product,
+    Order, OrderItem, CartItem, Review, Coupon, UserProfile,
+)
 
 
 @admin.register(Category)
@@ -51,3 +54,27 @@ class CouponAdmin(admin.ModelAdmin):
     list_display = ('id', 'code', 'discount_percent', 'is_active', 'expires_at')
     list_filter = ('is_active',)
     search_fields = ('code',)
+
+
+@admin.register(AccountToken)
+class AccountTokenAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'purpose', 'created_at', 'expires_at', 'used_at')
+    list_filter = ('purpose',)
+    search_fields = ('user__username', 'user__email')
+    readonly_fields = ('token_hash', 'created_at', 'expires_at', 'used_at', 'user', 'purpose')
+
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'role', 'created_at', 'updated_at')
+    list_filter = ('role',)
+    search_fields = ('user__username', 'user__email')
+    readonly_fields = ('created_at', 'updated_at')
+
+
+@admin.register(AdminAuditLog)
+class AdminAuditLogAdmin(admin.ModelAdmin):
+    list_display = ('id', 'actor', 'action', 'target_type', 'target_id', 'ip_address', 'created_at')
+    list_filter = ('action', 'target_type', 'created_at')
+    search_fields = ('actor__username', 'target_id', 'action')
+    readonly_fields = ('actor', 'action', 'target_type', 'target_id', 'metadata', 'ip_address', 'user_agent', 'created_at')

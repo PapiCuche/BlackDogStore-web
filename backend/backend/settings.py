@@ -45,7 +45,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
-    'store',
+    'store.apps.StoreConfig',
 ]
 
 REST_FRAMEWORK = {
@@ -68,6 +68,13 @@ REST_FRAMEWORK = {
         'checkout': '10/min',
         'cart': '60/min',
         'payment_status': '30/min',
+        'resend_verification': '3/min',
+        'password_reset_request': '3/min',
+        'password_reset_confirm': '5/min',
+        'change_password': '5/min',
+        'admin_users': '120/min',
+        'admin_role_change': '30/min',
+        'admin_audit_logs': '120/min',
     },
 }
 
@@ -170,6 +177,27 @@ STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY', default='')
 STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET', default='')
 STRIPE_DOMAIN = env('STRIPE_DOMAIN', default='http://localhost:3000')
 STRIPE_CURRENCY = env('STRIPE_CURRENCY', default='pen')
+
+# Email
+EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='Black Dog Store <no-reply@blackdogstoreperu.online>')
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+REQUIRE_EMAIL_VERIFICATION = env.bool('REQUIRE_EMAIL_VERIFICATION', default=False)
+EMAIL_HOST = env('EMAIL_HOST', default='')
+EMAIL_PORT = env.int('EMAIL_PORT', default=587)
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+
+if (
+    not DEBUG
+    and EMAIL_BACKEND == 'django.core.mail.backends.smtp.EmailBackend'
+    and not EMAIL_HOST
+):
+    raise ImproperlyConfigured(
+        "EMAIL_HOST must be set when using SMTP backend in production. "
+        "Set EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend for development."
+    )
 
 # HTTPS security headers — only enforce in production
 if not DEBUG:

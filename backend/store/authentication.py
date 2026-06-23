@@ -41,7 +41,7 @@ class CookieJWTAuthentication(BaseAuthentication):
 
     def authenticate(self, request):
         raw_token = request.COOKIES.get(settings.JWT_COOKIE_ACCESS_NAME)
-        if raw_token is None:
+        if not raw_token:  # None or empty string — both are invalid tokens
             return None
 
         try:
