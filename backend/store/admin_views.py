@@ -6,6 +6,7 @@ from django.db import transaction
 from django.http import HttpResponse
 from django.db.models import F, Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -525,6 +526,10 @@ class AdminOrderResendEmailView(APIView):
             result = resend_order_confirmation_email(order)
         except Exception:
             logger.exception("Failed to resend confirmation email for order %s", pk)
+            smtp_note = f"resend_smtp_fail: {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+            existing = Order.objects.filter(pk=pk).values_list("email_send_error", flat=True).first() or ""
+            new_error = (f"{existing}; {smtp_note}" if existing else smtp_note)[:500]
+            Order.objects.filter(pk=pk).update(email_send_error=new_error)
             return Response(
                 {"detail": "Error al enviar el email. Verifique la configuración SMTP e inténtelo nuevamente."},
                 status=status.HTTP_502_BAD_GATEWAY,

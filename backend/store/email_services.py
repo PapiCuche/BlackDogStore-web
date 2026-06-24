@@ -361,7 +361,6 @@ def resend_order_confirmation_email(order) -> dict:
     Returns {"had_pdf": bool}.
     Raises on SMTP failure — caller must handle.
     """
-    from django.utils import timezone
     from .models import Order  # local import to avoid circular
 
     if not order.paid or order.status != Order.Status.PAID:

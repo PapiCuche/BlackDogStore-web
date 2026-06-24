@@ -17,7 +17,7 @@ Audit 3.3 (+7 tests): technician 403, webhook doesn't modify fulfillment_status,
 Phase 4.0 (+30 tests): commercial checkout fields, document validation, delivery address requirements, receipt type, terms acceptance, frontend injection blocked, admin order detail commercial fields.
 Phase 4.1 (+36 tests): email service unit tests, idempotency flags, no-duplicate sends, webhook on_commit integration, send_mail failure handled, admin detail email flags, customer/payment views don't expose email flags.
 Phase 4.2 (+46 tests, audit +4=50): PDF context builder (excludes Stripe fields, Decimal types, disclaimer), PDF generator (valid bytes, ValueError for unpaid), email+PDF integration (attachment, PDF fail graceful, error logged), admin PDF endpoint RBAC (4 allowed roles, technician/customer/anon blocked), audit log clean metadata, content-type, Content-Disposition, Stripe data not in cleartext, copywriting disclaimer, no-SUNAT-electronico title.
-Phase 4.3 (+34 tests): resend_order_confirmation_email service (bypasses idempotency, best-effort PDF, updates flag, raises on SMTP failure), AdminOrderResendEmailView RBAC (admin+superadmin allowed; customer/sales/inventory/technician/anon blocked), 400 for unpaid, 404 for missing, 502 for SMTP failure, 405 for non-POST methods, audit log clean metadata (no Stripe IDs), regression (automatic webhook flow unaffected).
+Phase 4.3 (+37 tests, audit +3=42): resend_order_confirmation_email service (bypasses idempotency, best-effort PDF, updates flag, raises on SMTP failure), AdminOrderResendEmailView RBAC (admin+superadmin allowed; customer/sales/inventory/technician/anon blocked), 400 for unpaid, 404 for missing, 502 for SMTP failure, 405 for non-POST methods, audit log clean metadata (no Stripe IDs), SMTP failure records email_send_error, audit log NOT created on SMTP failure, HTML body no Stripe IDs, regression (automatic webhook flow unaffected).
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -5359,6 +5359,38 @@ class Phase43ResendEmailEndpointTest(TestCase):
         result = send_order_confirmation_email(self.order)
         self.assertFalse(result)
         self.assertEqual(len(mail.outbox), 0)
+
+    def test_smtp_failure_records_email_send_error(self):
+        """SMTP failure must append resend_smtp_fail: to email_send_error (BUG-2 regression guard)."""
+        import smtplib
+        self.order.email_send_error = ''
+        self.order.save(update_fields=['email_send_error'])
+        self.client.force_authenticate(user=self.admin)
+        with patch('django.core.mail.EmailMultiAlternatives.send', side_effect=smtplib.SMTPException('down')):
+            resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 502)
+        self.order.refresh_from_db()
+        self.assertIn('resend_smtp_fail:', self.order.email_send_error)
+
+    def test_smtp_failure_does_not_create_audit_log(self):
+        import smtplib
+        self.client.force_authenticate(user=self.admin)
+        before = AdminAuditLog.objects.filter(action='order_confirmation_email_resent').count()
+        with patch('django.core.mail.EmailMultiAlternatives.send', side_effect=smtplib.SMTPException('down')):
+            self.client.post(self.url)
+        after = AdminAuditLog.objects.filter(action='order_confirmation_email_resent').count()
+        self.assertEqual(before, after)
+
+    def test_resend_html_body_does_not_contain_stripe_payment_intent(self):
+        """HTML alternative body must also exclude Stripe IDs."""
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        html_alternatives = [body for body, mime in getattr(msg, 'alternatives', []) if mime == 'text/html']
+        self.assertTrue(html_alternatives, "No HTML alternative found")
+        self.assertNotIn('pi_43_ep', html_alternatives[0])
+        self.assertNotIn('cs_43_ep', html_alternatives[0])
 
     def test_resend_does_not_modify_paid_status_total(self):
         self.order.refresh_from_db()
