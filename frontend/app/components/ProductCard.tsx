@@ -1,7 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
 import { formatMoney } from "../lib/format";
-import { StarRating } from "./StarRating";
 
 type ProductCardProps = {
   id: number;
@@ -10,11 +9,48 @@ type ProductCardProps = {
   price: number | string;
   description?: string;
   image_url?: string;
+  inventory?: number;
+  category?: { id: number; name: string; slug: string };
   average_rating?: number | null;
   review_count?: number;
 };
 
-export function ProductCard({ slug, name, price, description, image_url, average_rating, review_count }: ProductCardProps) {
+function StockBadge({ inventory }: { inventory?: number }) {
+  if (inventory === undefined) return null;
+  if (inventory === 0) {
+    return (
+      <span className="rounded-full border border-red-500/20 bg-red-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-red-400">
+        Sin stock
+      </span>
+    );
+  }
+  if (inventory <= 3) {
+    return (
+      <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-400">
+        Últimas {inventory}
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+      En stock
+    </span>
+  );
+}
+
+export function ProductCard({
+  slug,
+  name,
+  price,
+  description,
+  image_url,
+  inventory,
+  category,
+  average_rating,
+  review_count,
+}: ProductCardProps) {
+  const outOfStock = inventory !== undefined && inventory === 0;
+
   return (
     <Link
       href={`/product/${slug}`}
@@ -27,7 +63,7 @@ export function ProductCard({ slug, name, price, description, image_url, average
             src={image_url}
             alt={name}
             fill
-            className="object-cover transition duration-500 group-hover:scale-105"
+            className={`object-cover transition duration-500 group-hover:scale-105 ${outOfStock ? "opacity-50" : ""}`}
             sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 33vw"
           />
         ) : (
@@ -40,10 +76,31 @@ export function ProductCard({ slug, name, price, description, image_url, average
           </div>
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-[#111]/80 to-transparent" />
+
+        {/* Stock badge overlay */}
+        <div className="absolute left-3 top-3">
+          <StockBadge inventory={inventory} />
+        </div>
       </div>
 
       {/* Content */}
       <div className="flex flex-1 flex-col px-5 pb-5 pt-4">
+        {/* Category + rating row */}
+        <div className="mb-2 flex items-center justify-between gap-2">
+          {category ? (
+            <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-600">
+              {category.name}
+            </span>
+          ) : (
+            <span />
+          )}
+          {average_rating !== null && average_rating !== undefined && review_count ? (
+            <span className="text-[9px] text-zinc-600">
+              ★ {average_rating.toFixed(1)} ({review_count})
+            </span>
+          ) : null}
+        </div>
+
         <div className="flex items-start justify-between gap-3">
           <h2 className="font-display text-lg font-black uppercase leading-tight text-white transition group-hover:text-zinc-200 line-clamp-2">
             {name}
@@ -53,21 +110,12 @@ export function ProductCard({ slug, name, price, description, image_url, average
           </span>
         </div>
 
-        {average_rating !== null && average_rating !== undefined && (
-          <div className="mt-2 flex items-center gap-2">
-            <StarRating rating={Math.round(average_rating)} size="sm" />
-            <span className="text-xs text-zinc-600">
-              {average_rating.toFixed(1)} ({review_count})
-            </span>
-          </div>
-        )}
-
         <p className="mt-2 flex-1 text-sm leading-6 text-zinc-600 line-clamp-2">
           {description || "Producto Apple de calidad premium con garantía."}
         </p>
 
         <div className="mt-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-zinc-500 transition group-hover:text-white">
-          Ver detalles
+          {outOfStock ? "Ver producto" : "Ver detalles"}
           <span className="transition group-hover:translate-x-1">→</span>
         </div>
       </div>

@@ -4,8 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { logout, getCurrentUser, isAdminRole, type AuthUser } from "../lib/auth";
 import { getSessionKey } from "../lib/cart";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api";
+import { apiUrl } from "../lib/api";
 
 const CART_ICON = (
   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -13,16 +12,26 @@ const CART_ICON = (
   </svg>
 );
 
+const CATEGORY_LINKS = [
+  { href: "/product?category=iphone", label: "iPhone" },
+  { href: "/product?category=apple-watch", label: "Watch" },
+  { href: "/product?category=ipad", label: "iPad" },
+  { href: "/product?category=mac", label: "Mac" },
+  { href: "/product?category=accesorios", label: "Accesorios" },
+  { href: "/product?category=audifonos", label: "Audífonos" },
+];
+
 export function Header() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const userLoggedIn = Boolean(user);
 
   async function fetchCartCount() {
     try {
       const sessionKey = getSessionKey();
-      const res = await fetch(`${API_BASE}/cart/?session_key=${sessionKey}`);
+      const res = await fetch(apiUrl(`/cart?session_key=${sessionKey}`));
       if (!res.ok) return;
       const data = await res.json();
       setCartCount(Array.isArray(data) ? data.length : 0);
@@ -76,18 +85,54 @@ export function Header() {
 
         {/* Desktop nav */}
         <nav className="hidden items-center gap-0.5 text-sm font-medium text-zinc-400 sm:flex">
-          {[
-            { href: "/product", label: "Catálogo" },
-            { href: "/services", label: "Servicios" },
-          ].map((item) => (
+
+          {/* Catalog with dropdown */}
+          <div
+            className="relative"
+            onMouseEnter={() => setCatalogOpen(true)}
+            onMouseLeave={() => setCatalogOpen(false)}
+          >
             <Link
-              key={item.href}
-              href={item.href}
-              className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white"
+              href="/product"
+              className="flex items-center gap-1 rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white"
             >
-              {item.label}
+              Catálogo
+              <svg className="h-3 w-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+              </svg>
             </Link>
-          ))}
+
+            {catalogOpen && (
+              <div className="absolute left-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111] py-2 shadow-2xl">
+                <div className="px-3 pb-2 pt-1">
+                  <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-zinc-700">Categorías</p>
+                </div>
+                {CATEGORY_LINKS.map((item) => (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setCatalogOpen(false)}
+                    className="block px-4 py-2 text-sm text-zinc-400 transition hover:bg-white/[0.04] hover:text-white"
+                  >
+                    {item.label}
+                  </Link>
+                ))}
+                <div className="mt-1 border-t border-white/[0.06] px-4 pt-2 pb-1">
+                  <Link
+                    href="/product"
+                    onClick={() => setCatalogOpen(false)}
+                    className="text-xs font-bold uppercase tracking-widest text-zinc-600 transition hover:text-white"
+                  >
+                    Ver todo →
+                  </Link>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <Link href="/services" className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
+            Servicios
+          </Link>
 
           {/* Cart */}
           <Link href="/cart" className="relative rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
@@ -159,8 +204,28 @@ export function Header() {
       {menuOpen && (
         <div className="border-t border-white/[0.06] bg-[#080808] px-5 pb-5 pt-3 sm:hidden">
           <nav className="flex flex-col gap-1 text-sm font-medium">
+            <p className="px-3 pt-1 pb-1 text-[9px] font-bold uppercase tracking-[0.25em] text-zinc-700">Categorías</p>
+            {CATEGORY_LINKS.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={() => setMenuOpen(false)}
+                className="rounded-lg px-3 py-2 text-zinc-500 transition hover:bg-white/5 hover:text-white"
+              >
+                {item.label}
+              </Link>
+            ))}
+            <Link
+              href="/product"
+              onClick={() => setMenuOpen(false)}
+              className="rounded-lg px-3 py-2 text-zinc-400 transition hover:bg-white/5 hover:text-white"
+            >
+              Todo el catálogo →
+            </Link>
+
+            <div className="my-2 border-t border-white/[0.06]" />
+
             {[
-              { href: "/product", label: "Catálogo" },
               { href: "/services", label: "Servicios" },
               { href: "/cart", label: `Carrito${cartCount > 0 ? ` (${cartCount})` : ""}` },
             ].map((item) => (

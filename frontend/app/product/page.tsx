@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { ProductCard } from "../components/ProductCard";
-import { API_BASE, fetcher } from "../lib/api";
+import { fetcher, apiUrl } from "../lib/api";
 
 type Category = { id: number; name: string; slug: string };
 type Product = {
@@ -11,40 +12,78 @@ type Product = {
   name: string;
   description?: string;
   price: number;
+  inventory?: number;
   category?: Category;
   image_url?: string;
   average_rating?: number | null;
   review_count?: number;
 };
 
-export default function CatalogPage() {
+const ORDERING_OPTIONS = [
+  { value: "", label: "Relevancia" },
+  { value: "price", label: "Precio: menor a mayor" },
+  { value: "-price", label: "Precio: mayor a menor" },
+  { value: "name", label: "Nombre A–Z" },
+  { value: "newest", label: "Más recientes" },
+];
+
+function CatalogContent() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
-  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const selectedCategory = searchParams.get("category") ?? "";
+  const search = searchParams.get("search") ?? "";
+  const inStock = searchParams.get("in_stock") === "true";
+  const ordering = searchParams.get("ordering") ?? "";
+
+  const updateParam = useCallback(
+    (key: string, value: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (value) {
+        params.set(key, value);
+      } else {
+        params.delete(key);
+      }
+      router.push(`${pathname}?${params.toString()}`, { scroll: false });
+    },
+    [router, pathname, searchParams],
+  );
+
+  const clearFilters = useCallback(() => {
+    router.push(pathname, { scroll: false });
+  }, [router, pathname]);
+
   useEffect(() => {
-    Promise.all([
-      fetcher<Product[]>(`${API_BASE}/products/`),
-      fetcher<Category[]>(`${API_BASE}/categories/`),
-    ])
-      .then(([prods, cats]) => { setProducts(prods); setCategories(cats); })
-      .catch((err) => setError(err instanceof Error ? err.message : "Error al cargar el catálogo."))
-      .finally(() => setLoading(false));
+    fetcher<Category[]>(apiUrl("/categories")).then(setCategories).catch(() => {});
   }, []);
 
-  const filtered = products.filter((p) => {
-    const matchCat = selectedCategory === null || p.category?.id === selectedCategory;
-    const matchQ = search === "" || p.name.toLowerCase().includes(search.toLowerCase());
-    return matchCat && matchQ;
-  });
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    const params = new URLSearchParams();
+    if (selectedCategory) params.set("category", selectedCategory);
+    if (search) params.set("search", search);
+    if (inStock) params.set("in_stock", "true");
+    if (ordering) params.set("ordering", ordering);
+    const qs = params.toString();
+    fetcher<Product[]>(apiUrl(`/products${qs ? `?${qs}` : ""}`))
+      .then(setProducts)
+      .catch((err) => setError(err instanceof Error ? err.message : "Error al cargar el catálogo."))
+      .finally(() => setLoading(false));
+  }, [selectedCategory, search, inStock, ordering]);
+
+  const hasActiveFilters = Boolean(selectedCategory || search || inStock || ordering);
 
   return (
     <div className="min-h-screen bg-[#080808] text-white">
 
-      {/* Header */}
+      {/* Page header */}
       <section className="relative overflow-hidden border-b border-white/[0.06]">
         <div className="topo-bg absolute inset-0 pointer-events-none" />
         <div className="dot-grid absolute right-0 top-0 h-64 w-64 opacity-30 pointer-events-none" />
@@ -61,13 +100,15 @@ export default function CatalogPage() {
 
       <main className="mx-auto max-w-7xl px-6 py-12 lg:px-8">
 
-        {/* Filters */}
-        <div className="mb-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        {/* Filters bar */}
+        <div className="mb-10 flex flex-col gap-4">
+
+          {/* Category chips */}
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => setSelectedCategory(null)}
+              onClick={() => updateParam("category", "")}
               className={`rounded-full px-4 py-2 text-xs font-bold uppercase tracking-widest transition ${
-                selectedCategory === null
+                !selectedCategory
                   ? "bg-white text-[#080808]"
                   : "border border-white/10 bg-white/[0.04] text-zinc-400 hover:border-white/25 hover:text-white"
               }`}
@@ -77,9 +118,9 @@ export default function CatalogPage() {
             {categories.map((cat) => (
               <button
                 key={cat.id}
-                onClick={() => setSelectedCategory(cat.id)}
+                onClick={() => updateParam("category", selectedCategory === cat.slug ? "" : cat.slug)}
                 className={`rounded-full px-4 py-2 text-xs font-bold uppercase tracking-widest transition ${
-                  selectedCategory === cat.id
+                  selectedCategory === cat.slug
                     ? "bg-white text-[#080808]"
                     : "border border-white/10 bg-white/[0.04] text-zinc-400 hover:border-white/25 hover:text-white"
                 }`}
@@ -89,26 +130,65 @@ export default function CatalogPage() {
             ))}
           </div>
 
-          {/* Search */}
-          <div className="relative">
-            <svg className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <input
-              type="search"
-              placeholder="Buscar productos..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full rounded-full border border-white/10 bg-white/[0.04] py-2.5 pl-10 pr-4 text-sm text-white placeholder-zinc-600 focus:border-white/25 focus:outline-none sm:w-64"
-            />
+          {/* Search + stock + ordering row */}
+          <div className="flex flex-wrap items-center gap-3">
+
+            {/* Search */}
+            <div className="relative flex-1 min-w-48">
+              <svg className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                type="search"
+                placeholder="Buscar productos..."
+                value={search}
+                onChange={(e) => updateParam("search", e.target.value)}
+                className="w-full rounded-full border border-white/10 bg-white/[0.04] py-2.5 pl-10 pr-4 text-sm text-white placeholder-zinc-600 focus:border-white/25 focus:outline-none"
+              />
+            </div>
+
+            {/* In-stock toggle */}
+            <button
+              onClick={() => updateParam("in_stock", inStock ? "" : "true")}
+              className={`rounded-full px-4 py-2.5 text-xs font-bold uppercase tracking-widest transition ${
+                inStock
+                  ? "bg-white text-[#080808]"
+                  : "border border-white/10 bg-white/[0.04] text-zinc-400 hover:border-white/25 hover:text-white"
+              }`}
+            >
+              Solo en stock
+            </button>
+
+            {/* Ordering */}
+            <select
+              value={ordering}
+              onChange={(e) => updateParam("ordering", e.target.value)}
+              className="rounded-full border border-white/10 bg-[#111] py-2.5 pl-4 pr-8 text-xs font-bold uppercase tracking-widest text-zinc-400 focus:border-white/25 focus:outline-none"
+            >
+              {ORDERING_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+
+            {/* Clear filters */}
+            {hasActiveFilters && (
+              <button
+                onClick={clearFilters}
+                className="text-xs font-bold uppercase tracking-widest text-zinc-600 transition hover:text-white"
+              >
+                × Limpiar
+              </button>
+            )}
           </div>
         </div>
 
         {/* Count */}
         {!loading && !error && (
           <p className="mb-8 text-xs uppercase tracking-widest text-zinc-600">
-            {filtered.length} {filtered.length === 1 ? "producto" : "productos"}
-            {selectedCategory !== null || search ? " encontrados" : " en catálogo"}
+            {products.length} {products.length === 1 ? "producto" : "productos"}
+            {hasActiveFilters ? " encontrados" : " en catálogo"}
           </p>
         )}
 
@@ -123,18 +203,20 @@ export default function CatalogPage() {
               <div key={i} className="h-72 animate-pulse rounded-2xl bg-white/[0.04]" />
             ))}
           </div>
-        ) : filtered.length === 0 ? (
+        ) : products.length === 0 ? (
           <div className="flex flex-col items-center gap-6 rounded-3xl border border-dashed border-white/10 p-16 text-center">
             <img src="/assets/branding/logo-icon.png" alt="" className="h-14 w-14 opacity-[0.06] invert" />
             <div>
               <p className="font-display text-2xl font-black uppercase text-zinc-700">Sin resultados</p>
               <p className="mt-1 text-sm text-zinc-700">
-                {search ? `No hay productos para "${search}"` : "No hay productos en esta categoría."}
+                {search
+                  ? `No hay productos para "${search}"`
+                  : "No hay productos en esta categoría."}
               </p>
             </div>
-            {(search || selectedCategory !== null) && (
+            {hasActiveFilters && (
               <button
-                onClick={() => { setSearch(""); setSelectedCategory(null); }}
+                onClick={clearFilters}
                 className="rounded-full border border-white/10 px-5 py-2 text-xs font-bold uppercase tracking-widest text-zinc-500 transition hover:border-white/25 hover:text-white"
               >
                 Limpiar filtros
@@ -143,7 +225,7 @@ export default function CatalogPage() {
           </div>
         ) : (
           <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-            {filtered.map((product) => (
+            {products.map((product) => (
               <ProductCard key={product.id} {...product} />
             ))}
           </div>
@@ -170,5 +252,23 @@ export default function CatalogPage() {
 
       </main>
     </div>
+  );
+}
+
+export default function CatalogPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#080808]">
+        <div className="mx-auto max-w-7xl px-6 py-12 lg:px-8">
+          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="h-72 animate-pulse rounded-2xl bg-white/[0.04]" />
+            ))}
+          </div>
+        </div>
+      </div>
+    }>
+      <CatalogContent />
+    </Suspense>
   );
 }

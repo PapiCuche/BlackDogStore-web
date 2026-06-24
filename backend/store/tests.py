@@ -160,6 +160,120 @@ class ProductAPITest(TestCase):
         self.assertEqual(len(results), 0)
 
 
+class Phase50ProductAPITest(TestCase):
+    """Phase 5.0: select_related, in_stock filter, ordering whitelist."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.cat = Category.objects.create(name="Mac Phase50", slug="mac-p50")
+        self.p1 = Product.objects.create(
+            name="MacBook Air P50",
+            slug="macbook-air-p50",
+            price=Decimal("4999.00"),
+            inventory=5,
+            category=self.cat,
+            is_active=True,
+        )
+        self.p2 = Product.objects.create(
+            name="MacBook Pro P50",
+            slug="macbook-pro-p50",
+            price=Decimal("9999.00"),
+            inventory=0,
+            category=self.cat,
+            is_active=True,
+        )
+        self.p3 = Product.objects.create(
+            name="Mac Studio P50",
+            slug="mac-studio-p50",
+            price=Decimal("7499.00"),
+            inventory=3,
+            category=self.cat,
+            is_active=True,
+        )
+        self.inactive = Product.objects.create(
+            name="Inactive Mac P50",
+            slug="inactive-mac-p50",
+            price=Decimal("1.00"),
+            inventory=10,
+            category=self.cat,
+            is_active=False,
+        )
+
+    def _get_slugs(self, path):
+        res = self.client.get(path)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        results = data.get("results", data) if isinstance(data, dict) else data
+        return [r["slug"] for r in results]
+
+    def test_list_returns_200_anonymous(self):
+        res = self.client.get("/api/products/")
+        self.assertEqual(res.status_code, 200)
+
+    def test_inactive_excluded_from_public_list(self):
+        slugs = self._get_slugs("/api/products/")
+        self.assertNotIn("inactive-mac-p50", slugs)
+
+    def test_category_field_present_in_response(self):
+        res = self.client.get("/api/products/?slug=macbook-air-p50")
+        data = res.json()
+        results = data.get("results", data) if isinstance(data, dict) else data
+        self.assertEqual(results[0]["category"]["slug"], "mac-p50")
+
+    def test_in_stock_filter_excludes_zero_inventory(self):
+        slugs = self._get_slugs("/api/products/?category=mac-p50&in_stock=true")
+        self.assertIn("macbook-air-p50", slugs)
+        self.assertIn("mac-studio-p50", slugs)
+        self.assertNotIn("macbook-pro-p50", slugs)
+
+    def test_in_stock_false_not_filtered(self):
+        slugs = self._get_slugs("/api/products/?category=mac-p50")
+        self.assertIn("macbook-pro-p50", slugs)
+
+    def test_ordering_price_asc(self):
+        slugs = self._get_slugs("/api/products/?category=mac-p50&ordering=price")
+        active = [s for s in slugs if s in {"macbook-air-p50", "macbook-pro-p50", "mac-studio-p50"}]
+        self.assertEqual(active, ["macbook-air-p50", "mac-studio-p50", "macbook-pro-p50"])
+
+    def test_ordering_price_desc(self):
+        slugs = self._get_slugs("/api/products/?category=mac-p50&ordering=-price")
+        active = [s for s in slugs if s in {"macbook-air-p50", "macbook-pro-p50", "mac-studio-p50"}]
+        self.assertEqual(active, ["macbook-pro-p50", "mac-studio-p50", "macbook-air-p50"])
+
+    def test_ordering_name_asc(self):
+        slugs = self._get_slugs("/api/products/?category=mac-p50&ordering=name")
+        active = [s for s in slugs if s in {"macbook-air-p50", "macbook-pro-p50", "mac-studio-p50"}]
+        # "Mac Studio" < "MacBook Air" < "MacBook Pro" (space ASCII 32 < 'B' ASCII 66)
+        self.assertEqual(active, ["mac-studio-p50", "macbook-air-p50", "macbook-pro-p50"])
+
+    def test_ordering_newest(self):
+        slugs = self._get_slugs("/api/products/?category=mac-p50&ordering=newest")
+        active = [s for s in slugs if s in {"macbook-air-p50", "macbook-pro-p50", "mac-studio-p50"}]
+        self.assertEqual(active, ["mac-studio-p50", "macbook-pro-p50", "macbook-air-p50"])
+
+    def test_ordering_invalid_returns_200_not_500(self):
+        res = self.client.get("/api/products/?ordering=injected__field")
+        self.assertEqual(res.status_code, 200)
+
+    def test_categories_endpoint_returns_200(self):
+        res = self.client.get("/api/categories/")
+        self.assertEqual(res.status_code, 200)
+
+    def test_product_without_category_does_not_crash(self):
+        Product.objects.create(
+            name="No Category P50",
+            slug="no-cat-p50",
+            price=Decimal("99.00"),
+            inventory=1,
+            is_active=True,
+        )
+        res = self.client.get("/api/products/?slug=no-cat-p50")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        results = data.get("results", data) if isinstance(data, dict) else data
+        self.assertIsNone(results[0]["category"])
+
+
 class CouponAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()

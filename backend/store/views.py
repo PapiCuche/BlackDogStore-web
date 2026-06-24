@@ -37,20 +37,39 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CategorySerializer
 
 
+_PRODUCT_ORDERING_WHITELIST = {
+    'price': 'price',
+    '-price': '-price',
+    'name': 'name',
+    '-name': '-name',
+    'newest': '-id',
+}
+
 class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ProductSerializer
 
     def get_queryset(self):
-        queryset = Product.objects.prefetch_related('reviews').filter(is_active=True)
+        queryset = (
+            Product.objects
+            .select_related('category')
+            .prefetch_related('reviews')
+            .filter(is_active=True)
+        )
         slug = self.request.query_params.get('slug')
         category = self.request.query_params.get('category')
         search = self.request.query_params.get('search')
+        in_stock = self.request.query_params.get('in_stock')
+        ordering = self.request.query_params.get('ordering')
         if slug:
             queryset = queryset.filter(slug=slug)
         if category:
             queryset = queryset.filter(category__slug=category)
         if search:
             queryset = queryset.filter(name__icontains=search)
+        if in_stock == 'true':
+            queryset = queryset.filter(inventory__gt=0)
+        if ordering and ordering in _PRODUCT_ORDERING_WHITELIST:
+            queryset = queryset.order_by(_PRODUCT_ORDERING_WHITELIST[ordering])
         return queryset
 
 

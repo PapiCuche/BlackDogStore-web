@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ProductCard } from "./components/ProductCard";
 import Hero from "./components/Hero";
-import { API_BASE, fetcher } from "./lib/api";
+import { fetcher, apiUrl } from "./lib/api";
 
 type Product = {
   id: number;
@@ -12,10 +12,21 @@ type Product = {
   name: string;
   description?: string;
   price: number;
+  inventory?: number;
   image_url?: string;
   average_rating?: number | null;
   review_count?: number;
+  category?: { id: number; name: string; slug: string };
 };
+
+const CATALOG_SECTIONS = [
+  { label: "iPhone", slug: "iphone", icon: "📱" },
+  { label: "Apple Watch", slug: "apple-watch", icon: "⌚" },
+  { label: "iPad", slug: "ipad", icon: "🖥" },
+  { label: "Mac", slug: "mac", icon: "💻" },
+  { label: "Accesorios", slug: "accesorios", icon: "🎧" },
+  { label: "Audífonos", slug: "audifonos", icon: "🎵" },
+];
 
 const STATS = [
   { stat: "5,000+", label: "Dispositivos reparados" },
@@ -81,12 +92,14 @@ const BRANDS_STRIP = [
 
 export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetcher<Product[]>(`${API_BASE}/products/`)
+    fetcher<Product[]>(apiUrl("/products?ordering=newest"))
       .then(setProducts)
-      .catch((err) => setError(err.message));
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
   }, []);
 
   return (
@@ -120,6 +133,35 @@ export default function Home() {
       </div>
 
       <main className="mx-auto max-w-7xl px-6 lg:px-8">
+
+        {/* Category sections grid */}
+        <section className="py-16">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <span className="section-label">Catálogo</span>
+              <h2 className="font-display mt-2 text-5xl font-black uppercase leading-none tracking-tight text-white sm:text-6xl">
+                Categorías
+              </h2>
+            </div>
+            <Link href="/product" className="text-sm font-bold uppercase tracking-widest text-zinc-400 transition hover:text-white">
+              Ver todos →
+            </Link>
+          </div>
+          <div className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {CATALOG_SECTIONS.map((section) => (
+              <Link
+                key={section.slug}
+                href={`/product?category=${section.slug}`}
+                className="group flex flex-col items-center gap-3 rounded-2xl border border-white/[0.08] bg-[#111] p-5 text-center transition hover:border-white/20 hover:bg-[#161616]"
+              >
+                <span className="text-2xl">{section.icon}</span>
+                <span className="font-display text-xs font-black uppercase tracking-widest text-zinc-400 transition group-hover:text-white">
+                  {section.label}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </section>
 
         {/* Services section */}
         <section className="py-20">
@@ -240,6 +282,12 @@ export default function Home() {
           {error ? (
             <div className="mt-8 rounded-2xl border border-red-500/20 bg-red-500/10 p-6 text-sm text-red-300">
               Error al cargar productos: {error}
+            </div>
+          ) : loading ? (
+            <div className="mt-10 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-72 animate-pulse rounded-2xl bg-white/[0.04]" />
+              ))}
             </div>
           ) : products.length === 0 ? (
             <div className="mt-8 flex flex-col items-center gap-6 rounded-3xl border border-dashed border-white/10 p-16 text-center">
