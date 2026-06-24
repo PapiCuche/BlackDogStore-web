@@ -41,7 +41,7 @@ export function AdminShell({ user, children }: Props) {
       {/* Nav tabs */}
       <div className="border-b border-white/[0.04] bg-[#080808]">
         <div className="mx-auto max-w-7xl px-6">
-          <AdminNav />
+          <AdminNav role={user.role} />
         </div>
       </div>
 

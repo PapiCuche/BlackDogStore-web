@@ -173,6 +173,61 @@ class AdminInventoryAdjustSerializer(serializers.Serializer):
         return value
 
 
+# ---------------------------------------------------------------------------
+# Admin serializers — orders
+# ---------------------------------------------------------------------------
+
+class AdminOrderItemSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source='product.id', read_only=True)
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    subtotal = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrderItem
+        fields = ['id', 'product_id', 'product_name', 'quantity', 'price', 'subtotal']
+
+    def get_subtotal(self, obj):
+        return str(obj.price * obj.quantity)
+
+
+class AdminOrderListSerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source='user.id', read_only=True, default=None, allow_null=True)
+    username = serializers.CharField(source='user.username', read_only=True, default='', allow_null=True)
+    item_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = [
+            'id', 'customer_name', 'customer_email', 'user_id', 'username',
+            'total', 'status', 'fulfillment_status', 'paid', 'created_at', 'paid_at',
+            'item_count',
+        ]
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+
+class AdminOrderDetailSerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source='user.id', read_only=True, default=None, allow_null=True)
+    username = serializers.CharField(source='user.username', read_only=True, default='', allow_null=True)
+    items = AdminOrderItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Order
+        fields = [
+            'id', 'customer_name', 'customer_email', 'user_id', 'username',
+            'total', 'discount_amount', 'coupon_code',
+            'status', 'fulfillment_status', 'paid', 'created_at', 'paid_at',
+            'items',
+        ]
+        # NOTE: stripe_session_id, stripe_payment_intent_id, payment_error intentionally excluded
+
+
+class AdminOrderFulfillmentSerializer(serializers.Serializer):
+    fulfillment_status = serializers.ChoiceField(choices=Order.FulfillmentStatus.choices)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=500, default='')
+
+
 class AdminCategoryWriteSerializer(serializers.ModelSerializer):
     """Write serializer for admin category create."""
     slug = serializers.SlugField(required=False, allow_blank=True, max_length=50)

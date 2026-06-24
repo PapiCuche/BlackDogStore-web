@@ -250,6 +250,123 @@ export async function createAdminCategory(data: {
   return res.json();
 }
 
+// ---------------------------------------------------------------------------
+// Admin orders types and helpers
+// ---------------------------------------------------------------------------
+
+export type AdminOrderItem = {
+  id: number;
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  price: string;
+  subtotal: string;
+};
+
+export type AdminOrder = {
+  id: number;
+  customer_name: string;
+  customer_email: string;
+  user_id: number | null;
+  username: string | null;
+  total: string;
+  status: string;
+  fulfillment_status: string;
+  paid: boolean;
+  created_at: string;
+  paid_at: string | null;
+  item_count: number;
+};
+
+export type AdminOrderDetail = AdminOrder & {
+  discount_amount: string;
+  coupon_code: string;
+  items: AdminOrderItem[];
+};
+
+export const PAYMENT_STATUS_LABELS: Record<string, string> = {
+  pending_payment: 'Pendiente de pago',
+  paid: 'Pagado',
+  failed: 'Fallido',
+  cancelled: 'Cancelado',
+  expired: 'Expirado',
+  refunded: 'Reembolsado',
+};
+
+export const FULFILLMENT_STATUS_LABELS: Record<string, string> = {
+  pending: 'Pendiente',
+  confirmed: 'Confirmado',
+  preparing: 'En preparación',
+  ready_for_pickup: 'Listo para retiro',
+  shipped: 'Enviado',
+  delivered: 'Entregado',
+  cancelled: 'Cancelado operativo',
+};
+
+export const FULFILLMENT_STATUS_OPTIONS = Object.entries(FULFILLMENT_STATUS_LABELS).map(
+  ([value, label]) => ({ value, label }),
+);
+
+export async function fetchAdminOrders(params?: {
+  search?: string;
+  status?: string;
+  fulfillment_status?: string;
+  paid?: 'true' | 'false';
+  date_from?: string;
+  date_to?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<PaginatedResponse<AdminOrder>> {
+  const qs = buildQs({
+    search: params?.search,
+    status: params?.status,
+    fulfillment_status: params?.fulfillment_status,
+    paid: params?.paid,
+    date_from: params?.date_from,
+    date_to: params?.date_to,
+    page: params?.page,
+    page_size: params?.page_size,
+  });
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${qs}`);
+  if (res.status === 403) throw new Error('No tienes permisos para ver órdenes.');
+  if (res.status === 401) throw new Error('Sesión expirada. Vuelve a iniciar sesión.');
+  if (!res.ok) throw new Error('No se pudieron cargar las órdenes.');
+  return res.json();
+}
+
+export async function fetchAdminOrderDetail(orderId: number): Promise<AdminOrderDetail> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/`);
+  if (res.status === 403) throw new Error('No tienes permisos.');
+  if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (!res.ok) throw new Error('No se pudo cargar la orden.');
+  return res.json();
+}
+
+export async function updateOrderFulfillment(
+  orderId: number,
+  fulfillmentStatus: string,
+  note?: string,
+): Promise<AdminOrderDetail> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/fulfillment-status/`, {
+    method: 'PATCH',
+    body: JSON.stringify({ fulfillment_status: fulfillmentStatus, note: note ?? '' }),
+  });
+  if (res.status === 400) {
+    const err = await res.json().catch(() => null);
+    const msg = err?.detail ?? (err && typeof err === 'object'
+      ? Object.values(err).flat().join(' ')
+      : 'Datos inválidos.');
+    throw new Error(msg);
+  }
+  if (res.status === 403) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? 'No tienes permisos para cambiar el estado de despacho.');
+  }
+  if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (!res.ok) throw new Error('No se pudo actualizar el estado de despacho.');
+  return res.json();
+}
+
 export const ACTION_LABELS: Record<string, string> = {
   role_change: 'Cambio de rol',
   product_created: 'Producto creado',
@@ -258,6 +375,7 @@ export const ACTION_LABELS: Record<string, string> = {
   product_reactivated: 'Producto reactivado',
   product_inventory_adjusted: 'Inventario ajustado',
   category_created: 'Categoría creada',
+  order_fulfillment_status_changed: 'Estado de despacho actualizado',
 };
 
 export function actionLabel(action: string): string {

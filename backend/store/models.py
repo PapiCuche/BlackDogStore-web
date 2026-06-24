@@ -53,6 +53,15 @@ class Order(models.Model):
         EXPIRED = 'expired', 'Expirado'
         REFUNDED = 'refunded', 'Reembolsado'
 
+    class FulfillmentStatus(models.TextChoices):
+        PENDING = 'pending', 'Pendiente'
+        CONFIRMED = 'confirmed', 'Confirmado'
+        PREPARING = 'preparing', 'En preparación'
+        READY_FOR_PICKUP = 'ready_for_pickup', 'Listo para retiro'
+        SHIPPED = 'shipped', 'Enviado'
+        DELIVERED = 'delivered', 'Entregado'
+        CANCELLED = 'cancelled', 'Cancelado operativo'
+
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     customer_name = models.CharField(max_length=255, blank=True)
     customer_email = models.EmailField(blank=True)
@@ -67,6 +76,12 @@ class Order(models.Model):
         max_length=20,
         choices=Status.choices,
         default=Status.PENDING_PAYMENT,
+        db_index=True,
+    )
+    fulfillment_status = models.CharField(
+        max_length=30,
+        choices=FulfillmentStatus.choices,
+        default=FulfillmentStatus.PENDING,
         db_index=True,
     )
     stripe_session_id = models.CharField(max_length=255, blank=True, null=True, unique=True, default=None)

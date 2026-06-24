@@ -79,6 +79,8 @@ REST_FRAMEWORK = {
         'admin_product_write': '60/min',
         'admin_inventory_adjust': '60/min',
         'admin_categories': '120/min',
+        'admin_orders': '120/min',
+        'admin_order_status_change': '60/min',
     },
 }
 

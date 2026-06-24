@@ -12,6 +12,7 @@ Phase 3.1 (+9 tests): paginated responses, search/filter users, filter audit log
 Audit 3.1 (+14 tests): page_size cap, page invalid, CSRF on role change, extra fields ignored, actor filter, pagination edge cases.
 Phase 3.2 (+52 tests): admin products CRUD, inventory adjust, categories, is_active filter, regression.
 Audit 3.2 (+6 tests): cart rejects inactive, public detail 404 inactive, checkout rejects inactive, PATCH detail GET.
+Phase 3.3 (+72 tests): admin orders access control, filters, detail security (no stripe/payment_error), fulfillment status change, inventory role restrictions, audit log, regression.
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -2992,3 +2993,565 @@ class Audit32PublicProductDetailInactiveTest(TestCase):
             self.client.get(f'/api/products/{self.inactive.pk}/').status_code,
             status.HTTP_404_NOT_FOUND,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.3 — Admin order management
+# ---------------------------------------------------------------------------
+
+def _make_order(customer_name='Test Customer', customer_email='test@example.com',
+                status_val=Order.Status.PAID, paid=True, fulfillment_status=None,
+                total='999.00'):
+    kwargs = dict(
+        customer_name=customer_name,
+        customer_email=customer_email,
+        status=status_val,
+        paid=paid,
+        total=Decimal(total),
+    )
+    if fulfillment_status is not None:
+        kwargs['fulfillment_status'] = fulfillment_status
+    return Order.objects.create(**kwargs)
+
+
+class Phase33AdminOrderAccessTest(TestCase):
+    """Access control: only staff roles can hit admin/orders/ endpoints."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.order = _make_order()
+        self.anon_client = APIClient()
+
+        self.customer = User.objects.create_user(username='ord_customer', password='Pass123!')
+        self.sales = User.objects.create_user(username='ord_sales', password='Pass123!')
+        self.sales.profile.role = UserProfile.ROLE_SALES
+        self.sales.profile.save()
+        self.inventory = User.objects.create_user(username='ord_inventory', password='Pass123!')
+        self.inventory.profile.role = UserProfile.ROLE_INVENTORY
+        self.inventory.profile.save()
+        self.admin = User.objects.create_user(username='ord_admin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.superadmin = User.objects.create_user(username='ord_superadmin', password='Pass123!', is_superuser=True)
+
+    def test_anonymous_list_returns_401(self):
+        self.assertEqual(self.anon_client.get('/api/admin/orders/').status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_anonymous_detail_returns_401(self):
+        self.assertEqual(self.anon_client.get(f'/api/admin/orders/{self.order.pk}/').status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_list_returns_403(self):
+        self.client.force_authenticate(user=self.customer)
+        self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_customer_detail_returns_403(self):
+        self.client.force_authenticate(user=self.customer)
+        self.assertEqual(self.client.get(f'/api/admin/orders/{self.order.pk}/').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_sales_can_list_orders(self):
+        self.client.force_authenticate(user=self.sales)
+        self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
+
+    def test_inventory_can_list_orders(self):
+        self.client.force_authenticate(user=self.inventory)
+        self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
+
+    def test_admin_can_list_orders(self):
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
+
+    def test_superadmin_can_list_orders(self):
+        self.client.force_authenticate(user=self.superadmin)
+        self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
+
+    def test_sales_can_get_detail(self):
+        self.client.force_authenticate(user=self.sales)
+        self.assertEqual(self.client.get(f'/api/admin/orders/{self.order.pk}/').status_code, status.HTTP_200_OK)
+
+    def test_inventory_can_get_detail(self):
+        self.client.force_authenticate(user=self.inventory)
+        self.assertEqual(self.client.get(f'/api/admin/orders/{self.order.pk}/').status_code, status.HTTP_200_OK)
+
+    def test_admin_can_get_detail(self):
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.get(f'/api/admin/orders/{self.order.pk}/').status_code, status.HTTP_200_OK)
+
+    def test_customer_cannot_patch_fulfillment(self):
+        self.client.force_authenticate(user=self.customer)
+        self.assertEqual(
+            self.client.patch(
+                f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+                {'fulfillment_status': 'confirmed'},
+                format='json',
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_anonymous_cannot_patch_fulfillment(self):
+        self.assertEqual(
+            self.anon_client.patch(
+                f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+                {'fulfillment_status': 'confirmed'},
+                format='json',
+            ).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_detail_404_for_nonexistent_order(self):
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.get('/api/admin/orders/99999/').status_code, status.HTTP_404_NOT_FOUND)
+
+
+class Phase33AdminOrderListFilterTest(TestCase):
+    """Filter and search tests for GET /api/admin/orders/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        Order.objects.all().delete()
+        self.admin = User.objects.create_user(username='fl_admin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.client.force_authenticate(user=self.admin)
+
+        self.paid_order = _make_order(
+            customer_email='alice@blackdog.pe', customer_name='Alice',
+            status_val=Order.Status.PAID, paid=True,
+            fulfillment_status=Order.FulfillmentStatus.CONFIRMED,
+        )
+        self.unpaid_order = _make_order(
+            customer_email='bob@blackdog.pe', customer_name='Bob',
+            status_val=Order.Status.PENDING_PAYMENT, paid=False,
+            fulfillment_status=Order.FulfillmentStatus.PENDING,
+        )
+
+    def test_list_returns_paginated_response(self):
+        data = self.client.get('/api/admin/orders/').json()
+        self.assertIn('results', data)
+        self.assertIn('count', data)
+        self.assertEqual(data['count'], 2)
+
+    def test_filter_by_paid_true(self):
+        data = self.client.get('/api/admin/orders/?paid=true').json()
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['results'][0]['customer_email'], 'alice@blackdog.pe')
+
+    def test_filter_by_paid_false(self):
+        data = self.client.get('/api/admin/orders/?paid=false').json()
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['results'][0]['customer_email'], 'bob@blackdog.pe')
+
+    def test_filter_by_payment_status(self):
+        data = self.client.get('/api/admin/orders/?status=pending_payment').json()
+        self.assertEqual(data['count'], 1)
+
+    def test_filter_by_fulfillment_status(self):
+        data = self.client.get('/api/admin/orders/?fulfillment_status=confirmed').json()
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['results'][0]['customer_email'], 'alice@blackdog.pe')
+
+    def test_search_by_customer_email(self):
+        data = self.client.get('/api/admin/orders/?search=alice%40blackdog').json()
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['results'][0]['customer_email'], 'alice@blackdog.pe')
+
+    def test_search_by_customer_name(self):
+        data = self.client.get('/api/admin/orders/?search=Alice').json()
+        self.assertEqual(data['count'], 1)
+
+    def test_search_by_id(self):
+        data = self.client.get(f'/api/admin/orders/?search={self.paid_order.pk}').json()
+        self.assertGreaterEqual(data['count'], 1)
+        ids = [r['id'] for r in data['results']]
+        self.assertIn(self.paid_order.pk, ids)
+
+    def test_date_from_filter(self):
+        data = self.client.get('/api/admin/orders/?date_from=2000-01-01').json()
+        self.assertEqual(data['count'], 2)
+
+    def test_date_to_filter_excludes_future(self):
+        data = self.client.get('/api/admin/orders/?date_to=1999-01-01').json()
+        self.assertEqual(data['count'], 0)
+
+    def test_invalid_date_from_ignored_gracefully(self):
+        response = self.client.get('/api/admin/orders/?date_from=not-a-date')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_list_item_count_field_present(self):
+        data = self.client.get('/api/admin/orders/').json()
+        self.assertIn('item_count', data['results'][0])
+
+
+class Phase33AdminOrderDetailSecurityTest(TestCase):
+    """Detail endpoint must not expose sensitive payment fields."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.admin = User.objects.create_user(username='sec_admin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.client.force_authenticate(user=self.admin)
+        self.order = Order.objects.create(
+            customer_name='Secure Test',
+            customer_email='secure@example.com',
+            status=Order.Status.PAID,
+            paid=True,
+            total=Decimal('500.00'),
+            stripe_session_id='cs_secret_123',
+            stripe_payment_intent_id='pi_secret_456',
+            payment_error='some error text',
+        )
+
+    def test_detail_does_not_expose_stripe_session_id(self):
+        data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
+        self.assertNotIn('stripe_session_id', data)
+
+    def test_detail_does_not_expose_stripe_payment_intent_id(self):
+        data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
+        self.assertNotIn('stripe_payment_intent_id', data)
+
+    def test_detail_does_not_expose_payment_error(self):
+        data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
+        self.assertNotIn('payment_error', data)
+
+    def test_detail_does_not_expose_cart_session_key(self):
+        data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
+        self.assertNotIn('cart_session_key', data)
+
+    def test_detail_includes_expected_fields(self):
+        data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
+        for field in ('id', 'customer_name', 'customer_email', 'total', 'status', 'fulfillment_status', 'paid', 'items'):
+            self.assertIn(field, data)
+
+    def test_list_does_not_expose_stripe_session_id(self):
+        data = self.client.get('/api/admin/orders/').json()
+        if data['results']:
+            self.assertNotIn('stripe_session_id', data['results'][0])
+
+
+class Phase33FulfillmentStatusChangeTest(TestCase):
+    """Fulfillment status change endpoint tests."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.order = _make_order(fulfillment_status=Order.FulfillmentStatus.PENDING)
+
+        self.admin = User.objects.create_user(username='fs_admin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.sales = User.objects.create_user(username='fs_sales', password='Pass123!')
+        self.sales.profile.role = UserProfile.ROLE_SALES
+        self.sales.profile.save()
+        self.inventory = User.objects.create_user(username='fs_inventory', password='Pass123!')
+        self.inventory.profile.role = UserProfile.ROLE_INVENTORY
+        self.inventory.profile.save()
+        self.superadmin = User.objects.create_user(username='fs_superadmin', password='Pass123!', is_superuser=True)
+
+    def _patch(self, user, order=None, data=None):
+        self.client.force_authenticate(user=user)
+        pk = (order or self.order).pk
+        return self.client.patch(
+            f'/api/admin/orders/{pk}/fulfillment-status/',
+            data or {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+
+    def test_admin_can_change_fulfillment_status(self):
+        res = self._patch(self.admin)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.fulfillment_status, 'confirmed')
+
+    def test_sales_can_change_fulfillment_status(self):
+        res = self._patch(self.sales)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_superadmin_can_change_fulfillment_status(self):
+        res = self._patch(self.superadmin)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_inventory_can_set_preparing(self):
+        res = self._patch(self.inventory, data={'fulfillment_status': 'preparing'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_inventory_can_set_ready_for_pickup(self):
+        res = self._patch(self.inventory, data={'fulfillment_status': 'ready_for_pickup'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_inventory_can_set_shipped(self):
+        res = self._patch(self.inventory, data={'fulfillment_status': 'shipped'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_inventory_can_set_delivered(self):
+        res = self._patch(self.inventory, data={'fulfillment_status': 'delivered'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_inventory_cannot_set_cancelled(self):
+        res = self._patch(self.inventory, data={'fulfillment_status': 'cancelled'})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_inventory_cannot_set_confirmed(self):
+        res = self._patch(self.inventory, data={'fulfillment_status': 'confirmed'})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_inventory_cannot_set_pending(self):
+        res = self._patch(self.inventory, data={'fulfillment_status': 'pending'})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_invalid_fulfillment_status_returns_400(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'invalid_status_xyz'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_missing_fulfillment_status_returns_400(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_change_does_not_alter_payment_status(self):
+        original_status = self.order.status
+        self._patch(self.admin)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, original_status)
+
+    def test_change_does_not_alter_paid_field(self):
+        original_paid = self.order.paid
+        self._patch(self.admin)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.paid, original_paid)
+
+    def test_change_does_not_alter_total(self):
+        original_total = self.order.total
+        self._patch(self.admin)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.total, original_total)
+
+    def test_extra_fields_in_body_are_ignored(self):
+        """Sending paid/total in body must not change those fields."""
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed', 'paid': True, 'total': '0.01', 'status': 'refunded'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.paid, True)
+        self.assertEqual(self.order.total, Decimal('999.00'))
+        self.assertEqual(self.order.status, Order.Status.PAID)
+
+    def test_response_does_not_contain_stripe_session_id(self):
+        res = self._patch(self.admin)
+        self.assertNotIn('stripe_session_id', res.json())
+
+    def test_response_does_not_contain_payment_error(self):
+        res = self._patch(self.admin)
+        self.assertNotIn('payment_error', res.json())
+
+    def test_response_contains_new_fulfillment_status(self):
+        res = self._patch(self.admin, data={'fulfillment_status': 'preparing'})
+        self.assertEqual(res.json().get('fulfillment_status'), 'preparing')
+
+    def test_nonexistent_order_returns_404(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch(
+            '/api/admin/orders/99999/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_delete_returns_405(self):
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(
+            self.client.delete(f'/api/admin/orders/{self.order.pk}/').status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+
+class Phase33AuditLogTest(TestCase):
+    """Fulfillment changes must create correct audit log entries."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.order = _make_order(fulfillment_status=Order.FulfillmentStatus.PENDING)
+        self.admin = User.objects.create_user(username='al_admin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.client.force_authenticate(user=self.admin)
+
+    def test_fulfillment_change_creates_audit_log(self):
+        before = AdminAuditLog.objects.count()
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+        self.assertEqual(AdminAuditLog.objects.count(), before + 1)
+
+    def test_audit_log_action_is_correct(self):
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'preparing'},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
+        self.assertEqual(log.action, 'order_fulfillment_status_changed')
+
+    def test_audit_log_contains_old_and_new_status(self):
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
+        self.assertEqual(log.metadata.get('old_fulfillment_status'), 'pending')
+        self.assertEqual(log.metadata.get('new_fulfillment_status'), 'confirmed')
+
+    def test_audit_log_contains_order_id(self):
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
+        self.assertEqual(log.metadata.get('order_id'), self.order.pk)
+
+    def test_audit_log_contains_customer_email(self):
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
+        self.assertEqual(log.metadata.get('customer_email'), self.order.customer_email)
+
+    def test_audit_log_does_not_contain_stripe_data(self):
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
+        meta_str = str(log.metadata)
+        self.assertNotIn('stripe', meta_str.lower())
+        self.assertNotIn('payment_error', meta_str)
+
+    def test_audit_log_note_is_stored(self):
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed', 'note': 'Confirmed by warehouse team'},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
+        self.assertEqual(log.metadata.get('note'), 'Confirmed by warehouse team')
+
+    def test_audit_log_note_truncated_at_200_chars(self):
+        long_note = 'x' * 300
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed', 'note': long_note},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
+        self.assertLessEqual(len(log.metadata.get('note', '')), 200)
+
+    def test_audit_log_actor_is_admin(self):
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
+        self.assertEqual(log.actor, self.admin)
+
+    def test_audit_log_target_type_is_order(self):
+        self.client.patch(
+            f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
+        self.assertEqual(log.target_type, 'order')
+
+
+class Phase33FulfillmentModelDefaultTest(TestCase):
+    """fulfillment_status field defaults to pending on new orders."""
+
+    def test_new_order_defaults_to_pending(self):
+        order = Order.objects.create(
+            customer_name='Default Test',
+            customer_email='default@example.com',
+            total=Decimal('100.00'),
+        )
+        self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.PENDING)
+
+    def test_fulfillment_choices_exist(self):
+        choices = [c[0] for c in Order.FulfillmentStatus.choices]
+        for val in ('pending', 'confirmed', 'preparing', 'ready_for_pickup', 'shipped', 'delivered', 'cancelled'):
+            self.assertIn(val, choices)
+
+
+class Phase33RegressionTest(TestCase):
+    """Regression: existing endpoints still work after Phase 3.3 changes."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        cat = Category.objects.create(name='Reg33 Cat', slug='reg33-cat')
+        self.product = _make_product('Reg33 Product', 'reg33-product', price='500.00', inventory=10, category=cat)
+        self.user = User.objects.create_user(username='reg33_user', password='Pass123!')
+        self.admin = User.objects.create_user(username='reg33_admin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+
+    def test_public_product_list_still_works(self):
+        self.assertEqual(self.client.get('/api/products/').status_code, status.HTTP_200_OK)
+
+    def test_admin_products_still_works(self):
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_200_OK)
+
+    def test_admin_users_still_works(self):
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.get('/api/admin/users/').status_code, status.HTTP_200_OK)
+
+    def test_admin_audit_logs_still_works(self):
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.get('/api/admin/audit-logs/').status_code, status.HTTP_200_OK)
+
+    def test_customer_orders_endpoint_still_works(self):
+        self.client.force_authenticate(user=self.user)
+        self.assertEqual(self.client.get('/api/orders/').status_code, status.HTTP_200_OK)
+
+    def test_existing_order_has_fulfillment_status_field(self):
+        """Orders created before migration must have fulfillment_status = pending."""
+        order = Order.objects.create(
+            customer_name='Reg33 Order',
+            customer_email='reg33@example.com',
+            total=Decimal('100.00'),
+        )
+        self.assertEqual(order.fulfillment_status, 'pending')
+
+    def test_admin_order_list_returns_fulfillment_status_in_results(self):
+        Order.objects.create(
+            customer_name='Reg33 FulfCheck',
+            customer_email='fulfcheck@example.com',
+            total=Decimal('200.00'),
+        )
+        self.client.force_authenticate(user=self.admin)
+        data = self.client.get('/api/admin/orders/').json()
+        self.assertTrue(len(data['results']) > 0)
+        self.assertIn('fulfillment_status', data['results'][0])

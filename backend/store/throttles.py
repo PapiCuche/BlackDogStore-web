@@ -72,3 +72,11 @@ class AdminInventoryAdjustThrottle(UserRateThrottle):
 
 class AdminCategoriesThrottle(UserRateThrottle):
     scope = 'admin_categories'
+
+
+class AdminOrdersThrottle(UserRateThrottle):
+    scope = 'admin_orders'
+
+
+class AdminOrderStatusChangeThrottle(UserRateThrottle):
+    scope = 'admin_order_status_change'

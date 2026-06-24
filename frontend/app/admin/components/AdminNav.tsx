@@ -3,20 +3,31 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const NAV_ITEMS = [
+type NavItem = { href: string; label: string; exact?: boolean; roles?: string[] };
+
+const NAV_ITEMS: NavItem[] = [
   { href: "/admin", label: "Dashboard", exact: true },
-  { href: "/admin/users", label: "Usuarios" },
-  { href: "/admin/products", label: "Productos" },
-  { href: "/admin/audit-logs", label: "Auditoría" },
+  { href: "/admin/users", label: "Usuarios", roles: ["admin", "superadmin"] },
+  { href: "/admin/products", label: "Productos", roles: ["inventory", "sales", "admin", "superadmin"] },
+  { href: "/admin/orders", label: "Órdenes", roles: ["inventory", "sales", "admin", "superadmin"] },
+  { href: "/admin/audit-logs", label: "Auditoría", roles: ["admin", "superadmin"] },
 ];
 
-export function AdminNav() {
+type Props = { role?: string };
+
+export function AdminNav({ role }: Props) {
   const pathname = usePathname();
+
+  const visible = NAV_ITEMS.filter(
+    (item) => !item.roles || (role && item.roles.includes(role)),
+  );
 
   return (
     <nav className="flex gap-1 py-2 text-sm font-medium overflow-x-auto">
-      {NAV_ITEMS.map((item) => {
-        const isActive = item.exact ? pathname === item.href : pathname.startsWith(item.href);
+      {visible.map((item) => {
+        const isActive = item.exact
+          ? pathname === item.href
+          : pathname.startsWith(item.href);
         return (
           <Link
             key={item.href}

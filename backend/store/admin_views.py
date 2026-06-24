@@ -8,18 +8,21 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import AdminAuditLog, Category, OrderItem, Product, UserProfile
+from .models import AdminAuditLog, Category, Order, OrderItem, Product, UserProfile
 from .permissions import (
-    CanManageInventory, CanManageProducts, CanViewAdminProducts,
+    CanManageInventory, CanManageOrderFulfillment, CanManageProducts,
+    CanViewAdminOrders, CanViewAdminProducts,
     IsAdminRole, IsSuperAdminRole, get_user_role,
 )
 from .serializers import (
     AdminCategoryWriteSerializer, AdminInventoryAdjustSerializer,
+    AdminOrderDetailSerializer, AdminOrderFulfillmentSerializer, AdminOrderListSerializer,
     AdminProductSerializer, AdminProductWriteSerializer,
     CategorySerializer,
 )
 from .throttles import (
     AdminAuditLogsThrottle, AdminCategoriesThrottle, AdminInventoryAdjustThrottle,
+    AdminOrdersThrottle, AdminOrderStatusChangeThrottle,
     AdminProductsThrottle, AdminProductWriteThrottle, AdminRoleChangeThrottle,
     AdminUsersThrottle,
 )
@@ -407,3 +410,137 @@ class AdminCategoryListView(APIView):
             request=request,
         )
         return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.3 — Admin order views
+# ---------------------------------------------------------------------------
+
+# inventory role can only set these operational statuses
+_INVENTORY_ALLOWED_FULFILLMENT = frozenset([
+    Order.FulfillmentStatus.PREPARING,
+    Order.FulfillmentStatus.READY_FOR_PICKUP,
+    Order.FulfillmentStatus.SHIPPED,
+    Order.FulfillmentStatus.DELIVERED,
+])
+
+
+class AdminOrderListView(APIView):
+    """
+    GET /api/admin/orders/ — paginated order list with filters.
+    Roles: inventory, sales, admin, superadmin.
+    """
+    permission_classes = [permissions.IsAuthenticated, CanViewAdminOrders]
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request):
+        from datetime import datetime
+        orders = Order.objects.select_related('user').prefetch_related('items').order_by('-created_at')
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            id_match = int(search) if search.isdigit() else -1
+            orders = orders.filter(
+                Q(customer_name__icontains=search) |
+                Q(customer_email__icontains=search) |
+                Q(id=id_match)
+            ).distinct()
+
+        status_filter = request.query_params.get('status', '').strip()
+        if status_filter:
+            orders = orders.filter(status=status_filter)
+
+        fulfillment_filter = request.query_params.get('fulfillment_status', '').strip()
+        if fulfillment_filter:
+            orders = orders.filter(fulfillment_status=fulfillment_filter)
+
+        paid_param = request.query_params.get('paid', '').strip().lower()
+        if paid_param == 'true':
+            orders = orders.filter(paid=True)
+        elif paid_param == 'false':
+            orders = orders.filter(paid=False)
+
+        date_from = request.query_params.get('date_from', '').strip()
+        if date_from:
+            try:
+                orders = orders.filter(created_at__date__gte=datetime.strptime(date_from, '%Y-%m-%d').date())
+            except ValueError:
+                pass
+
+        date_to = request.query_params.get('date_to', '').strip()
+        if date_to:
+            try:
+                orders = orders.filter(created_at__date__lte=datetime.strptime(date_to, '%Y-%m-%d').date())
+            except ValueError:
+                pass
+
+        page_qs, meta = _paginate(orders, request)
+        return Response({**meta, 'results': AdminOrderListSerializer(page_qs, many=True).data})
+
+
+class AdminOrderDetailView(APIView):
+    """
+    GET /api/admin/orders/{pk}/ — order detail.
+    Roles: inventory, sales, admin, superadmin.
+    No stripe_session_id, no payment_error.
+    """
+    permission_classes = [permissions.IsAuthenticated, CanViewAdminOrders]
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, pk):
+        order = get_object_or_404(
+            Order.objects.select_related('user').prefetch_related('items__product'),
+            pk=pk,
+        )
+        return Response(AdminOrderDetailSerializer(order).data)
+
+
+class AdminOrderFulfillmentView(APIView):
+    """
+    PATCH /api/admin/orders/{pk}/fulfillment-status/
+    Changes fulfillment_status only. Creates audit log.
+    inventory role: limited to preparing/ready_for_pickup/shipped/delivered.
+    sales/admin/superadmin: any value.
+    """
+    permission_classes = [permissions.IsAuthenticated, CanManageOrderFulfillment]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def patch(self, request, pk):
+        ser = AdminOrderFulfillmentSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        new_fs = ser.validated_data['fulfillment_status']
+        note = ser.validated_data.get('note', '').strip()
+
+        order = get_object_or_404(Order, pk=pk)
+
+        role = get_user_role(request.user)
+        if role == UserProfile.ROLE_INVENTORY and new_fs not in _INVENTORY_ALLOWED_FULFILLMENT:
+            allowed = ', '.join(sorted(_INVENTORY_ALLOWED_FULFILLMENT))
+            return Response(
+                {'detail': f'El rol de inventario no puede establecer el estado "{new_fs}". '
+                           f'Estados permitidos: {allowed}.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        old_fs = order.fulfillment_status
+        order.fulfillment_status = new_fs
+        order.save(update_fields=['fulfillment_status'])
+
+        AdminAuditLog.log(
+            actor=request.user,
+            action='order_fulfillment_status_changed',
+            target_type='order',
+            target_id=order.pk,
+            metadata={
+                'order_id': order.pk,
+                'customer_email': order.customer_email,
+                'old_fulfillment_status': old_fs,
+                'new_fulfillment_status': new_fs,
+                'note': note[:200] if note else '',
+            },
+            request=request,
+        )
+
+        order.refresh_from_db()
+        return Response(AdminOrderDetailSerializer(order).data)
