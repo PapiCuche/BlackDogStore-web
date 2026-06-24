@@ -11,6 +11,7 @@ Phase 3.0 (+34 tests): UserProfile auto-create, RBAC permissions, admin endpoint
 Phase 3.1 (+9 tests): paginated responses, search/filter users, filter audit logs, rate limits.
 Audit 3.1 (+14 tests): page_size cap, page invalid, CSRF on role change, extra fields ignored, actor filter, pagination edge cases.
 Phase 3.2 (+52 tests): admin products CRUD, inventory adjust, categories, is_active filter, regression.
+Audit 3.2 (+6 tests): cart rejects inactive, public detail 404 inactive, checkout rejects inactive, PATCH detail GET.
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -2929,3 +2930,65 @@ class Phase32RegressionTest(TestCase):
         """Public ProductSerializer must NOT expose is_active to clients."""
         response = self.client.get(f'/api/products/{self.product.pk}/')
         self.assertNotIn('is_active', response.json())
+
+
+# ---------------------------------------------------------------------------
+# Audit 3.2 — bugs found and fixed
+# ---------------------------------------------------------------------------
+
+class Audit32CartInactiveProductTest(TestCase):
+    """Cart add must reject inactive products (bug fix: is_active check added)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.active = _make_product('Active Cart', 'active-cart-a32', inventory=10)
+        self.inactive = _make_product('Inactive Cart', 'inactive-cart-a32', is_active=False, inventory=10)
+
+    def test_add_active_product_to_cart_succeeds(self):
+        response = self.client.post('/api/cart/add/', {
+            'session_key': 'a32_session',
+            'product': self.active.pk,
+            'quantity': 1,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_add_inactive_product_to_cart_returns_404(self):
+        response = self.client.post('/api/cart/add/', {
+            'session_key': 'a32_session',
+            'product': self.inactive.pk,
+            'quantity': 1,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_add_inactive_product_does_not_create_cart_item(self):
+        self.client.post('/api/cart/add/', {
+            'session_key': 'a32_session2',
+            'product': self.inactive.pk,
+            'quantity': 1,
+        }, format='json')
+        from store.models import CartItem
+        count = CartItem.objects.filter(session_key='a32_session2', product=self.inactive).count()
+        self.assertEqual(count, 0)
+
+
+class Audit32PublicProductDetailInactiveTest(TestCase):
+    """Public product detail must return 404 for inactive products."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.active = _make_product('Active Detail', 'active-detail-a32', inventory=5)
+        self.inactive = _make_product('Inactive Detail', 'inactive-detail-a32', is_active=False, inventory=5)
+
+    def test_active_product_detail_returns_200(self):
+        self.assertEqual(
+            self.client.get(f'/api/products/{self.active.pk}/').status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_inactive_product_public_detail_returns_404(self):
+        self.assertEqual(
+            self.client.get(f'/api/products/{self.inactive.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )

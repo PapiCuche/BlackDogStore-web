@@ -22,6 +22,15 @@ export function isAdminRole(user: AuthUser | null): boolean {
   return user?.role === 'admin' || user?.role === 'superadmin';
 }
 
+export function isStaffRole(user: AuthUser | null): boolean {
+  return (
+    user?.role === 'inventory' ||
+    user?.role === 'sales' ||
+    user?.role === 'admin' ||
+    user?.role === 'superadmin'
+  );
+}
+
 export function isSuperAdmin(user: AuthUser | null): boolean {
   return user?.role === 'superadmin';
 }

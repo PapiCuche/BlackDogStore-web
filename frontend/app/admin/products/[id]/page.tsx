@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { AdminGuard } from "../../components/AdminGuard";
+import { StaffGuard } from "../../components/StaffGuard";
 import { AdminShell } from "../../components/AdminShell";
 import { ProductForm } from "../../components/ProductForm";
 import { InventoryAdjustForm } from "../../components/InventoryAdjustForm";
@@ -153,6 +153,6 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
 
 export default function ProductDetailPage() {
   return (
-    <AdminGuard>{(user) => <ProductDetailContent user={user} />}</AdminGuard>
+    <StaffGuard>{(user) => <ProductDetailContent user={user} />}</StaffGuard>
   );
 }

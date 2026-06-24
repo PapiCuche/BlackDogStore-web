@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { AdminGuard } from "../components/AdminGuard";
+import { StaffGuard } from "../components/StaffGuard";
 import { AdminShell } from "../components/AdminShell";
 import { ProductsTable } from "../components/ProductsTable";
 import {
@@ -176,6 +176,6 @@ function ProductsContent({ user }: { user: AuthUser }) {
 
 export default function AdminProductsPage() {
   return (
-    <AdminGuard>{(user) => <ProductsContent user={user} />}</AdminGuard>
+    <StaffGuard>{(user) => <ProductsContent user={user} />}</StaffGuard>
   );
 }

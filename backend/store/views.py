@@ -489,10 +489,10 @@ class CartViewSet(
             )
 
         try:
-            product = Product.objects.get(pk=product_id)
+            product = Product.objects.get(pk=product_id, is_active=True)
         except (Product.DoesNotExist, TypeError, ValueError):
             return Response(
-                {'detail': 'Producto no encontrado.'},
+                {'detail': 'Producto no encontrado o no disponible.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
