@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 
 from django.utils.text import slugify
@@ -92,6 +93,125 @@ class CartItemSerializer(serializers.ModelSerializer):
         model = CartItem
         fields = ['id', 'session_key', 'product', 'quantity', 'added_at']
         read_only_fields = ['session_key', 'added_at']
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.0: Checkout input serializer (commercial fields)
+# ---------------------------------------------------------------------------
+
+_PERU_PHONE_RE = re.compile(r'^\+?51?\s*9\d{2}\s*\d{3}\s*\d{3}$|^9\d{8}$')
+
+# Fields the frontend must never be allowed to set (injected fields)
+_FORBIDDEN_CHECKOUT_FIELDS = frozenset([
+    'total', 'discount_amount', 'paid', 'paid_at', 'status', 'fulfillment_status',
+    'stripe_session_id', 'stripe_payment_intent_id', 'payment_error', 'cart_session_key',
+    'coupon_code',  # accepted separately, validated server-side
+])
+
+
+class CheckoutInputSerializer(serializers.Serializer):
+    """Validates and sanitizes all commercial fields submitted at checkout.
+
+    Economic fields (total, discount_amount, paid, etc.) are never accepted here
+    — those are calculated and set exclusively by the backend.
+    """
+    customer_name = serializers.CharField(max_length=255, min_length=2, trim_whitespace=True)
+    customer_email = serializers.EmailField(max_length=254)
+    customer_phone = serializers.CharField(max_length=30, trim_whitespace=True)
+
+    document_type = serializers.ChoiceField(choices=Order.DocumentType.choices)
+    document_number = serializers.CharField(max_length=20, trim_whitespace=True)
+
+    delivery_method = serializers.ChoiceField(choices=Order.DeliveryMethod.choices)
+    address_line = serializers.CharField(max_length=300, required=False, allow_blank=True, trim_whitespace=True)
+    city = serializers.CharField(max_length=100, required=False, allow_blank=True, trim_whitespace=True)
+    district = serializers.CharField(max_length=100, required=False, allow_blank=True, trim_whitespace=True)
+    reference = serializers.CharField(max_length=250, required=False, allow_blank=True, trim_whitespace=True)
+    notes = serializers.CharField(max_length=500, required=False, allow_blank=True, trim_whitespace=True)
+
+    receipt_type = serializers.ChoiceField(choices=Order.ReceiptType.choices)
+
+    accepted_terms = serializers.BooleanField()
+    accepted_warranty_policy = serializers.BooleanField()
+
+    # session_key handled separately — not persisted on Order
+    session_key = serializers.CharField(max_length=200, trim_whitespace=True)
+    coupon_code = serializers.CharField(max_length=50, required=False, allow_blank=True, trim_whitespace=True)
+
+    def validate_customer_phone(self, value):
+        digits = re.sub(r'\s', '', value)
+        if not _PERU_PHONE_RE.match(digits):
+            raise serializers.ValidationError(
+                'Teléfono inválido. Ejemplos aceptados: 936449536, +51936449536, +51 936 449 536.'
+            )
+        return value
+
+    def validate_document_number(self, value):
+        return value  # cross-field validation done in validate()
+
+    def validate_accepted_terms(self, value):
+        if not value:
+            raise serializers.ValidationError('Debes aceptar los términos y condiciones para continuar.')
+        return value
+
+    def validate_accepted_warranty_policy(self, value):
+        if not value:
+            raise serializers.ValidationError('Debes aceptar la política de garantía para continuar.')
+        return value
+
+    def validate(self, attrs):
+        doc_type = attrs.get('document_type', '')
+        doc_number = attrs.get('document_number', '')
+        receipt = attrs.get('receipt_type', '')
+        delivery = attrs.get('delivery_method', '')
+        address_line = attrs.get('address_line', '').strip()
+        city = attrs.get('city', '').strip()
+        district = attrs.get('district', '').strip()
+
+        # document_number format per type
+        if doc_type == Order.DocumentType.DNI:
+            if not re.fullmatch(r'\d{8}', doc_number):
+                raise serializers.ValidationError({'document_number': 'El DNI debe tener exactamente 8 dígitos.'})
+        elif doc_type == Order.DocumentType.RUC:
+            if not re.fullmatch(r'\d{11}', doc_number):
+                raise serializers.ValidationError({'document_number': 'El RUC debe tener exactamente 11 dígitos.'})
+        elif doc_type == Order.DocumentType.CE:
+            if not re.fullmatch(r'[a-zA-Z0-9]{6,12}', doc_number):
+                raise serializers.ValidationError(
+                    {'document_number': 'El Carnet de Extranjería debe tener entre 6 y 12 caracteres alfanuméricos.'}
+                )
+
+        # receipt_type + document_type compatibility
+        if receipt == Order.ReceiptType.FACTURA and doc_type != Order.DocumentType.RUC:
+            raise serializers.ValidationError(
+                {'receipt_type': 'La factura requiere un número de RUC. Selecciona RUC como tipo de documento.'}
+            )
+
+        # delivery address requirements
+        if delivery == Order.DeliveryMethod.DELIVERY_AREQUIPA:
+            if not address_line:
+                raise serializers.ValidationError(
+                    {'address_line': 'La dirección es requerida para delivery en Arequipa.'}
+                )
+            if not district:
+                raise serializers.ValidationError(
+                    {'district': 'El distrito es requerido para delivery en Arequipa.'}
+                )
+        elif delivery == Order.DeliveryMethod.NATIONAL_SHIPPING:
+            if not address_line:
+                raise serializers.ValidationError(
+                    {'address_line': 'La dirección es requerida para envío nacional.'}
+                )
+            if not city:
+                raise serializers.ValidationError(
+                    {'city': 'La ciudad es requerida para envío nacional.'}
+                )
+            if not district:
+                raise serializers.ValidationError(
+                    {'district': 'El distrito / departamento es requerido para envío nacional.'}
+                )
+
+        return attrs
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +338,10 @@ class AdminOrderDetailSerializer(serializers.ModelSerializer):
             'id', 'customer_name', 'customer_email', 'user_id', 'username',
             'total', 'discount_amount', 'coupon_code',
             'status', 'fulfillment_status', 'paid', 'created_at', 'paid_at',
+            # Phase 4.0 commercial fields
+            'customer_phone', 'document_type', 'document_number',
+            'delivery_method', 'address_line', 'city', 'district', 'reference',
+            'notes', 'receipt_type', 'accepted_terms', 'accepted_warranty_policy',
             'items',
         ]
         # NOTE: stripe_session_id, stripe_payment_intent_id, payment_error intentionally excluded

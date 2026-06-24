@@ -20,6 +20,7 @@ from .serializers import (
     CartItemSerializer,
     ReviewSerializer,
     CouponSerializer,
+    CheckoutInputSerializer,
 )
 from .throttles import (
     CouponThrottle,
@@ -118,17 +119,16 @@ class CreateCheckoutSessionView(APIView):
             )
         stripe.api_key = secret_key
 
-        # Extract input — all economic validation happens in backend, never trust frontend values
-        session_key = request.data.get('session_key', '').strip()
-        customer_name = request.data.get('customer_name', '').strip()
-        customer_email = request.data.get('customer_email', '').strip()
-        coupon_code = request.data.get('coupon_code', '').upper().strip()
+        # Validate all commercial input fields (Phase 4.0)
+        checkout_ser = CheckoutInputSerializer(data=request.data)
+        if not checkout_ser.is_valid():
+            return Response(checkout_ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        if not session_key:
-            return Response(
-                {'detail': 'session_key es requerido.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        validated = checkout_ser.validated_data
+        session_key = validated['session_key']
+        customer_name = validated['customer_name']
+        customer_email = validated['customer_email']
+        coupon_code = validated.get('coupon_code', '').upper().strip()
 
         # Load cart and validate stock
         cart_items = list(
@@ -200,6 +200,19 @@ class CreateCheckoutSessionView(APIView):
                 cart_session_key=session_key,
                 status=Order.Status.PENDING_PAYMENT,
                 paid=False,
+                # Phase 4.0: commercial fields (backend-validated, never from unvalidated request.data)
+                customer_phone=validated['customer_phone'],
+                document_type=validated['document_type'],
+                document_number=validated['document_number'],
+                delivery_method=validated['delivery_method'],
+                address_line=validated.get('address_line', ''),
+                city=validated.get('city', ''),
+                district=validated.get('district', ''),
+                reference=validated.get('reference', ''),
+                notes=validated.get('notes', ''),
+                receipt_type=validated['receipt_type'],
+                accepted_terms=validated['accepted_terms'],
+                accepted_warranty_policy=validated['accepted_warranty_policy'],
             )
             for item in cart_items:
                 OrderItem.objects.create(

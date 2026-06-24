@@ -281,6 +281,19 @@ export type AdminOrder = {
 export type AdminOrderDetail = AdminOrder & {
   discount_amount: string;
   coupon_code: string;
+  // Phase 4.0 commercial fields
+  customer_phone: string;
+  document_type: string;
+  document_number: string;
+  delivery_method: string;
+  address_line: string;
+  city: string;
+  district: string;
+  reference: string;
+  notes: string;
+  receipt_type: string;
+  accepted_terms: boolean;
+  accepted_warranty_policy: boolean;
   items: AdminOrderItem[];
 };
 

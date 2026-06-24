@@ -524,23 +524,23 @@ class AdminOrderFulfillmentView(APIView):
             )
 
         old_fs = order.fulfillment_status
-        order.fulfillment_status = new_fs
-        order.save(update_fields=['fulfillment_status'])
+        with transaction.atomic():
+            order.fulfillment_status = new_fs
+            order.save(update_fields=['fulfillment_status'])
+            AdminAuditLog.log(
+                actor=request.user,
+                action='order_fulfillment_status_changed',
+                target_type='order',
+                target_id=order.pk,
+                metadata={
+                    'order_id': order.pk,
+                    'customer_email': order.customer_email,
+                    'old_fulfillment_status': old_fs,
+                    'new_fulfillment_status': new_fs,
+                    'note': note[:200] if note else '',
+                },
+                request=request,
+            )
 
-        AdminAuditLog.log(
-            actor=request.user,
-            action='order_fulfillment_status_changed',
-            target_type='order',
-            target_id=order.pk,
-            metadata={
-                'order_id': order.pk,
-                'customer_email': order.customer_email,
-                'old_fulfillment_status': old_fs,
-                'new_fulfillment_status': new_fs,
-                'note': note[:200] if note else '',
-            },
-            request=request,
-        )
-
-        order.refresh_from_db()
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(AdminOrderDetailSerializer(order).data)

@@ -62,6 +62,20 @@ class Order(models.Model):
         DELIVERED = 'delivered', 'Entregado'
         CANCELLED = 'cancelled', 'Cancelado operativo'
 
+    class DocumentType(models.TextChoices):
+        DNI = 'dni', 'DNI'
+        RUC = 'ruc', 'RUC'
+        CE = 'ce', 'Carnet de Extranjería'
+
+    class DeliveryMethod(models.TextChoices):
+        PICKUP_STORE = 'pickup_store', 'Recojo en tienda'
+        DELIVERY_AREQUIPA = 'delivery_arequipa', 'Delivery Arequipa'
+        NATIONAL_SHIPPING = 'national_shipping', 'Envío nacional'
+
+    class ReceiptType(models.TextChoices):
+        BOLETA = 'boleta', 'Boleta'
+        FACTURA = 'factura', 'Factura'
+
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     customer_name = models.CharField(max_length=255, blank=True)
     customer_email = models.EmailField(blank=True)
@@ -89,6 +103,33 @@ class Order(models.Model):
     paid_at = models.DateTimeField(null=True, blank=True)
     cart_session_key = models.CharField(max_length=100, blank=True)
     payment_error = models.TextField(blank=True)
+
+    # Phase 4.0: commercial checkout fields
+    customer_phone = models.CharField(max_length=30, blank=True)
+    document_type = models.CharField(
+        max_length=10,
+        choices=DocumentType.choices,
+        blank=True,
+    )
+    document_number = models.CharField(max_length=20, blank=True)
+    delivery_method = models.CharField(
+        max_length=25,
+        choices=DeliveryMethod.choices,
+        blank=True,
+        db_index=True,
+    )
+    address_line = models.CharField(max_length=300, blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    district = models.CharField(max_length=100, blank=True)
+    reference = models.CharField(max_length=250, blank=True)
+    notes = models.TextField(max_length=500, blank=True)
+    receipt_type = models.CharField(
+        max_length=10,
+        choices=ReceiptType.choices,
+        blank=True,
+    )
+    accepted_terms = models.BooleanField(default=False)
+    accepted_warranty_policy = models.BooleanField(default=False)
 
     def __str__(self):
         owner = self.customer_name or self.user or "Anon"

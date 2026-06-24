@@ -13,6 +13,8 @@ Audit 3.1 (+14 tests): page_size cap, page invalid, CSRF on role change, extra f
 Phase 3.2 (+52 tests): admin products CRUD, inventory adjust, categories, is_active filter, regression.
 Audit 3.2 (+6 tests): cart rejects inactive, public detail 404 inactive, checkout rejects inactive, PATCH detail GET.
 Phase 3.3 (+72 tests): admin orders access control, filters, detail security (no stripe/payment_error), fulfillment status change, inventory role restrictions, audit log, regression.
+Audit 3.3 (+7 tests): technician 403, webhook doesn't modify fulfillment_status, checkout default pending, atomic audit log.
+Phase 4.0 (+30 tests): commercial checkout fields, document validation, delivery address requirements, receipt type, terms acceptance, frontend injection blocked, admin order detail commercial fields.
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -367,14 +369,29 @@ class CheckoutFlowTest(TestCase):
         mock.url = "https://checkout.stripe.com/pay/cs_test_abc123"
         return mock
 
-    @patch("stripe.checkout.Session.create")
-    def test_checkout_creates_order_with_pending_status(self, mock_create):
-        mock_create.return_value = self._mock_stripe_session()
-        response = self.client.post("/api/payments/create-checkout-session/", {
+    def _base_body(self, **overrides):
+        """Returns a complete valid checkout body for regression tests."""
+        body = {
             "session_key": self.session_key,
             "customer_name": "Ana Torres",
             "customer_email": "ana@example.com",
-        }, format="json")
+            "customer_phone": "936449536",
+            "document_type": "dni",
+            "document_number": "12345678",
+            "delivery_method": "pickup_store",
+            "receipt_type": "boleta",
+            "accepted_terms": True,
+            "accepted_warranty_policy": True,
+        }
+        body.update(overrides)
+        return body
+
+    @patch("stripe.checkout.Session.create")
+    def test_checkout_creates_order_with_pending_status(self, mock_create):
+        mock_create.return_value = self._mock_stripe_session()
+        response = self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         order = Order.objects.first()
         self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
@@ -383,67 +400,56 @@ class CheckoutFlowTest(TestCase):
     @patch("stripe.checkout.Session.create")
     def test_checkout_does_not_delete_cart(self, mock_create):
         mock_create.return_value = self._mock_stripe_session()
-        self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": self.session_key,
-            "customer_name": "Ana Torres",
-            "customer_email": "ana@example.com",
-        }, format="json")
+        self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
         cart_count = CartItem.objects.filter(session_key=self.session_key).count()
         self.assertEqual(cart_count, 1)
 
     @patch("stripe.checkout.Session.create")
     def test_checkout_saves_stripe_session_id(self, mock_create):
         mock_create.return_value = self._mock_stripe_session("cs_test_xyz")
-        self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": self.session_key,
-            "customer_name": "Ana Torres",
-            "customer_email": "ana@example.com",
-        }, format="json")
+        self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
         order = Order.objects.first()
         self.assertEqual(order.stripe_session_id, "cs_test_xyz")
 
     @patch("stripe.checkout.Session.create")
     def test_checkout_calculates_total_from_db_not_frontend(self, mock_create):
         mock_create.return_value = self._mock_stripe_session()
-        response = self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": self.session_key,
-            "customer_name": "Ana Torres",
-            "customer_email": "ana@example.com",
-            "frontend_total": "1.00",  # malicious input ignored
-        }, format="json")
+        response = self.client.post(
+            "/api/payments/create-checkout-session/",
+            self._base_body(**{"frontend_total": "1.00"}),  # malicious input ignored
+            format="json",
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         order = Order.objects.first()
         self.assertEqual(order.total, Decimal("7499.00"))
 
     def test_checkout_empty_cart_returns_400(self):
-        response = self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": "empty-session-xyz",
-            "customer_name": "Test",
-            "customer_email": "test@example.com",
-        }, format="json")
+        body = self._base_body(session_key="empty-session-xyz")
+        response = self.client.post("/api/payments/create-checkout-session/", body, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_checkout_insufficient_stock_returns_400(self):
         self.product.inventory = 0
         self.product.save()
-        response = self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": self.session_key,
-            "customer_name": "Test",
-            "customer_email": "test@example.com",
-        }, format="json")
+        response = self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("errors", response.json())
 
     @patch("stripe.checkout.Session.create")
     def test_checkout_applies_coupon_discount_from_db(self, mock_create):
         mock_create.return_value = self._mock_stripe_session()
-        coupon = Coupon.objects.create(code="FASE1TEST", discount_percent=10, is_active=True)
-        response = self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": self.session_key,
-            "customer_name": "Test",
-            "customer_email": "test@example.com",
-            "coupon_code": "FASE1TEST",
-        }, format="json")
+        Coupon.objects.create(code="FASE1TEST", discount_percent=10, is_active=True)
+        response = self.client.post(
+            "/api/payments/create-checkout-session/",
+            self._base_body(coupon_code="FASE1TEST"),
+            format="json",
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         order = Order.objects.first()
         expected_total = (Decimal("7499.00") * Decimal("0.90")).quantize(Decimal("0.01"))
@@ -453,12 +459,11 @@ class CheckoutFlowTest(TestCase):
     @patch("stripe.checkout.Session.create")
     def test_checkout_invalid_coupon_returns_400(self, mock_create):
         mock_create.return_value = self._mock_stripe_session()
-        response = self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": self.session_key,
-            "customer_name": "Test",
-            "customer_email": "test@example.com",
-            "coupon_code": "CUPONFALSO",
-        }, format="json")
+        response = self.client.post(
+            "/api/payments/create-checkout-session/",
+            self._base_body(coupon_code="CUPONFALSO"),
+            format="json",
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
@@ -658,32 +663,40 @@ class CheckoutStripeErrorTest(TestCase):
             quantity=1,
         )
 
+    def _base_body(self):
+        return {
+            "session_key": self.session_key,
+            "customer_name": "Test User",
+            "customer_email": "test@example.com",
+            "customer_phone": "936449536",
+            "document_type": "dni",
+            "document_number": "12345678",
+            "delivery_method": "pickup_store",
+            "receipt_type": "boleta",
+            "accepted_terms": True,
+            "accepted_warranty_policy": True,
+        }
+
     @patch("stripe.checkout.Session.create", side_effect=stripe_lib.StripeError("Connection error"))
     def test_stripe_failure_returns_502(self, _mock):
-        response = self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": self.session_key,
-            "customer_name": "Test",
-            "customer_email": "test@example.com",
-        }, format="json")
+        response = self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
         self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
 
     @patch("stripe.checkout.Session.create", side_effect=stripe_lib.StripeError("Connection error"))
     def test_stripe_failure_preserves_cart(self, _mock):
-        self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": self.session_key,
-            "customer_name": "Test",
-            "customer_email": "test@example.com",
-        }, format="json")
+        self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
         cart_count = CartItem.objects.filter(session_key=self.session_key).count()
         self.assertEqual(cart_count, 1)
 
     @patch("stripe.checkout.Session.create", side_effect=stripe_lib.StripeError("Connection error"))
     def test_stripe_failure_marks_order_failed(self, _mock):
-        self.client.post("/api/payments/create-checkout-session/", {
-            "session_key": self.session_key,
-            "customer_name": "Test",
-            "customer_email": "test@example.com",
-        }, format="json")
+        self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
         order = Order.objects.first()
         self.assertEqual(order.status, Order.Status.FAILED)
         self.assertIn("Connection error", order.payment_error)
@@ -2882,6 +2895,13 @@ class ProductIsActivePublicCatalogTest(TestCase):
                     'session_key': 'pub_sess',
                     'customer_name': 'Test',
                     'customer_email': 'test@test.com',
+                    'customer_phone': '936449536',
+                    'document_type': 'dni',
+                    'document_number': '12345678',
+                    'delivery_method': 'pickup_store',
+                    'receipt_type': 'boleta',
+                    'accepted_terms': True,
+                    'accepted_warranty_policy': True,
                 }, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('errors', response.json())
@@ -3034,6 +3054,9 @@ class Phase33AdminOrderAccessTest(TestCase):
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
         self.superadmin = User.objects.create_user(username='ord_superadmin', password='Pass123!', is_superuser=True)
+        self.technician = User.objects.create_user(username='ord_technician', password='Pass123!')
+        self.technician.profile.role = UserProfile.ROLE_TECHNICIAN
+        self.technician.profile.save()
 
     def test_anonymous_list_returns_401(self):
         self.assertEqual(self.anon_client.get('/api/admin/orders/').status_code, status.HTTP_401_UNAUTHORIZED)
@@ -3096,6 +3119,25 @@ class Phase33AdminOrderAccessTest(TestCase):
                 format='json',
             ).status_code,
             status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_technician_list_returns_403(self):
+        self.client.force_authenticate(user=self.technician)
+        self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_technician_detail_returns_403(self):
+        self.client.force_authenticate(user=self.technician)
+        self.assertEqual(self.client.get(f'/api/admin/orders/{self.order.pk}/').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_technician_cannot_patch_fulfillment(self):
+        self.client.force_authenticate(user=self.technician)
+        self.assertEqual(
+            self.client.patch(
+                f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+                {'fulfillment_status': 'confirmed'},
+                format='json',
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
         )
 
     def test_detail_404_for_nonexistent_order(self):
@@ -3555,3 +3597,477 @@ class Phase33RegressionTest(TestCase):
         data = self.client.get('/api/admin/orders/').json()
         self.assertTrue(len(data['results']) > 0)
         self.assertIn('fulfillment_status', data['results'][0])
+
+    def test_checkout_creates_order_with_pending_fulfillment_status(self):
+        """Checkout flow must create orders with fulfillment_status='pending' (not affected by Phase 3.3)."""
+        order = Order.objects.create(
+            customer_name='Reg33 Checkout',
+            customer_email='checkout33@example.com',
+            status=Order.Status.PENDING_PAYMENT,
+            paid=False,
+            total=Decimal('500.00'),
+        )
+        self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.PENDING)
+
+    def test_webhook_update_fields_does_not_include_fulfillment_status(self):
+        """Simulates the webhook save to verify fulfillment_status is never written by the webhook."""
+        order = Order.objects.create(
+            customer_name='Reg33 Webhook',
+            customer_email='webhook33@example.com',
+            status=Order.Status.PENDING_PAYMENT,
+            paid=False,
+            total=Decimal('300.00'),
+            fulfillment_status=Order.FulfillmentStatus.CONFIRMED,
+        )
+        # Simulate what webhook _handle_checkout_completed does:
+        order.status = Order.Status.PAID
+        order.paid = True
+        order.paid_at = timezone.now()
+        order.stripe_payment_intent_id = 'pi_test_reg33'
+        order.save(update_fields=['status', 'paid', 'paid_at', 'stripe_payment_intent_id', 'payment_error'])
+        order.refresh_from_db()
+        # fulfillment_status must remain 'confirmed' — webhook never touches it
+        self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.CONFIRMED)
+
+    def test_fulfillment_status_change_is_atomic_with_audit_log(self):
+        """Verifies that fulfillment_status change and audit log are created together."""
+        order = Order.objects.create(
+            customer_name='Reg33 Atomic',
+            customer_email='atomic33@example.com',
+            total=Decimal('100.00'),
+        )
+        admin = User.objects.create_user(username='reg33_atomic_admin', password='Pass123!')
+        admin.profile.role = UserProfile.ROLE_ADMIN
+        admin.profile.save()
+        self.client.force_authenticate(user=admin)
+        audit_before = AdminAuditLog.objects.count()
+        self.client.patch(
+            f'/api/admin/orders/{order.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+            format='json',
+        )
+        order.refresh_from_db()
+        self.assertEqual(order.fulfillment_status, 'confirmed')
+        self.assertEqual(AdminAuditLog.objects.count(), audit_before + 1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.0 tests — commercial checkout fields
+# ---------------------------------------------------------------------------
+
+@override_settings(
+    STRIPE_SECRET_KEY='sk_test_fake_key',
+    STRIPE_WEBHOOK_SECRET='whsec_fake_secret',
+    STRIPE_DOMAIN='http://localhost:3000',
+)
+class Phase40CheckoutValidationTest(TestCase):
+    """Validates all commercial checkout fields: document, delivery, receipt, terms."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.product = Product.objects.create(
+            name='P40 Product',
+            slug='p40-product',
+            price=Decimal('500.00'),
+            inventory=10,
+        )
+        self.session_key = 'p40-session-001'
+        CartItem.objects.create(session_key=self.session_key, product=self.product, quantity=1)
+
+    def _base_body(self, **overrides):
+        body = {
+            'session_key': self.session_key,
+            'customer_name': 'Carlos Mau',
+            'customer_email': 'carlos@blackdog.pe',
+            'customer_phone': '936449536',
+            'document_type': 'dni',
+            'document_number': '12345678',
+            'delivery_method': 'pickup_store',
+            'receipt_type': 'boleta',
+            'accepted_terms': True,
+            'accepted_warranty_policy': True,
+        }
+        body.update(overrides)
+        return body
+
+    def _mock_stripe(self):
+        mock = MagicMock()
+        mock.id = 'cs_test_p40'
+        mock.url = 'https://checkout.stripe.com/pay/cs_test_p40'
+        return mock
+
+    # --- Required field missing ---
+
+    def test_missing_phone_returns_400(self):
+        body = self._base_body()
+        del body['customer_phone']
+        resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('customer_phone', resp.json())
+
+    def test_missing_document_type_returns_400(self):
+        body = self._base_body()
+        del body['document_type']
+        resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('document_type', resp.json())
+
+    def test_missing_document_number_returns_400(self):
+        body = self._base_body()
+        del body['document_number']
+        resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('document_number', resp.json())
+
+    def test_missing_receipt_type_returns_400(self):
+        body = self._base_body()
+        del body['receipt_type']
+        resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('receipt_type', resp.json())
+
+    def test_accepted_terms_false_returns_400(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(accepted_terms=False),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('accepted_terms', resp.json())
+
+    def test_accepted_warranty_policy_false_returns_400(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(accepted_warranty_policy=False),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('accepted_warranty_policy', resp.json())
+
+    # --- Document number format ---
+
+    def test_dni_must_be_8_digits(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(document_type='dni', document_number='1234'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('document_number', resp.json())
+
+    def test_dni_exactly_8_digits_accepted(self):
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            resp = self.client.post(
+                '/api/payments/create-checkout-session/',
+                self._base_body(document_type='dni', document_number='12345678'),
+                format='json',
+            )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_ruc_must_be_11_digits(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(document_type='ruc', document_number='123'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('document_number', resp.json())
+
+    def test_ruc_11_digits_accepted(self):
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            resp = self.client.post(
+                '/api/payments/create-checkout-session/',
+                self._base_body(document_type='ruc', document_number='20610159886'),
+                format='json',
+            )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_ce_too_short_returns_400(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(document_type='ce', document_number='AB'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('document_number', resp.json())
+
+    def test_ce_valid_length_accepted(self):
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            resp = self.client.post(
+                '/api/payments/create-checkout-session/',
+                self._base_body(document_type='ce', document_number='ABC123456'),
+                format='json',
+            )
+        self.assertEqual(resp.status_code, 200)
+
+    # --- Receipt + document type combo ---
+
+    def test_factura_requires_ruc(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(receipt_type='factura', document_type='dni', document_number='12345678'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('receipt_type', resp.json())
+
+    def test_factura_with_ruc_accepted(self):
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            resp = self.client.post(
+                '/api/payments/create-checkout-session/',
+                self._base_body(
+                    receipt_type='factura',
+                    document_type='ruc',
+                    document_number='20610159886',
+                ),
+                format='json',
+            )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_boleta_with_dni_accepted(self):
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            resp = self.client.post(
+                '/api/payments/create-checkout-session/',
+                self._base_body(receipt_type='boleta', document_type='dni', document_number='12345678'),
+                format='json',
+            )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_boleta_with_ruc_accepted(self):
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            resp = self.client.post(
+                '/api/payments/create-checkout-session/',
+                self._base_body(receipt_type='boleta', document_type='ruc', document_number='20610159886'),
+                format='json',
+            )
+        self.assertEqual(resp.status_code, 200)
+
+    # --- Delivery address requirements ---
+
+    def test_delivery_arequipa_requires_address(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(delivery_method='delivery_arequipa', district='Cayma'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('address_line', resp.json())
+
+    def test_delivery_arequipa_requires_district(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(delivery_method='delivery_arequipa', address_line='Av. Lima 123'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('district', resp.json())
+
+    def test_national_shipping_requires_address(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(
+                delivery_method='national_shipping',
+                city='Lima',
+                district='Miraflores',
+            ),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('address_line', resp.json())
+
+    def test_national_shipping_requires_city(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(
+                delivery_method='national_shipping',
+                address_line='Av. Javier Prado 100',
+                district='Miraflores',
+            ),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('city', resp.json())
+
+    def test_national_shipping_requires_district(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(
+                delivery_method='national_shipping',
+                address_line='Av. Javier Prado 100',
+                city='Lima',
+            ),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('district', resp.json())
+
+    def test_pickup_store_does_not_require_address(self):
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            resp = self.client.post(
+                '/api/payments/create-checkout-session/',
+                self._base_body(delivery_method='pickup_store'),
+                format='json',
+            )
+        self.assertEqual(resp.status_code, 200)
+
+    # --- Field size limits ---
+
+    def test_notes_too_long_returns_400(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(notes='x' * 501),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('notes', resp.json())
+
+    def test_reference_too_long_returns_400(self):
+        resp = self.client.post(
+            '/api/payments/create-checkout-session/',
+            self._base_body(
+                delivery_method='delivery_arequipa',
+                address_line='Av. Lima 123',
+                district='Cayma',
+                reference='x' * 251,
+            ),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('reference', resp.json())
+
+    # --- Injection guard ---
+
+    def test_frontend_cannot_send_total(self):
+        """total sent from frontend must be silently ignored — backend calculates it."""
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            body = self._base_body()
+            body['total'] = '1.00'
+            resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
+        self.assertEqual(resp.status_code, 200)
+        order = Order.objects.first()
+        self.assertEqual(order.total, Decimal('500.00'))  # from DB, not from frontend
+
+    def test_frontend_cannot_send_paid_true(self):
+        """paid=True sent from frontend must never affect the order."""
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            body = self._base_body()
+            body['paid'] = True
+            resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
+        self.assertEqual(resp.status_code, 200)
+        order = Order.objects.first()
+        self.assertFalse(order.paid)
+
+    def test_frontend_cannot_send_status_paid(self):
+        """status=paid sent from frontend must never affect the order."""
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            body = self._base_body()
+            body['status'] = 'paid'
+            resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
+        self.assertEqual(resp.status_code, 200)
+        order = Order.objects.first()
+        self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
+
+    def test_frontend_cannot_send_fulfillment_status_delivered(self):
+        """fulfillment_status sent from frontend must never affect the order."""
+        with patch('stripe.checkout.Session.create') as m:
+            m.return_value = self._mock_stripe()
+            body = self._base_body()
+            body['fulfillment_status'] = 'delivered'
+            resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
+        self.assertEqual(resp.status_code, 200)
+        order = Order.objects.first()
+        self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.PENDING)
+
+    # --- Order saves commercial fields ---
+
+    @patch('stripe.checkout.Session.create')
+    def test_order_saves_commercial_fields(self, mock_create):
+        mock_create.return_value = self._mock_stripe()
+        body = self._base_body(
+            delivery_method='delivery_arequipa',
+            address_line='Calle Mercaderes 100',
+            district='Cercado',
+            reference='Frente al parque',
+            notes='Entregar en horario de tarde',
+        )
+        resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
+        self.assertEqual(resp.status_code, 200)
+        order = Order.objects.first()
+        self.assertEqual(order.customer_phone, '936449536')
+        self.assertEqual(order.document_type, 'dni')
+        self.assertEqual(order.document_number, '12345678')
+        self.assertEqual(order.delivery_method, 'delivery_arequipa')
+        self.assertEqual(order.address_line, 'Calle Mercaderes 100')
+        self.assertEqual(order.district, 'Cercado')
+        self.assertEqual(order.reference, 'Frente al parque')
+        self.assertEqual(order.notes, 'Entregar en horario de tarde')
+        self.assertEqual(order.receipt_type, 'boleta')
+        self.assertTrue(order.accepted_terms)
+        self.assertTrue(order.accepted_warranty_policy)
+
+
+class Phase40AdminOrderDetailCommercialFieldsTest(TestCase):
+    """Admin order detail endpoint exposes commercial fields and hides Stripe fields."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.admin = User.objects.create_user(username='p40_admin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.order = Order.objects.create(
+            customer_name='P40 Cliente',
+            customer_email='p40cliente@blackdog.pe',
+            total=Decimal('500.00'),
+            customer_phone='936449536',
+            document_type='ruc',
+            document_number='20610159886',
+            delivery_method='delivery_arequipa',
+            address_line='Calle Mercaderes 100',
+            district='Cercado',
+            receipt_type='factura',
+            notes='Test notes',
+            accepted_terms=True,
+            accepted_warranty_policy=True,
+            stripe_session_id='cs_test_p40_admin',
+        )
+
+    def test_admin_detail_shows_commercial_fields(self):
+        self.client.force_authenticate(user=self.admin)
+        data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
+        self.assertEqual(data['customer_phone'], '936449536')
+        self.assertEqual(data['document_type'], 'ruc')
+        self.assertEqual(data['document_number'], '20610159886')
+        self.assertEqual(data['delivery_method'], 'delivery_arequipa')
+        self.assertEqual(data['address_line'], 'Calle Mercaderes 100')
+        self.assertEqual(data['district'], 'Cercado')
+        self.assertEqual(data['receipt_type'], 'factura')
+        self.assertEqual(data['notes'], 'Test notes')
+        self.assertTrue(data['accepted_terms'])
+        self.assertTrue(data['accepted_warranty_policy'])
+
+    def test_admin_detail_still_hides_stripe_session_id(self):
+        self.client.force_authenticate(user=self.admin)
+        data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
+        self.assertNotIn('stripe_session_id', data)
+        self.assertNotIn('payment_error', data)
+
+    def test_payment_status_view_does_not_expose_commercial_fields(self):
+        """PaymentStatusView must not expose address/document data."""
+        data = self.client.get(
+            f'/api/payments/status/?session_id=cs_test_p40_admin'
+        ).json()
+        self.assertNotIn('address_line', data)
+        self.assertNotIn('document_number', data)
+        self.assertNotIn('customer_phone', data)

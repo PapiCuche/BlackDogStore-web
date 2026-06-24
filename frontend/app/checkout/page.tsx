@@ -1,65 +1,167 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import Link from "next/link";
 import { getSessionKey } from "../lib/cart";
 import { API_BASE } from "../lib/api";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
+import {
+  STORE_ADDRESS,
+  STORE_PHONE,
+  TERMS_TEXT,
+  WARRANTY_TEXT,
+  DELIVERY_DESCRIPTIONS,
+} from "../lib/business";
 
 type Coupon = { code: string; discount_percent: number };
+type FieldErrors = Record<string, string>;
+
+type FormState = {
+  customer_name: string;
+  customer_email: string;
+  customer_phone: string;
+  document_type: string;
+  document_number: string;
+  delivery_method: string;
+  address_line: string;
+  city: string;
+  district: string;
+  reference: string;
+  notes: string;
+  receipt_type: string;
+  accepted_terms: boolean;
+  accepted_warranty_policy: boolean;
+};
+
+type FormAction =
+  | { type: "set_str"; field: keyof FormState; value: string }
+  | { type: "set_bool"; field: keyof FormState; value: boolean }
+  | { type: "prefill"; name: string; email: string };
+
+function formReducer(state: FormState, action: FormAction): FormState {
+  switch (action.type) {
+    case "set_str":
+      return { ...state, [action.field]: action.value };
+    case "set_bool":
+      return { ...state, [action.field]: action.value };
+    case "prefill":
+      return {
+        ...state,
+        customer_name: action.name || state.customer_name,
+        customer_email: action.email || state.customer_email,
+      };
+    default:
+      return state;
+  }
+}
+
+const initialForm: FormState = {
+  customer_name: "",
+  customer_email: "",
+  customer_phone: "",
+  document_type: "dni",
+  document_number: "",
+  delivery_method: "pickup_store",
+  address_line: "",
+  city: "",
+  district: "",
+  reference: "",
+  notes: "",
+  receipt_type: "boleta",
+  accepted_terms: false,
+  accepted_warranty_policy: false,
+};
+
+function FieldError({ msg }: { msg?: string }) {
+  if (!msg) return null;
+  return <p className="mt-1 text-xs text-red-400">{msg}</p>;
+}
 
 export default function CheckoutPage() {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [form, dispatch] = useReducer(formReducer, initialForm);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [cancelled, setCancelled] = useState(false);
   const [coupon, setCoupon] = useState<Coupon | null>(null);
+
   const sessionKey = getSessionKey();
 
   useEffect(() => {
-    async function loadData() {
-      if (typeof window === "undefined") return;
-      const params = new URLSearchParams(window.location.search);
-      setCancelled(params.get("cancelled") === "true");
-
-      // Restore coupon
-      const saved = sessionStorage.getItem("blackdog_coupon");
-      if (saved) setCoupon(JSON.parse(saved));
-
-      // Pre-fill from auth
-      try {
-        const profile = await getCurrentUser();
-        if (profile) {
-          if (profile.email) setEmail(profile.email);
-          if (profile.first_name) setName(profile.first_name);
-        }
-      } catch {}
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    setCancelled(params.get("cancelled") === "true");
+    const saved = sessionStorage.getItem("blackdog_coupon");
+    if (saved) {
+      try { setCoupon(JSON.parse(saved)); } catch { /* ignore */ }
     }
-    loadData();
+    getCurrentUser()
+      .then((profile) => {
+        if (profile) {
+          dispatch({ type: "prefill", name: profile.first_name || "", email: profile.email || "" });
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  // factura forces document_type = ruc
+  useEffect(() => {
+    if (form.receipt_type === "factura" && form.document_type !== "ruc") {
+      dispatch({ type: "set_str", field: "document_type", value: "ruc" });
+    }
+  }, [form.receipt_type, form.document_type]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setLoading(true);
     setMessage(null);
-    try {
-      const body: Record<string, string> = {
-        session_key: sessionKey,
-        customer_name: name,
-        customer_email: email,
-      };
-      if (coupon) body.coupon_code = coupon.code;
+    setFieldErrors({});
 
-      const res = await fetchWithAuth(`${API_BASE}/payments/create-checkout-session/`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+    const body = {
+      session_key: sessionKey,
+      customer_name: form.customer_name,
+      customer_email: form.customer_email,
+      customer_phone: form.customer_phone,
+      document_type: form.document_type,
+      document_number: form.document_number,
+      delivery_method: form.delivery_method,
+      address_line: form.address_line,
+      city: form.city,
+      district: form.district,
+      reference: form.reference,
+      notes: form.notes,
+      receipt_type: form.receipt_type,
+      accepted_terms: form.accepted_terms,
+      accepted_warranty_policy: form.accepted_warranty_policy,
+      ...(coupon ? { coupon_code: coupon.code } : {}),
+    };
+
+    try {
+      const res = await fetchWithAuth(
+        `${API_BASE}/payments/create-checkout-session/`,
+        { method: "POST", body: JSON.stringify(body) },
+      );
+
+      if (res.status === 400) {
+        const err = await res.json().catch(() => null);
+        if (err && typeof err === "object" && !("detail" in err)) {
+          const fields: FieldErrors = {};
+          for (const [k, v] of Object.entries(err)) {
+            fields[k] = Array.isArray(v) ? (v as string[]).join(" ") : String(v);
+          }
+          setFieldErrors(fields);
+          setLoading(false);
+          return;
+        }
+        throw new Error((err as { detail?: string })?.detail ?? "Datos inválidos.");
+      }
+
       if (!res.ok) {
         const err = await res.json().catch(() => null);
-        throw new Error(err?.detail || "No se pudo crear la sesión de pago.");
+        throw new Error((err as { detail?: string })?.detail ?? "No se pudo crear la sesión de pago.");
       }
-      const data = await res.json();
+
+      const data = await res.json() as { url?: string };
       if (data.url) {
         sessionStorage.removeItem("blackdog_coupon");
         window.location.href = data.url;
@@ -70,75 +172,348 @@ export default function CheckoutPage() {
     }
   }
 
-  const inputClass = "mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500/50 focus:outline-none";
-  const labelClass = "block text-sm font-medium text-slate-300";
+  const fe = fieldErrors;
+  const needsAddress =
+    form.delivery_method === "delivery_arequipa" ||
+    form.delivery_method === "national_shipping";
+  const needsCity = form.delivery_method === "national_shipping";
+
+  const inputClass =
+    "mt-1.5 w-full rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-sm text-white placeholder-zinc-600 focus:border-white/30 focus:outline-none";
+  const labelClass = "block text-xs font-medium text-zinc-400 uppercase tracking-wide";
+  const sectionClass =
+    "rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 space-y-4";
 
   return (
-    <div className="min-h-screen bg-zinc-950 px-6 py-12">
-      <div className="mx-auto max-w-lg">
+    <div className="min-h-screen bg-[#080808] px-4 py-12">
+      <div className="mx-auto max-w-xl">
+
         <div className="mb-8">
-          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-emerald-400/60">Pago seguro</p>
-          <h1 className="mt-1 text-4xl font-bold text-white">Checkout</h1>
+          <h1 className="text-3xl font-bold text-white">Checkout</h1>
+          <p className="mt-1 text-sm text-zinc-500">
+            Pago procesado de forma segura por Stripe.
+          </p>
         </div>
 
         {cancelled && (
-          <div className="mb-5 rounded-2xl border border-yellow-500/20 bg-yellow-500/10 p-4 text-sm text-yellow-300">
+          <div className="mb-5 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-300">
             Pago cancelado. Tu carrito sigue disponible.
           </div>
         )}
         {message && (
-          <div className="mb-5 rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">{message}</div>
+          <div className="mb-5 rounded-xl border border-red-500/20 bg-red-500/[0.06] p-4 text-sm text-red-300">
+            {message}
+          </div>
+        )}
+        {coupon && (
+          <div className="mb-5 flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
+            <div>
+              <span className="text-xs text-zinc-500">Cupón aplicado</span>
+              <div className="text-sm font-semibold text-white">
+                {coupon.code} — {coupon.discount_percent}% de descuento
+              </div>
+            </div>
+            <Link href="/cart" className="text-xs text-zinc-500 hover:text-zinc-300">
+              Cambiar
+            </Link>
+          </div>
         )}
 
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-8">
-          {coupon && (
-            <div className="mb-5 flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
+        <form onSubmit={handleSubmit} className="space-y-5">
+
+          {/* 1. Datos personales */}
+          <div className={sectionClass}>
+            <h2 className="text-sm font-semibold text-white">Datos personales</h2>
+
+            <div>
+              <label className={labelClass}>Nombre completo *</label>
+              <input
+                value={form.customer_name}
+                onChange={(e) => dispatch({ type: "set_str", field: "customer_name", value: e.target.value })}
+                className={inputClass}
+                placeholder="Juan Pérez"
+                required
+                maxLength={255}
+              />
+              <FieldError msg={fe.customer_name} />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <span className="text-xs text-slate-400">Cupón aplicado:</span>
-                <div className="text-sm font-bold text-emerald-400">{coupon.code} — {coupon.discount_percent}% de descuento</div>
+                <label className={labelClass}>Correo electrónico *</label>
+                <input
+                  type="email"
+                  value={form.customer_email}
+                  onChange={(e) => dispatch({ type: "set_str", field: "customer_email", value: e.target.value })}
+                  className={inputClass}
+                  placeholder="juan@ejemplo.com"
+                  required
+                  maxLength={254}
+                />
+                <FieldError msg={fe.customer_email} />
               </div>
-              <Link href="/cart" className="text-xs text-slate-500 hover:text-slate-300">Cambiar</Link>
+              <div>
+                <label className={labelClass}>Teléfono *</label>
+                <input
+                  type="tel"
+                  value={form.customer_phone}
+                  onChange={(e) => dispatch({ type: "set_str", field: "customer_phone", value: e.target.value })}
+                  className={inputClass}
+                  placeholder="936 449 536"
+                  required
+                  maxLength={30}
+                />
+                <FieldError msg={fe.customer_phone} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className={labelClass}>Tipo de documento *</label>
+                <select
+                  value={form.document_type}
+                  onChange={(e) => dispatch({ type: "set_str", field: "document_type", value: e.target.value })}
+                  className={inputClass}
+                  disabled={form.receipt_type === "factura"}
+                >
+                  <option value="dni">DNI</option>
+                  <option value="ce">Carnet de Extranjería</option>
+                  <option value="ruc">RUC</option>
+                </select>
+                <FieldError msg={fe.document_type} />
+              </div>
+              <div>
+                <label className={labelClass}>Número de documento *</label>
+                <input
+                  value={form.document_number}
+                  onChange={(e) => dispatch({ type: "set_str", field: "document_number", value: e.target.value })}
+                  className={inputClass}
+                  placeholder={
+                    form.document_type === "dni"
+                      ? "12345678"
+                      : form.document_type === "ruc"
+                      ? "20610159886"
+                      : "ABC123456"
+                  }
+                  required
+                  maxLength={20}
+                />
+                <FieldError msg={fe.document_number} />
+              </div>
+            </div>
+          </div>
+
+          {/* 2. Método de entrega */}
+          <div className={sectionClass}>
+            <h2 className="text-sm font-semibold text-white">Método de entrega</h2>
+
+            <div className="space-y-2">
+              {(
+                [
+                  ["pickup_store", "Recojo en tienda"],
+                  ["delivery_arequipa", "Delivery Arequipa"],
+                  ["national_shipping", "Envío nacional"],
+                ] as const
+              ).map(([value, label]) => (
+                <label
+                  key={value}
+                  className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors ${
+                    form.delivery_method === value
+                      ? "border-white/30 bg-white/[0.04]"
+                      : "border-white/[0.06] hover:border-white/15"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="delivery_method"
+                    value={value}
+                    checked={form.delivery_method === value}
+                    onChange={() => dispatch({ type: "set_str", field: "delivery_method", value })}
+                    className="mt-0.5 accent-white"
+                  />
+                  <div>
+                    <p className="text-sm font-medium text-white">{label}</p>
+                    <p className="mt-0.5 text-xs text-zinc-500 leading-relaxed">
+                      {DELIVERY_DESCRIPTIONS[value]}
+                    </p>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <FieldError msg={fe.delivery_method} />
+
+            {needsAddress && (
+              <div className="space-y-4 pt-1">
+                <div>
+                  <label className={labelClass}>Dirección *</label>
+                  <input
+                    value={form.address_line}
+                    onChange={(e) => dispatch({ type: "set_str", field: "address_line", value: e.target.value })}
+                    className={inputClass}
+                    placeholder="Av. Ejemplo 123, Dpto 4B"
+                    maxLength={300}
+                  />
+                  <FieldError msg={fe.address_line} />
+                </div>
+
+                {needsCity && (
+                  <div>
+                    <label className={labelClass}>Ciudad *</label>
+                    <input
+                      value={form.city}
+                      onChange={(e) => dispatch({ type: "set_str", field: "city", value: e.target.value })}
+                      className={inputClass}
+                      placeholder="Lima"
+                      maxLength={100}
+                    />
+                    <FieldError msg={fe.city} />
+                  </div>
+                )}
+
+                <div>
+                  <label className={labelClass}>
+                    {needsCity ? "Distrito / Departamento *" : "Distrito *"}
+                  </label>
+                  <input
+                    value={form.district}
+                    onChange={(e) => dispatch({ type: "set_str", field: "district", value: e.target.value })}
+                    className={inputClass}
+                    placeholder={needsCity ? "Miraflores / Lima" : "Miraflores"}
+                    maxLength={100}
+                  />
+                  <FieldError msg={fe.district} />
+                </div>
+
+                <div>
+                  <label className={labelClass}>Referencia (opcional)</label>
+                  <input
+                    value={form.reference}
+                    onChange={(e) => dispatch({ type: "set_str", field: "reference", value: e.target.value })}
+                    className={inputClass}
+                    placeholder="Frente al parque, edificio blanco"
+                    maxLength={250}
+                  />
+                  <FieldError msg={fe.reference} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 3. Tipo de comprobante */}
+          <div className={sectionClass}>
+            <h2 className="text-sm font-semibold text-white">Comprobante</h2>
+
+            <div className="flex gap-3">
+              {(["boleta", "factura"] as const).map((type) => (
+                <label
+                  key={type}
+                  className={`flex flex-1 cursor-pointer items-center gap-2.5 rounded-lg border p-3.5 transition-colors ${
+                    form.receipt_type === type
+                      ? "border-white/30 bg-white/[0.04]"
+                      : "border-white/[0.06] hover:border-white/15"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="receipt_type"
+                    value={type}
+                    checked={form.receipt_type === type}
+                    onChange={() => dispatch({ type: "set_str", field: "receipt_type", value: type })}
+                    className="accent-white"
+                  />
+                  <span className="text-sm font-medium text-white capitalize">{type}</span>
+                </label>
+              ))}
+            </div>
+            {form.receipt_type === "factura" && (
+              <p className="text-xs text-zinc-500">
+                La factura requiere RUC. El tipo de documento se ha fijado automáticamente.
+              </p>
+            )}
+            <FieldError msg={fe.receipt_type} />
+          </div>
+
+          {/* 4. Notas */}
+          <div className={sectionClass}>
+            <h2 className="text-sm font-semibold text-white">Notas del pedido (opcional)</h2>
+            <textarea
+              value={form.notes}
+              onChange={(e) => dispatch({ type: "set_str", field: "notes", value: e.target.value })}
+              className={`${inputClass} resize-none`}
+              placeholder="Indicaciones especiales para tu pedido…"
+              rows={3}
+              maxLength={500}
+            />
+            <p className="text-xs text-zinc-600 text-right">{form.notes.length}/500</p>
+            <FieldError msg={fe.notes} />
+          </div>
+
+          {/* 5. Aceptaciones */}
+          <div className={sectionClass}>
+            <h2 className="text-sm font-semibold text-white">Declaraciones</h2>
+
+            <label className="flex cursor-pointer items-start gap-3">
+              <input
+                type="checkbox"
+                checked={form.accepted_terms}
+                onChange={(e) =>
+                  dispatch({ type: "set_bool", field: "accepted_terms", value: e.target.checked })
+                }
+                className="mt-0.5 h-4 w-4 accent-white"
+              />
+              <span className="text-xs text-zinc-400 leading-relaxed">
+                {TERMS_TEXT}
+              </span>
+            </label>
+            <FieldError msg={fe.accepted_terms} />
+
+            <label className="flex cursor-pointer items-start gap-3">
+              <input
+                type="checkbox"
+                checked={form.accepted_warranty_policy}
+                onChange={(e) =>
+                  dispatch({ type: "set_bool", field: "accepted_warranty_policy", value: e.target.checked })
+                }
+                className="mt-0.5 h-4 w-4 accent-white"
+              />
+              <span className="text-xs text-zinc-400 leading-relaxed">
+                {WARRANTY_TEXT}
+              </span>
+            </label>
+            <FieldError msg={fe.accepted_warranty_policy} />
+          </div>
+
+          {/* Punto de retiro */}
+          {form.delivery_method === "pickup_store" && (
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 text-xs text-zinc-500 leading-relaxed">
+              <p className="font-medium text-zinc-300 mb-1">Punto de retiro</p>
+              <p>{STORE_ADDRESS}</p>
+              <p className="mt-1">Tel: {STORE_PHONE}</p>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            <div>
-              <label className={labelClass}>Nombre completo</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} placeholder="Juan Pérez" required />
-            </div>
-            <div>
-              <label className={labelClass}>Correo electrónico</label>
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} placeholder="juan@ejemplo.com" required />
-            </div>
+          <button
+            type="submit"
+            className="w-full rounded-xl bg-white px-6 py-3.5 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={loading}
+          >
+            {loading ? "Redirigiendo a Stripe…" : "Continuar al pago →"}
+          </button>
 
-            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm text-emerald-300">
-              <span className="flex items-center gap-2">
-                <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                </svg>
-                Pago procesado por Stripe. Tus datos están protegidos con SSL.
-              </span>
-            </div>
-
-            <button
-              className="w-full rounded-full bg-emerald-500 px-6 py-3.5 text-sm font-semibold text-white shadow-lg transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={loading}
+          <div className="text-center">
+            <Link
+              href="/cart"
+              className="text-sm text-zinc-600 hover:text-zinc-300 transition"
             >
-              {loading ? "Redirigiendo a Stripe..." : "Pagar con tarjeta →"}
-            </button>
-          </form>
-
-          <div className="mt-6 text-center">
-            <Link href="/cart" className="text-sm text-slate-500 hover:text-slate-300 transition">
               ← Volver al carrito
             </Link>
           </div>
-        </div>
+        </form>
 
-        <div className="mt-4 flex justify-center gap-6 text-xs text-slate-600">
-          <span>🔒 SSL Encriptado</span>
-          <span>💳 Stripe Payments</span>
-          <span>✓ Compra protegida</span>
+        <div className="mt-6 flex justify-center gap-6 text-xs text-zinc-700">
+          <span>SSL Encriptado</span>
+          <span>Stripe Payments</span>
+          <span>Compra protegida</span>
         </div>
       </div>
     </div>

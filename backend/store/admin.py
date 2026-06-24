@@ -29,11 +29,37 @@ class OrderItemInline(admin.TabularInline):
 class OrderAdmin(admin.ModelAdmin):
     list_display = (
         'id', 'customer_name', 'customer_email', 'total', 'discount_amount',
-        'coupon_code', 'status', 'paid', 'paid_at', 'created_at',
+        'coupon_code', 'status', 'fulfillment_status', 'delivery_method',
+        'receipt_type', 'paid', 'paid_at', 'created_at',
     )
-    list_filter = ('status', 'paid', 'created_at')
-    search_fields = ('customer_name', 'customer_email', 'coupon_code', 'stripe_session_id')
-    readonly_fields = ('stripe_session_id', 'stripe_payment_intent_id', 'paid_at', 'payment_error')
+    list_filter = ('status', 'fulfillment_status', 'delivery_method', 'receipt_type', 'paid', 'created_at')
+    search_fields = ('customer_name', 'customer_email', 'coupon_code', 'stripe_session_id',
+                     'document_number', 'customer_phone')
+    readonly_fields = ('stripe_session_id', 'stripe_payment_intent_id', 'paid_at', 'payment_error',
+                       'accepted_terms', 'accepted_warranty_policy')
+    fieldsets = (
+        ('Identificación', {
+            'fields': ('id', 'user', 'status', 'fulfillment_status', 'paid', 'paid_at'),
+        }),
+        ('Cliente', {
+            'fields': ('customer_name', 'customer_email', 'customer_phone',
+                       'document_type', 'document_number'),
+        }),
+        ('Económico', {
+            'fields': ('total', 'discount_amount', 'coupon_code'),
+        }),
+        ('Entrega', {
+            'fields': ('delivery_method', 'address_line', 'city', 'district', 'reference'),
+        }),
+        ('Comprobante y notas', {
+            'fields': ('receipt_type', 'notes', 'accepted_terms', 'accepted_warranty_policy'),
+        }),
+        ('Técnico (Stripe)', {
+            'classes': ('collapse',),
+            'fields': ('stripe_session_id', 'stripe_payment_intent_id', 'payment_error',
+                       'cart_session_key'),
+        }),
+    )
     inlines = [OrderItemInline]
 
 

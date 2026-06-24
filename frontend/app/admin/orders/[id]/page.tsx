@@ -13,6 +13,11 @@ import {
   fetchAdminOrderDetail,
   formatAdminDate,
 } from "../../../lib/admin";
+import {
+  DOCUMENT_TYPE_LABELS,
+  DELIVERY_METHOD_LABELS,
+  RECEIPT_TYPE_LABELS,
+} from "../../../lib/business";
 import type { AuthUser } from "../../../lib/auth";
 
 function OrderDetailContent({ user }: { user: AuthUser }) {
@@ -126,6 +131,86 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
                 <dd className="text-zinc-200">{formatAdminDate(order.paid_at)}</dd>
               </div>
             )}
+          </dl>
+        </section>
+
+        {/* Delivery and receipt data */}
+        <section className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
+          <h2 className="text-sm font-semibold text-white mb-4">Entrega y comprobante</h2>
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+            {order.customer_phone && (
+              <div>
+                <dt className="text-zinc-500 text-xs mb-0.5">Teléfono</dt>
+                <dd className="text-zinc-200">{order.customer_phone}</dd>
+              </div>
+            )}
+            {order.document_type && (
+              <div>
+                <dt className="text-zinc-500 text-xs mb-0.5">Documento</dt>
+                <dd className="text-zinc-200">
+                  {DOCUMENT_TYPE_LABELS[order.document_type] ?? order.document_type}
+                  {order.document_number && ` — ${order.document_number}`}
+                </dd>
+              </div>
+            )}
+            {order.receipt_type && (
+              <div>
+                <dt className="text-zinc-500 text-xs mb-0.5">Comprobante</dt>
+                <dd className="text-zinc-200">
+                  {RECEIPT_TYPE_LABELS[order.receipt_type] ?? order.receipt_type}
+                </dd>
+              </div>
+            )}
+            {order.delivery_method && (
+              <div>
+                <dt className="text-zinc-500 text-xs mb-0.5">Método de entrega</dt>
+                <dd className="text-zinc-200">
+                  {DELIVERY_METHOD_LABELS[order.delivery_method] ?? order.delivery_method}
+                </dd>
+              </div>
+            )}
+            {order.address_line && (
+              <div className="col-span-2">
+                <dt className="text-zinc-500 text-xs mb-0.5">Dirección</dt>
+                <dd className="text-zinc-200">{order.address_line}</dd>
+              </div>
+            )}
+            {order.city && (
+              <div>
+                <dt className="text-zinc-500 text-xs mb-0.5">Ciudad</dt>
+                <dd className="text-zinc-200">{order.city}</dd>
+              </div>
+            )}
+            {order.district && (
+              <div>
+                <dt className="text-zinc-500 text-xs mb-0.5">Distrito</dt>
+                <dd className="text-zinc-200">{order.district}</dd>
+              </div>
+            )}
+            {order.reference && (
+              <div className="col-span-2">
+                <dt className="text-zinc-500 text-xs mb-0.5">Referencia</dt>
+                <dd className="text-zinc-200">{order.reference}</dd>
+              </div>
+            )}
+            {order.notes && (
+              <div className="col-span-2">
+                <dt className="text-zinc-500 text-xs mb-0.5">Notas del cliente</dt>
+                <dd className="text-zinc-200 whitespace-pre-wrap">{order.notes}</dd>
+              </div>
+            )}
+            <div>
+              <dt className="text-zinc-500 text-xs mb-0.5">Términos aceptados</dt>
+              <dd className={order.accepted_terms ? "text-zinc-200" : "text-red-400"}>
+                {order.accepted_terms ? "Sí" : "No"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-zinc-500 text-xs mb-0.5">Garantía aceptada</dt>
+              <dd className={order.accepted_warranty_policy ? "text-zinc-200" : "text-red-400"}>
+                {order.accepted_warranty_policy ? "Sí" : "No"}
+              </dd>
+            </div>
           </dl>
         </section>
 
