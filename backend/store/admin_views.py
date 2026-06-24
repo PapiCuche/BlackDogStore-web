@@ -1,7 +1,9 @@
+import logging
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.http import HttpResponse
 from django.db.models import F, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
@@ -22,12 +24,13 @@ from .serializers import (
 )
 from .throttles import (
     AdminAuditLogsThrottle, AdminCategoriesThrottle, AdminInventoryAdjustThrottle,
-    AdminOrdersThrottle, AdminOrderStatusChangeThrottle,
+    AdminOrderEmailResendThrottle, AdminOrdersThrottle, AdminOrderStatusChangeThrottle,
     AdminProductsThrottle, AdminProductWriteThrottle, AdminRoleChangeThrottle,
     AdminUsersThrottle,
 )
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 _VALID_ROLES = {r[0] for r in UserProfile.ROLE_CHOICES}
 _DEFAULT_PAGE_SIZE = 25
@@ -495,6 +498,59 @@ class AdminOrderDetailView(APIView):
         return Response(AdminOrderDetailSerializer(order).data)
 
 
+class AdminOrderResendEmailView(APIView):
+    """
+    POST /api/admin/orders/{pk}/resend-confirmation-email/
+    Manually resends the customer confirmation email (with PDF).
+    Roles: admin, superadmin only (NOT sales/inventory/technician).
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+    throttle_classes = [AdminOrderEmailResendThrottle]
+
+    def post(self, request, pk):
+        from .email_services import resend_order_confirmation_email
+
+        try:
+            order = Order.objects.prefetch_related("items__product").get(pk=pk)
+        except Order.DoesNotExist:
+            return Response({"detail": "Orden no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not order.paid or order.status != Order.Status.PAID:
+            return Response(
+                {"detail": "Solo se puede reenviar el email para órdenes pagadas."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = resend_order_confirmation_email(order)
+        except Exception:
+            logger.exception("Failed to resend confirmation email for order %s", pk)
+            return Response(
+                {"detail": "Error al enviar el email. Verifique la configuración SMTP e inténtelo nuevamente."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        AdminAuditLog.log(
+            actor=request.user,
+            action="order_confirmation_email_resent",
+            target_type="order",
+            target_id=order.pk,
+            metadata={
+                "order_id": order.pk,
+                "customer_email": order.customer_email,
+                "resent_to": order.customer_email,
+                "had_pdf_attachment": result["had_pdf"],
+            },
+            request=request,
+        )
+
+        return Response({
+            "detail": "Email de confirmación reenviado correctamente.",
+            "had_pdf_attachment": result["had_pdf"],
+            "resent_to": order.customer_email,
+        })
+
+
 class AdminOrderReceiptPdfView(APIView):
     """
     GET /api/admin/orders/{pk}/receipt-pdf/
@@ -506,10 +562,6 @@ class AdminOrderReceiptPdfView(APIView):
     throttle_classes = [AdminOrdersThrottle]
 
     def get(self, request, pk):
-        import logging
-        from django.http import HttpResponse
-        logger = logging.getLogger(__name__)
-
         try:
             order = Order.objects.prefetch_related("items__product").get(pk=pk)
         except Order.DoesNotExist:

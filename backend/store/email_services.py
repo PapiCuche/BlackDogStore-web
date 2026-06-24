@@ -348,6 +348,64 @@ def send_order_confirmation_email(order) -> bool:
     return True
 
 
+def resend_order_confirmation_email(order) -> dict:
+    """
+    Manual resend of customer confirmation email from admin panel.
+
+    Intentionally bypasses confirmation_email_sent_at idempotency guard.
+    PDF attachment is best-effort — if PDF fails, email still sends.
+    Updates confirmation_email_sent_at on success.
+    Does NOT send internal notification.
+    Does NOT modify paid, status, total, inventory, or Stripe fields.
+
+    Returns {"had_pdf": bool}.
+    Raises on SMTP failure — caller must handle.
+    """
+    from django.utils import timezone
+    from .models import Order  # local import to avoid circular
+
+    if not order.paid or order.status != Order.Status.PAID:
+        raise ValueError(
+            f"Cannot resend email for order {order.pk}: not paid "
+            f"(paid={order.paid}, status={order.status!r})"
+        )
+
+    ctx = build_order_confirmation_context(order)
+    subject = f"Confirmación de pedido #{order.id} — {_STORE_NAME}"
+    text_body = _build_customer_text(ctx)
+    html_body = _build_customer_html(ctx)
+
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[order.customer_email],
+    )
+    msg.attach_alternative(html_body, "text/html")
+
+    had_pdf = False
+    try:
+        pdf_bytes = _pdf_services.generate_order_receipt_pdf(order)
+        msg.attach(_pdf_services.get_order_receipt_filename(order), pdf_bytes, "application/pdf")
+        had_pdf = True
+    except Exception:
+        pdf_err = traceback.format_exc(limit=3)
+        logger.exception(
+            "PDF generation failed for order %s during manual resend; sending email without attachment",
+            order.pk,
+        )
+        existing = Order.objects.filter(pk=order.pk).values_list("email_send_error", flat=True).first() or ""
+        pdf_note = f"resend_pdf_skip: {str(pdf_err)[:150]}"
+        new_error = (f"{existing}; {pdf_note}" if existing else pdf_note)[:500]
+        Order.objects.filter(pk=order.pk).update(email_send_error=new_error)
+
+    # Raises on SMTP failure — propagated to caller (view returns 502)
+    msg.send()
+
+    Order.objects.filter(pk=order.pk).update(confirmation_email_sent_at=timezone.now())
+    return {"had_pdf": had_pdf}
+
+
 def send_internal_order_notification(order) -> bool:
     """
     Sends new-sale notification to ORDER_NOTIFICATION_EMAIL.

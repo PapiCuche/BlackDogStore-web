@@ -13,6 +13,7 @@ import {
   fetchAdminOrderDetail,
   formatAdminDate,
   downloadOrderReceiptPdf,
+  resendOrderConfirmationEmail,
 } from "../../../lib/admin";
 import {
   DOCUMENT_TYPE_LABELS,
@@ -30,6 +31,9 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
   const [error, setError] = useState<string | null>(null);
   const [pdfDownloading, setPdfDownloading] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendSuccess, setResendSuccess] = useState<string | null>(null);
+  const [resendError, setResendError] = useState<string | null>(null);
 
   async function handleDownloadPdf() {
     setPdfDownloading(true);
@@ -50,6 +54,26 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
       setPdfDownloading(false);
     }
   }
+
+  async function handleResendEmail() {
+    if (!window.confirm(`¿Reenviar el email de confirmación a ${order?.customer_email}?`)) return;
+    setResendLoading(true);
+    setResendSuccess(null);
+    setResendError(null);
+    try {
+      const result = await resendOrderConfirmationEmail(orderId);
+      setResendSuccess(
+        `Email reenviado a ${result.resent_to}${result.had_pdf_attachment ? " (con PDF adjunto)" : " (sin PDF)"}`,
+      );
+    } catch (err) {
+      setResendError(err instanceof Error ? err.message : "Error al reenviar el email.");
+    } finally {
+      setResendLoading(false);
+    }
+  }
+
+  const canResendEmail =
+    user.role === "admin" || user.role === "superadmin";
 
   const canManageFulfillment =
     user.role === "sales" ||
@@ -102,7 +126,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
           </div>
           <p className="mt-1 text-xs text-zinc-500">{formatAdminDate(order.created_at)}</p>
           {order.paid && (
-            <div className="mt-3 flex items-center gap-3">
+            <div className="mt-3 flex flex-wrap items-center gap-3">
               <button
                 onClick={handleDownloadPdf}
                 disabled={pdfDownloading}
@@ -112,6 +136,23 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
               </button>
               {pdfError && (
                 <p className="text-red-400 text-xs">{pdfError}</p>
+              )}
+              {canResendEmail && (
+                <>
+                  <button
+                    onClick={handleResendEmail}
+                    disabled={resendLoading}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.10] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/[0.08] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {resendLoading ? "Enviando…" : "Reenviar email de confirmación"}
+                  </button>
+                  {resendSuccess && (
+                    <p className="text-green-400 text-xs">{resendSuccess}</p>
+                  )}
+                  {resendError && (
+                    <p className="text-red-400 text-xs">{resendError}</p>
+                  )}
+                </>
               )}
             </div>
           )}

@@ -18,8 +18,6 @@ from __future__ import annotations
 import io
 from decimal import Decimal
 
-from django.utils import timezone
-
 _STORE_NAME = "Black Dog Store"
 _STORE_LEGAL_NAME = "CMAU CORP E.I.R.L."
 _STORE_RUC = "20610159886"
@@ -174,7 +172,6 @@ def generate_order_receipt_pdf(order) -> bytes:
         )
 
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_RIGHT
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
@@ -342,7 +339,7 @@ def generate_order_receipt_pdf(order) -> bytes:
     story.append(Spacer(1, 10))
 
     # --- Receipt type ---
-    story.append(Paragraph("Comprobante solicitado", _h2))
+    story.append(Paragraph("Tipo de comprobante solicitado por el cliente", _h2))
     story.append(Table([
         ["Tipo:", ctx["receipt_label"]],
         [f"{ctx['document_label']}:", ctx["document_number"]],

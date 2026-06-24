@@ -16,7 +16,8 @@ Phase 3.3 (+72 tests): admin orders access control, filters, detail security (no
 Audit 3.3 (+7 tests): technician 403, webhook doesn't modify fulfillment_status, checkout default pending, atomic audit log.
 Phase 4.0 (+30 tests): commercial checkout fields, document validation, delivery address requirements, receipt type, terms acceptance, frontend injection blocked, admin order detail commercial fields.
 Phase 4.1 (+36 tests): email service unit tests, idempotency flags, no-duplicate sends, webhook on_commit integration, send_mail failure handled, admin detail email flags, customer/payment views don't expose email flags.
-Phase 4.2 (+39 tests): PDF context builder (excludes Stripe fields, Decimal types, disclaimer), PDF generator (valid bytes, ValueError for unpaid), email+PDF integration (attachment, PDF fail graceful, error logged), admin PDF endpoint RBAC (4 allowed roles, technician/customer/anon blocked), audit log, content-type, Content-Disposition, Stripe data not in cleartext.
+Phase 4.2 (+46 tests, audit +4=50): PDF context builder (excludes Stripe fields, Decimal types, disclaimer), PDF generator (valid bytes, ValueError for unpaid), email+PDF integration (attachment, PDF fail graceful, error logged), admin PDF endpoint RBAC (4 allowed roles, technician/customer/anon blocked), audit log clean metadata, content-type, Content-Disposition, Stripe data not in cleartext, copywriting disclaimer, no-SUNAT-electronico title.
+Phase 4.3 (+34 tests): resend_order_confirmation_email service (bypasses idempotency, best-effort PDF, updates flag, raises on SMTP failure), AdminOrderResendEmailView RBAC (admin+superadmin allowed; customer/sales/inventory/technician/anon blocked), 400 for unpaid, 404 for missing, 502 for SMTP failure, 405 for non-POST methods, audit log clean metadata (no Stripe IDs), regression (automatic webhook flow unaffected).
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -4975,3 +4976,398 @@ class Phase42AdminReceiptPdfEndpointTest(TestCase):
         self.client.force_authenticate(user=self.admin)
         resp = self.client.get(self.url)
         self.assertNotIn(b'pi_42_pdf_ep', resp.content)
+
+    def test_audit_log_metadata_does_not_contain_stripe_ids(self):
+        """Audit log entry must not store stripe_session_id or stripe_payment_intent_id."""
+        self.client.force_authenticate(user=self.admin)
+        self.client.get(self.url)
+        log = AdminAuditLog.objects.filter(
+            action='order_receipt_pdf_downloaded',
+            target_id=str(self.order.pk),
+        ).latest('created_at')
+        metadata_str = str(log.metadata)
+        self.assertNotIn('cs_42_pdf_ep', metadata_str)
+        self.assertNotIn('pi_42_pdf_ep', metadata_str)
+        self.assertNotIn('payment_error', metadata_str)
+        self.assertIn('order_id', metadata_str)
+
+    def test_pdf_context_does_not_label_itself_comprobante_electronico(self):
+        """The PDF title must NOT say 'comprobante electrónico' without the SUNAT disclaimer."""
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        title_lower = ctx['title'].lower()
+        # Title can say "constancia" but never "comprobante electrónico"
+        self.assertNotIn('comprobante electrónico', title_lower)
+        self.assertNotIn('comprobante electronico', title_lower)
+
+    def test_pdf_disclaimer_present_in_context(self):
+        """Disclaimer must contain both 'interno' and 'No válido como comprobante electrónico SUNAT'."""
+        from store.pdf_services import build_order_pdf_context, DISCLAIMER
+        ctx = build_order_pdf_context(self.order)
+        self.assertIn('interno', ctx['disclaimer'].lower())
+        self.assertIn('No válido como comprobante electrónico SUNAT', ctx['disclaimer'])
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.3 — Manual email resend
+# ---------------------------------------------------------------------------
+
+def _make_paid_order_43(**kwargs):
+    """Factory for Phase 4.3 tests — separate slugs to avoid UNIQUE conflicts."""
+    cat, _ = Category.objects.get_or_create(name='Mac43', defaults={'slug': 'mac-43'})
+    product, _ = Product.objects.get_or_create(
+        slug='mbp-m3-43',
+        defaults={'name': 'MacBook Pro M3 43', 'price': '8999.00', 'inventory': 3, 'category': cat},
+    )
+    defaults = dict(
+        customer_name='Marco Quispe', customer_email='marco@example.com',
+        customer_phone='936449111', document_type='dni', document_number='11223344',
+        delivery_method='pickup_store', receipt_type='boleta',
+        accepted_terms=True, accepted_warranty_policy=True,
+        total='8999.00', discount_amount='0.00', status=Order.Status.PAID, paid=True,
+        paid_at=timezone.now(), stripe_session_id=None,
+        stripe_payment_intent_id='pi_test_43_base',
+    )
+    defaults.update(kwargs)
+    order = Order.objects.create(**defaults)
+    OrderItem.objects.create(order=order, product=product, quantity=1, price='8999.00')
+    return order
+
+
+def _make_user_43(username, role):
+    user = User.objects.create_user(username, f'{username}@example.com', 'x')
+    user.profile.role = role
+    user.profile.save()
+    return user
+
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    DEFAULT_FROM_EMAIL='noreply@blackdogstore.test',
+    EMAIL_HOST='localhost',
+    EMAIL_PORT=25,
+)
+class Phase43ResendEmailServiceTest(TestCase):
+    """Unit tests for resend_order_confirmation_email()."""
+
+    def setUp(self):
+        self.order = _make_paid_order_43()
+
+    def test_resend_returns_dict_with_had_pdf(self):
+        from store.email_services import resend_order_confirmation_email
+        result = resend_order_confirmation_email(self.order)
+        self.assertIn('had_pdf', result)
+        self.assertIsInstance(result['had_pdf'], bool)
+
+    def test_resend_email_sent_to_customer(self):
+        from store.email_services import resend_order_confirmation_email
+        resend_order_confirmation_email(self.order)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.order.customer_email, mail.outbox[0].to)
+
+    def test_resend_attaches_pdf_when_generation_succeeds(self):
+        from store.email_services import resend_order_confirmation_email
+        result = resend_order_confirmation_email(self.order)
+        self.assertTrue(result['had_pdf'])
+        msg = mail.outbox[0]
+        pdf_attachments = [a for a in msg.attachments if isinstance(a, tuple) and a[2] == 'application/pdf']
+        self.assertEqual(len(pdf_attachments), 1)
+
+    def test_resend_updates_confirmation_email_sent_at(self):
+        from store.email_services import resend_order_confirmation_email
+        self.order.confirmation_email_sent_at = None
+        self.order.save(update_fields=['confirmation_email_sent_at'])
+        resend_order_confirmation_email(self.order)
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.confirmation_email_sent_at)
+
+    def test_resend_bypasses_idempotency_flag(self):
+        """Resend must work even if confirmation_email_sent_at is already set."""
+        from store.email_services import resend_order_confirmation_email
+        self.order.confirmation_email_sent_at = timezone.now() - timedelta(days=1)
+        self.order.save(update_fields=['confirmation_email_sent_at'])
+        result = resend_order_confirmation_email(self.order)
+        self.assertIn('had_pdf', result)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_resend_raises_if_order_not_paid(self):
+        from store.email_services import resend_order_confirmation_email
+        self.order.paid = False
+        self.order.status = Order.Status.PENDING_PAYMENT
+        self.order.save(update_fields=['paid', 'status'])
+        with self.assertRaises(ValueError):
+            resend_order_confirmation_email(self.order)
+
+    def test_resend_raises_if_status_not_paid(self):
+        from store.email_services import resend_order_confirmation_email
+        self.order.status = Order.Status.REFUNDED
+        self.order.save(update_fields=['status'])
+        with self.assertRaises(ValueError):
+            resend_order_confirmation_email(self.order)
+
+    def test_resend_pdf_fail_email_still_sent(self):
+        from store.email_services import resend_order_confirmation_email
+        with patch('store.pdf_services.generate_order_receipt_pdf', side_effect=RuntimeError('PDF error')):
+            result = resend_order_confirmation_email(self.order)
+        self.assertFalse(result['had_pdf'])
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_resend_pdf_fail_records_error_with_prefix(self):
+        from store.email_services import resend_order_confirmation_email
+        with patch('store.pdf_services.generate_order_receipt_pdf', side_effect=RuntimeError('PDF fail 43')):
+            resend_order_confirmation_email(self.order)
+        self.order.refresh_from_db()
+        self.assertIn('resend_pdf_skip:', self.order.email_send_error)
+
+    def test_resend_does_not_send_internal_notification(self):
+        from store.email_services import resend_order_confirmation_email
+        resend_order_confirmation_email(self.order)
+        # Only one email in outbox (no internal notification)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.order.customer_email, mail.outbox[0].to)
+
+    def test_resend_email_does_not_contain_stripe_payment_intent(self):
+        from store.email_services import resend_order_confirmation_email
+        order = _make_paid_order_43(
+            stripe_payment_intent_id='pi_secret_43_test',
+            stripe_session_id=None,
+        )
+        resend_order_confirmation_email(order)
+        body = mail.outbox[0].body
+        self.assertNotIn('pi_secret_43_test', body)
+
+    def test_resend_email_does_not_contain_payment_error(self):
+        from store.email_services import resend_order_confirmation_email
+        self.order.payment_error = 'some_sensitive_error_43'
+        self.order.save(update_fields=['payment_error'])
+        resend_order_confirmation_email(self.order)
+        body = mail.outbox[0].body
+        self.assertNotIn('some_sensitive_error_43', body)
+
+    def test_resend_raises_on_smtp_failure(self):
+        from store.email_services import resend_order_confirmation_email
+        import smtplib
+        with patch('django.core.mail.EmailMultiAlternatives.send', side_effect=smtplib.SMTPException('SMTP down')):
+            with self.assertRaises(smtplib.SMTPException):
+                resend_order_confirmation_email(self.order)
+
+    def test_resend_does_not_update_flag_on_smtp_failure(self):
+        """confirmation_email_sent_at must NOT be updated if SMTP fails."""
+        from store.email_services import resend_order_confirmation_email
+        import smtplib
+        before = self.order.confirmation_email_sent_at
+        with patch('django.core.mail.EmailMultiAlternatives.send', side_effect=smtplib.SMTPException('down')):
+            try:
+                resend_order_confirmation_email(self.order)
+            except smtplib.SMTPException:
+                pass
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.confirmation_email_sent_at, before)
+
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    DEFAULT_FROM_EMAIL='noreply@blackdogstore.test',
+    EMAIL_HOST='localhost',
+    EMAIL_PORT=25,
+)
+class Phase43ResendEmailEndpointTest(TestCase):
+    """RBAC, validation, audit log, and regression tests for AdminOrderResendEmailView."""
+
+    def setUp(self):
+        cache.clear()  # reset throttle state between tests
+        mail.outbox = []
+        self.client = APIClient()
+        self.order = _make_paid_order_43(stripe_session_id='cs_43_ep', stripe_payment_intent_id='pi_43_ep')
+        self.url = f'/api/admin/orders/{self.order.pk}/resend-confirmation-email/'
+
+        self.admin = _make_user_43('adm43', UserProfile.ROLE_ADMIN)
+        self.superadmin = _make_user_43('sup43', UserProfile.ROLE_SUPERADMIN)
+        self.customer = _make_user_43('cust43', UserProfile.ROLE_CUSTOMER)
+        self.sales = _make_user_43('sal43', UserProfile.ROLE_SALES)
+        self.inventory = _make_user_43('inv43', UserProfile.ROLE_INVENTORY)
+        self.technician = _make_user_43('tech43', UserProfile.ROLE_TECHNICIAN)
+
+    # --- RBAC ---
+
+    def test_anonymous_receives_401(self):
+        resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 401)
+
+    def test_customer_receives_403(self):
+        self.client.force_authenticate(user=self.customer)
+        resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_sales_receives_403(self):
+        self.client.force_authenticate(user=self.sales)
+        resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_inventory_receives_403(self):
+        self.client.force_authenticate(user=self.inventory)
+        resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_technician_receives_403(self):
+        self.client.force_authenticate(user=self.technician)
+        resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_admin_can_resend(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_superadmin_can_resend(self):
+        self.client.force_authenticate(user=self.superadmin)
+        resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 200)
+
+    # --- Validation ---
+
+    def test_unpaid_order_returns_400(self):
+        unpaid = _make_paid_order_43(paid=False, status=Order.Status.PENDING_PAYMENT, stripe_session_id=None, stripe_payment_intent_id='pi_43_unpaid')
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.post(f'/api/admin/orders/{unpaid.pk}/resend-confirmation-email/')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_nonexistent_order_returns_404(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.post('/api/admin/orders/99999999/resend-confirmation-email/')
+        self.assertEqual(resp.status_code, 404)
+
+    # --- HTTP method restrictions ---
+
+    def test_get_method_not_allowed(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 405)
+
+    def test_put_method_not_allowed(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.put(self.url)
+        self.assertEqual(resp.status_code, 405)
+
+    def test_patch_method_not_allowed(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.patch(self.url)
+        self.assertEqual(resp.status_code, 405)
+
+    def test_delete_method_not_allowed(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.delete(self.url)
+        self.assertEqual(resp.status_code, 405)
+
+    # --- SMTP failure ---
+
+    def test_smtp_failure_returns_502(self):
+        import smtplib
+        self.client.force_authenticate(user=self.admin)
+        with patch('django.core.mail.EmailMultiAlternatives.send', side_effect=smtplib.SMTPException('down')):
+            resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 502)
+
+    def test_502_response_does_not_expose_smtp_secrets(self):
+        import smtplib
+        self.client.force_authenticate(user=self.admin)
+        with patch('django.core.mail.EmailMultiAlternatives.send', side_effect=smtplib.SMTPException('smtp_password=supersecret')):
+            resp = self.client.post(self.url)
+        self.assertNotIn(b'smtp_password', resp.content)
+        self.assertNotIn(b'supersecret', resp.content)
+
+    # --- Email content ---
+
+    def test_resend_sends_email_to_customer(self):
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.order.customer_email, mail.outbox[0].to)
+
+    def test_resend_has_pdf_attachment(self):
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        msg = mail.outbox[0]
+        pdf_attachments = [a for a in msg.attachments if isinstance(a, tuple) and a[2] == 'application/pdf']
+        self.assertEqual(len(pdf_attachments), 1)
+
+    def test_response_includes_resent_to_and_had_pdf(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.post(self.url)
+        data = resp.json()
+        self.assertIn('resent_to', data)
+        self.assertIn('had_pdf_attachment', data)
+        self.assertEqual(data['resent_to'], self.order.customer_email)
+
+    # --- Idempotency bypass ---
+
+    def test_resend_works_when_confirmation_sent_at_already_exists(self):
+        """Endpoint must succeed even if email was already sent (idempotency bypassed)."""
+        self.order.confirmation_email_sent_at = timezone.now() - timedelta(hours=1)
+        self.order.save(update_fields=['confirmation_email_sent_at'])
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.post(self.url)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_resend_updates_confirmation_email_sent_at(self):
+        self.order.confirmation_email_sent_at = None
+        self.order.save(update_fields=['confirmation_email_sent_at'])
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.confirmation_email_sent_at)
+
+    # --- Audit log ---
+
+    def test_resend_creates_audit_log(self):
+        self.client.force_authenticate(user=self.admin)
+        before = AdminAuditLog.objects.filter(action='order_confirmation_email_resent').count()
+        self.client.post(self.url)
+        after = AdminAuditLog.objects.filter(action='order_confirmation_email_resent').count()
+        self.assertEqual(after, before + 1)
+
+    def test_audit_log_metadata_does_not_contain_stripe_ids(self):
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        log = AdminAuditLog.objects.filter(
+            action='order_confirmation_email_resent',
+            target_id=str(self.order.pk),
+        ).latest('created_at')
+        metadata_str = str(log.metadata)
+        self.assertNotIn('cs_43_ep', metadata_str)
+        self.assertNotIn('pi_43_ep', metadata_str)
+        self.assertNotIn('payment_error', metadata_str)
+        self.assertIn('order_id', metadata_str)
+        self.assertIn('customer_email', metadata_str)
+
+    def test_audit_log_records_had_pdf_attachment(self):
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        log = AdminAuditLog.objects.filter(
+            action='order_confirmation_email_resent',
+            target_id=str(self.order.pk),
+        ).latest('created_at')
+        self.assertIn('had_pdf_attachment', log.metadata)
+
+    # --- Regression: automatic webhook flow unaffected ---
+
+    def test_automatic_confirmation_email_still_uses_idempotency_guard(self):
+        """send_order_confirmation_email still skips if confirmation_email_sent_at is set."""
+        from store.email_services import send_order_confirmation_email
+        self.order.confirmation_email_sent_at = timezone.now()
+        self.order.save(update_fields=['confirmation_email_sent_at'])
+        result = send_order_confirmation_email(self.order)
+        self.assertFalse(result)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_resend_does_not_modify_paid_status_total(self):
+        self.order.refresh_from_db()
+        original_paid = self.order.paid
+        original_status = self.order.status
+        original_total = self.order.total
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.paid, original_paid)
+        self.assertEqual(self.order.status, original_status)
+        self.assertEqual(self.order.total, original_total)

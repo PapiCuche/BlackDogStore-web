@@ -80,3 +80,8 @@ class AdminOrdersThrottle(UserRateThrottle):
 
 class AdminOrderStatusChangeThrottle(UserRateThrottle):
     scope = 'admin_order_status_change'
+
+
+class AdminOrderEmailResendThrottle(UserRateThrottle):
+    """10/min per authenticated user — prevents email spam from admin panel."""
+    scope = 'admin_order_email_resend'

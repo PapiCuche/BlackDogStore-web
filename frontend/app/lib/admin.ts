@@ -384,6 +384,30 @@ export async function updateOrderFulfillment(
   return res.json();
 }
 
+export async function resendOrderConfirmationEmail(orderId: number): Promise<{
+  detail: string;
+  had_pdf_attachment: boolean;
+  resent_to: string;
+}> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/orders/${orderId}/resend-confirmation-email/`,
+    { method: 'POST' },
+  );
+  if (res.status === 400) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? 'La orden no está pagada.');
+  }
+  if (res.status === 403) throw new Error('No tienes permisos para reenviar emails.');
+  if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (res.status === 429) throw new Error('Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.');
+  if (res.status === 502 || res.status === 500) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? 'Error al enviar el email. Verifica la configuración SMTP.');
+  }
+  if (!res.ok) throw new Error('No se pudo reenviar el email.');
+  return res.json();
+}
+
 export async function downloadOrderReceiptPdf(
   orderId: number,
 ): Promise<{ blob: Blob; filename: string }> {
@@ -413,6 +437,7 @@ export const ACTION_LABELS: Record<string, string> = {
   category_created: 'Categoría creada',
   order_fulfillment_status_changed: 'Estado de despacho actualizado',
   order_receipt_pdf_downloaded: 'PDF de recibo descargado',
+  order_confirmation_email_resent: 'Email de confirmación reenviado',
 };
 
 export function actionLabel(action: string): string {
