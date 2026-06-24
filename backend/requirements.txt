@@ -24,3 +24,7 @@ Pillow==12.2.0
 
 # WSGI server for production (replaces runserver)
 gunicorn==26.0.0
+
+# PDF generation — internal purchase receipts (Phase 4.2)
+# Pure Python, no system dependencies (unlike WeasyPrint which needs libpango/libcairo).
+reportlab==4.4.1

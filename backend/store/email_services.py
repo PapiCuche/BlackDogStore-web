@@ -24,6 +24,8 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 
+from . import pdf_services as _pdf_services  # module ref allows test patches
+
 logger = logging.getLogger(__name__)
 
 _STORE_NAME = "Black Dog Store"
@@ -306,8 +308,8 @@ def _build_internal_text(ctx: dict, order_id: int, admin_url: str) -> str:
 
 def send_order_confirmation_email(order) -> bool:
     """
-    Sends confirmation email to the customer.
-    Returns True if sent successfully, False otherwise.
+    Sends confirmation email to the customer with a PDF receipt attached.
+    Returns True if email was sent (PDF attachment is best-effort).
     Does nothing if order is not paid or email already sent.
     """
     from .models import Order  # local import to avoid circular
@@ -328,6 +330,20 @@ def send_order_confirmation_email(order) -> bool:
         to=[order.customer_email],
     )
     msg.attach_alternative(html_body, "text/html")
+
+    # Attach PDF receipt (best-effort: email is still sent if PDF generation fails)
+    try:
+        pdf_bytes = _pdf_services.generate_order_receipt_pdf(order)
+        msg.attach(_pdf_services.get_order_receipt_filename(order), pdf_bytes, "application/pdf")
+    except Exception:
+        pdf_err = traceback.format_exc(limit=3)
+        logger.exception("PDF generation failed for order %s; sending email without attachment", order.pk)
+        # Record in email_send_error so staff can see PDF was skipped
+        existing = Order.objects.filter(pk=order.pk).values_list("email_send_error", flat=True).first() or ""
+        pdf_note = f"pdf_skip: {str(pdf_err)[:200]}"
+        new_error = (f"{existing}; {pdf_note}" if existing else pdf_note)[:500]
+        Order.objects.filter(pk=order.pk).update(email_send_error=new_error)
+
     msg.send()
     return True
 

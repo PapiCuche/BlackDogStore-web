@@ -495,6 +495,57 @@ class AdminOrderDetailView(APIView):
         return Response(AdminOrderDetailSerializer(order).data)
 
 
+class AdminOrderReceiptPdfView(APIView):
+    """
+    GET /api/admin/orders/{pk}/receipt-pdf/
+    Returns the PDF receipt for a paid order as application/pdf.
+    Roles: inventory, sales, admin, superadmin (CanViewAdminOrders).
+    Technician and customer are blocked.
+    """
+    permission_classes = [permissions.IsAuthenticated, CanViewAdminOrders]
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, pk):
+        import logging
+        from django.http import HttpResponse
+        logger = logging.getLogger(__name__)
+
+        try:
+            order = Order.objects.prefetch_related("items__product").get(pk=pk)
+        except Order.DoesNotExist:
+            return Response({"detail": "Orden no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not order.paid or order.status != Order.Status.PAID:
+            return Response(
+                {"detail": "El PDF solo está disponible para órdenes pagadas."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            from .pdf_services import generate_order_receipt_pdf, get_order_receipt_filename
+            pdf_bytes = generate_order_receipt_pdf(order)
+            filename = get_order_receipt_filename(order)
+        except Exception:
+            logger.exception("PDF generation failed for order %s (admin download)", pk)
+            return Response(
+                {"detail": "Error al generar el PDF. Inténtelo nuevamente."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        AdminAuditLog.log(
+            actor=request.user,
+            action="order_receipt_pdf_downloaded",
+            target_type="order",
+            target_id=order.pk,
+            metadata={"order_id": order.pk, "customer_email": order.customer_email},
+            request=request,
+        )
+
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
 class AdminOrderFulfillmentView(APIView):
     """
     PATCH /api/admin/orders/{pk}/fulfillment-status/

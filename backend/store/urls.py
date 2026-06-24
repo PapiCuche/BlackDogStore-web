@@ -21,6 +21,7 @@ from .admin_views import (
     AdminProductListView, AdminProductDetailView, AdminProductInventoryAdjustView,
     AdminCategoryListView,
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
+    AdminOrderReceiptPdfView,
 )
 from django.urls import path, include
 
@@ -58,4 +59,5 @@ urlpatterns = [
     path('admin/orders/', AdminOrderListView.as_view(), name='admin-orders'),
     path('admin/orders/<int:pk>/', AdminOrderDetailView.as_view(), name='admin-order-detail'),
     path('admin/orders/<int:pk>/fulfillment-status/', AdminOrderFulfillmentView.as_view(), name='admin-order-fulfillment'),
+    path('admin/orders/<int:pk>/receipt-pdf/', AdminOrderReceiptPdfView.as_view(), name='admin-order-receipt-pdf'),
 ]

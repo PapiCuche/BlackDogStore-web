@@ -15,7 +15,8 @@ Audit 3.2 (+6 tests): cart rejects inactive, public detail 404 inactive, checkou
 Phase 3.3 (+72 tests): admin orders access control, filters, detail security (no stripe/payment_error), fulfillment status change, inventory role restrictions, audit log, regression.
 Audit 3.3 (+7 tests): technician 403, webhook doesn't modify fulfillment_status, checkout default pending, atomic audit log.
 Phase 4.0 (+30 tests): commercial checkout fields, document validation, delivery address requirements, receipt type, terms acceptance, frontend injection blocked, admin order detail commercial fields.
-Phase 4.1 (+36 tests): email service unit tests, idempotency flags, no-duplicate sends, webhook on_commit integration, send_mail failure handled, admin detail email flags, customer/payment views don't expose email fields.
+Phase 4.1 (+36 tests): email service unit tests, idempotency flags, no-duplicate sends, webhook on_commit integration, send_mail failure handled, admin detail email flags, customer/payment views don't expose email flags.
+Phase 4.2 (+39 tests): PDF context builder (excludes Stripe fields, Decimal types, disclaimer), PDF generator (valid bytes, ValueError for unpaid), email+PDF integration (attachment, PDF fail graceful, error logged), admin PDF endpoint RBAC (4 allowed roles, technician/customer/anon blocked), audit log, content-type, Content-Disposition, Stripe data not in cleartext.
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -4552,3 +4553,425 @@ class Phase41AdminDetailEmailFlagsTest(TestCase):
         self.assertNotIn('confirmation_email_sent_at', data)
         self.assertNotIn('internal_notification_sent_at', data)
         self.assertNotIn('email_send_error', data)
+
+
+# ===========================================================================
+# Phase 4.2 — PDF receipt generation
+# ===========================================================================
+
+def _make_paid_order_42(**kwargs):
+    """Factory for Phase 4.2 tests — separate slugs to avoid UNIQUE conflicts."""
+    cat, _ = Category.objects.get_or_create(name='Mac42', defaults={'slug': 'mac-42'})
+    product, _ = Product.objects.get_or_create(
+        slug='mbp-m3-42',
+        defaults={'name': 'MacBook Pro M3 42', 'price': '9999.00', 'inventory': 5, 'category': cat},
+    )
+    defaults = dict(
+        customer_name='Laura Quispe', customer_email='laura@example.com',
+        customer_phone='936449000', document_type='dni', document_number='87654321',
+        delivery_method='pickup_store', receipt_type='boleta',
+        accepted_terms=True, accepted_warranty_policy=True,
+        total='9999.00', discount_amount='0.00', status=Order.Status.PAID, paid=True,
+        paid_at=timezone.now(), stripe_session_id='cs_test_42_base',
+        stripe_payment_intent_id='pi_test_42_base',
+    )
+    defaults.update(kwargs)
+    order = Order.objects.create(**defaults)
+    OrderItem.objects.create(order=order, product=product, quantity=1, price='9999.00')
+    return order
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.2 — Context builder unit tests
+# ---------------------------------------------------------------------------
+
+class Phase42PdfContextTest(TestCase):
+    """Unit tests for build_order_pdf_context()."""
+
+    def setUp(self):
+        self.order = _make_paid_order_42()
+
+    def test_context_has_required_keys(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        for key in (
+            'title', 'disclaimer', 'warranty_note',
+            'order_id', 'created_at', 'paid_at', 'status_label',
+            'customer_name', 'customer_email', 'customer_phone',
+            'document_label', 'document_number',
+            'delivery_label', 'full_address',
+            'items', 'total', 'discount_amount',
+            'receipt_label',
+            'store_name', 'store_legal_name', 'store_ruc',
+        ):
+            self.assertIn(key, ctx, msg=f"Missing key: {key}")
+
+    def test_context_excludes_stripe_fields(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        for forbidden in (
+            'stripe_session_id', 'stripe_payment_intent_id', 'payment_error',
+            'cart_session_key', 'confirmation_email_sent_at', 'email_send_error',
+        ):
+            self.assertNotIn(forbidden, ctx, msg=f"Forbidden key found: {forbidden}")
+
+    def test_context_total_is_decimal(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        self.assertIsInstance(ctx['total'], Decimal)
+        self.assertIsInstance(ctx['discount_amount'], Decimal)
+
+    def test_context_items_have_required_fields(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        self.assertEqual(len(ctx['items']), 1)
+        item = ctx['items'][0]
+        self.assertIn('product_name', item)
+        self.assertIn('quantity', item)
+        self.assertIn('price', item)
+        self.assertIn('subtotal', item)
+        self.assertIsInstance(item['price'], Decimal)
+        self.assertIsInstance(item['subtotal'], Decimal)
+
+    def test_context_disclaimer_is_not_sunat(self):
+        from store.pdf_services import build_order_pdf_context, DISCLAIMER
+        ctx = build_order_pdf_context(self.order)
+        self.assertEqual(ctx['disclaimer'], DISCLAIMER)
+        self.assertIn('No válido como comprobante electrónico SUNAT', ctx['disclaimer'])
+        self.assertNotIn('SUNAT electrónico', ctx['disclaimer'].lower().replace(' ', ''))
+
+    def test_context_boleta_title(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        self.assertIn('Boleta', ctx['title'])
+
+    def test_context_factura_title(self):
+        from store.pdf_services import build_order_pdf_context
+        order = _make_paid_order_42(
+            receipt_type='factura', stripe_session_id='cs_42_fac', document_type='ruc',
+            stripe_payment_intent_id='pi_42_fac',
+        )
+        ctx = build_order_pdf_context(order)
+        self.assertIn('Factura', ctx['title'])
+
+    def test_context_pickup_store_has_no_delivery_address(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        # pickup_store — no delivery address fields set
+        self.assertEqual(ctx['full_address'], '')
+
+    def test_context_delivery_builds_address(self):
+        from store.pdf_services import build_order_pdf_context
+        order = _make_paid_order_42(
+            delivery_method='delivery_arequipa',
+            address_line='Jr. Lima 123', district='Cercado', city='Arequipa',
+            stripe_session_id='cs_42_del', stripe_payment_intent_id='pi_42_del',
+        )
+        ctx = build_order_pdf_context(order)
+        self.assertIn('Lima', ctx['full_address'])
+        self.assertIn('Cercado', ctx['full_address'])
+        self.assertIn('Arequipa', ctx['full_address'])
+
+    def test_context_delivery_label_mapped(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        self.assertEqual(ctx['delivery_label'], 'Recojo en tienda')
+
+    def test_context_document_label_dni(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        self.assertEqual(ctx['document_label'], 'DNI')
+
+    def test_context_store_constants(self):
+        from store.pdf_services import build_order_pdf_context, _STORE_RUC, _STORE_NAME
+        ctx = build_order_pdf_context(self.order)
+        self.assertEqual(ctx['store_ruc'], _STORE_RUC)
+        self.assertEqual(ctx['store_name'], _STORE_NAME)
+        self.assertNotEqual(ctx['store_address'], '')
+
+    def test_context_status_label_is_paid(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        self.assertEqual(ctx['status_label'], 'Pagado')
+
+    def test_context_discount_zero(self):
+        from store.pdf_services import build_order_pdf_context
+        ctx = build_order_pdf_context(self.order)
+        self.assertEqual(ctx['discount_amount'], Decimal('0.00'))
+
+    def test_context_discount_nonzero(self):
+        from store.pdf_services import build_order_pdf_context
+        order = _make_paid_order_42(
+            discount_amount='500.00', coupon_code='BLK50',
+            total='9499.00', stripe_session_id='cs_42_disc',
+            stripe_payment_intent_id='pi_42_disc',
+        )
+        ctx = build_order_pdf_context(order)
+        self.assertEqual(ctx['discount_amount'], Decimal('500.00'))
+        self.assertEqual(ctx['coupon_code'], 'BLK50')
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.2 — PDF generator tests
+# ---------------------------------------------------------------------------
+
+class Phase42PdfGeneratorTest(TestCase):
+    """Tests for generate_order_receipt_pdf() and get_order_receipt_filename()."""
+
+    def setUp(self):
+        self.order = _make_paid_order_42(stripe_session_id='cs_42_gen', stripe_payment_intent_id='pi_42_gen')
+
+    def test_pdf_returns_bytes(self):
+        from store.pdf_services import generate_order_receipt_pdf
+        pdf = generate_order_receipt_pdf(self.order)
+        self.assertIsInstance(pdf, bytes)
+
+    def test_pdf_starts_with_pdf_header(self):
+        from store.pdf_services import generate_order_receipt_pdf
+        pdf = generate_order_receipt_pdf(self.order)
+        self.assertTrue(pdf[:4] == b'%PDF', "Expected PDF header %%PDF not found")
+
+    def test_pdf_has_minimum_size(self):
+        from store.pdf_services import generate_order_receipt_pdf
+        pdf = generate_order_receipt_pdf(self.order)
+        self.assertGreater(len(pdf), 2000)
+
+    def test_pdf_raises_for_pending_payment_order(self):
+        from store.pdf_services import generate_order_receipt_pdf
+        order = _make_paid_order_42(
+            paid=False, status=Order.Status.PENDING_PAYMENT,
+            stripe_session_id='cs_42_pend', stripe_payment_intent_id='pi_42_pend',
+        )
+        with self.assertRaises(ValueError):
+            generate_order_receipt_pdf(order)
+
+    def test_pdf_raises_for_failed_order(self):
+        from store.pdf_services import generate_order_receipt_pdf
+        order = _make_paid_order_42(
+            paid=False, status=Order.Status.FAILED,
+            stripe_session_id='cs_42_fail', stripe_payment_intent_id='pi_42_fail',
+        )
+        with self.assertRaises(ValueError):
+            generate_order_receipt_pdf(order)
+
+    def test_pdf_raises_for_cancelled_order(self):
+        from store.pdf_services import generate_order_receipt_pdf
+        order = _make_paid_order_42(
+            paid=False, status=Order.Status.CANCELLED,
+            stripe_session_id='cs_42_can', stripe_payment_intent_id='pi_42_can',
+        )
+        with self.assertRaises(ValueError):
+            generate_order_receipt_pdf(order)
+
+    def test_pdf_get_filename(self):
+        from store.pdf_services import get_order_receipt_filename
+        filename = get_order_receipt_filename(self.order)
+        self.assertEqual(filename, f'blackdog-pedido-{self.order.id}.pdf')
+        self.assertTrue(filename.isascii())
+
+    def test_pdf_with_discount(self):
+        from store.pdf_services import generate_order_receipt_pdf
+        order = _make_paid_order_42(
+            discount_amount='500.00', coupon_code='BLK50', total='9499.00',
+            stripe_session_id='cs_42_discpdf', stripe_payment_intent_id='pi_42_discpdf',
+        )
+        pdf = generate_order_receipt_pdf(order)
+        self.assertTrue(pdf[:4] == b'%PDF')
+        self.assertGreater(len(pdf), 2000)
+
+    def test_pdf_with_delivery_address(self):
+        from store.pdf_services import generate_order_receipt_pdf
+        order = _make_paid_order_42(
+            delivery_method='delivery_arequipa',
+            address_line='Av. Ejercito 100', district='Yanahuara', city='Arequipa',
+            stripe_session_id='cs_42_addr', stripe_payment_intent_id='pi_42_addr',
+        )
+        pdf = generate_order_receipt_pdf(order)
+        self.assertTrue(pdf[:4] == b'%PDF')
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.2 — Email + PDF integration tests
+# ---------------------------------------------------------------------------
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    ORDER_NOTIFICATION_EMAIL='store@example.com',
+    DEFAULT_FROM_EMAIL='noreply@blackdogstore.com',
+    FRONTEND_URL='https://blackdogstore.com',
+)
+class Phase42EmailWithPdfTest(TestCase):
+    """Integration tests for PDF attached to customer confirmation email."""
+
+    def setUp(self):
+        self.order = _make_paid_order_42(
+            stripe_session_id='cs_42_email', stripe_payment_intent_id='pi_42_email',
+        )
+
+    def test_email_with_pdf_attachment_sends(self):
+        from store.email_services import send_order_confirmation_email
+        result = send_order_confirmation_email(self.order)
+        self.assertTrue(result)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_email_has_pdf_attachment(self):
+        from store.email_services import send_order_confirmation_email
+        send_order_confirmation_email(self.order)
+        msg = mail.outbox[0]
+        attachments = msg.attachments
+        self.assertEqual(len(attachments), 1)
+        filename, content, mimetype = attachments[0]
+        self.assertEqual(mimetype, 'application/pdf')
+        self.assertTrue(filename.endswith('.pdf'))
+
+    def test_email_attachment_is_valid_pdf(self):
+        from store.email_services import send_order_confirmation_email
+        send_order_confirmation_email(self.order)
+        msg = mail.outbox[0]
+        _, content, _ = msg.attachments[0]
+        self.assertTrue(content[:4] == b'%PDF')
+
+    def test_email_attachment_filename_matches_order(self):
+        from store.email_services import send_order_confirmation_email
+        send_order_confirmation_email(self.order)
+        msg = mail.outbox[0]
+        filename, _, _ = msg.attachments[0]
+        self.assertIn(str(self.order.id), filename)
+
+    def test_email_still_sends_if_pdf_generation_fails(self):
+        """If PDF generation throws, email must still be delivered without attachment."""
+        from store.email_services import send_order_confirmation_email
+        with patch('store.pdf_services.generate_order_receipt_pdf', side_effect=RuntimeError('PDF boom')):
+            result = send_order_confirmation_email(self.order)
+        self.assertTrue(result)
+        self.assertEqual(len(mail.outbox), 1)
+        # No attachment when PDF failed
+        self.assertEqual(len(mail.outbox[0].attachments), 0)
+
+    def test_pdf_failure_recorded_in_email_send_error(self):
+        """PDF generation failure must append to email_send_error even if email goes through."""
+        from store.email_services import send_order_confirmation_email
+        with patch('store.pdf_services.generate_order_receipt_pdf', side_effect=RuntimeError('PDF kaboom')):
+            send_order_confirmation_email(self.order)
+        self.order.refresh_from_db()
+        self.assertIn('pdf_skip', self.order.email_send_error)
+
+    def test_pdf_failure_does_not_prevent_idempotency_flag(self):
+        """Even if PDF fails, the confirmation email flag is set after successful send."""
+        from store.email_services import send_order_emails_after_payment
+        with patch('store.pdf_services.generate_order_receipt_pdf', side_effect=RuntimeError('PDF fail')):
+            send_order_emails_after_payment(self.order.pk)
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.confirmation_email_sent_at)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.2 — Admin PDF download endpoint RBAC and security tests
+# ---------------------------------------------------------------------------
+
+class Phase42AdminReceiptPdfEndpointTest(TestCase):
+    """RBAC and security tests for GET /api/admin/orders/{pk}/receipt-pdf/."""
+
+    def _make_user(self, username, role):
+        u = User.objects.create_user(username, f'{username}@ex.com', 'pw')
+        u.profile.role = role
+        u.profile.save()
+        return u
+
+    def setUp(self):
+        self.client = APIClient()
+        self.order = _make_paid_order_42(
+            stripe_session_id='cs_42_pdf_ep', stripe_payment_intent_id='pi_42_pdf_ep',
+        )
+        self.url = f'/api/admin/orders/{self.order.pk}/receipt-pdf/'
+
+        self.admin = self._make_user('adm42', UserProfile.ROLE_ADMIN)
+        self.sales = self._make_user('sal42', UserProfile.ROLE_SALES)
+        self.inventory = self._make_user('inv42', UserProfile.ROLE_INVENTORY)
+        self.superadmin = self._make_user('sup42', UserProfile.ROLE_SUPERADMIN)
+        self.technician = self._make_user('tech42', UserProfile.ROLE_TECHNICIAN)
+        self.customer = self._make_user('cust42', UserProfile.ROLE_CUSTOMER)
+
+    def test_admin_can_download_pdf(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_sales_can_download_pdf(self):
+        self.client.force_authenticate(user=self.sales)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_inventory_can_download_pdf(self):
+        self.client.force_authenticate(user=self.inventory)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_superadmin_can_download_pdf(self):
+        self.client.force_authenticate(user=self.superadmin)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_technician_cannot_download_pdf(self):
+        self.client.force_authenticate(user=self.technician)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_customer_cannot_download_pdf(self):
+        self.client.force_authenticate(user=self.customer)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_anonymous_cannot_download_pdf(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 401)
+
+    def test_pdf_response_content_type(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp['Content-Type'], 'application/pdf')
+
+    def test_pdf_response_content_disposition(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.get(self.url)
+        disposition = resp.get('Content-Disposition', '')
+        self.assertIn('attachment', disposition)
+        self.assertIn('.pdf', disposition)
+
+    def test_pdf_response_bytes_start_with_pdf_header(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.get(self.url)
+        self.assertTrue(resp.content[:4] == b'%PDF')
+
+    def test_pdf_endpoint_404_for_unknown_order(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.get('/api/admin/orders/999999/receipt-pdf/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_pdf_endpoint_400_for_unpaid_order(self):
+        unpaid = _make_paid_order_42(
+            paid=False, status=Order.Status.PENDING_PAYMENT,
+            stripe_session_id='cs_42_unp', stripe_payment_intent_id='pi_42_unp',
+        )
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.get(f'/api/admin/orders/{unpaid.pk}/receipt-pdf/')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_pdf_endpoint_creates_audit_log(self):
+        self.client.force_authenticate(user=self.admin)
+        before = AdminAuditLog.objects.filter(action='order_receipt_pdf_downloaded').count()
+        self.client.get(self.url)
+        after = AdminAuditLog.objects.filter(action='order_receipt_pdf_downloaded').count()
+        self.assertEqual(after, before + 1)
+
+    def test_pdf_response_does_not_contain_stripe_session_id(self):
+        """PDF bytes must not contain the Stripe session ID in cleartext."""
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.get(self.url)
+        self.assertNotIn(b'cs_42_pdf_ep', resp.content)
+
+    def test_pdf_response_does_not_contain_stripe_payment_intent(self):
+        """PDF bytes must not contain the Stripe payment intent ID in cleartext."""
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.get(self.url)
+        self.assertNotIn(b'pi_42_pdf_ep', resp.content)

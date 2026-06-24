@@ -12,6 +12,7 @@ import {
   AdminOrderDetail,
   fetchAdminOrderDetail,
   formatAdminDate,
+  downloadOrderReceiptPdf,
 } from "../../../lib/admin";
 import {
   DOCUMENT_TYPE_LABELS,
@@ -27,6 +28,28 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
   const [order, setOrder] = useState<AdminOrderDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pdfDownloading, setPdfDownloading] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
+  async function handleDownloadPdf() {
+    setPdfDownloading(true);
+    setPdfError(null);
+    try {
+      const { blob, filename } = await downloadOrderReceiptPdf(orderId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setPdfError(err instanceof Error ? err.message : "Error al descargar el PDF.");
+    } finally {
+      setPdfDownloading(false);
+    }
+  }
 
   const canManageFulfillment =
     user.role === "sales" ||
@@ -78,6 +101,20 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
             <FulfillmentStatusBadge status={order.fulfillment_status} />
           </div>
           <p className="mt-1 text-xs text-zinc-500">{formatAdminDate(order.created_at)}</p>
+          {order.paid && (
+            <div className="mt-3 flex items-center gap-3">
+              <button
+                onClick={handleDownloadPdf}
+                disabled={pdfDownloading}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.10] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/[0.08] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {pdfDownloading ? "Generando…" : "Descargar PDF"}
+              </button>
+              {pdfError && (
+                <p className="text-red-400 text-xs">{pdfError}</p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Summary cards */}

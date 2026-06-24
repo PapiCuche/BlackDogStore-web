@@ -384,6 +384,25 @@ export async function updateOrderFulfillment(
   return res.json();
 }
 
+export async function downloadOrderReceiptPdf(
+  orderId: number,
+): Promise<{ blob: Blob; filename: string }> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/receipt-pdf/`);
+  if (res.status === 400) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? 'La orden no está pagada.');
+  }
+  if (res.status === 403) throw new Error('No tienes permisos para descargar el PDF.');
+  if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (res.status === 500) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? 'Error al generar el PDF.');
+  }
+  if (!res.ok) throw new Error('No se pudo descargar el PDF.');
+  const blob = await res.blob();
+  return { blob, filename: `blackdog-pedido-${orderId}.pdf` };
+}
+
 export const ACTION_LABELS: Record<string, string> = {
   role_change: 'Cambio de rol',
   product_created: 'Producto creado',
@@ -393,6 +412,7 @@ export const ACTION_LABELS: Record<string, string> = {
   product_inventory_adjusted: 'Inventario ajustado',
   category_created: 'Categoría creada',
   order_fulfillment_status_changed: 'Estado de despacho actualizado',
+  order_receipt_pdf_downloaded: 'PDF de recibo descargado',
 };
 
 export function actionLabel(action: string): string {
