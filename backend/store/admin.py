@@ -36,7 +36,8 @@ class OrderAdmin(admin.ModelAdmin):
     search_fields = ('customer_name', 'customer_email', 'coupon_code', 'stripe_session_id',
                      'document_number', 'customer_phone')
     readonly_fields = ('stripe_session_id', 'stripe_payment_intent_id', 'paid_at', 'payment_error',
-                       'accepted_terms', 'accepted_warranty_policy')
+                       'accepted_terms', 'accepted_warranty_policy',
+                       'confirmation_email_sent_at', 'internal_notification_sent_at', 'email_send_error')
     fieldsets = (
         ('Identificación', {
             'fields': ('id', 'user', 'status', 'fulfillment_status', 'paid', 'paid_at'),
@@ -53,6 +54,9 @@ class OrderAdmin(admin.ModelAdmin):
         }),
         ('Comprobante y notas', {
             'fields': ('receipt_type', 'notes', 'accepted_terms', 'accepted_warranty_policy'),
+        }),
+        ('Emails transaccionales (Fase 4.1)', {
+            'fields': ('confirmation_email_sent_at', 'internal_notification_sent_at', 'email_send_error'),
         }),
         ('Técnico (Stripe)', {
             'classes': ('collapse',),

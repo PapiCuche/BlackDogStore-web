@@ -104,6 +104,11 @@ class Order(models.Model):
     cart_session_key = models.CharField(max_length=100, blank=True)
     payment_error = models.TextField(blank=True)
 
+    # Phase 4.1: transactional email idempotency flags
+    confirmation_email_sent_at = models.DateTimeField(null=True, blank=True)
+    internal_notification_sent_at = models.DateTimeField(null=True, blank=True)
+    email_send_error = models.TextField(blank=True)
+
     # Phase 4.0: commercial checkout fields
     customer_phone = models.CharField(max_length=30, blank=True)
     document_type = models.CharField(

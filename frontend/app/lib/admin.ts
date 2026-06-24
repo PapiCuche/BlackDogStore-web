@@ -281,6 +281,10 @@ export type AdminOrder = {
 export type AdminOrderDetail = AdminOrder & {
   discount_amount: string;
   coupon_code: string;
+  // Phase 4.1 email flags (admin only)
+  confirmation_email_sent_at: string | null;
+  internal_notification_sent_at: string | null;
+  email_send_error: string;
   // Phase 4.0 commercial fields
   customer_phone: string;
   document_type: string;

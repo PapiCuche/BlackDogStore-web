@@ -194,6 +194,8 @@ EMAIL_PORT = env.int('EMAIL_PORT', default=587)
 EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+# Recipient for internal new-sale notifications (optional; leave empty to disable)
+ORDER_NOTIFICATION_EMAIL = env('ORDER_NOTIFICATION_EMAIL', default='')
 
 if (
     not DEBUG

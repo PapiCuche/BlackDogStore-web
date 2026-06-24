@@ -243,6 +243,35 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
           </table>
         </section>
 
+        {/* Email status */}
+        <section className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
+          <h2 className="text-sm font-semibold text-white mb-4">Emails transaccionales</h2>
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+            <div>
+              <dt className="text-zinc-500 text-xs mb-0.5">Confirmación al cliente</dt>
+              <dd className={order.confirmation_email_sent_at ? "text-zinc-200" : "text-zinc-500"}>
+                {order.confirmation_email_sent_at
+                  ? formatAdminDate(order.confirmation_email_sent_at)
+                  : "Pendiente"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-zinc-500 text-xs mb-0.5">Notificación interna</dt>
+              <dd className={order.internal_notification_sent_at ? "text-zinc-200" : "text-zinc-500"}>
+                {order.internal_notification_sent_at
+                  ? formatAdminDate(order.internal_notification_sent_at)
+                  : "Pendiente / No configurado"}
+              </dd>
+            </div>
+            {order.email_send_error && (
+              <div className="col-span-2">
+                <dt className="text-zinc-500 text-xs mb-0.5">Error de envío</dt>
+                <dd className="text-red-400 text-xs font-mono whitespace-pre-wrap">{order.email_send_error}</dd>
+              </div>
+            )}
+          </dl>
+        </section>
+
         {/* Fulfillment management */}
         {canManageFulfillment && (
           <section className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">

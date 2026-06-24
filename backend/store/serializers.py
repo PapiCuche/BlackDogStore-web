@@ -342,6 +342,8 @@ class AdminOrderDetailSerializer(serializers.ModelSerializer):
             'customer_phone', 'document_type', 'document_number',
             'delivery_method', 'address_line', 'city', 'district', 'reference',
             'notes', 'receipt_type', 'accepted_terms', 'accepted_warranty_policy',
+            # Phase 4.1 email flags (admin read-only)
+            'confirmation_email_sent_at', 'internal_notification_sent_at', 'email_send_error',
             'items',
         ]
         # NOTE: stripe_session_id, stripe_payment_intent_id, payment_error intentionally excluded

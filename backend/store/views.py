@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 
 from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon, UserProfile
 from .permissions import get_user_role
+from .email_services import send_order_emails_after_payment
 from .serializers import (
     CategorySerializer,
     ProductSerializer,
@@ -345,6 +346,14 @@ class StripeWebhookView(APIView):
             # Clear cart only after payment is confirmed
             if order.cart_session_key:
                 CartItem.objects.filter(session_key=order.cart_session_key).delete()
+
+            # Schedule transactional emails to fire after this transaction commits.
+            # on_commit guarantees payment is persisted before email goes out.
+            # Email failures never revert the payment (captured in email_send_error).
+            _order_pk = order.pk
+            transaction.on_commit(
+                lambda: send_order_emails_after_payment(_order_pk)
+            )
 
     def _handle_checkout_expired(self, session_obj):
         stripe_session_id = session_obj.get('id', '')

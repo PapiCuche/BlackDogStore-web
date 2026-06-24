@@ -142,9 +142,9 @@ export default function CheckoutSuccessPage() {
           <div className="mb-8 rounded-2xl border border-white/10 bg-white/5 p-6 text-left text-sm text-zinc-400">
             <p className="mb-2 font-medium text-white">¿Qué sigue?</p>
             <ul className="space-y-1 list-disc list-inside">
-              <li>Nuestro equipo procesará tu pedido en breve.</li>
-              <li>Recibirás una confirmación por correo electrónico.</li>
-              <li>Para consultas escríbenos por WhatsApp.</li>
+              <li>Recibirás la confirmación de tu pedido al correo registrado.</li>
+              <li>Nuestro equipo se comunicará contigo para coordinar la entrega.</li>
+              <li>Para consultas inmediatas escríbenos por WhatsApp.</li>
             </ul>
           </div>
 

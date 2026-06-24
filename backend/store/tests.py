@@ -15,12 +15,14 @@ Audit 3.2 (+6 tests): cart rejects inactive, public detail 404 inactive, checkou
 Phase 3.3 (+72 tests): admin orders access control, filters, detail security (no stripe/payment_error), fulfillment status change, inventory role restrictions, audit log, regression.
 Audit 3.3 (+7 tests): technician 403, webhook doesn't modify fulfillment_status, checkout default pending, atomic audit log.
 Phase 4.0 (+30 tests): commercial checkout fields, document validation, delivery address requirements, receipt type, terms acceptance, frontend injection blocked, admin order detail commercial fields.
+Phase 4.1 (+36 tests): email service unit tests, idempotency flags, no-duplicate sends, webhook on_commit integration, send_mail failure handled, admin detail email flags, customer/payment views don't expose email fields.
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
 import stripe as stripe_lib
 
+from django.core import mail
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
@@ -4071,3 +4073,482 @@ class Phase40AdminOrderDetailCommercialFieldsTest(TestCase):
         self.assertNotIn('address_line', data)
         self.assertNotIn('document_number', data)
         self.assertNotIn('customer_phone', data)
+
+
+# ===========================================================================
+# Phase 4.1 — Transactional email service tests
+# ===========================================================================
+
+def _make_paid_order(**kwargs):
+    """Factory for a fully paid order with one item."""
+    cat, _ = Category.objects.get_or_create(name='Mac41', defaults={'slug': 'mac-41'})
+    product, _ = Product.objects.get_or_create(
+        slug='mbp-m3-41',
+        defaults={'name': 'MacBook Pro M3', 'price': '9999.00', 'inventory': 5, 'category': cat},
+    )
+    defaults = dict(
+        customer_name='Ana Torres',
+        customer_email='ana@example.com',
+        customer_phone='936449536',
+        document_type='dni',
+        document_number='12345678',
+        delivery_method='pickup_store',
+        receipt_type='boleta',
+        accepted_terms=True,
+        accepted_warranty_policy=True,
+        total='9999.00',
+        status=Order.Status.PAID,
+        paid=True,
+        paid_at=timezone.now(),
+        stripe_session_id='cs_test_41',
+        stripe_payment_intent_id='pi_test_41',
+    )
+    defaults.update(kwargs)
+    order = Order.objects.create(**defaults)
+    OrderItem.objects.create(order=order, product=product, quantity=1, price='9999.00')
+    return order
+
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    ORDER_NOTIFICATION_EMAIL='store@example.com',
+    DEFAULT_FROM_EMAIL='Black Dog Store <no-reply@test.com>',
+    FRONTEND_URL='http://localhost:3000',
+)
+class Phase41EmailServiceUnitTest(TestCase):
+    """Unit tests for email_services.py functions (called directly, no webhook)."""
+
+    def setUp(self):
+        mail.outbox = []
+
+    def test_build_order_confirmation_context_excludes_stripe_fields(self):
+        from store.email_services import build_order_confirmation_context
+        order = _make_paid_order()
+        ctx = build_order_confirmation_context(order)
+        self.assertNotIn('stripe_session_id', ctx)
+        self.assertNotIn('stripe_payment_intent_id', ctx)
+        self.assertNotIn('payment_error', ctx)
+
+    def test_build_order_confirmation_context_includes_required_fields(self):
+        from store.email_services import build_order_confirmation_context
+        order = _make_paid_order()
+        ctx = build_order_confirmation_context(order)
+        self.assertEqual(ctx['customer_name'], 'Ana Torres')
+        self.assertEqual(ctx['customer_email'], 'ana@example.com')
+        self.assertIn('items', ctx)
+        self.assertEqual(len(ctx['items']), 1)
+        self.assertEqual(ctx['store_name'], 'Black Dog Store')
+        self.assertIn('store_address', ctx)
+
+    def test_send_order_confirmation_email_delivers_to_customer(self):
+        from store.email_services import send_order_confirmation_email
+        order = _make_paid_order()
+        result = send_order_confirmation_email(order)
+        self.assertTrue(result)
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, ['ana@example.com'])
+        self.assertIn(str(order.id), msg.subject)
+        self.assertNotIn('stripe', msg.body.lower())
+
+    def test_send_order_confirmation_email_does_not_include_stripe_data(self):
+        from store.email_services import send_order_confirmation_email
+        order = _make_paid_order()
+        send_order_confirmation_email(order)
+        msg = mail.outbox[0]
+        self.assertNotIn('cs_test_41', msg.body)
+        self.assertNotIn('pi_test_41', msg.body)
+
+    def test_send_order_confirmation_email_has_html_alternative(self):
+        from store.email_services import send_order_confirmation_email
+        order = _make_paid_order()
+        send_order_confirmation_email(order)
+        msg = mail.outbox[0]
+        alternatives = getattr(msg, 'alternatives', [])
+        html_types = [mime for _, mime in alternatives]
+        self.assertIn('text/html', html_types)
+
+    def test_send_order_confirmation_email_skips_if_already_sent(self):
+        from store.email_services import send_order_confirmation_email
+        order = _make_paid_order()
+        order.confirmation_email_sent_at = timezone.now()
+        order.save(update_fields=['confirmation_email_sent_at'])
+        result = send_order_confirmation_email(order)
+        self.assertFalse(result)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_send_order_confirmation_email_skips_if_not_paid(self):
+        from store.email_services import send_order_confirmation_email
+        order = _make_paid_order(status=Order.Status.PENDING_PAYMENT, paid=False)
+        result = send_order_confirmation_email(order)
+        self.assertFalse(result)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_send_order_confirmation_email_skips_if_status_not_paid(self):
+        from store.email_services import send_order_confirmation_email
+        order = _make_paid_order(status=Order.Status.FAILED)
+        result = send_order_confirmation_email(order)
+        self.assertFalse(result)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_send_internal_order_notification_sends_to_notification_email(self):
+        from store.email_services import send_internal_order_notification
+        order = _make_paid_order()
+        result = send_internal_order_notification(order)
+        self.assertTrue(result)
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, ['store@example.com'])
+        self.assertIn(str(order.id), msg.subject)
+
+    def test_send_internal_notification_skips_if_already_sent(self):
+        from store.email_services import send_internal_order_notification
+        order = _make_paid_order()
+        order.internal_notification_sent_at = timezone.now()
+        order.save(update_fields=['internal_notification_sent_at'])
+        result = send_internal_order_notification(order)
+        self.assertFalse(result)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_send_internal_notification_skips_if_not_configured(self):
+        from store.email_services import send_internal_order_notification
+        order = _make_paid_order()
+        with self.settings(ORDER_NOTIFICATION_EMAIL=''):
+            result = send_internal_order_notification(order)
+        self.assertFalse(result)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_send_internal_notification_includes_admin_link(self):
+        from store.email_services import send_internal_order_notification
+        order = _make_paid_order()
+        send_internal_order_notification(order)
+        msg = mail.outbox[0]
+        self.assertIn('localhost:3000', msg.body)
+        self.assertIn(str(order.id), msg.body)
+
+    def test_send_internal_notification_does_not_include_stripe_data(self):
+        from store.email_services import send_internal_order_notification
+        order = _make_paid_order()
+        send_internal_order_notification(order)
+        msg = mail.outbox[0]
+        self.assertNotIn('cs_test_41', msg.body)
+        self.assertNotIn('pi_test_41', msg.body)
+
+    def test_send_order_emails_after_payment_sends_both_emails(self):
+        from store.email_services import send_order_emails_after_payment
+        order = _make_paid_order()
+        send_order_emails_after_payment(order.pk)
+        self.assertEqual(len(mail.outbox), 2)
+
+    def test_send_order_emails_after_payment_sets_confirmation_flag(self):
+        from store.email_services import send_order_emails_after_payment
+        order = _make_paid_order()
+        send_order_emails_after_payment(order.pk)
+        order.refresh_from_db()
+        self.assertIsNotNone(order.confirmation_email_sent_at)
+
+    def test_send_order_emails_after_payment_sets_internal_flag(self):
+        from store.email_services import send_order_emails_after_payment
+        order = _make_paid_order()
+        send_order_emails_after_payment(order.pk)
+        order.refresh_from_db()
+        self.assertIsNotNone(order.internal_notification_sent_at)
+
+    def test_send_order_emails_after_payment_idempotent_double_call(self):
+        """Calling twice (simulating duplicate webhook) must not send duplicate emails."""
+        from store.email_services import send_order_emails_after_payment
+        order = _make_paid_order()
+        send_order_emails_after_payment(order.pk)
+        mail.outbox = []  # clear after first call
+        send_order_emails_after_payment(order.pk)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_send_order_emails_after_payment_graceful_on_nonexistent_pk(self):
+        from store.email_services import send_order_emails_after_payment
+        # Must not raise, just log
+        send_order_emails_after_payment(999999)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_send_order_emails_after_payment_saves_error_on_failure(self):
+        from store.email_services import send_order_emails_after_payment
+        order = _make_paid_order()
+        with patch('store.email_services.send_order_confirmation_email', side_effect=Exception('SMTP down')):
+            send_order_emails_after_payment(order.pk)
+        order.refresh_from_db()
+        self.assertIn('confirmation', order.email_send_error)
+
+    def test_internal_email_failure_does_not_prevent_confirmation_email(self):
+        from store.email_services import send_order_emails_after_payment
+        order = _make_paid_order()
+        with patch('store.email_services.send_internal_order_notification', side_effect=Exception('SMTP')):
+            send_order_emails_after_payment(order.pk)
+        # Customer email should still be sent
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [order.customer_email])
+        order.refresh_from_db()
+        self.assertIsNotNone(order.confirmation_email_sent_at)
+
+    def test_delivery_arequipa_shows_address_in_email(self):
+        from store.email_services import build_order_confirmation_context
+        order = _make_paid_order(
+            delivery_method='delivery_arequipa',
+            address_line='Av. Independencia 500',
+            district='Cayma',
+        )
+        ctx = build_order_confirmation_context(order)
+        self.assertIn('Av. Independencia 500', ctx['full_address'])
+        self.assertIn('Cayma', ctx['full_address'])
+
+    def test_pickup_store_shows_empty_address(self):
+        from store.email_services import build_order_confirmation_context
+        order = _make_paid_order(delivery_method='pickup_store')
+        ctx = build_order_confirmation_context(order)
+        self.assertEqual(ctx['full_address'], '')
+
+    def test_factura_receipt_label_in_context(self):
+        from store.email_services import build_order_confirmation_context
+        order = _make_paid_order(receipt_type='factura', document_type='ruc', document_number='20610159886')
+        ctx = build_order_confirmation_context(order)
+        self.assertEqual(ctx['receipt_label'], 'Factura')
+        self.assertEqual(ctx['document_label'], 'RUC')
+
+    def test_discount_included_in_context_when_present(self):
+        from store.email_services import build_order_confirmation_context
+        order = _make_paid_order(discount_amount='500.00', coupon_code='PROMO50')
+        ctx = build_order_confirmation_context(order)
+        self.assertEqual(str(ctx['discount_amount']), '500.00')
+        self.assertEqual(ctx['coupon_code'], 'PROMO50')
+
+    def test_no_internal_email_when_notification_email_not_set(self):
+        from store.email_services import send_order_emails_after_payment
+        order = _make_paid_order()
+        with self.settings(ORDER_NOTIFICATION_EMAIL=''):
+            send_order_emails_after_payment(order.pk)
+        # Only customer confirmation, no internal
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [order.customer_email])
+
+    # --- Audit 4.1: checklist items #8, #9, #10 ---
+
+    def test_confirmation_email_body_does_not_contain_payment_error(self):
+        """Email body must never include payment_error value (even if non-empty)."""
+        from store.email_services import send_order_confirmation_email
+        order = _make_paid_order()
+        order.payment_error = "Card declined: insufficient_funds"
+        order.save(update_fields=["payment_error"])
+        send_order_confirmation_email(order)
+        msg = mail.outbox[0]
+        self.assertNotIn("Card declined", msg.body)
+        self.assertNotIn("insufficient_funds", msg.body)
+        for _, html_body in getattr(msg, "alternatives", []):
+            self.assertNotIn("Card declined", html_body)
+
+    def test_confirmation_email_body_contains_product_and_total(self):
+        """Email text body must include product name and total amount."""
+        from store.email_services import send_order_confirmation_email
+        order = _make_paid_order()
+        send_order_confirmation_email(order)
+        msg = mail.outbox[0]
+        self.assertIn("MacBook Pro M3", msg.body)
+        self.assertIn("9999.00", msg.body)
+
+    def test_pickup_store_email_body_contains_store_address(self):
+        """For pickup_store orders, the text body must show the store address, not a delivery address."""
+        from store.email_services import send_order_confirmation_email
+        from store.email_services import _STORE_ADDRESS
+        order = _make_paid_order(delivery_method="pickup_store")
+        send_order_confirmation_email(order)
+        msg = mail.outbox[0]
+        self.assertIn(_STORE_ADDRESS, msg.body)
+        self.assertIn("Punto de retiro", msg.body)
+
+    def test_html_escaping_in_customer_email(self):
+        """User-supplied data with HTML special chars must be escaped in the HTML body."""
+        from store.email_services import send_order_confirmation_email
+        order = _make_paid_order(
+            customer_name='<b>Atacante</b>',
+            notes='<script>alert("xss")</script>',
+        )
+        send_order_confirmation_email(order)
+        msg = mail.outbox[0]
+        html_alternatives = [body for body, mime in getattr(msg, "alternatives", []) if mime == "text/html"]
+        self.assertTrue(html_alternatives, "Email must have HTML alternative")
+        html_body = html_alternatives[0]
+        # Angle brackets must be escaped — raw tags must NOT appear
+        self.assertNotIn("<b>Atacante</b>", html_body)
+        self.assertNotIn("<script>", html_body)
+        # Escaped versions must appear
+        self.assertIn("&lt;b&gt;Atacante&lt;/b&gt;", html_body)
+        self.assertIn("&lt;script&gt;", html_body)
+
+    def test_email_send_error_appends_on_repeated_failure(self):
+        """Repeated email failures must append errors, not overwrite the first one."""
+        from store.email_services import send_order_emails_after_payment
+        order = _make_paid_order()
+        # First failure
+        with patch('store.email_services.send_order_confirmation_email', side_effect=Exception('SMTP timeout')):
+            send_order_emails_after_payment(order.pk)
+        order.refresh_from_db()
+        self.assertIn('confirmation', order.email_send_error)
+        first_error = order.email_send_error
+        # Second failure — error must be appended, not overwritten
+        order.confirmation_email_sent_at = None  # reset flag to re-trigger
+        order.save(update_fields=['confirmation_email_sent_at'])
+        with patch('store.email_services.send_order_confirmation_email', side_effect=Exception('DNS error')):
+            send_order_emails_after_payment(order.pk)
+        order.refresh_from_db()
+        self.assertIn('confirmation', order.email_send_error)
+        # Both errors should be present (first_error substring still there)
+        self.assertIn(first_error[:50], order.email_send_error)
+
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    ORDER_NOTIFICATION_EMAIL='store@example.com',
+    DEFAULT_FROM_EMAIL='Black Dog Store <no-reply@test.com>',
+    FRONTEND_URL='http://localhost:3000',
+    STRIPE_SECRET_KEY='sk_test_fake41',
+    STRIPE_WEBHOOK_SECRET='whsec_fake41',
+)
+class Phase41WebhookEmailIntegrationTest(TestCase):
+    """
+    Tests that the Stripe webhook triggers email sending via transaction.on_commit().
+
+    Because TestCase wraps everything in a transaction that is never committed,
+    we patch transaction.on_commit to call the function immediately, which lets
+    us verify the integration without needing TransactionTestCase.
+    """
+
+    def setUp(self):
+        mail.outbox = []
+        cat = Category.objects.create(name='Mac41W', slug='mac-41w')
+        self.product = Product.objects.create(
+            name='iMac M3', slug='imac-m3-41w', price='5999.00', inventory=3, category=cat,
+        )
+        self.order = Order.objects.create(
+            customer_name='Pedro Salas', customer_email='pedro@example.com',
+            customer_phone='936449537', document_type='dni', document_number='87654321',
+            delivery_method='pickup_store', receipt_type='boleta',
+            accepted_terms=True, accepted_warranty_policy=True,
+            total='5999.00',
+            status=Order.Status.PENDING_PAYMENT,
+            paid=False,
+            stripe_session_id='cs_wh_41_integration',
+        )
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=1, price='5999.00',
+        )
+
+    def _fire_webhook(self, event_type='checkout.session.completed', extra_data=None):
+        event = {
+            'type': event_type,
+            'data': {
+                'object': {
+                    'id': 'cs_wh_41_integration',
+                    'payment_intent': 'pi_wh_41',
+                    **(extra_data or {}),
+                }
+            },
+        }
+        with patch('stripe.Webhook.construct_event', return_value=event):
+            return self.client.post(
+                '/api/payments/webhook/',
+                data=b'{}',
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='t=1,v1=fake',
+            )
+
+    def test_webhook_triggers_email_via_on_commit(self):
+        with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
+            resp = self._fire_webhook()
+        self.assertEqual(resp.status_code, 200)
+        # Both customer + internal emails sent
+        self.assertGreaterEqual(len(mail.outbox), 1)
+        recipient_emails = [msg.to[0] for msg in mail.outbox]
+        self.assertIn('pedro@example.com', recipient_emails)
+
+    def test_webhook_email_not_fired_if_already_paid(self):
+        """Idempotency: second webhook call must not trigger emails."""
+        self.order.status = Order.Status.PAID
+        self.order.paid = True
+        self.order.paid_at = timezone.now()
+        self.order.confirmation_email_sent_at = timezone.now()
+        self.order.internal_notification_sent_at = timezone.now()
+        self.order.save()
+
+        with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
+            resp = self._fire_webhook()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_email_failure_does_not_revert_payment(self):
+        """If email sending fails, the payment must still be marked paid."""
+        with patch('store.email_services.send_order_emails_after_payment', side_effect=Exception('SMTP')):
+            with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
+                self._fire_webhook()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertTrue(self.order.paid)
+
+    def test_webhook_without_on_commit_patch_does_not_raise(self):
+        """Standard TestCase behavior: on_commit fires after test transaction ends (never).
+        The webhook must still return 200 and mark the order paid."""
+        resp = self._fire_webhook()
+        self.assertEqual(resp.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        # No emails in outbox because on_commit never fires in TestCase
+        self.assertEqual(len(mail.outbox), 0)
+
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    ORDER_NOTIFICATION_EMAIL='store@example.com',
+)
+class Phase41AdminDetailEmailFlagsTest(TestCase):
+    """Admin order detail API must expose the three email flag fields."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user('admin41', 'admin41@example.com', 'pw')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.order = _make_paid_order(stripe_session_id='cs_test_admin_41_flags')
+
+    def test_admin_detail_exposes_email_flags_null_by_default(self):
+        self.client.force_authenticate(user=self.admin)
+        data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
+        self.assertIn('confirmation_email_sent_at', data)
+        self.assertIn('internal_notification_sent_at', data)
+        self.assertIn('email_send_error', data)
+        self.assertIsNone(data['confirmation_email_sent_at'])
+        self.assertIsNone(data['internal_notification_sent_at'])
+        self.assertEqual(data['email_send_error'], '')
+
+    def test_admin_detail_shows_confirmation_sent_at_after_email(self):
+        from store.email_services import send_order_emails_after_payment
+        send_order_emails_after_payment(self.order.pk)
+        self.client.force_authenticate(user=self.admin)
+        data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
+        self.assertIsNotNone(data['confirmation_email_sent_at'])
+
+    def test_admin_detail_email_flags_not_visible_to_customer(self):
+        """OrderSerializer (customer-facing) must never include email flags."""
+        customer = User.objects.create_user('cust41', 'cust41@example.com', 'pw')
+        order = _make_paid_order(stripe_session_id='cs_test_cust41')
+        order.user = customer
+        order.save(update_fields=['user'])
+        self.client.force_authenticate(user=customer)
+        data = self.client.get(f'/api/orders/{order.pk}/').json()
+        self.assertNotIn('confirmation_email_sent_at', data)
+        self.assertNotIn('internal_notification_sent_at', data)
+        self.assertNotIn('email_send_error', data)
+
+    def test_payment_status_view_does_not_expose_email_flags(self):
+        """PaymentStatusView (public endpoint) must not expose email flags."""
+        data = self.client.get(
+            f'/api/payments/status/?session_id=cs_test_admin_41_flags'
+        ).json()
+        self.assertNotIn('confirmation_email_sent_at', data)
+        self.assertNotIn('internal_notification_sent_at', data)
+        self.assertNotIn('email_send_error', data)
