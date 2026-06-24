@@ -1,4 +1,8 @@
+from decimal import Decimal
+
+from django.utils.text import slugify
 from rest_framework import serializers
+
 from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon
 
 
@@ -88,3 +92,114 @@ class CartItemSerializer(serializers.ModelSerializer):
         model = CartItem
         fields = ['id', 'session_key', 'product', 'quantity', 'added_at']
         read_only_fields = ['session_key', 'added_at']
+
+
+# ---------------------------------------------------------------------------
+# Admin serializers — products
+# ---------------------------------------------------------------------------
+
+class AdminProductSerializer(serializers.ModelSerializer):
+    """Read serializer: used for list and detail responses from admin endpoints."""
+    category_id = serializers.IntegerField(source='category.id', read_only=True, default=None, allow_null=True)
+    category_name = serializers.CharField(source='category.name', read_only=True, default='', allow_null=True)
+
+    class Meta:
+        model = Product
+        fields = [
+            'id', 'name', 'slug', 'description', 'price', 'inventory',
+            'image_url', 'category_id', 'category_name', 'is_active',
+            'created_at', 'updated_at',
+        ]
+
+
+class AdminProductWriteSerializer(serializers.ModelSerializer):
+    """Write serializer: validates and saves product create/update."""
+    slug = serializers.SlugField(required=False, allow_blank=True, max_length=50)
+    image_url = serializers.URLField(required=False, allow_blank=True, max_length=500, default='')
+    description = serializers.CharField(required=False, allow_blank=True, default='')
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=Category.objects.all(), required=False, allow_null=True, default=None
+    )
+    is_active = serializers.BooleanField(required=False, default=True)
+
+    class Meta:
+        model = Product
+        fields = ['name', 'slug', 'description', 'price', 'inventory', 'image_url', 'category', 'is_active']
+        extra_kwargs = {
+            'slug': {'validators': []},
+        }
+
+    def validate_price(self, value):
+        if value <= Decimal('0'):
+            raise serializers.ValidationError('El precio debe ser mayor que 0.')
+        return value
+
+    def validate_inventory(self, value):
+        if value < 0:
+            raise serializers.ValidationError('El inventario no puede ser negativo.')
+        return value
+
+    def validate_slug(self, value):
+        if not value:
+            return value
+        qs = Product.objects.filter(slug=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('Ya existe un producto con este slug.')
+        return value
+
+    def validate(self, attrs):
+        if not self.instance and not attrs.get('slug'):
+            base = slugify(attrs.get('name', ''))[:45]
+            if not base:
+                raise serializers.ValidationError({'slug': 'No se pudo generar un slug desde el nombre.'})
+            slug, counter = base, 1
+            while Product.objects.filter(slug=slug).exists():
+                slug = f'{base}-{counter}'
+                counter += 1
+            attrs['slug'] = slug
+        return attrs
+
+
+class AdminInventoryAdjustSerializer(serializers.Serializer):
+    """Validates inventory adjustment input: delta + reason."""
+    delta = serializers.IntegerField()
+    reason = serializers.CharField(min_length=3, max_length=500, trim_whitespace=True)
+
+    def validate_delta(self, value):
+        if value == 0:
+            raise serializers.ValidationError('El delta no puede ser 0.')
+        return value
+
+
+class AdminCategoryWriteSerializer(serializers.ModelSerializer):
+    """Write serializer for admin category create."""
+    slug = serializers.SlugField(required=False, allow_blank=True, max_length=50)
+
+    class Meta:
+        model = Category
+        fields = ['name', 'slug']
+        extra_kwargs = {'slug': {'validators': []}}
+
+    def validate_slug(self, value):
+        if not value:
+            return value
+        qs = Category.objects.filter(slug=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('Ya existe una categoría con este slug.')
+        return value
+
+    def validate(self, attrs):
+        if not self.instance and not attrs.get('slug'):
+            base = slugify(attrs.get('name', ''))[:45]
+            if not base:
+                raise serializers.ValidationError({'slug': 'No se pudo generar un slug.'})
+            slug, counter = base, 1
+            while Category.objects.filter(slug=slug).exists():
+                slug = f'{base}-{counter}'
+                counter += 1
+            attrs['slug'] = slug
+        return attrs

@@ -16,7 +16,7 @@ function DashboardContent({ user }: { user: AuthUser }) {
           </p>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Link
             href="/admin/users"
             className="group rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 transition hover:border-white/10 hover:bg-white/[0.04]"
@@ -32,6 +32,24 @@ function DashboardContent({ user }: { user: AuthUser }) {
             </p>
             <p className="mt-4 text-xs text-zinc-600 transition group-hover:text-zinc-400">
               Ver usuarios →
+            </p>
+          </Link>
+
+          <Link
+            href="/admin/products"
+            className="group rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 transition hover:border-white/10 hover:bg-white/[0.04]"
+          >
+            <p className="text-xs font-semibold uppercase tracking-widest text-zinc-500">
+              Catálogo
+            </p>
+            <p className="mt-2 text-lg font-semibold text-white">
+              Productos e inventario
+            </p>
+            <p className="mt-1 text-sm text-zinc-500">
+              Gestión del catálogo, precios, stock y estado de productos.
+            </p>
+            <p className="mt-4 text-xs text-zinc-600 transition group-hover:text-zinc-400">
+              Ver productos →
             </p>
           </Link>
 

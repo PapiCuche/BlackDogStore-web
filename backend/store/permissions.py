@@ -8,6 +8,18 @@ _MANAGE_ORDERS_ROLES = frozenset([
     UserProfile.ROLE_ADMIN,
     UserProfile.ROLE_SUPERADMIN,
 ])
+_VIEW_ADMIN_PRODUCTS_ROLES = frozenset([
+    UserProfile.ROLE_INVENTORY,
+    UserProfile.ROLE_SALES,
+    UserProfile.ROLE_ADMIN,
+    UserProfile.ROLE_SUPERADMIN,
+])
+_MANAGE_PRODUCTS_ROLES = frozenset([UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN])
+_MANAGE_INVENTORY_ROLES = frozenset([
+    UserProfile.ROLE_INVENTORY,
+    UserProfile.ROLE_ADMIN,
+    UserProfile.ROLE_SUPERADMIN,
+])
 
 
 def get_user_role(user):
@@ -41,3 +53,24 @@ class CanManageOrders(BasePermission):
 
     def has_permission(self, request, view):
         return get_user_role(request.user) in _MANAGE_ORDERS_ROLES
+
+
+class CanViewAdminProducts(BasePermission):
+    message = 'Se requiere rol de inventario, ventas, administrador o superior.'
+
+    def has_permission(self, request, view):
+        return get_user_role(request.user) in _VIEW_ADMIN_PRODUCTS_ROLES
+
+
+class CanManageProducts(BasePermission):
+    message = 'Se requiere rol de administrador o superior para gestionar productos.'
+
+    def has_permission(self, request, view):
+        return get_user_role(request.user) in _MANAGE_PRODUCTS_ROLES
+
+
+class CanManageInventory(BasePermission):
+    message = 'Se requiere rol de inventario, administrador o superior.'
+
+    def has_permission(self, request, view):
+        return get_user_role(request.user) in _MANAGE_INVENTORY_ROLES

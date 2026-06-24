@@ -9,6 +9,8 @@ Phase 2.2 (+10 tests): logout CSRF enforcement, token blacklist after rotation a
 Phase 2.3 (+28 tests): AccountToken model, email verification flow, password reset, change password.
 Phase 3.0 (+34 tests): UserProfile auto-create, RBAC permissions, admin endpoints, audit log, OrderViewSet roles.
 Phase 3.1 (+9 tests): paginated responses, search/filter users, filter audit logs, rate limits.
+Audit 3.1 (+14 tests): page_size cap, page invalid, CSRF on role change, extra fields ignored, actor filter, pagination edge cases.
+Phase 3.2 (+52 tests): admin products CRUD, inventory adjust, categories, is_active filter, regression.
 """
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -2195,3 +2197,735 @@ class AdminAuditLogFilterTest(TestCase):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.post('/api/admin/audit-logs/', {}, format='json')
         self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_filter_by_actor(self):
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/audit-logs/?actor=alf_actor1')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.json()['results']
+        self.assertTrue(len(results) >= 1)
+        self.assertTrue(all(r['actor'] == 'alf_actor1' for r in results))
+
+
+# ---------------------------------------------------------------------------
+# Audit 3.1 — Pagination edge cases, CSRF enforcement, extra-field protection
+# ---------------------------------------------------------------------------
+
+class Audit31PaginationEdgeCasesTest(TestCase):
+    """page_size cap at 100, invalid page param defaults gracefully."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.admin_user = User.objects.create_user(username='pe_admin', password='Pass123!')
+        self.admin_user.profile.role = UserProfile.ROLE_ADMIN
+        self.admin_user.profile.save()
+
+    def test_page_size_exceeds_max_is_clamped_to_100(self):
+        """?page_size=500 must be silently clamped to 100."""
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/?page_size=500')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertEqual(data['page_size'], 100)
+
+    def test_page_invalid_string_defaults_to_page_1(self):
+        """?page=abc must not raise a 500; defaults to page 1."""
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/?page=abc')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['page'], 1)
+
+    def test_page_negative_defaults_to_page_1(self):
+        """?page=-5 must be clamped to 1 by max(1, ...)."""
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/?page=-5')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['page'], 1)
+
+    def test_page_out_of_range_returns_empty_results_with_correct_count(self):
+        """?page=9999 must return empty results but count must still reflect total."""
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/users/?page=9999&page_size=25')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertEqual(data['results'], [])
+        self.assertGreaterEqual(data['count'], 1)  # at least admin_user exists
+
+    def test_audit_log_page_size_clamped_to_100(self):
+        """Same clamping must apply to audit-logs endpoint."""
+        AdminAuditLog.objects.create(
+            actor=self.admin_user, action='test_action', target_type='test', target_id='1', metadata={},
+        )
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get('/api/admin/audit-logs/?page_size=999')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['page_size'], 100)
+
+
+class Audit31RoleChangeCsrfTest(TestCase):
+    """PATCH /api/admin/users/{pk}/role/ must enforce CSRF when using cookie auth."""
+
+    def _get_access_token(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        return str(RefreshToken.for_user(user).access_token)
+
+    def test_patch_with_cookie_but_no_csrf_is_rejected(self):
+        """Cookie auth without X-CSRFToken header must trigger 403 PermissionDenied."""
+        from django.test import RequestFactory
+        from rest_framework.request import Request as DRFRequest
+        from rest_framework.exceptions import PermissionDenied
+        from store.authentication import CookieJWTAuthentication
+
+        superadmin = User.objects.create_user(username='csrf_sa', password='Pass123!')
+        superadmin.profile.role = UserProfile.ROLE_SUPERADMIN
+        superadmin.profile.save()
+        access = self._get_access_token(superadmin)
+
+        raw = RequestFactory().patch(
+            '/api/admin/users/1/role/',
+            content_type='application/json',
+            data='{"role": "sales"}',
+        )
+        raw.COOKIES['blackdog_access'] = access
+        # Intentionally NO csrftoken cookie
+
+        with self.assertRaises(PermissionDenied):
+            CookieJWTAuthentication().authenticate(DRFRequest(raw))
+
+    def test_get_with_cookie_no_csrf_succeeds_safe_method(self):
+        """GET /api/admin/users/ must not require CSRF — safe methods are exempt."""
+        from django.test import RequestFactory
+        from rest_framework.request import Request as DRFRequest
+        from store.authentication import CookieJWTAuthentication
+
+        admin = User.objects.create_user(username='csrf_admin_get', password='Pass123!')
+        admin.profile.role = UserProfile.ROLE_ADMIN
+        admin.profile.save()
+        access = self._get_access_token(admin)
+
+        raw = RequestFactory().get('/api/admin/users/')
+        raw.COOKIES['blackdog_access'] = access
+
+        result = CookieJWTAuthentication().authenticate(DRFRequest(raw))
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], admin)
+
+
+class Audit31ExtraFieldsIgnoredTest(TestCase):
+    """PATCH /api/admin/users/{pk}/role/ must silently ignore extra request body fields."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.superadmin = User.objects.create_user(username='ef_superadmin', password='Pass123!')
+        self.superadmin.profile.role = UserProfile.ROLE_SUPERADMIN
+        self.superadmin.profile.save()
+        self.target = User.objects.create_user(username='ef_target', password='OriginalPass123!')
+
+    def test_extra_fields_in_body_do_not_modify_user(self):
+        """Sending is_superuser=true, password=hacked alongside role must not change those fields."""
+        self.client.force_authenticate(user=self.superadmin)
+        original_password_hash = self.target.password
+        original_is_superuser = self.target.is_superuser
+
+        response = self.client.patch(
+            f'/api/admin/users/{self.target.pk}/role/',
+            {
+                'role': 'sales',
+                'is_superuser': True,
+                'password': 'hacked_password',
+                'username': 'hijacked_username',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.password, original_password_hash)
+        self.assertEqual(self.target.is_superuser, original_is_superuser)
+        self.assertEqual(self.target.username, 'ef_target')
+        self.assertEqual(self.target.profile.role, UserProfile.ROLE_SALES)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.2 — Admin product tests
+# ---------------------------------------------------------------------------
+
+def _make_product(name, slug, price='100.00', inventory=10, is_active=True, category=None):
+    return Product.objects.create(
+        name=name, slug=slug, price=Decimal(price),
+        inventory=inventory, is_active=is_active, category=category,
+    )
+
+
+def _make_roles(prefix):
+    """Helper: create one user per role, return dict role->user."""
+    roles = {}
+    for role in (
+        UserProfile.ROLE_CUSTOMER, UserProfile.ROLE_SALES, UserProfile.ROLE_INVENTORY,
+        UserProfile.ROLE_TECHNICIAN, UserProfile.ROLE_ADMIN,
+    ):
+        u = User.objects.create_user(username=f'{prefix}_{role}', password='Pass123!')
+        u.profile.role = role
+        u.profile.save()
+        roles[role] = u
+    su = User.objects.create_user(username=f'{prefix}_superadmin', password='Pass123!')
+    su.is_superuser = True
+    su.save()
+    roles[UserProfile.ROLE_SUPERADMIN] = su
+    return roles
+
+
+class AdminProductListAccessTest(TestCase):
+    """GET /api/admin/products/ — access control."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.roles = _make_roles('pla')
+        cat = Category.objects.create(name='PLA Cat', slug='pla-cat')
+        _make_product('PLA Product', 'pla-product', category=cat)
+
+    def test_anon_gets_401(self):
+        response = self.client.get('/api/admin/products/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_gets_403(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_CUSTOMER])
+        self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_technician_gets_403(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_TECHNICIAN])
+        self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_sales_can_list(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SALES])
+        self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_200_OK)
+
+    def test_inventory_can_list(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_INVENTORY])
+        self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_200_OK)
+
+    def test_admin_can_list(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_200_OK)
+
+    def test_superadmin_can_list(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SUPERADMIN])
+        self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_200_OK)
+
+    def test_response_has_pagination_structure(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        data = self.client.get('/api/admin/products/').json()
+        for key in ('count', 'page', 'page_size', 'results'):
+            self.assertIn(key, data)
+
+    def test_response_has_is_active_and_updated_at(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        results = self.client.get('/api/admin/products/').json()['results']
+        self.assertTrue(len(results) >= 1)
+        self.assertIn('is_active', results[0])
+        self.assertIn('updated_at', results[0])
+
+    def test_admin_list_includes_inactive_products(self):
+        _make_product('Inactive P', 'inactive-p-list', is_active=False)
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        data = self.client.get('/api/admin/products/').json()
+        slugs = [r['slug'] for r in data['results']]
+        self.assertIn('inactive-p-list', slugs)
+
+
+class AdminProductListFilterTest(TestCase):
+    """GET /api/admin/products/ — search and filters."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        Product.objects.all().delete()
+        self.admin = User.objects.create_user(username='pf_admin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.cat = Category.objects.create(name='PF Cat', slug='pf-cat')
+        self.p1 = _make_product('iPhone 15', 'iphone-15-pf', inventory=5, is_active=True, category=self.cat)
+        self.p2 = _make_product('MacBook Air', 'macbook-air-pf', inventory=0, is_active=True)
+        self.p3 = _make_product('Old iPad', 'old-ipad-pf', inventory=2, is_active=False)
+
+    def test_search_by_name(self):
+        self.client.force_authenticate(user=self.admin)
+        results = self.client.get('/api/admin/products/?search=iphone').json()['results']
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['slug'], 'iphone-15-pf')
+
+    def test_filter_by_is_active_true(self):
+        self.client.force_authenticate(user=self.admin)
+        results = self.client.get('/api/admin/products/?is_active=true').json()['results']
+        self.assertTrue(all(r['is_active'] for r in results))
+        slugs = [r['slug'] for r in results]
+        self.assertNotIn('old-ipad-pf', slugs)
+
+    def test_filter_by_is_active_false(self):
+        self.client.force_authenticate(user=self.admin)
+        results = self.client.get('/api/admin/products/?is_active=false').json()['results']
+        self.assertTrue(all(not r['is_active'] for r in results))
+
+    def test_filter_by_category(self):
+        self.client.force_authenticate(user=self.admin)
+        results = self.client.get(f'/api/admin/products/?category={self.cat.pk}').json()['results']
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['slug'], 'iphone-15-pf')
+
+    def test_filter_stock_in_stock(self):
+        self.client.force_authenticate(user=self.admin)
+        results = self.client.get('/api/admin/products/?stock=in_stock').json()['results']
+        self.assertTrue(all(r['inventory'] > 0 for r in results))
+
+    def test_filter_stock_out_of_stock(self):
+        self.client.force_authenticate(user=self.admin)
+        results = self.client.get('/api/admin/products/?stock=out_of_stock').json()['results']
+        self.assertTrue(all(r['inventory'] == 0 for r in results))
+
+    def test_filter_stock_low_stock(self):
+        self.client.force_authenticate(user=self.admin)
+        results = self.client.get('/api/admin/products/?stock=low_stock').json()['results']
+        self.assertTrue(all(0 < r['inventory'] <= 5 for r in results))
+
+
+class AdminProductCreateTest(TestCase):
+    """POST /api/admin/products/ — create product permissions and validation."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.roles = _make_roles('pc')
+        self.cat = Category.objects.create(name='PC Cat', slug='pc-cat')
+
+    def _base_payload(self, **overrides):
+        data = {
+            'name': 'Test Product',
+            'price': '299.00',
+            'inventory': 5,
+            'category': self.cat.pk,
+        }
+        data.update(overrides)
+        return data
+
+    def test_anon_gets_401(self):
+        response = self.client.post('/api/admin/products/', self._base_payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_gets_403(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_CUSTOMER])
+        self.assertEqual(
+            self.client.post('/api/admin/products/', self._base_payload(), format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_inventory_role_cannot_create(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_INVENTORY])
+        self.assertEqual(
+            self.client.post('/api/admin/products/', self._base_payload(), format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_sales_role_cannot_create(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SALES])
+        self.assertEqual(
+            self.client.post('/api/admin/products/', self._base_payload(), format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_admin_can_create(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.post('/api/admin/products/', self._base_payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn('id', response.json())
+
+    def test_superadmin_can_create(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SUPERADMIN])
+        response = self.client.post('/api/admin/products/', self._base_payload(name='Super Product'), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_price_zero_rejected(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.post('/api/admin/products/', self._base_payload(price='0'), format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_price_negative_rejected(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.post('/api/admin/products/', self._base_payload(price='-10'), format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_inventory_negative_rejected(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.post('/api/admin/products/', self._base_payload(inventory=-1), format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_slug_auto_generated_from_name(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.post('/api/admin/products/', self._base_payload(name='Auto Slug Product'), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn('slug', response.json())
+        self.assertNotEqual(response.json()['slug'], '')
+
+    def test_slug_duplicate_rejected(self):
+        _make_product('Existing', 'existing-slug-pc')
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.post(
+            '/api/admin/products/', self._base_payload(name='Dup', slug='existing-slug-pc'), format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_creates_audit_log(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.client.post('/api/admin/products/', self._base_payload(name='Audit Product Create'), format='json')
+        log = AdminAuditLog.objects.filter(action='product_created').first()
+        self.assertIsNotNone(log)
+        self.assertIn('product_name', log.metadata)
+
+    def test_response_does_not_contain_sensitive_fields(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.post('/api/admin/products/', self._base_payload(name='Safe Product'), format='json')
+        data = response.json()
+        for field in ('password', 'token', 'stripe_secret', 'cookie'):
+            self.assertNotIn(field, data)
+
+
+class AdminProductDetailTest(TestCase):
+    """GET and PATCH /api/admin/products/{pk}/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.roles = _make_roles('pd')
+        self.cat = Category.objects.create(name='PD Cat', slug='pd-cat')
+        self.product = _make_product('PD iPhone', 'pd-iphone', price='999.00', inventory=10, category=self.cat)
+
+    def test_anon_get_401(self):
+        self.assertEqual(
+            self.client.get(f'/api/admin/products/{self.product.pk}/').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_customer_get_403(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_CUSTOMER])
+        self.assertEqual(
+            self.client.get(f'/api/admin/products/{self.product.pk}/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_admin_can_get_detail(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.get(f'/api/admin/products/{self.product.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['slug'], 'pd-iphone')
+
+    def test_inventory_can_get_detail(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_INVENTORY])
+        self.assertEqual(
+            self.client.get(f'/api/admin/products/{self.product.pk}/').status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_admin_can_patch_price(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.patch(
+            f'/api/admin/products/{self.product.pk}/', {'price': '1299.00'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['price'], '1299.00')
+
+    def test_inventory_role_cannot_patch_price(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_INVENTORY])
+        response = self.client.patch(
+            f'/api/admin/products/{self.product.pk}/', {'price': '1.00'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_sales_role_cannot_patch(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SALES])
+        response = self.client.patch(
+            f'/api/admin/products/{self.product.pk}/', {'name': 'Hacked'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_deactivate_creates_audit_log(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.client.patch(f'/api/admin/products/{self.product.pk}/', {'is_active': False}, format='json')
+        log = AdminAuditLog.objects.filter(action='product_deactivated').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.target_id, str(self.product.pk))
+
+    def test_reactivate_creates_audit_log(self):
+        self.product.is_active = False
+        self.product.save()
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.client.patch(f'/api/admin/products/{self.product.pk}/', {'is_active': True}, format='json')
+        log = AdminAuditLog.objects.filter(action='product_reactivated').first()
+        self.assertIsNotNone(log)
+
+    def test_patch_no_change_creates_no_audit_log(self):
+        initial_log_count = AdminAuditLog.objects.count()
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.client.patch(f'/api/admin/products/{self.product.pk}/', {}, format='json')
+        self.assertEqual(AdminAuditLog.objects.count(), initial_log_count)
+
+    def test_delete_returns_405(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SUPERADMIN])
+        self.assertEqual(
+            self.client.delete(f'/api/admin/products/{self.product.pk}/').status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def test_nonexistent_product_returns_404(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.assertEqual(
+            self.client.get('/api/admin/products/999999/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+
+class AdminInventoryAdjustTest(TestCase):
+    """POST /api/admin/products/{pk}/inventory-adjust/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.roles = _make_roles('ia')
+        self.product = _make_product('IA iPhone', 'ia-iphone', inventory=10)
+
+    def _url(self):
+        return f'/api/admin/products/{self.product.pk}/inventory-adjust/'
+
+    def test_anon_gets_401(self):
+        self.assertEqual(
+            self.client.post(self._url(), {'delta': 1, 'reason': 'Test'}, format='json').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_customer_gets_403(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_CUSTOMER])
+        self.assertEqual(
+            self.client.post(self._url(), {'delta': 1, 'reason': 'Test'}, format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_sales_gets_403(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SALES])
+        self.assertEqual(
+            self.client.post(self._url(), {'delta': 1, 'reason': 'Test'}, format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_technician_gets_403(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_TECHNICIAN])
+        self.assertEqual(
+            self.client.post(self._url(), {'delta': 1, 'reason': 'Test'}, format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_inventory_role_can_adjust(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_INVENTORY])
+        response = self.client.post(self._url(), {'delta': 5, 'reason': 'Ingreso de stock'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_admin_can_adjust(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.post(self._url(), {'delta': -3, 'reason': 'Corrección manual'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_superadmin_can_adjust(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SUPERADMIN])
+        response = self.client.post(self._url(), {'delta': 2, 'reason': 'Superadmin test'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_delta_zero_rejected(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_INVENTORY])
+        response = self.client.post(self._url(), {'delta': 0, 'reason': 'Zero delta'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reason_too_short_rejected(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_INVENTORY])
+        response = self.client.post(self._url(), {'delta': 1, 'reason': 'AB'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reason_empty_rejected(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_INVENTORY])
+        response = self.client.post(self._url(), {'delta': 1, 'reason': ''}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_negative_delta_leaving_stock_negative_rejected(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_INVENTORY])
+        response = self.client.post(self._url(), {'delta': -99, 'reason': 'Overdraft test'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_positive_adjust_updates_inventory(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.client.post(self._url(), {'delta': 5, 'reason': 'Restock bulk'}, format='json')
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 15)
+
+    def test_negative_adjust_updates_inventory(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.client.post(self._url(), {'delta': -3, 'reason': 'Manual removal'}, format='json')
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 7)
+
+    def test_adjust_creates_audit_log(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.client.post(self._url(), {'delta': 4, 'reason': 'Audit test reason'}, format='json')
+        log = AdminAuditLog.objects.filter(action='product_inventory_adjusted').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata['delta'], 4)
+        self.assertEqual(log.metadata['reason'], 'Audit test reason')
+        self.assertEqual(log.metadata['old_inventory'], 10)
+        self.assertEqual(log.metadata['new_inventory'], 14)
+
+    def test_adjust_audit_log_no_sensitive_data(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        self.client.post(self._url(), {'delta': 1, 'reason': 'Security test'}, format='json')
+        log = AdminAuditLog.objects.filter(action='product_inventory_adjusted').first()
+        log_str = str(log.metadata)
+        for sensitive in ('password', 'token', 'stripe', 'cookie'):
+            self.assertNotIn(sensitive, log_str)
+
+    def test_nonexistent_product_returns_404(self):
+        self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
+        response = self.client.post(
+            '/api/admin/products/999999/inventory-adjust/',
+            {'delta': 1, 'reason': 'Test'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AdminCategoryTest(TestCase):
+    """GET and POST /api/admin/categories/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.admin = User.objects.create_user(username='catadmin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.customer = User.objects.create_user(username='catcustomer', password='Pass123!')
+        Category.objects.create(name='Cat A', slug='cat-a-test')
+
+    def test_anon_gets_401(self):
+        self.assertEqual(self.client.get('/api/admin/categories/').status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_gets_403(self):
+        self.client.force_authenticate(user=self.customer)
+        self.assertEqual(self.client.get('/api/admin/categories/').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_list(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get('/api/admin/categories/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.json(), list)
+
+    def test_admin_can_create_category(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post('/api/admin/categories/', {'name': 'Accesorios'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn('slug', response.json())
+
+    def test_customer_cannot_create_category(self):
+        self.client.force_authenticate(user=self.customer)
+        self.assertEqual(
+            self.client.post('/api/admin/categories/', {'name': 'Hack'}, format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_create_category_creates_audit_log(self):
+        self.client.force_authenticate(user=self.admin)
+        self.client.post('/api/admin/categories/', {'name': 'Nueva Categoria'}, format='json')
+        log = AdminAuditLog.objects.filter(action='category_created').first()
+        self.assertIsNotNone(log)
+        self.assertIn('name', log.metadata)
+
+
+class ProductIsActivePublicCatalogTest(TestCase):
+    """Public catalog must not show inactive products; admin must see them."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        cat = Category.objects.create(name='PUB Cat', slug='pub-cat')
+        self.active = _make_product('Active Pub', 'active-pub', is_active=True, category=cat)
+        self.inactive = _make_product('Inactive Pub', 'inactive-pub', is_active=False, category=cat)
+        self.admin = User.objects.create_user(username='pub_admin', password='Pass123!')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+
+    def test_inactive_product_not_in_public_catalog(self):
+        response = self.client.get('/api/products/')
+        slugs = [p['slug'] for p in response.json()]
+        self.assertNotIn('inactive-pub', slugs)
+        self.assertIn('active-pub', slugs)
+
+    def test_inactive_product_appears_in_admin_list(self):
+        self.client.force_authenticate(user=self.admin)
+        data = self.client.get('/api/admin/products/').json()
+        slugs = [p['slug'] for p in data['results']]
+        self.assertIn('inactive-pub', slugs)
+
+    def test_inactive_product_blocked_in_checkout(self):
+        """Checkout must reject cart items containing inactive products."""
+        CartItem.objects.create(session_key='pub_sess', product=self.inactive, quantity=1)
+        with patch('store.views.stripe') as mock_stripe:
+            mock_stripe.checkout.Session.create.return_value = MagicMock(id='cs_test', url='https://stripe.com/test')
+            mock_stripe.api_key = ''
+            with override_settings(STRIPE_SECRET_KEY='sk_test_fake', STRIPE_WEBHOOK_SECRET='whsec_fake'):
+                response = self.client.post('/api/payments/create-checkout-session/', {
+                    'session_key': 'pub_sess',
+                    'customer_name': 'Test',
+                    'customer_email': 'test@test.com',
+                }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('errors', response.json())
+
+
+class Phase32RegressionTest(TestCase):
+    """Regression: existing endpoints still work after Phase 3.2 changes."""
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        cat = Category.objects.create(name='Reg32 Cat', slug='reg32-cat')
+        self.product = _make_product('Reg32 Product', 'reg32-product', price='500.00', inventory=10, category=cat)
+        self.user = User.objects.create_user(username='reg32_user', password='Pass123!')
+
+    def test_public_product_list_still_works(self):
+        self.assertEqual(self.client.get('/api/products/').status_code, status.HTTP_200_OK)
+
+    def test_public_product_detail_still_works(self):
+        self.assertEqual(self.client.get(f'/api/products/{self.product.pk}/').status_code, status.HTTP_200_OK)
+
+    def test_public_categories_still_works(self):
+        self.assertEqual(self.client.get('/api/categories/').status_code, status.HTTP_200_OK)
+
+    def test_cart_still_works(self):
+        self.assertEqual(self.client.get('/api/cart/?session_key=reg32sess').status_code, status.HTTP_200_OK)
+
+    def test_auth_login_still_works(self):
+        response = self.client.post('/api/auth/login/', {'username': 'reg32_user', 'password': 'Pass123!'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_admin_users_still_works(self):
+        admin = User.objects.create_user(username='reg32_admin', password='Pass123!')
+        admin.profile.role = UserProfile.ROLE_ADMIN
+        admin.profile.save()
+        self.client.force_authenticate(user=admin)
+        self.assertEqual(self.client.get('/api/admin/users/').status_code, status.HTTP_200_OK)
+
+    def test_admin_audit_logs_still_works(self):
+        admin = User.objects.create_user(username='reg32_adminb', password='Pass123!')
+        admin.profile.role = UserProfile.ROLE_ADMIN
+        admin.profile.save()
+        self.client.force_authenticate(user=admin)
+        self.assertEqual(self.client.get('/api/admin/audit-logs/').status_code, status.HTTP_200_OK)
+
+    def test_product_public_serializer_no_is_active_field(self):
+        """Public ProductSerializer must NOT expose is_active to clients."""
+        response = self.client.get(f'/api/products/{self.product.pk}/')
+        self.assertNotIn('is_active', response.json())

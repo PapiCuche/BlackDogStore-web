@@ -56,3 +56,19 @@ class AdminRoleChangeThrottle(UserRateThrottle):
 
 class AdminAuditLogsThrottle(UserRateThrottle):
     scope = 'admin_audit_logs'
+
+
+class AdminProductsThrottle(UserRateThrottle):
+    scope = 'admin_products'
+
+
+class AdminProductWriteThrottle(UserRateThrottle):
+    scope = 'admin_product_write'
+
+
+class AdminInventoryAdjustThrottle(UserRateThrottle):
+    scope = 'admin_inventory_adjust'
+
+
+class AdminCategoriesThrottle(UserRateThrottle):
+    scope = 'admin_categories'

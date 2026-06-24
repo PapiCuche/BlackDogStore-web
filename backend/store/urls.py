@@ -16,7 +16,11 @@ from .auth_views import (
     PasswordResetRequestView, PasswordResetConfirmView,
     ChangePasswordView,
 )
-from .admin_views import AdminUserListView, AdminUserRoleView, AdminAuditLogListView
+from .admin_views import (
+    AdminUserListView, AdminUserRoleView, AdminAuditLogListView,
+    AdminProductListView, AdminProductDetailView, AdminProductInventoryAdjustView,
+    AdminCategoryListView,
+)
 from django.urls import path, include
 
 router = DefaultRouter()
@@ -46,4 +50,8 @@ urlpatterns = [
     path('admin/users/', AdminUserListView.as_view(), name='admin-users'),
     path('admin/users/<int:pk>/role/', AdminUserRoleView.as_view(), name='admin-user-role'),
     path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
+    path('admin/products/', AdminProductListView.as_view(), name='admin-products'),
+    path('admin/products/<int:pk>/', AdminProductDetailView.as_view(), name='admin-product-detail'),
+    path('admin/products/<int:pk>/inventory-adjust/', AdminProductInventoryAdjustView.as_view(), name='admin-product-inventory-adjust'),
+    path('admin/categories/', AdminCategoryListView.as_view(), name='admin-categories'),
 ]

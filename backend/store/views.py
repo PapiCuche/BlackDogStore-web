@@ -39,7 +39,7 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ProductSerializer
 
     def get_queryset(self):
-        queryset = Product.objects.prefetch_related('reviews').all()
+        queryset = Product.objects.prefetch_related('reviews').filter(is_active=True)
         slug = self.request.query_params.get('slug')
         category = self.request.query_params.get('category')
         search = self.request.query_params.get('search')
@@ -143,6 +143,9 @@ class CreateCheckoutSessionView(APIView):
         stock_errors = []
         subtotal = Decimal('0.00')
         for item in cart_items:
+            if not item.product.is_active:
+                stock_errors.append(f'{item.product.name} ya no está disponible.')
+                continue
             if item.quantity <= 0:
                 stock_errors.append(f'Cantidad inválida para {item.product.name}.')
                 continue

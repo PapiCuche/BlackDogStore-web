@@ -89,8 +89,175 @@ export async function fetchAuditLogs(params?: {
   return res.json();
 }
 
+// ---------------------------------------------------------------------------
+// Admin products + categories types
+// ---------------------------------------------------------------------------
+
+export type AdminProduct = {
+  id: number;
+  name: string;
+  slug: string;
+  description: string;
+  price: string;
+  inventory: number;
+  image_url: string;
+  category_id: number | null;
+  category_name: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminCategory = {
+  id: number;
+  name: string;
+  slug: string;
+};
+
+export async function fetchAdminProducts(params?: {
+  search?: string;
+  category?: number | string;
+  is_active?: 'true' | 'false';
+  stock?: 'in_stock' | 'out_of_stock' | 'low_stock';
+  page?: number;
+  page_size?: number;
+}): Promise<PaginatedResponse<AdminProduct>> {
+  const qs = buildQs({
+    search: params?.search,
+    category: params?.category !== undefined ? String(params.category) : undefined,
+    is_active: params?.is_active,
+    stock: params?.stock,
+    page: params?.page,
+    page_size: params?.page_size,
+  });
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${qs}`);
+  if (res.status === 403) throw new Error('No tienes permisos para ver productos.');
+  if (res.status === 401) throw new Error('Sesión expirada. Vuelve a iniciar sesión.');
+  if (!res.ok) throw new Error('No se pudieron cargar los productos.');
+  return res.json();
+}
+
+export async function fetchAdminProductDetail(productId: number): Promise<AdminProduct> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/`);
+  if (res.status === 403) throw new Error('No tienes permisos.');
+  if (res.status === 404) throw new Error('Producto no encontrado.');
+  if (!res.ok) throw new Error('No se pudo cargar el producto.');
+  return res.json();
+}
+
+export async function createAdminProduct(data: {
+  name: string;
+  price: string;
+  inventory: number;
+  description?: string;
+  slug?: string;
+  image_url?: string;
+  category?: number | null;
+  is_active?: boolean;
+}): Promise<AdminProduct> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+  if (res.status === 400) {
+    const err = await res.json().catch(() => null);
+    const msg = err && typeof err === 'object'
+      ? Object.values(err).flat().join(' ')
+      : 'Datos inválidos.';
+    throw new Error(msg);
+  }
+  if (res.status === 403) throw new Error('Solo admin puede crear productos.');
+  if (!res.ok) throw new Error('No se pudo crear el producto.');
+  return res.json();
+}
+
+export async function patchAdminProduct(
+  productId: number,
+  data: Partial<{
+    name: string;
+    slug: string;
+    description: string;
+    price: string;
+    inventory: number;
+    image_url: string;
+    category: number | null;
+    is_active: boolean;
+  }>,
+): Promise<AdminProduct> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+  if (res.status === 400) {
+    const err = await res.json().catch(() => null);
+    const msg = err && typeof err === 'object'
+      ? Object.values(err).flat().join(' ')
+      : 'Datos inválidos.';
+    throw new Error(msg);
+  }
+  if (res.status === 403) throw new Error('No tienes permisos para editar productos.');
+  if (res.status === 404) throw new Error('Producto no encontrado.');
+  if (!res.ok) throw new Error('No se pudo actualizar el producto.');
+  return res.json();
+}
+
+export async function adjustInventory(
+  productId: number,
+  delta: number,
+  reason: string,
+): Promise<AdminProduct> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/inventory-adjust/`, {
+    method: 'POST',
+    body: JSON.stringify({ delta, reason }),
+  });
+  if (res.status === 400) {
+    const err = await res.json().catch(() => null);
+    const msg = err?.detail ?? (err && typeof err === 'object'
+      ? Object.values(err).flat().join(' ')
+      : 'Error de validación.');
+    throw new Error(msg);
+  }
+  if (res.status === 403) throw new Error('No tienes permisos para ajustar inventario.');
+  if (res.status === 404) throw new Error('Producto no encontrado.');
+  if (!res.ok) throw new Error('No se pudo ajustar el inventario.');
+  return res.json();
+}
+
+export async function fetchAdminCategories(): Promise<AdminCategory[]> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/categories/`);
+  if (res.status === 403) throw new Error('No tienes permisos para ver categorías.');
+  if (!res.ok) throw new Error('No se pudieron cargar las categorías.');
+  return res.json();
+}
+
+export async function createAdminCategory(data: {
+  name: string;
+  slug?: string;
+}): Promise<AdminCategory> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/categories/`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+  if (res.status === 400) {
+    const err = await res.json().catch(() => null);
+    const msg = err && typeof err === 'object'
+      ? Object.values(err).flat().join(' ')
+      : 'Datos inválidos.';
+    throw new Error(msg);
+  }
+  if (res.status === 403) throw new Error('Solo admin puede crear categorías.');
+  if (!res.ok) throw new Error('No se pudo crear la categoría.');
+  return res.json();
+}
+
 export const ACTION_LABELS: Record<string, string> = {
   role_change: 'Cambio de rol',
+  product_created: 'Producto creado',
+  product_updated: 'Producto actualizado',
+  product_deactivated: 'Producto desactivado',
+  product_reactivated: 'Producto reactivado',
+  product_inventory_adjusted: 'Inventario ajustado',
+  category_created: 'Categoría creada',
 };
 
 export function actionLabel(action: string): string {
