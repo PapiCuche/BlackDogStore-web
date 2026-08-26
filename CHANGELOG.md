@@ -33,7 +33,7 @@ Serial/IMEI                   PENDIENTE
 - Endpoints `/api/admin/companies|branches|memberships/` y `/api/me/memberships/` con scoping por membresía.
 - `AdminAuditLog.company` nullable, sin reescribir el histórico.
 - Registro seguro de los tres modelos en Django Admin (sin borrado de empresas, FKs bloqueadas tras la creación).
-- 77 tests nuevos: modelos, resolución de tenant, aislamiento entre empresas y regresión del e-commerce.
+- 67 tests nuevos: modelos, resolución de tenant, aislamiento entre empresas y regresión del e-commerce.
 
 ### PARCIAL
 - Resolución de tenant por host (`resolve_company_from_host`): implementada y testeada, **sin uso en endpoints públicos**.

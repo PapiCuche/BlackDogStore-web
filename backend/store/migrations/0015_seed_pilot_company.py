@@ -102,8 +102,8 @@ def unseed_pilot_company(apps, schema_editor):
         was deactivated, that points at another branch, or that belongs to a
         non-staff user was NOT created here and is left alone.
       - The pilot branch is removed only when no membership still references it.
-        Branch.company is SET_NULL on Membership, so deleting it while rows still
-        point at it would silently rewrite surviving data.
+        Membership.branch uses SET_NULL, so deleting the branch while surviving
+        memberships reference it would silently rewrite those rows to branch=NULL.
       - The pilot company is removed only when nothing at all is left hanging off
         it (no branches, no memberships, no audit logs).
       - Users are never touched. Other companies are never touched.
