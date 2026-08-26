@@ -471,3 +471,28 @@ El endpoint ahora incluye `role` e `is_staff` en su respuesta:
 - `frontend/app/lib/auth.ts` — tipo `AuthUser` incluye `role` e `is_staff`, helper `isAdminRole()`
 - `frontend/app/components/Header.tsx` — muestra enlace "Admin" solo para roles admin/superadmin
 - `backend/store/migrations/0008_adminauditlog_userprofile.py` — migración nueva
+
+---
+
+## Fase 6.0 — Inventario avanzado y notas de venta internas
+
+Todo cambio de stock pasa por `store/inventory_services.py` y genera una línea de
+Kardex (`StockMovement`) en la misma transacción: stock y Kardex nunca divergen.
+
+- **Kardex completo** — cada movimiento guarda `stock_before`, `stock_after`, motivo, responsable y referencia.
+- **Salidas por venta idempotentes** — un webhook de Stripe reintentado nunca descuenta stock dos veces.
+- **Stock nunca negativo** — una salida que lo dejaría bajo cero se rechaza y hace rollback.
+- **Reportes operativos** — bajo/alto stock, agotados, más vendidos, valor del inventario, productos sin movimiento.
+- **Notas de venta internas** (`NV-000001`) con PDF para órdenes pagadas.
+
+> ⚠️ Las notas de venta son **documentos internos**. No son comprobantes
+> electrónicos SUNAT, no son numeración fiscal y no tienen validez tributaria.
+
+Separación de roles: `inventory` mueve stock pero no emite documentos ni toca
+pagos; `sales` emite notas de venta pero no puede alterar stock.
+
+Panel: `/admin/inventory`, `/admin/inventory/movements`, `/admin/inventory/reports`,
+`/admin/products/{id}/stock-card`.
+
+Detalle completo — modelos, endpoints, permisos, auditoría y pendientes:
+[docs/inventario-y-notas-de-venta.md](docs/inventario-y-notas-de-venta.md)

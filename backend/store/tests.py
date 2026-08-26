@@ -5517,3 +5517,855 @@ class Phase43ResendEmailEndpointTest(TestCase):
         self.assertEqual(self.order.paid, original_paid)
         self.assertEqual(self.order.status, original_status)
         self.assertEqual(self.order.total, original_total)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.0 — inventory (Kardex), reports and INTERNAL sales notes
+# ---------------------------------------------------------------------------
+
+from .inventory_services import (  # noqa: E402
+    InsufficientStockError,
+    InvalidMovementError,
+    apply_manual_stock_movement,
+    create_stock_movement,
+    get_best_selling_products,
+    get_inventory_summary,
+    record_sale_stock_movements,
+)
+from .models import SalesNote, StockMovement  # noqa: E402
+from .sales_note_services import (  # noqa: E402
+    SalesNoteError,
+    generate_sales_note_pdf,
+    get_or_create_sales_note,
+)
+
+
+def _p60_users():
+    """Create one user per business role. Returns a dict keyed by role name."""
+    users = {}
+    for role in (
+        UserProfile.ROLE_CUSTOMER,
+        UserProfile.ROLE_SALES,
+        UserProfile.ROLE_INVENTORY,
+        UserProfile.ROLE_TECHNICIAN,
+        UserProfile.ROLE_ADMIN,
+    ):
+        u = User.objects.create_user(username=f'p60_{role}', password='Pass123!')
+        u.profile.role = role
+        u.profile.save()
+        users[role] = u
+    users[UserProfile.ROLE_SUPERADMIN] = User.objects.create_user(
+        username='p60_superadmin', password='Pass123!', is_superuser=True,
+    )
+    return users
+
+
+def _p60_product(name='iPhone 15 Pro P60', inventory=10, price='5599.00'):
+    return Product.objects.create(
+        name=name,
+        slug=name.lower().replace(' ', '-'),
+        price=Decimal(price),
+        inventory=inventory,
+    )
+
+
+def _p60_paid_order(product, quantity=2, **extra):
+    order = Order.objects.create(
+        customer_name='Cliente Demo',
+        customer_email='cliente@example.com',
+        customer_phone='+51 999 999 999',
+        document_type=Order.DocumentType.DNI,
+        document_number='12345678',
+        delivery_method=Order.DeliveryMethod.PICKUP_STORE,
+        receipt_type=Order.ReceiptType.BOLETA,
+        total=Decimal(product.price) * quantity,
+        status=Order.Status.PAID,
+        paid=True,
+        paid_at=timezone.now(),
+        stripe_session_id=extra.pop('stripe_session_id', None),
+        stripe_payment_intent_id=extra.pop('stripe_payment_intent_id', ''),
+        **extra,
+    )
+    OrderItem.objects.create(order=order, product=product, quantity=quantity, price=product.price)
+    return order
+
+
+class Phase60InventoryAccessTest(TestCase):
+    """RBAC on /api/admin/inventory/ — customer, technician and anonymous are locked out."""
+
+    def setUp(self):
+        cache.clear()
+        self.users = _p60_users()
+        self.product = _p60_product()
+        self.anon = APIClient()
+
+    def _as(self, role):
+        c = APIClient()
+        c.force_authenticate(user=self.users[role])
+        return c
+
+    def test_01_anonymous_cannot_read_summary(self):
+        self.assertEqual(
+            self.anon.get('/api/admin/inventory/summary/').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_01b_anonymous_cannot_read_movements(self):
+        self.assertEqual(
+            self.anon.get('/api/admin/inventory/movements/').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_02_customer_cannot_read_summary(self):
+        self.assertEqual(
+            self._as(UserProfile.ROLE_CUSTOMER).get('/api/admin/inventory/summary/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_02b_technician_cannot_read_summary(self):
+        self.assertEqual(
+            self._as(UserProfile.ROLE_TECHNICIAN).get('/api/admin/inventory/summary/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_03_sales_cannot_create_movements(self):
+        res = self._as(UserProfile.ROLE_SALES).post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 5,
+            'reason': 'Intento no autorizado',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_03b_customer_cannot_create_movements(self):
+        res = self._as(UserProfile.ROLE_CUSTOMER).post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 5,
+            'reason': 'Intento no autorizado',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_04_inventory_creates_entry(self):
+        res = self._as(UserProfile.ROLE_INVENTORY).post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'purchase_entry',
+            'quantity': 5,
+            'reason': 'Compra de stock',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 15)
+
+    def test_05_inventory_creates_exit(self):
+        res = self._as(UserProfile.ROLE_INVENTORY).post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_exit',
+            'quantity': 3,
+            'reason': 'Salida por muestra',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 7)
+
+    def test_06_admin_creates_entry(self):
+        res = self._as(UserProfile.ROLE_ADMIN).post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 2,
+            'reason': 'Ajuste admin',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 12)
+
+    def test_07_superadmin_creates_exit(self):
+        res = self._as(UserProfile.ROLE_SUPERADMIN).post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'damaged_exit',
+            'quantity': 1,
+            'reason': 'Equipo dañado en tienda',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 9)
+
+    def test_sale_exit_cannot_be_created_manually(self):
+        res = self._as(UserProfile.ROLE_ADMIN).post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'sale_exit',
+            'quantity': 1,
+            'reason': 'Intento de salida por venta manual',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+
+class Phase60StockMovementRulesTest(TestCase):
+    """Validation rules on manual movements."""
+
+    def setUp(self):
+        cache.clear()
+        self.users = _p60_users()
+        self.product = _p60_product(inventory=4)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.users[UserProfile.ROLE_INVENTORY])
+
+    def test_08_exit_that_would_go_negative_fails(self):
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_exit',
+            'quantity': 99,
+            'reason': 'Salida excesiva',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 4)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_08b_service_layer_raises_on_negative_stock(self):
+        with self.assertRaises(InsufficientStockError):
+            create_stock_movement(
+                product_id=self.product.pk,
+                movement_type=StockMovement.MANUAL_EXIT,
+                quantity=99,
+                reason='Salida excesiva',
+            )
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 4)
+
+    def test_09_quantity_zero_fails(self):
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 0,
+            'reason': 'Cantidad inválida',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_09b_negative_quantity_fails(self):
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': -5,
+            'reason': 'Cantidad inválida',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_10_empty_reason_fails(self):
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 1,
+            'reason': '   ',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_10b_manual_movement_without_actor_is_rejected(self):
+        with self.assertRaises(InvalidMovementError):
+            apply_manual_stock_movement(
+                product_id=self.product.pk,
+                movement_type=StockMovement.MANUAL_ENTRY,
+                quantity=1,
+                reason='Sin responsable',
+                actor=None,
+            )
+
+    def test_11_movement_records_stock_before(self):
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 6,
+            'reason': 'Reposición',
+        }, format='json')
+        self.assertEqual(res.data['stock_before'], 4)
+
+    def test_12_movement_records_stock_after(self):
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 6,
+            'reason': 'Reposición',
+        }, format='json')
+        self.assertEqual(res.data['stock_after'], 10)
+
+    def test_13_movement_updates_product_inventory(self):
+        self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 6,
+            'reason': 'Reposición',
+        }, format='json')
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+
+    def test_14_movement_creates_audit_log(self):
+        self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 6,
+            'reason': 'Reposición',
+        }, format='json')
+        log = AdminAuditLog.objects.filter(action='stock_entry_created').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.actor, self.users[UserProfile.ROLE_INVENTORY])
+        self.assertEqual(log.metadata['stock_before'], 4)
+        self.assertEqual(log.metadata['stock_after'], 10)
+        self.assertEqual(log.metadata['reason'], 'Reposición')
+
+    def test_14b_exit_creates_exit_audit_log(self):
+        self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_exit',
+            'quantity': 1,
+            'reason': 'Muestra',
+        }, format='json')
+        self.assertTrue(AdminAuditLog.objects.filter(action='stock_exit_created').exists())
+
+    def test_14c_audit_metadata_has_no_payment_data(self):
+        self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 1,
+            'reason': 'Reposición',
+        }, format='json')
+        log = AdminAuditLog.objects.filter(action='stock_entry_created').first()
+        raw = str(log.metadata)
+        for forbidden in ('stripe', 'payment_intent', 'payment_error', 'cs_test', 'pi_'):
+            self.assertNotIn(forbidden, raw.lower())
+
+    def test_movement_records_actor(self):
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 1,
+            'reason': 'Reposición',
+        }, format='json')
+        movement = StockMovement.objects.get(pk=res.data['id'])
+        self.assertEqual(movement.actor, self.users[UserProfile.ROLE_INVENTORY])
+        self.assertEqual(movement.reference_type, 'manual')
+
+
+class Phase60SaleStockMovementTest(TestCase):
+    """Sale exits from the Stripe webhook: created once, never duplicated."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.product = _p60_product(name='AirPods P60', inventory=10, price='999.00')
+        self.session_key = 'p60-webhook-session'
+        self.order = Order.objects.create(
+            customer_email='p60@example.com',
+            total=Decimal('1998.00'),
+            cart_session_key=self.session_key,
+            stripe_session_id='cs_test_p60_001',
+            status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=2, price=self.product.price,
+        )
+        CartItem.objects.create(session_key=self.session_key, product=self.product, quantity=2)
+
+    def _post_webhook(self, session_id='cs_test_p60_001'):
+        event = {
+            'type': 'checkout.session.completed',
+            'data': {'object': {'id': session_id, 'payment_intent': 'pi_test_p60'}},
+        }
+        with patch('stripe.Webhook.construct_event', return_value=event):
+            return self.client.post(
+                '/api/payments/webhook/',
+                data=b'{}',
+                content_type='application/json',
+                HTTP_STRIPE_SIGNATURE='t=1,v1=fake',
+            )
+
+    def test_15_webhook_creates_sale_exit_movements(self):
+        self._post_webhook()
+        movements = StockMovement.objects.filter(
+            order=self.order, movement_type=StockMovement.SALE_EXIT,
+        )
+        self.assertEqual(movements.count(), 1)
+        m = movements.first()
+        self.assertEqual(m.quantity, 2)
+        self.assertEqual(m.stock_before, 10)
+        self.assertEqual(m.stock_after, 8)
+
+    def test_16_duplicate_webhook_does_not_duplicate_movements(self):
+        self._post_webhook()
+        self._post_webhook()
+        self._post_webhook()
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=self.order, movement_type=StockMovement.SALE_EXIT,
+            ).count(),
+            1,
+        )
+
+    def test_17_stock_not_decremented_twice(self):
+        self._post_webhook()
+        self._post_webhook()
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 8)
+
+    def test_17b_service_is_idempotent_when_called_directly(self):
+        record_sale_stock_movements(self.order)
+        record_sale_stock_movements(self.order)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 8)
+        self.assertEqual(StockMovement.objects.filter(order=self.order).count(), 1)
+
+    def test_17c_sale_movement_links_the_order(self):
+        self._post_webhook()
+        m = StockMovement.objects.get(order=self.order)
+        self.assertEqual(m.reference_type, 'order')
+        self.assertEqual(m.reference_id, str(self.order.pk))
+        self.assertIsNone(m.actor)
+
+    def test_17d_insufficient_stock_flags_order_without_breaking_payment(self):
+        # Stock disappears between checkout and confirmation
+        Product.objects.filter(pk=self.product.pk).update(inventory=0)
+        res = self._post_webhook()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertIn('Stock insuficiente', self.order.payment_error)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 0)
+
+    def test_17e_webhook_still_marks_order_paid_and_clears_cart(self):
+        self._post_webhook()
+        self.order.refresh_from_db()
+        self.assertTrue(self.order.paid)
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertEqual(CartItem.objects.filter(session_key=self.session_key).count(), 0)
+
+
+class Phase60ReportsTest(TestCase):
+    """Kardex, low/high stock, best-selling and summary."""
+
+    def setUp(self):
+        cache.clear()
+        self.users = _p60_users()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.users[UserProfile.ROLE_INVENTORY])
+
+        # The 0002_initial_data migration seeds demo products; drop them so the
+        # summary assertions below describe exactly the fixtures created here.
+        Product.objects.all().delete()
+
+        self.low = _p60_product(name='Producto Bajo P60', inventory=2, price='100.00')
+        self.high = _p60_product(name='Producto Alto P60', inventory=50, price='200.00')
+        self.zero = _p60_product(name='Producto Agotado P60', inventory=0, price='300.00')
+
+    def test_18_stock_card_returns_movements_newest_first(self):
+        for qty in (1, 2, 3):
+            create_stock_movement(
+                product_id=self.low.pk,
+                movement_type=StockMovement.MANUAL_ENTRY,
+                quantity=qty,
+                reason=f'Entrada {qty}',
+            )
+        res = self.client.get(f'/api/admin/products/{self.low.pk}/stock-card/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data['movements']), 3)
+        self.assertEqual(res.data['current_stock'], 2 + 1 + 2 + 3)
+        quantities = [m['quantity'] for m in res.data['movements']]
+        self.assertEqual(quantities, [3, 2, 1])
+
+    def test_18b_stock_card_404_for_unknown_product(self):
+        self.assertEqual(
+            self.client.get('/api/admin/products/999999/stock-card/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_19_low_stock_report(self):
+        res = self.client.get('/api/admin/inventory/low-stock/?threshold=5')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        names = [p['name'] for p in res.data['results']]
+        self.assertIn('Producto Bajo P60', names)
+        self.assertIn('Producto Agotado P60', names)
+        self.assertNotIn('Producto Alto P60', names)
+
+    def test_20_high_stock_report(self):
+        res = self.client.get('/api/admin/inventory/high-stock/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['results'][0]['name'], 'Producto Alto P60')
+
+    def test_21_best_selling_report(self):
+        _p60_paid_order(self.high, quantity=4)
+        _p60_paid_order(self.low, quantity=1)
+        res = self.client.get('/api/admin/inventory/best-selling/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        top = res.data['results'][0]
+        self.assertEqual(top['product_name'], 'Producto Alto P60')
+        self.assertEqual(top['units_sold'], 4)
+        self.assertEqual(top['revenue'], '800.00')
+
+    def test_21b_best_selling_ignores_unpaid_orders(self):
+        order = Order.objects.create(
+            customer_email='pending@example.com',
+            total=Decimal('200.00'),
+            status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(order=order, product=self.high, quantity=9, price=self.high.price)
+        rows = get_best_selling_products()
+        self.assertEqual(rows, [])
+
+    def test_22_summary_computes_total_units(self):
+        res = self.client.get('/api/admin/inventory/summary/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['total_units'], 52)  # 2 + 50, agotado no suma
+
+    def test_23_summary_computes_inventory_value(self):
+        res = self.client.get('/api/admin/inventory/summary/')
+        # 2*100 + 50*200 = 10200.00 ; el agotado no aporta valor
+        self.assertEqual(res.data['inventory_value'], '10200.00')
+
+    def test_23b_summary_counts_out_of_stock_and_low_stock(self):
+        res = self.client.get('/api/admin/inventory/summary/?threshold=5')
+        self.assertEqual(res.data['out_of_stock_count'], 1)
+        self.assertEqual(res.data['low_stock_count'], 1)
+
+    def test_23c_movements_list_filters_by_product(self):
+        create_stock_movement(
+            product_id=self.low.pk, movement_type=StockMovement.MANUAL_ENTRY,
+            quantity=1, reason='x',
+        )
+        create_stock_movement(
+            product_id=self.high.pk, movement_type=StockMovement.MANUAL_ENTRY,
+            quantity=1, reason='y',
+        )
+        res = self.client.get(f'/api/admin/inventory/movements/?product={self.low.pk}')
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['product'], self.low.pk)
+
+    def test_23d_movements_list_filters_by_type(self):
+        create_stock_movement(
+            product_id=self.low.pk, movement_type=StockMovement.MANUAL_ENTRY,
+            quantity=1, reason='x',
+        )
+        create_stock_movement(
+            product_id=self.low.pk, movement_type=StockMovement.MANUAL_EXIT,
+            quantity=1, reason='y',
+        )
+        res = self.client.get('/api/admin/inventory/movements/?movement_type=manual_exit')
+        self.assertEqual(res.data['count'], 1)
+
+    def test_23e_movements_list_is_paginated(self):
+        for i in range(30):
+            create_stock_movement(
+                product_id=self.high.pk, movement_type=StockMovement.MANUAL_ENTRY,
+                quantity=1, reason=f'entrada {i}',
+            )
+        res = self.client.get('/api/admin/inventory/movements/?page_size=10')
+        self.assertEqual(res.data['count'], 30)
+        self.assertEqual(len(res.data['results']), 10)
+        self.assertEqual(res.data['page'], 1)
+
+    def test_23f_sales_role_can_read_best_selling(self):
+        c = APIClient()
+        c.force_authenticate(user=self.users[UserProfile.ROLE_SALES])
+        self.assertEqual(
+            c.get('/api/admin/inventory/best-selling/').status_code, status.HTTP_200_OK,
+        )
+
+
+class Phase60SalesNoteTest(TestCase):
+    """Internal sales notes: issuance rules, numbering, RBAC, PDF and audit."""
+
+    def setUp(self):
+        cache.clear()
+        self.users = _p60_users()
+        self.product = _p60_product(name='iPad P60', inventory=10, price='4999.00')
+        self.paid_order = _p60_paid_order(
+            self.product, quantity=1,
+            stripe_session_id='cs_test_p60_note',
+            stripe_payment_intent_id='pi_test_p60_note',
+        )
+        self.unpaid_order = Order.objects.create(
+            customer_email='pending@example.com',
+            total=Decimal('4999.00'),
+            status=Order.Status.PENDING_PAYMENT,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.users[UserProfile.ROLE_ADMIN])
+
+    def _as(self, role):
+        c = APIClient()
+        c.force_authenticate(user=self.users[role])
+        return c
+
+    def test_24_no_note_for_unpaid_order(self):
+        res = self.client.post(f'/api/admin/orders/{self.unpaid_order.pk}/sales-note/')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(SalesNote.objects.count(), 0)
+
+    def test_24b_service_raises_for_unpaid_order(self):
+        with self.assertRaises(SalesNoteError):
+            get_or_create_sales_note(self.unpaid_order)
+
+    def test_24c_no_note_for_cancelled_order(self):
+        self.unpaid_order.status = Order.Status.CANCELLED
+        self.unpaid_order.save(update_fields=['status'])
+        res = self.client.post(f'/api/admin/orders/{self.unpaid_order.pk}/sales-note/')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_25_note_created_for_paid_order(self):
+        res = self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['number'], 'NV-000001')
+        self.assertEqual(SalesNote.objects.count(), 1)
+
+    def test_26_does_not_duplicate_note_for_same_order(self):
+        first = self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        second = self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(first.data['number'], second.data['number'])
+        self.assertEqual(SalesNote.objects.count(), 1)
+
+    def test_27_internal_number_is_unique_and_sequential(self):
+        other_product = _p60_product(name='Watch P60', inventory=5, price='1799.00')
+        other_order = _p60_paid_order(other_product, quantity=1)
+
+        n1, _ = get_or_create_sales_note(self.paid_order)
+        n2, _ = get_or_create_sales_note(other_order)
+
+        self.assertEqual(n1.number, 'NV-000001')
+        self.assertEqual(n2.number, 'NV-000002')
+        self.assertNotEqual(n1.number, n2.number)
+
+    def test_28_pdf_starts_with_pdf_magic_bytes(self):
+        note, _ = get_or_create_sales_note(self.paid_order)
+        pdf = generate_sales_note_pdf(note)
+        self.assertTrue(pdf.startswith(b'%PDF'))
+        self.assertGreater(len(pdf), 1000)
+
+    def test_29_pdf_contains_no_sunat_disclaimer(self):
+        note, _ = get_or_create_sales_note(self.paid_order)
+        res = self._as(UserProfile.ROLE_ADMIN).get(
+            f'/api/admin/orders/{self.paid_order.pk}/sales-note/pdf/'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res['Content-Type'], 'application/pdf')
+        # The disclaimer text lives in the service and is rendered into the story
+        from .sales_note_services import SALES_NOTE_DISCLAIMER, build_sales_note_context
+        self.assertIn('SUNAT', SALES_NOTE_DISCLAIMER)
+        self.assertEqual(build_sales_note_context(note)['disclaimer'], SALES_NOTE_DISCLAIMER)
+
+    def test_30_pdf_context_contains_no_stripe_ids(self):
+        note, _ = get_or_create_sales_note(self.paid_order)
+        from .sales_note_services import build_sales_note_context
+        raw = str(build_sales_note_context(note)).lower()
+        self.assertNotIn('cs_test', raw)
+        self.assertNotIn('pi_test', raw)
+        self.assertNotIn('stripe', raw)
+        self.assertNotIn('payment_error', raw)
+
+    def test_30b_pdf_bytes_contain_no_stripe_ids_in_cleartext(self):
+        note, _ = get_or_create_sales_note(self.paid_order)
+        pdf = generate_sales_note_pdf(note)
+        self.assertNotIn(b'cs_test_p60_note', pdf)
+        self.assertNotIn(b'pi_test_p60_note', pdf)
+
+    def test_30c_serializer_exposes_no_payment_fields(self):
+        res = self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        raw = str(res.data).lower()
+        for forbidden in ('stripe', 'payment_error', 'cs_test', 'pi_test'):
+            self.assertNotIn(forbidden, raw)
+
+    def test_31_customer_cannot_download(self):
+        get_or_create_sales_note(self.paid_order)
+        res = self._as(UserProfile.ROLE_CUSTOMER).get(
+            f'/api/admin/orders/{self.paid_order.pk}/sales-note/pdf/'
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_31b_anonymous_cannot_download(self):
+        get_or_create_sales_note(self.paid_order)
+        res = APIClient().get(f'/api/admin/orders/{self.paid_order.pk}/sales-note/pdf/')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_31c_inventory_cannot_issue_or_download(self):
+        c = self._as(UserProfile.ROLE_INVENTORY)
+        self.assertEqual(
+            c.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_32_sales_can_download(self):
+        get_or_create_sales_note(self.paid_order)
+        res = self._as(UserProfile.ROLE_SALES).get(
+            f'/api/admin/orders/{self.paid_order.pk}/sales-note/pdf/'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('attachment;', res['Content-Disposition'])
+
+    def test_33_admin_can_download(self):
+        get_or_create_sales_note(self.paid_order)
+        res = self._as(UserProfile.ROLE_ADMIN).get(
+            f'/api/admin/orders/{self.paid_order.pk}/sales-note/pdf/'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_34_audit_log_sales_note_created(self):
+        self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        log = AdminAuditLog.objects.filter(action='sales_note_created').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata['sales_note_number'], 'NV-000001')
+        self.assertEqual(log.metadata['order_id'], self.paid_order.pk)
+        raw = str(log.metadata).lower()
+        self.assertNotIn('stripe', raw)
+
+    def test_34b_audit_log_not_duplicated_on_second_post(self):
+        self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        self.assertEqual(
+            AdminAuditLog.objects.filter(action='sales_note_created').count(), 1,
+        )
+
+    def test_35_audit_log_sales_note_pdf_downloaded(self):
+        get_or_create_sales_note(self.paid_order)
+        self.client.get(f'/api/admin/orders/{self.paid_order.pk}/sales-note/pdf/')
+        log = AdminAuditLog.objects.filter(action='sales_note_pdf_downloaded').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata['sales_note_number'], 'NV-000001')
+
+    def test_36_note_does_not_modify_payment(self):
+        before = {
+            'status': self.paid_order.status,
+            'paid': self.paid_order.paid,
+            'total': self.paid_order.total,
+            'stripe_session_id': self.paid_order.stripe_session_id,
+        }
+        self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        self.paid_order.refresh_from_db()
+        self.assertEqual(self.paid_order.status, before['status'])
+        self.assertEqual(self.paid_order.paid, before['paid'])
+        self.assertEqual(self.paid_order.total, before['total'])
+        self.assertEqual(self.paid_order.stripe_session_id, before['stripe_session_id'])
+
+    def test_37_note_does_not_modify_inventory(self):
+        before = self.product.inventory
+        self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        self.client.get(f'/api/admin/orders/{self.paid_order.pk}/sales-note/pdf/')
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, before)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_get_returns_404_when_no_note_issued(self):
+        res = self.client.get(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_get_returns_note_after_issuance(self):
+        self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        res = self.client.get(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['number'], 'NV-000001')
+        self.assertIn('SUNAT', res.data['notice'])
+
+
+class Phase60RegressionTest(TestCase):
+    """Phase 6.0 must not disturb checkout, payments, admin or existing PDFs."""
+
+    def setUp(self):
+        cache.clear()
+        self.users = _p60_users()
+        self.product = _p60_product(name='Regression P60', inventory=20, price='1000.00')
+        self.client = APIClient()
+
+    def test_38_checkout_still_creates_pending_order(self):
+        CartItem.objects.create(session_key='p60-reg-cart', product=self.product, quantity=1)
+        with patch('stripe.checkout.Session.create') as mock_create:
+            mock_create.return_value = MagicMock(id='cs_test_reg_p60', url='https://stripe.test/x')
+            res = self.client.post('/api/payments/create-checkout-session/', {
+                'session_key': 'p60-reg-cart',
+                'customer_name': 'Cliente Regresión',
+                'customer_email': 'reg@example.com',
+                'customer_phone': '999999999',
+                'document_type': 'dni',
+                'document_number': '12345678',
+                'delivery_method': 'pickup_store',
+                'receipt_type': 'boleta',
+                'accepted_terms': True,
+                'accepted_warranty_policy': True,
+            }, format='json')
+        self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+        order = Order.objects.get(stripe_session_id='cs_test_reg_p60')
+        self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
+        # No stock movement before payment is confirmed
+        self.assertEqual(StockMovement.objects.filter(order=order).count(), 0)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 20)
+
+    def test_39_webhook_still_marks_order_paid(self):
+        order = Order.objects.create(
+            customer_email='reg2@example.com',
+            total=Decimal('1000.00'),
+            stripe_session_id='cs_test_reg_p60_2',
+            status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(order=order, product=self.product, quantity=1, price=self.product.price)
+        event = {
+            'type': 'checkout.session.completed',
+            'data': {'object': {'id': 'cs_test_reg_p60_2', 'payment_intent': 'pi_reg_p60'}},
+        }
+        with patch('stripe.Webhook.construct_event', return_value=event):
+            res = self.client.post(
+                '/api/payments/webhook/', data=b'{}',
+                content_type='application/json', HTTP_STRIPE_SIGNATURE='t=1,v1=fake',
+            )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(order.stripe_payment_intent_id, 'pi_reg_p60')
+
+    def test_40_payment_status_view_still_works(self):
+        order = Order.objects.create(
+            customer_email='reg3@example.com',
+            total=Decimal('1000.00'),
+            stripe_session_id='cs_test_reg_p60_3',
+            status=Order.Status.PAID,
+            paid=True,
+        )
+        res = self.client.get('/api/payments/status/?session_id=cs_test_reg_p60_3')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['order_id'], order.pk)
+
+    def test_41_admin_products_still_works(self):
+        c = APIClient()
+        c.force_authenticate(user=self.users[UserProfile.ROLE_ADMIN])
+        res = c.get('/api/admin/products/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_41b_legacy_inventory_adjust_endpoint_still_works(self):
+        c = APIClient()
+        c.force_authenticate(user=self.users[UserProfile.ROLE_INVENTORY])
+        res = c.post(f'/api/admin/products/{self.product.pk}/inventory-adjust/', {
+            'delta': 5, 'reason': 'Ajuste heredado',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 25)
+
+    def test_42_admin_orders_still_works(self):
+        c = APIClient()
+        c.force_authenticate(user=self.users[UserProfile.ROLE_ADMIN])
+        res = c.get('/api/admin/orders/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_44_existing_order_receipt_pdf_still_works(self):
+        order = _p60_paid_order(self.product, quantity=1)
+        c = APIClient()
+        c.force_authenticate(user=self.users[UserProfile.ROLE_ADMIN])
+        res = c.get(f'/api/admin/orders/{order.pk}/receipt-pdf/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res['Content-Type'], 'application/pdf')
+        self.assertTrue(res.content.startswith(b'%PDF'))
+
+    def test_45_public_catalog_still_works(self):
+        res = self.client.get('/api/products/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)

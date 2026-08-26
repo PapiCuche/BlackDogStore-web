@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon, UserProfile
+from .inventory_services import record_sale_stock_movements
 from .permissions import get_user_role
 from .email_services import send_order_emails_after_payment
 from .serializers import (
@@ -339,20 +340,12 @@ class StripeWebhookView(APIView):
             if order.status == Order.Status.PAID:
                 return
 
-            # Decrement inventory atomically for each item
-            for item in order.items.select_related('product').all():
-                updated = Product.objects.filter(
-                    pk=item.product.pk,
-                    inventory__gte=item.quantity,
-                ).update(inventory=F('inventory') - item.quantity)
-
-                if updated == 0:
-                    # Stock ran out between checkout creation and payment confirmation.
-                    # Money was already collected — record the discrepancy for admin review.
-                    order.payment_error = (
-                        (order.payment_error + '\n' if order.payment_error else '') +
-                        f'Stock insuficiente para producto ID={item.product.pk} al confirmar pago.'
-                    )
+            # Decrement inventory AND write the Kardex in the same transaction.
+            # record_sale_stock_movements is idempotent per (order, product): a
+            # replayed webhook never subtracts stock twice. Insufficient stock is
+            # recorded on order.payment_error (money is already captured) rather
+            # than raising — same behaviour as before Phase 6.0.
+            record_sale_stock_movements(order)
 
             order.status = Order.Status.PAID
             order.paid = True

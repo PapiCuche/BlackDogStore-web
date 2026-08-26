@@ -2,6 +2,7 @@ from django.contrib import admin
 from .models import (
     AccountToken, AdminAuditLog, Category, Product,
     Order, OrderItem, CartItem, Review, Coupon, UserProfile,
+    SalesNote, StockMovement,
 )
 
 
@@ -108,3 +109,55 @@ class AdminAuditLogAdmin(admin.ModelAdmin):
     list_filter = ('action', 'target_type', 'created_at')
     search_fields = ('actor__username', 'target_id', 'action')
     readonly_fields = ('actor', 'action', 'target_type', 'target_id', 'metadata', 'ip_address', 'user_agent', 'created_at')
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.0 — Kardex and internal sales notes
+# ---------------------------------------------------------------------------
+
+@admin.register(StockMovement)
+class StockMovementAdmin(admin.ModelAdmin):
+    """
+    Read-only on purpose: stock must only move through store.inventory_services
+    so that Product.inventory and the Kardex stay consistent. Editing a movement
+    here would desync the two.
+    """
+    list_display = (
+        'id', 'created_at', 'product', 'movement_type',
+        'quantity', 'stock_before', 'stock_after', 'actor', 'order',
+    )
+    list_filter = ('movement_type', 'created_at')
+    search_fields = ('product__name', 'reason', 'reference_id', 'actor__username')
+    readonly_fields = (
+        'product', 'movement_type', 'quantity', 'stock_before', 'stock_after',
+        'reason', 'reference_type', 'reference_id', 'order', 'actor',
+        'created_at', 'metadata',
+    )
+    date_hierarchy = 'created_at'
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SalesNote)
+class SalesNoteAdmin(admin.ModelAdmin):
+    """Internal sales notes. NOT SUNAT electronic receipts."""
+    list_display = ('id', 'number', 'order', 'status', 'issued_at', 'created_by', 'pdf_generated_at')
+    list_filter = ('status', 'created_at')
+    search_fields = ('number', 'order__id', 'order__customer_name')
+    readonly_fields = (
+        'order', 'number', 'issued_at', 'created_at', 'created_by',
+        'pdf_generated_at', 'metadata',
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

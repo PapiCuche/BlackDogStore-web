@@ -85,3 +85,20 @@ class AdminOrderStatusChangeThrottle(UserRateThrottle):
 class AdminOrderEmailResendThrottle(UserRateThrottle):
     """10/min per authenticated user — prevents email spam from admin panel."""
     scope = 'admin_order_email_resend'
+
+
+# --- Phase 6.0 ---
+
+class AdminInventoryReportsThrottle(UserRateThrottle):
+    """Read-only inventory dashboards and Kardex."""
+    scope = 'admin_inventory_reports'
+
+
+class AdminStockMovementsThrottle(UserRateThrottle):
+    """Creating manual stock entries/exits."""
+    scope = 'admin_stock_movements'
+
+
+class AdminSalesNotesThrottle(UserRateThrottle):
+    """Issuing / downloading internal sales notes."""
+    scope = 'admin_sales_notes'

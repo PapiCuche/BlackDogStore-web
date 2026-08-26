@@ -26,6 +26,28 @@ _VIEW_ADMIN_ORDERS_ROLES = frozenset([
     UserProfile.ROLE_ADMIN,
     UserProfile.ROLE_SUPERADMIN,
 ])
+# Phase 6.0 — inventory / sales reporting
+_VIEW_INVENTORY_REPORTS_ROLES = frozenset([
+    UserProfile.ROLE_INVENTORY,
+    UserProfile.ROLE_ADMIN,
+    UserProfile.ROLE_SUPERADMIN,
+])
+_MANAGE_STOCK_MOVEMENTS_ROLES = frozenset([
+    UserProfile.ROLE_INVENTORY,
+    UserProfile.ROLE_ADMIN,
+    UserProfile.ROLE_SUPERADMIN,
+])
+_VIEW_SALES_REPORTS_ROLES = frozenset([
+    UserProfile.ROLE_SALES,
+    UserProfile.ROLE_INVENTORY,
+    UserProfile.ROLE_ADMIN,
+    UserProfile.ROLE_SUPERADMIN,
+])
+_MANAGE_SALES_NOTES_ROLES = frozenset([
+    UserProfile.ROLE_SALES,
+    UserProfile.ROLE_ADMIN,
+    UserProfile.ROLE_SUPERADMIN,
+])
 _MANAGE_ORDER_FULFILLMENT_ROLES = frozenset([
     UserProfile.ROLE_INVENTORY,
     UserProfile.ROLE_SALES,
@@ -100,3 +122,39 @@ class CanManageOrderFulfillment(BasePermission):
 
     def has_permission(self, request, view):
         return get_user_role(request.user) in _MANAGE_ORDER_FULFILLMENT_ROLES
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.0 — inventory, reports and internal sales notes
+# ---------------------------------------------------------------------------
+
+class CanViewInventoryReports(BasePermission):
+    """Read inventory dashboards, Kardex and stock reports."""
+    message = 'Se requiere rol de inventario, administrador o superior.'
+
+    def has_permission(self, request, view):
+        return get_user_role(request.user) in _VIEW_INVENTORY_REPORTS_ROLES
+
+
+class CanManageStockMovements(BasePermission):
+    """Create manual stock entries and exits. Sales/technician are excluded."""
+    message = 'Se requiere rol de inventario, administrador o superior para mover stock.'
+
+    def has_permission(self, request, view):
+        return get_user_role(request.user) in _MANAGE_STOCK_MOVEMENTS_ROLES
+
+
+class CanViewSalesReports(BasePermission):
+    """Read best-selling / revenue reports."""
+    message = 'Se requiere rol de ventas, inventario, administrador o superior.'
+
+    def has_permission(self, request, view):
+        return get_user_role(request.user) in _VIEW_SALES_REPORTS_ROLES
+
+
+class CanManageSalesNotes(BasePermission):
+    """Issue, view and download INTERNAL sales notes. Inventory is excluded."""
+    message = 'Se requiere rol de ventas, administrador o superior.'
+
+    def has_permission(self, request, view):
+        return get_user_role(request.user) in _MANAGE_SALES_NOTES_ROLES

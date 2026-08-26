@@ -8,6 +8,7 @@ import { AdminShell } from "../../components/AdminShell";
 import { OrderStatusBadge } from "../../components/OrderStatusBadge";
 import { FulfillmentStatusBadge } from "../../components/FulfillmentStatusBadge";
 import { FulfillmentStatusSelect } from "../../components/FulfillmentStatusSelect";
+import { SalesNotePanel } from "../../components/SalesNotePanel";
 import {
   AdminOrderDetail,
   fetchAdminOrderDetail,
@@ -20,7 +21,7 @@ import {
   DELIVERY_METHOD_LABELS,
   RECEIPT_TYPE_LABELS,
 } from "../../../lib/business";
-import type { AuthUser } from "../../../lib/auth";
+import { canManageSalesNotes, type AuthUser } from "../../../lib/auth";
 
 function OrderDetailContent({ user }: { user: AuthUser }) {
   const { id } = useParams<{ id: string }>();
@@ -349,6 +350,11 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
             )}
           </dl>
         </section>
+
+        {/* Internal sales note — sales/admin/superadmin only, paid orders only */}
+        {canManageSalesNotes(user) && (
+          <SalesNotePanel orderId={order.id} isPaid={order.status === "paid"} />
+        )}
 
         {/* Fulfillment management */}
         {canManageFulfillment && (

@@ -323,3 +323,143 @@ class AccountToken(models.Model):
         obj.used_at = now
         obj.save(update_fields=['used_at'])
         return obj
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.0 — Inventory (Kardex) and internal sales notes
+# ---------------------------------------------------------------------------
+
+class StockMovement(models.Model):
+    """
+    Immutable Kardex line. Every change to Product.inventory must produce one.
+
+    Rules enforced by store.inventory_services (never write this model directly):
+      - quantity is always POSITIVE; movement_type decides the sign.
+      - stock_before / stock_after are snapshots taken under select_for_update().
+      - stock_after is never negative.
+      - manual movements require an actor and a reason.
+      - sale movements require an order and are idempotent per (order, product).
+    """
+
+    # --- Entries (add stock) ---
+    INITIAL_STOCK = 'initial_stock'
+    PURCHASE_ENTRY = 'purchase_entry'
+    MANUAL_ENTRY = 'manual_entry'
+    RETURN_ENTRY = 'return_entry'
+    CORRECTION_POSITIVE = 'correction_positive'
+    # --- Exits (remove stock) ---
+    MANUAL_EXIT = 'manual_exit'
+    SALE_EXIT = 'sale_exit'
+    CORRECTION_NEGATIVE = 'correction_negative'
+    DAMAGED_EXIT = 'damaged_exit'
+    SERVICE_EXIT = 'service_exit'
+
+    MOVEMENT_TYPE_CHOICES = [
+        (INITIAL_STOCK, 'Stock inicial'),
+        (PURCHASE_ENTRY, 'Entrada por compra'),
+        (MANUAL_ENTRY, 'Entrada manual'),
+        (RETURN_ENTRY, 'Entrada por devolución'),
+        (CORRECTION_POSITIVE, 'Corrección positiva'),
+        (MANUAL_EXIT, 'Salida manual'),
+        (SALE_EXIT, 'Salida por venta'),
+        (CORRECTION_NEGATIVE, 'Corrección negativa'),
+        (DAMAGED_EXIT, 'Salida por daño / merma'),
+        (SERVICE_EXIT, 'Salida por servicio técnico'),
+    ]
+
+    ENTRY_TYPES = frozenset([
+        INITIAL_STOCK, PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY, CORRECTION_POSITIVE,
+    ])
+    EXIT_TYPES = frozenset([
+        MANUAL_EXIT, SALE_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT, SERVICE_EXIT,
+    ])
+    # Types an operator may create through the admin API. sale_exit is excluded
+    # on purpose: it is only ever produced by the payment pipeline.
+    MANUAL_TYPES = frozenset([
+        PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY, CORRECTION_POSITIVE,
+        MANUAL_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT,
+    ])
+
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name='stock_movements',
+    )
+    movement_type = models.CharField(
+        max_length=40, choices=MOVEMENT_TYPE_CHOICES, db_index=True,
+    )
+    quantity = models.PositiveIntegerField()
+    stock_before = models.IntegerField()
+    stock_after = models.IntegerField()
+    reason = models.TextField(blank=True)
+    reference_type = models.CharField(max_length=40, blank=True)
+    reference_id = models.CharField(max_length=120, blank=True)
+    order = models.ForeignKey(
+        Order, null=True, blank=True, on_delete=models.PROTECT,
+        related_name='stock_movements',
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='stock_movements',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['product', '-created_at']),
+            models.Index(fields=['movement_type', '-created_at']),
+            models.Index(fields=['order', 'movement_type']),
+        ]
+
+    def __str__(self):
+        return f"{self.movement_type} {self.signed_quantity:+d} product={self.product_id}"
+
+    @property
+    def is_entry(self) -> bool:
+        return self.movement_type in self.ENTRY_TYPES
+
+    @property
+    def signed_quantity(self) -> int:
+        """Quantity with the sign implied by movement_type."""
+        return self.quantity if self.is_entry else -self.quantity
+
+
+class SalesNote(models.Model):
+    """
+    INTERNAL sales note for a paid order.
+
+    This is NOT a SUNAT electronic receipt, NOT fiscal numbering and has no
+    legal/tax validity. The number is an internal correlativo (NV-000001).
+    """
+
+    STATUS_ISSUED = 'issued'
+    STATUS_VOID = 'void'
+    STATUS_CHOICES = [
+        (STATUS_ISSUED, 'Emitida'),
+        (STATUS_VOID, 'Anulada'),
+    ]
+
+    NUMBER_PREFIX = 'NV-'
+    NUMBER_PADDING = 6
+
+    order = models.OneToOneField(
+        Order, on_delete=models.PROTECT, related_name='sales_note',
+    )
+    number = models.CharField(max_length=30, unique=True)
+    status = models.CharField(
+        max_length=30, choices=STATUS_CHOICES, default=STATUS_ISSUED, db_index=True,
+    )
+    issued_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='sales_notes_created',
+    )
+    pdf_generated_at = models.DateTimeField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f"SalesNote({self.number}, order={self.order_id})"

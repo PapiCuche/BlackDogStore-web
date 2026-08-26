@@ -82,6 +82,9 @@ REST_FRAMEWORK = {
         'admin_orders': '120/min',
         'admin_order_status_change': '60/min',
         'admin_order_email_resend': '10/min',
+        'admin_inventory_reports': '120/min',
+        'admin_stock_movements': '60/min',
+        'admin_sales_notes': '60/min',
     },
 }
 

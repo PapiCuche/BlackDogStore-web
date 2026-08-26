@@ -4,7 +4,10 @@ from decimal import Decimal
 from django.utils.text import slugify
 from rest_framework import serializers
 
-from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon
+from .models import (
+    Category, Product, Order, OrderItem, CartItem, Review, Coupon,
+    SalesNote, StockMovement,
+)
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -384,3 +387,96 @@ class AdminCategoryWriteSerializer(serializers.ModelSerializer):
                 counter += 1
             attrs['slug'] = slug
         return attrs
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.0 — inventory (Kardex) and internal sales notes
+# ---------------------------------------------------------------------------
+
+class StockMovementSerializer(serializers.ModelSerializer):
+    """Read serializer for one Kardex line."""
+
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    product_slug = serializers.CharField(source='product.slug', read_only=True)
+    movement_type_label = serializers.CharField(
+        source='get_movement_type_display', read_only=True,
+    )
+    actor_username = serializers.SerializerMethodField()
+    signed_quantity = serializers.IntegerField(read_only=True)
+    is_entry = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = StockMovement
+        fields = [
+            'id', 'product', 'product_name', 'product_slug',
+            'movement_type', 'movement_type_label', 'is_entry',
+            'quantity', 'signed_quantity', 'stock_before', 'stock_after',
+            'reason', 'reference_type', 'reference_id', 'order',
+            'actor', 'actor_username', 'created_at', 'metadata',
+        ]
+        read_only_fields = fields
+
+    def get_actor_username(self, obj):
+        return obj.actor.username if obj.actor_id else None
+
+
+class StockMovementCreateSerializer(serializers.Serializer):
+    """
+    Write serializer for MANUAL movements only.
+
+    `sale_exit` is intentionally absent from the choices: sale movements are
+    produced exclusively by the payment pipeline.
+    """
+
+    product_id = serializers.IntegerField(min_value=1)
+    movement_type = serializers.ChoiceField(choices=sorted(StockMovement.MANUAL_TYPES))
+    quantity = serializers.IntegerField(min_value=1)
+    reason = serializers.CharField(max_length=500, allow_blank=False, trim_whitespace=True)
+
+    def validate_reason(self, value):
+        if not value.strip():
+            raise serializers.ValidationError('El motivo es obligatorio.')
+        return value.strip()
+
+    def validate_product_id(self, value):
+        if not Product.objects.filter(pk=value).exists():
+            raise serializers.ValidationError('Producto no encontrado.')
+        return value
+
+
+class InventoryProductSerializer(serializers.ModelSerializer):
+    """Compact product row used by the stock reports."""
+
+    category_name = serializers.CharField(source='category.name', read_only=True, default=None)
+
+    class Meta:
+        model = Product
+        fields = ['id', 'name', 'slug', 'price', 'inventory', 'is_active', 'category_name']
+        read_only_fields = fields
+
+
+class SalesNoteSerializer(serializers.ModelSerializer):
+    """
+    Internal sales note. NOT a SUNAT electronic receipt.
+
+    Deliberately exposes no Stripe identifier and no payment_error.
+    """
+
+    created_by_username = serializers.SerializerMethodField()
+    order_total = serializers.DecimalField(
+        source='order.total', max_digits=12, decimal_places=2, read_only=True,
+    )
+    customer_name = serializers.CharField(source='order.customer_name', read_only=True)
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = SalesNote
+        fields = [
+            'id', 'order', 'number', 'status', 'status_label',
+            'issued_at', 'created_at', 'created_by', 'created_by_username',
+            'pdf_generated_at', 'order_total', 'customer_name',
+        ]
+        read_only_fields = fields
+
+    def get_created_by_username(self, obj):
+        return obj.created_by.username if obj.created_by_id else None

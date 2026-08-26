@@ -23,6 +23,11 @@ from .admin_views import (
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
     AdminOrderReceiptPdfView, AdminOrderResendEmailView,
 )
+from .inventory_views import (
+    AdminBestSellingView, AdminHighStockView, AdminInventorySummaryView,
+    AdminLowStockView, AdminOrderSalesNotePdfView, AdminOrderSalesNoteView,
+    AdminProductStockCardView, AdminStaleStockView, AdminStockMovementListView,
+)
 from django.urls import path, include
 
 router = DefaultRouter()
@@ -61,4 +66,15 @@ urlpatterns = [
     path('admin/orders/<int:pk>/fulfillment-status/', AdminOrderFulfillmentView.as_view(), name='admin-order-fulfillment'),
     path('admin/orders/<int:pk>/receipt-pdf/', AdminOrderReceiptPdfView.as_view(), name='admin-order-receipt-pdf'),
     path('admin/orders/<int:pk>/resend-confirmation-email/', AdminOrderResendEmailView.as_view(), name='admin-order-resend-email'),
+
+    # --- Phase 6.0: inventory (Kardex) + internal sales notes ---
+    path('admin/inventory/summary/', AdminInventorySummaryView.as_view(), name='admin-inventory-summary'),
+    path('admin/inventory/movements/', AdminStockMovementListView.as_view(), name='admin-inventory-movements'),
+    path('admin/inventory/low-stock/', AdminLowStockView.as_view(), name='admin-inventory-low-stock'),
+    path('admin/inventory/high-stock/', AdminHighStockView.as_view(), name='admin-inventory-high-stock'),
+    path('admin/inventory/best-selling/', AdminBestSellingView.as_view(), name='admin-inventory-best-selling'),
+    path('admin/inventory/no-movement/', AdminStaleStockView.as_view(), name='admin-inventory-no-movement'),
+    path('admin/products/<int:pk>/stock-card/', AdminProductStockCardView.as_view(), name='admin-product-stock-card'),
+    path('admin/orders/<int:pk>/sales-note/', AdminOrderSalesNoteView.as_view(), name='admin-order-sales-note'),
+    path('admin/orders/<int:pk>/sales-note/pdf/', AdminOrderSalesNotePdfView.as_view(), name='admin-order-sales-note-pdf'),
 ]

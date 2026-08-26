@@ -9,6 +9,11 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/admin", label: "Dashboard", exact: true },
   { href: "/admin/users", label: "Usuarios", roles: ["admin", "superadmin"] },
   { href: "/admin/products", label: "Productos", roles: ["inventory", "sales", "admin", "superadmin"] },
+  // Phase 6.0 — inventory is scoped to the roles that can read the Kardex.
+  // `sales` is deliberately excluded: it may read the catalogue but not stock reports.
+  { href: "/admin/inventory", label: "Inventario", exact: true, roles: ["inventory", "admin", "superadmin"] },
+  { href: "/admin/inventory/movements", label: "Movimientos", roles: ["inventory", "admin", "superadmin"] },
+  { href: "/admin/inventory/reports", label: "Reportes", roles: ["inventory", "admin", "superadmin"] },
   { href: "/admin/orders", label: "Órdenes", roles: ["inventory", "sales", "admin", "superadmin"] },
   { href: "/admin/audit-logs", label: "Auditoría", roles: ["admin", "superadmin"] },
 ];

@@ -11,3 +11,6 @@ env.local
 *.log
 coverage/
 .pytest_cache/
+
+# Local databases
+*.sqlite3

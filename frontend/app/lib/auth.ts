@@ -35,6 +35,24 @@ export function isSuperAdmin(user: AuthUser | null): boolean {
   return user?.role === 'superadmin';
 }
 
+/** Phase 6.0 — may register manual stock entries/exits. Mirrors CanManageStockMovements. */
+export function canManageInventory(user: AuthUser | null): boolean {
+  return (
+    user?.role === 'inventory' ||
+    user?.role === 'admin' ||
+    user?.role === 'superadmin'
+  );
+}
+
+/** Phase 6.0 — may issue and download INTERNAL sales notes. Mirrors CanManageSalesNotes. */
+export function canManageSalesNotes(user: AuthUser | null): boolean {
+  return (
+    user?.role === 'sales' ||
+    user?.role === 'admin' ||
+    user?.role === 'superadmin'
+  );
+}
+
 const ROLE_LABELS: Record<string, string> = {
   customer: 'Cliente',
   sales: 'Vendedor',
