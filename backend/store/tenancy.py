@@ -42,6 +42,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .capabilities import (
+    ALL_CAPABILITY_CODES,
+    ASSIGNABLE_CAPABILITY_CODES,
+)
 from .models import Branch, Company, Membership, UserProfile
 
 
@@ -193,14 +197,20 @@ def has_company_capability(user, company, capability: str) -> bool:
     """
     Whether the caller may perform `capability` inside `company`.
 
-    A platform administrator may do anything, in any company. Everyone else needs
-    an active membership, in an active company, whose role holds the capability.
+    Phase 2A.1: this now delegates to resolve_capabilities(), so a custom role
+    genuinely governs. Behaviour is unchanged for a membership with no custom
+    role assignments — LEGACY_ROLE_CAPABILITIES reproduces the Phase 2A matrix
+    exactly, and there is a test asserting the two agree for every role.
+
+    Delegating (rather than OR-ing the two systems) is the whole point: a company
+    that restricts someone with a custom role must not have the legacy matrix
+    hand the withheld authority back.
     """
     if capability not in COMPANY_CAPABILITIES:
         raise ValueError(f'Capacidad desconocida: {capability}')
     if is_platform_admin(user):
         return True
-    return has_company_role(user, company, COMPANY_CAPABILITIES[capability])
+    return has_capability(user, company, LEGACY_CAP_TO_CODE[capability])
 
 
 def can_view_company(user, company) -> bool:
@@ -248,16 +258,156 @@ def holds_any_capability(user, capability: str) -> bool:
     """
     Whether the caller holds `capability` in AT LEAST ONE company.
 
-    Used as a coarse view-level gate so a request that could not succeed in any
-    company is rejected before the payload is parsed. It is never a substitute
-    for the per-company check.
+    Coarse view-level gate: it rejects a request that could not succeed in any
+    company before the payload is parsed. NEVER a substitute for the per-company
+    check — holding something somewhere is not holding it everywhere.
+
+    Phase 2A.1: walks each membership through resolve_capabilities(), so a user
+    whose authority comes from a custom role is not rejected here just because
+    their legacy Membership.role would not have qualified.
     """
     if capability not in COMPANY_CAPABILITIES:
         raise ValueError(f'Capacidad desconocida: {capability}')
     if is_platform_admin(user):
         return True
-    allowed = COMPANY_CAPABILITIES[capability]
-    return active_memberships(user).filter(role__in=allowed).exists()
+    return holds_any_capability_code(user, LEGACY_CAP_TO_CODE[capability])
+
+
+def holds_any_capability_code(user, code: str) -> bool:
+    """Same coarse gate, addressed by catalogue code instead of legacy name."""
+    if code not in ALL_CAPABILITY_CODES:
+        raise ValueError(f'Capacidad desconocida: {code}')
+    if is_platform_admin(user):
+        return True
+    for membership in active_memberships(user):
+        if code in resolve_capabilities(user, membership.company):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1 — capability resolution (custom roles + legacy fallback)
+# ---------------------------------------------------------------------------
+#
+# Legacy Phase 2A roles are expressed as capability codes so BOTH systems answer
+# in the same vocabulary. This mapping is what lets a custom role fully replace
+# a legacy role instead of merely adding to it.
+
+LEGACY_CAP_TO_CODE: dict[str, str] = {
+    CAP_VIEW_COMPANY: 'company.view',
+    CAP_MANAGE_COMPANY: 'company.manage',
+    CAP_MANAGE_MEMBERSHIPS: 'memberships.manage',
+    CAP_MANAGE_INVENTORY: 'inventory.adjust',
+    CAP_MANAGE_SALES: 'sales.orders.manage',
+    CAP_MANAGE_TECHNICAL_SERVICE: 'service.manage',
+}
+
+# What each legacy Membership.role is worth in catalogue terms. Used both for the
+# fallback below and to seed the preset roles of a company.
+LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
+    UserProfile.ROLE_CUSTOMER: frozenset(),
+    UserProfile.ROLE_SALES: frozenset([
+        'company.view', 'products.view', 'reports.view',
+        'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage',
+    ]),
+    UserProfile.ROLE_INVENTORY: frozenset([
+        'company.view', 'products.view', 'reports.view',
+        'inventory.view', 'inventory.adjust', 'inventory.reports',
+    ]),
+    UserProfile.ROLE_TECHNICIAN: frozenset([
+        'company.view', 'service.manage',
+    ]),
+    UserProfile.ROLE_ADMIN: ASSIGNABLE_CAPABILITY_CODES,
+    # Legacy value: company-scoped authority, never platform authority.
+    UserProfile.ROLE_SUPERADMIN: ASSIGNABLE_CAPABILITY_CODES,
+}
+
+assert all(
+    caps <= ASSIGNABLE_CAPABILITY_CODES for caps in LEGACY_ROLE_CAPABILITIES.values()
+), 'un rol legacy referencia una capacidad inexistente o reservada'
+assert set(LEGACY_CAP_TO_CODE.values()) <= ALL_CAPABILITY_CODES, \
+    'LEGACY_CAP_TO_CODE apunta a una capacidad inexistente'
+
+
+def active_role_assignments(membership):
+    """Assignments that currently count: active, with an active role."""
+    if membership is None:
+        return []
+    return list(
+        membership.role_assignments
+        .filter(is_active=True, role__is_active=True)
+        .select_related('role', 'area')
+    )
+
+
+def resolve_capabilities(user, company) -> frozenset[str]:
+    """
+    Every capability the caller holds inside `company`.
+
+    Resolution order — deliberately EXCLUSIVE, not additive:
+
+      1. Platform master  → every assignable capability, in every company.
+      2. Custom roles     → the UNION of the capabilities of the membership's
+                            active role assignments. The legacy Membership.role
+                            is IGNORED here. This is the important part: once a
+                            company models a user with custom roles, restricting
+                            them actually restricts them. Falling back to the
+                            legacy matrix as well would silently re-grant what
+                            the custom role withheld.
+      3. Legacy fallback  → the capabilities of Membership.role, so a company
+                            that has not configured any custom role keeps
+                            working exactly as in Phase 2A.
+
+    A membership that is inactive, or whose company is inactive, holds nothing.
+    """
+    if is_platform_admin(user):
+        return ASSIGNABLE_CAPABILITY_CODES
+
+    membership = get_membership(user, company)
+    if membership is None:
+        return frozenset()
+
+    assignments = active_role_assignments(membership)
+    if assignments:
+        granted: set[str] = set()
+        for assignment in assignments:
+            granted |= set(assignment.role.capability_set)
+        return frozenset(granted)
+
+    return LEGACY_ROLE_CAPABILITIES.get(membership.role, frozenset())
+
+
+def has_capability(user, company, code: str) -> bool:
+    """Whether the caller holds capability `code` inside `company`."""
+    if code not in ALL_CAPABILITY_CODES:
+        raise ValueError(f'Capacidad desconocida: {code}')
+    return code in resolve_capabilities(user, company)
+
+
+def user_areas(user, company):
+    """
+    Areas the caller is assigned to inside `company`.
+
+    Organisational only — this never affects authority. See CompanyArea.
+    """
+    membership = get_membership(user, company)
+    return [
+        a.area for a in active_role_assignments(membership)
+        if a.area is not None and a.area.is_active
+    ]
+
+
+def can_delegate_capabilities(user, company, codes) -> bool:
+    """
+    Whether the caller may put `codes` into a role of `company`.
+
+    Anti-escalation rule: a company administrator may only delegate capabilities
+    they themselves hold. Otherwise a limited admin could author a powerful role,
+    assign it to themselves and escalate. A platform master is exempt.
+    """
+    if is_platform_admin(user):
+        return True
+    return set(codes) <= set(resolve_capabilities(user, company))
 
 
 # ---------------------------------------------------------------------------

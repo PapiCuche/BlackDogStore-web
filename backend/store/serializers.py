@@ -8,6 +8,7 @@ from .models import (
     Category, Product, Order, OrderItem, CartItem, Review, Coupon,
     SalesNote, StockMovement,
     Branch, Company, Membership,
+    CompanyArea, CompanyRole, MembershipRoleAssignment,
 )
 
 
@@ -560,4 +561,119 @@ class MembershipUpdateSerializer(serializers.Serializer):
         choices=[r[0] for r in Membership.ROLE_CHOICES], required=False,
     )
     branch = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    is_active = serializers.BooleanField(required=False)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1 — configurable areas, roles and assignments
+# ---------------------------------------------------------------------------
+
+class CompanyAreaSerializer(serializers.ModelSerializer):
+    """
+    An organisational area. Areas NEVER grant permissions — see CompanyArea.
+
+    `company` is write-once: moving an area between tenants would drag its
+    assignments across a company boundary.
+    """
+
+    company_name = serializers.CharField(source='company.name', read_only=True)
+    member_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = CompanyArea
+        fields = [
+            'id', 'company', 'company_name', 'name', 'slug', 'description',
+            'is_active', 'sort_order', 'created_at', 'updated_at', 'member_count',
+        ]
+        read_only_fields = ['id', 'company_name', 'created_at', 'updated_at', 'member_count']
+
+    def validate(self, attrs):
+        if self.instance and 'company' in attrs and attrs['company'] != self.instance.company:
+            raise serializers.ValidationError(
+                {'company': 'No se puede mover un área a otra empresa.'}
+            )
+        return attrs
+
+
+class CompanyRoleSerializer(serializers.ModelSerializer):
+    """
+    A role a company defines for its own staff.
+
+    Capability codes are validated against the platform catalogue here, so no
+    request path depends on the model's clean() alone. Whether the CALLER may
+    delegate those particular capabilities is an authority question answered in
+    the view (can_delegate_capabilities), not a payload-shape question.
+    """
+
+    company_name = serializers.CharField(source='company.name', read_only=True)
+    assignment_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = CompanyRole
+        fields = [
+            'id', 'company', 'company_name', 'name', 'slug', 'description',
+            'capabilities', 'is_active', 'created_at', 'updated_at', 'assignment_count',
+        ]
+        read_only_fields = [
+            'id', 'company_name', 'created_at', 'updated_at', 'assignment_count',
+        ]
+
+    def validate_capabilities(self, value):
+        from .capabilities import normalise_capabilities
+        try:
+            return normalise_capabilities(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+
+    def validate(self, attrs):
+        if self.instance and 'company' in attrs and attrs['company'] != self.instance.company:
+            raise serializers.ValidationError(
+                {'company': 'No se puede mover un rol a otra empresa.'}
+            )
+        return attrs
+
+
+class MembershipRoleAssignmentSerializer(serializers.ModelSerializer):
+    """Read serializer for one role assignment."""
+
+    username = serializers.CharField(source='membership.user.username', read_only=True)
+    company = serializers.IntegerField(source='membership.company_id', read_only=True)
+    company_name = serializers.CharField(source='membership.company.name', read_only=True)
+    role_name = serializers.CharField(source='role.name', read_only=True)
+    role_slug = serializers.CharField(source='role.slug', read_only=True)
+    area_name = serializers.CharField(source='area.name', read_only=True, default=None)
+    capabilities = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MembershipRoleAssignment
+        fields = [
+            'id', 'membership', 'username', 'company', 'company_name',
+            'role', 'role_name', 'role_slug', 'area', 'area_name',
+            'capabilities', 'is_active', 'assigned_by', 'created_at', 'updated_at',
+        ]
+        read_only_fields = fields
+
+    def get_capabilities(self, obj):
+        return sorted(obj.role.capability_set)
+
+
+class MembershipRoleAssignmentWriteSerializer(serializers.Serializer):
+    """
+    Create payload. Every id is UNTRUSTED and re-checked in the view against the
+    caller's own tenant before anything is written.
+    """
+
+    membership = serializers.IntegerField(min_value=1)
+    role = serializers.IntegerField(min_value=1)
+    area = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    is_active = serializers.BooleanField(required=False, default=True)
+
+
+class MembershipRoleAssignmentUpdateSerializer(serializers.Serializer):
+    """
+    Partial update. `membership` and `role` are immutable: changing either is a
+    different grant, not an edit — remove the assignment and create a new one.
+    """
+
+    area = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     is_active = serializers.BooleanField(required=False)

@@ -6,16 +6,24 @@
 tenantización de los modelos de negocio queda `PENDIENTE` por diseño.
 
 ```
-Fundación SaaS                       IMPLEMENTADO
-Tenant resolution                    PARCIAL
-RBAC tenant-aware infraestructura    IMPLEMENTADO
-RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
-Tenantización Product                PENDIENTE
-Tenantización Order                  PENDIENTE
-Tenantización Inventory              PENDIENTE
-Membership Invitation Flow           PENDIENTE
-Branding                             PENDIENTE
-IMEI/Serial                          PENDIENTE
+Autenticación única                    IMPLEMENTADO
+Portal externo e-commerce              IMPLEMENTADO
+Control interno                        PARCIAL
+Platform master                        IMPLEMENTADO
+Membership                             IMPLEMENTADO
+CompanyArea                            IMPLEMENTADO
+CompanyRole                            IMPLEMENTADO
+Role assignments                       IMPLEMENTADO
+Capabilities configurables por rol     IMPLEMENTADO
+Legacy RBAC fallback                   IMPLEMENTADO / TRANSICIÓN
+Tenant resolution                      PARCIAL
+Portal cliente servicio técnico        PENDIENTE
+Product tenant-aware                   PENDIENTE
+Order tenant-aware                     PENDIENTE
+Inventory tenant-aware                 PENDIENTE
+Membership Invitation Flow             PENDIENTE
+Branding                               PENDIENTE
+IMEI/Serial                            PENDIENTE
 ```
 
 ---
@@ -346,6 +354,107 @@ deliberadamente **no están conectadas a ninguna URL** todavía.
 
 ---
 
+## 8-ter. Áreas, roles y permisos configurables (Fase 2A.1)
+
+### Tres superficies, separadas formalmente
+
+| Superficie | Quién es | Cómo se identifica | Qué ve |
+|---|---|---|---|
+| **PORTAL EXTERNO** | Cliente del e-commerce | `User` **sin** Membership | Catálogo, carrito, checkout, sus compras, reseñas, su cuenta |
+| **CONTROL INTERNO** | Personal de una empresa | `User` + Membership activa + Company activa | Panel de la empresa, según las capacidades de sus roles |
+| **PLATFORM CONTROL** | Operador del SaaS | `User.is_superuser` — y solo eso | Todos los tenants |
+
+**Una sola identidad**: no hay `CustomerUser`, `StaffUser` ni `MasterUser`. El
+alcance sale de las relaciones del `User`, no de su modelo. Un mismo usuario
+puede comprar en la tienda y ser empleado de una empresa sin duplicar credenciales.
+
+Un cliente **no** recibe Membership automáticamente, y ninguna API empresarial
+escribe `is_superuser`, `is_staff` ni `UserProfile.role`.
+
+### Catálogo de capacidades — decisión de arquitectura
+
+Se evaluaron dos alternativas:
+
+**A. Tabla `PermissionDefinition`** — capacidades como filas en la base.
+**B. Catálogo en código** (`store/capabilities.py`), los roles guardan `code`.
+
+**Elegida: B.** Razones:
+
+| Criterio | Por qué gana B |
+|---|---|
+| Seguridad | La **plataforma** es dueña del vocabulario. Con una tabla, quien pudiera escribirla inventaría capacidades; el tenant definiría el alcance de su propia autoridad. Aquí solo elige de la lista. |
+| Migraciones | Añadir o renombrar una capacidad es un cambio de código y un test, no una migración de esquema más una de datos por entorno. |
+| Una sola verdad | La Fase 2A ya expresaba capacidades como constantes de código. Una tabla habría creado una segunda autoridad divergente. |
+| Integridad | Validación contra el catálogo en `clean()` **y** en el serializer, que es donde vive el significado. |
+| UI | `/api/admin/capabilities/` sirve el catálogo en solo lectura; el front no duplica la lista. |
+
+`django.contrib.auth.Permission` se descartó: es global, está atado a modelos y
+no tiene dimensión de tenant, así que no puede expresar *«esta capacidad, dentro
+de esta empresa»*.
+
+Cada capacidad declara su estado, sin fingir:
+
+| Estado | Significa |
+|---|---|
+| `active` | La plataforma la aplica hoy (`company.*`, `memberships.*`, `areas.manage`, `roles.manage`) |
+| `available` | El módulo existe pero sus endpoints siguen autorizando por RBAC legacy; asignable, aún no aplicada |
+| `reserved` | El módulo **no existe** (`service.customers.*`, `service.devices.*`, `service.orders.*`, `service.diagnostic.*`, `service.repair.*`, `service.quality.*`). Listada solo para diseño y **no asignable** |
+
+18 asignables, 10 reservadas. Un rol que intente reclamar una reservada es
+rechazado con `400`.
+
+### Áreas ≠ permisos
+
+**Regla dura, con test:** pertenecer al área «Inventario» **no** otorga
+`inventory.adjust`. La autoridad viene exclusivamente de las capacidades del rol.
+El área sirve para organización, filtros, asignaciones, dashboards y reportes.
+Desactivar un área tampoco cambia la autoridad de nadie.
+
+### Varios sombreros, una sola membresía
+
+```
+Usuario X @ Empresa A          (una sola Membership)
+  ├── Técnico    — área Taller
+  └── Recepción  — área Recepción
+```
+
+`MembershipRoleAssignment` cuelga de la Membership, así que un usuario puede
+llevar varios roles sin duplicar su pertenencia a la empresa. El mismo rol puede
+repetirse en dos áreas distintas, nunca dos veces en la misma.
+
+### Resolución de capacidades — exclusiva, no aditiva
+
+```
+1. Platform master  → todas las capacidades asignables, en cualquier empresa
+2. Roles propios    → UNIÓN de las capacidades de sus asignaciones activas
+                      (Membership.role se IGNORA)
+3. Fallback legacy  → capacidades equivalentes a Membership.role
+```
+
+El punto 2 es el importante: **si una empresa modela a alguien con roles
+personalizados, restringirlo lo restringe de verdad**. Sumar además el fallback
+legacy devolvería en silencio lo que el rol personalizado le quitó.
+
+Una empresa que no haya configurado ningún rol sigue funcionando exactamente
+como en Fase 2A — hay un test que compara ambos sistemas rol por rol y capacidad
+por capacidad.
+
+### Escalada de privilegios — política adoptada
+
+**Un administrador de empresa solo puede delegar capacidades que él mismo tiene.**
+Se aplica al crear un rol, al editar sus capacidades y al asignarlo (incluida la
+reactivación de una asignación). Sin esta regla, un admin limitado podría
+escribir un rol poderoso, asignárselo y escalar.
+
+El platform master está exento, porque necesita poder configurar tenants desde cero.
+
+### `superadmin` legacy
+
+Sin cambios respecto a 2A: sigue siendo autoridad **solo dentro de su empresa**,
+nunca implica `User.is_superuser`, y un admin de empresa no puede asignarlo.
+
+---
+
 ## 9. Deuda pendiente
 
 1. **Branding por empresa** — `_STORE_NAME`, `_STORE_RUC`, `_STORE_ADDRESS` y
@@ -367,11 +476,21 @@ deliberadamente **no están conectadas a ninguna URL** todavía.
    la cadena de migraciones de la instalación en producción.
 8. **`bulk_create()` / `queryset.update()` saltan `Membership.clean()`** — hoy nadie
    los usa para Membership; código futuro debe llamar `assert_branch_in_company()`.
-9. **PENDIENTE — Membership Invitation Flow.** Un admin de empresa puede añadir a
+9. **Capacidades `available` no aplicadas** — `products.*`, `inventory.*`,
+   `sales.*`, `reports.*`, `settings.*` y `service.manage` son asignables pero
+   ningún endpoint las consulta todavía: el dominio comercial sigue autorizando
+   por `UserProfile.role`. Un rol que las conceda no abre nada aún. Se conectan
+   en 2B/2C, cuando esos modelos tengan `company`.
+10. **Módulo de servicio técnico inexistente** — las 10 capacidades `service.*`
+   detalladas están reservadas y no son asignables. El portal del cliente
+   (Mis equipos, Reparaciones, Cotizaciones, Garantías, Seguimiento) está
+   PENDIENTE; cuando exista, el cliente no debe ver notas internas, costos
+   internos, auditoría, otros clientes ni datos privados del técnico.
+11. **PENDIENTE — Membership Invitation Flow.** Un admin de empresa puede añadir a
    cualquier usuario existente de la plataforma sin su consentimiento, y así
    confirmar su username. La mitigación actual uniforma las respuestas de error;
    la solución real es onboarding por invitación con aceptación del destinatario.
-10. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
+12. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
    cubriera `*.sqlite3`). Conviene sacarlo del índice en un commit aparte.
 
 ---

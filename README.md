@@ -522,17 +522,45 @@ Base estructural para que la plataforma deje de asumir una sola empresa.
   Cambiar sus permisos antes que sus datos daría una falsa sensación de aislamiento.
 
 ```
-Fundación SaaS                       IMPLEMENTADO
-Tenant resolution                    PARCIAL
-RBAC tenant-aware infraestructura    IMPLEMENTADO
-RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
-Tenantización Product                PENDIENTE
-Tenantización Order                  PENDIENTE
-Tenantización Inventory              PENDIENTE
-Membership Invitation Flow           PENDIENTE
-Branding                             PENDIENTE
-IMEI/Serial                          PENDIENTE
+Autenticación única                    IMPLEMENTADO
+Portal externo e-commerce              IMPLEMENTADO
+Control interno                        PARCIAL
+Platform master                        IMPLEMENTADO
+Membership                             IMPLEMENTADO
+CompanyArea                            IMPLEMENTADO
+CompanyRole                            IMPLEMENTADO
+Role assignments                       IMPLEMENTADO
+Capabilities configurables por rol     IMPLEMENTADO
+Legacy RBAC fallback                   IMPLEMENTADO / TRANSICIÓN
+Tenant resolution                      PARCIAL
+Portal cliente servicio técnico        PENDIENTE
+Product tenant-aware                   PENDIENTE
+Order tenant-aware                     PENDIENTE
+Inventory tenant-aware                 PENDIENTE
+Membership Invitation Flow             PENDIENTE
+Branding                               PENDIENTE
+IMEI/Serial                            PENDIENTE
 ```
+
+### Acceso interno configurable (Fase 2A.1)
+
+Tres superficies sobre **una sola identidad** `User`:
+
+| Superficie | Identificación | Alcance |
+|---|---|---|
+| Portal externo | `User` sin Membership | Tienda, carrito, compras, cuenta |
+| Control interno | `User` + Membership activa | Panel de su empresa, según sus roles |
+| Platform control | `User.is_superuser` | Todos los tenants |
+
+Cada empresa define sus propias **áreas** (Taller, Recepción, Caja…) y sus
+propios **roles** (Técnico Senior, Almacenero…) eligiendo de un catálogo de
+capacidades que controla la plataforma. Un usuario puede llevar varios roles en
+una misma empresa sin duplicar su membresía.
+
+> **Las áreas no otorgan permisos.** Pertenecer a «Inventario» no habilita
+> `inventory.adjust`; la autoridad viene solo de las capacidades del rol.
+
+Un administrador de empresa **solo puede delegar capacidades que él mismo tiene**.
 
 Detalle, deuda pendiente y próximas fases:
 [docs/saas-multiempresa.md](docs/saas-multiempresa.md) · [CHANGELOG.md](CHANGELOG.md)

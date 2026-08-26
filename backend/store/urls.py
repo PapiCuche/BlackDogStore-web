@@ -32,6 +32,11 @@ from .tenant_views import (
     AdminBranchListView, AdminCompanyDetailView, AdminCompanyListView,
     AdminMembershipDetailView, AdminMembershipListView, MyMembershipsView,
 )
+from .access_views import (
+    AdminAreaDetailView, AdminAreaListView, AdminRoleAssignmentDetailView,
+    AdminRoleAssignmentListView, AdminRoleDetailView, AdminRoleListView,
+    CapabilityCatalogView, MyCompanyAccessView,
+)
 from django.urls import path, include
 
 router = DefaultRouter()
@@ -89,4 +94,14 @@ urlpatterns = [
     path('admin/memberships/', AdminMembershipListView.as_view(), name='admin-memberships'),
     path('admin/memberships/<int:pk>/', AdminMembershipDetailView.as_view(), name='admin-membership-detail'),
     path('me/memberships/', MyMembershipsView.as_view(), name='me-memberships'),
+
+    # --- SaaS Phase 2A.1: configurable areas, roles and assignments ---
+    path('admin/capabilities/', CapabilityCatalogView.as_view(), name='admin-capabilities'),
+    path('admin/areas/', AdminAreaListView.as_view(), name='admin-areas'),
+    path('admin/areas/<int:pk>/', AdminAreaDetailView.as_view(), name='admin-area-detail'),
+    path('admin/roles/', AdminRoleListView.as_view(), name='admin-roles'),
+    path('admin/roles/<int:pk>/', AdminRoleDetailView.as_view(), name='admin-role-detail'),
+    path('admin/membership-role-assignments/', AdminRoleAssignmentListView.as_view(), name='admin-role-assignments'),
+    path('admin/membership-role-assignments/<int:pk>/', AdminRoleAssignmentDetailView.as_view(), name='admin-role-assignment-detail'),
+    path('me/company-access/', MyCompanyAccessView.as_view(), name='me-company-access'),
 ]

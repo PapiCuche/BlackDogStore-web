@@ -945,22 +945,31 @@ Cambios estructurales posteriores a esta auditoría:
 | 6.0 | `StockMovement` (Kardex), `SalesNote`, servicio de inventario transaccional | IMPLEMENTADO |
 | SaaS 1 | `Company`, `Branch`, `Membership`, resolución de tenant | PARCIAL |
 | SaaS 2A | Matriz de capacidades empresariales, `CompanyContext`, separación PLATFORM/COMPANY/LEGACY | IMPLEMENTADO |
+| SaaS 2A.1 | `CompanyArea`, `CompanyRole`, `MembershipRoleAssignment`, catálogo de capacidades | IMPLEMENTADO |
 
 **Modelos de base de datos actuales**, además de los listados en la sección 7:
 `UserProfile`, `AdminAuditLog`, `AccountToken`, `StockMovement`, `SalesNote`,
-`Company`, `Branch`, `Membership`.
+`Company`, `Branch`, `Membership`, `CompanyArea`, `CompanyRole`, `MembershipRoleAssignment`.
 
 ```
-Fundación SaaS                       IMPLEMENTADO
-Tenant resolution                    PARCIAL
-RBAC tenant-aware infraestructura    IMPLEMENTADO
-RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
-Tenantización Product                PENDIENTE
-Tenantización Order                  PENDIENTE
-Tenantización Inventory              PENDIENTE
-Membership Invitation Flow           PENDIENTE
-Branding                             PENDIENTE
-IMEI/Serial                          PENDIENTE
+Autenticación única                    IMPLEMENTADO
+Portal externo e-commerce              IMPLEMENTADO
+Control interno                        PARCIAL
+Platform master                        IMPLEMENTADO
+Membership                             IMPLEMENTADO
+CompanyArea                            IMPLEMENTADO
+CompanyRole                            IMPLEMENTADO
+Role assignments                       IMPLEMENTADO
+Capabilities configurables por rol     IMPLEMENTADO
+Legacy RBAC fallback                   IMPLEMENTADO / TRANSICIÓN
+Tenant resolution                      PARCIAL
+Portal cliente servicio técnico        PENDIENTE
+Product tenant-aware                   PENDIENTE
+Order tenant-aware                     PENDIENTE
+Inventory tenant-aware                 PENDIENTE
+Membership Invitation Flow             PENDIENTE
+Branding                               PENDIENTE
+IMEI/Serial                            PENDIENTE
 ```
 
 **Nota sobre multiempresa:** los modelos SaaS existen pero el e-commerce

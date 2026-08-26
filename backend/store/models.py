@@ -629,3 +629,207 @@ class Membership(models.Model):
     def grants_business_access(self) -> bool:
         """A membership only confers company access while both it and the company are active."""
         return self.is_active and self.company.is_active
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 2A.1 — configurable areas, roles and assignments
+# ---------------------------------------------------------------------------
+#
+# Three surfaces, kept apart on purpose:
+#   EXTERNAL PORTAL  a User with no Membership — the e-commerce customer
+#   INTERNAL CONTROL a User with an active Membership in an active Company
+#   PLATFORM CONTROL User.is_superuser, and only that
+#
+# Nothing in this module can turn a user into a platform master.
+
+class CompanyArea(models.Model):
+    """
+    An internal area of a company (Ventas, Taller, Recepción, Caja…).
+
+    AREAS DO NOT GRANT PERMISSIONS. Belonging to "Inventario" confers no
+    authority whatsoever; authority comes from CompanyRole capabilities alone.
+    An area exists for organisation, filtering, assignment and reporting.
+
+    The example areas are presets seeded per company, never a closed list:
+    every tenant may create its own.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='areas',
+    )
+    name = models.CharField(max_length=120)
+    slug = models.SlugField(max_length=120)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['company__name', 'sort_order', 'name']
+        constraints = [
+            # Slug is the stable identifier inside a tenant; name is what people
+            # read. Both are unique per company, and neither is unique globally —
+            # two tenants may each have a "Ventas".
+            models.UniqueConstraint(
+                fields=['company', 'slug'], name='unique_area_slug_per_company',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'name'], name='unique_area_name_per_company',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'is_active'])]
+
+    def __str__(self):
+        return f"{self.name} ({self.company.name})"
+
+
+class CompanyRole(models.Model):
+    """
+    A role a company defines for its own staff, holding a set of capabilities.
+
+    `capabilities` stores capability CODES from store.capabilities — the platform
+    owns the vocabulary, the tenant only picks from it. See that module for why
+    the catalogue lives in code rather than in a table.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='roles',
+    )
+    name = models.CharField(max_length=120)
+    slug = models.SlugField(max_length=120)
+    description = models.TextField(blank=True)
+    capabilities = models.JSONField(default=list, blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['company__name', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'slug'], name='unique_role_slug_per_company',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'name'], name='unique_role_name_per_company',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'is_active'])]
+
+    def __str__(self):
+        return f"{self.name} ({self.company.name})"
+
+    @property
+    def capability_set(self) -> frozenset[str]:
+        """Capabilities this role grants. Empty while the role is inactive."""
+        if not self.is_active:
+            return frozenset()
+        return frozenset(self.capabilities or [])
+
+    def clean(self):
+        """
+        Reject unknown or reserved capability codes.
+
+        Known gap, same as Membership: bulk_create() and queryset.update() bypass
+        save() and therefore this check. The API validates independently in its
+        serializer, so no request path depends on clean() alone.
+        """
+        from django.core.exceptions import ValidationError
+
+        from .capabilities import normalise_capabilities
+
+        try:
+            self.capabilities = normalise_capabilities(self.capabilities)
+        except ValueError as exc:
+            raise ValidationError({'capabilities': str(exc)})
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class MembershipRoleAssignment(models.Model):
+    """
+    Grants one CompanyRole to one Membership, optionally scoped to an area.
+
+    This is what lets a single membership carry several hats:
+
+        User X @ Company A
+          ├── Técnico    — área Taller
+          └── Recepción  — área Recepción
+
+    without duplicating the Membership (which stays unique per user+company).
+
+    The area is organisational metadata attached to the assignment; it never
+    widens or narrows the capabilities the role grants.
+    """
+
+    membership = models.ForeignKey(
+        Membership, on_delete=models.CASCADE, related_name='role_assignments',
+    )
+    role = models.ForeignKey(
+        CompanyRole, on_delete=models.PROTECT, related_name='assignments',
+    )
+    area = models.ForeignKey(
+        CompanyArea, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='role_assignments',
+    )
+    is_active = models.BooleanField(default=True, db_index=True)
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='role_assignments_made',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['membership__company__name', 'role__name']
+        constraints = [
+            # The same role may be held in two different areas, but not twice in
+            # the same one.
+            models.UniqueConstraint(
+                fields=['membership', 'role', 'area'],
+                name='unique_role_assignment_per_area',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['membership', 'is_active']),
+            models.Index(fields=['role', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"{self.membership.user.username} → {self.role.name}"
+
+    def clean(self):
+        """
+        Structural tenant guard: role and area must belong to the membership's
+        own company. Without this, a valid id from another tenant would be a
+        cross-company privilege grant.
+        """
+        from django.core.exceptions import ValidationError
+
+        if not self.membership_id:
+            return
+        company_id = self.membership.company_id
+
+        if self.role_id and self.role.company_id != company_id:
+            raise ValidationError(
+                {'role': 'El rol no pertenece a la empresa de esta membresía.'}
+            )
+        if self.area_id and self.area.company_id != company_id:
+            raise ValidationError(
+                {'area': 'El área no pertenece a la empresa de esta membresía.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    @property
+    def grants_capabilities(self) -> bool:
+        """An assignment only counts while it, its role and its membership are live."""
+        return (
+            self.is_active
+            and self.role.is_active
+            and self.membership.grants_business_access
+        )

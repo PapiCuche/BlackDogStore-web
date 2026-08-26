@@ -7647,3 +7647,734 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
         self.assertEqual(
             c.get('/api/admin/inventory/summary/').status_code, status.HTTP_403_FORBIDDEN,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1 — configurable areas, roles and capability resolution
+# ---------------------------------------------------------------------------
+
+from .capabilities import (  # noqa: E402
+    ALL_CAPABILITY_CODES, ASSIGNABLE_CAPABILITY_CODES, CAPABILITIES,
+    RESERVED_CAPABILITY_CODES, normalise_capabilities,
+)
+from .models import CompanyArea, CompanyRole, MembershipRoleAssignment  # noqa: E402
+from .tenancy import (  # noqa: E402
+    LEGACY_CAP_TO_CODE, LEGACY_ROLE_CAPABILITIES, can_delegate_capabilities,
+    has_capability, resolve_capabilities, user_areas,
+)
+
+
+def _area(company, name='Taller', slug=None, **extra):
+    return CompanyArea.objects.create(
+        company=company, name=name, slug=slug or name.lower().replace(' ', '-'), **extra,
+    )
+
+
+def _role(company, name='Técnico', capabilities=None, slug=None, **extra):
+    return CompanyRole.objects.create(
+        company=company, name=name, slug=slug or name.lower().replace(' ', '-'),
+        capabilities=capabilities or [], **extra,
+    )
+
+
+def _assign(membership, role, area=None, **extra):
+    return MembershipRoleAssignment.objects.create(
+        membership=membership, role=role, area=area, **extra,
+    )
+
+
+class Phase2a1CatalogTest(TestCase):
+    """The capability catalogue is owned by the platform, not by tenants."""
+
+    def test_catalog_has_no_duplicate_codes(self):
+        self.assertEqual(len(CAPABILITIES), len(ALL_CAPABILITY_CODES))
+
+    def test_reserved_capabilities_are_not_assignable(self):
+        self.assertTrue(RESERVED_CAPABILITY_CODES)
+        self.assertFalse(RESERVED_CAPABILITY_CODES & ASSIGNABLE_CAPABILITY_CODES)
+        for code in RESERVED_CAPABILITY_CODES:
+            self.assertTrue(code.startswith('service.'), code)
+
+    def test_normalise_rejects_unknown_code(self):
+        with self.assertRaises(ValueError):
+            normalise_capabilities(['inventory.teleport'])
+
+    def test_normalise_rejects_reserved_code(self):
+        with self.assertRaises(ValueError):
+            normalise_capabilities(['service.repair.manage'])
+
+    def test_normalise_deduplicates_and_sorts(self):
+        self.assertEqual(
+            normalise_capabilities(['inventory.adjust', 'company.view', 'inventory.adjust']),
+            ['company.view', 'inventory.adjust'],
+        )
+
+    def test_normalise_rejects_a_bare_string(self):
+        with self.assertRaises(ValueError):
+            normalise_capabilities('company.view')
+
+    def test_legacy_role_capabilities_reference_real_codes(self):
+        for role, caps in LEGACY_ROLE_CAPABILITIES.items():
+            self.assertTrue(caps <= ASSIGNABLE_CAPABILITY_CODES, role)
+
+    def test_legacy_capability_names_map_into_the_catalog(self):
+        self.assertTrue(set(LEGACY_CAP_TO_CODE.values()) <= ALL_CAPABILITY_CODES)
+
+
+class Phase2a1ModelInvariantTest(TestCase):
+    """Structural guards on areas, roles and assignments."""
+
+    def setUp(self):
+        self.company_a = _saas_company('Empresa A', 'p21-a')
+        self.company_b = _saas_company('Empresa B', 'p21-b', tax_id='20000000021')
+        self.user = _saas_user('p21_user')
+        self.membership = Membership.objects.create(
+            user=self.user, company=self.company_a, role='sales',
+        )
+
+    def test_area_slug_unique_per_company_but_reusable_across_companies(self):
+        _area(self.company_a, 'Taller', 'taller')
+        _area(self.company_b, 'Taller', 'taller')  # otra empresa: permitido
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _area(self.company_a, 'Taller Bis', 'taller')
+
+    def test_role_slug_unique_per_company(self):
+        _role(self.company_a, 'Técnico', ['company.view'], 'tecnico')
+        _role(self.company_b, 'Técnico', ['company.view'], 'tecnico')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _role(self.company_a, 'Otro', ['company.view'], 'tecnico')
+
+    def test_role_rejects_unknown_capability(self):
+        with self.assertRaises(DjangoValidationError):
+            _role(self.company_a, 'Malo', ['inventory.teleport'], 'malo')
+
+    def test_role_rejects_reserved_capability(self):
+        with self.assertRaises(DjangoValidationError):
+            _role(self.company_a, 'Reservado', ['service.repair.manage'], 'reservado')
+
+    def test_role_capabilities_are_stored_sorted_and_deduplicated(self):
+        role = _role(self.company_a, 'Orden', ['inventory.adjust', 'company.view', 'company.view'], 'orden')
+        role.refresh_from_db()
+        self.assertEqual(role.capabilities, ['company.view', 'inventory.adjust'])
+
+    def test_assignment_rejects_role_from_another_company(self):
+        foreign_role = _role(self.company_b, 'Ajeno', ['company.view'], 'ajeno')
+        with self.assertRaises(DjangoValidationError):
+            _assign(self.membership, foreign_role)
+
+    def test_assignment_rejects_area_from_another_company(self):
+        own_role = _role(self.company_a, 'Propio', ['company.view'], 'propio')
+        foreign_area = _area(self.company_b, 'Ajena', 'ajena')
+        with self.assertRaises(DjangoValidationError):
+            _assign(self.membership, own_role, area=foreign_area)
+
+    def test_same_role_may_be_held_in_two_areas(self):
+        role = _role(self.company_a, 'Multi', ['company.view'], 'multi')
+        taller = _area(self.company_a, 'Taller', 'taller')
+        recepcion = _area(self.company_a, 'Recepción', 'recepcion')
+        _assign(self.membership, role, area=taller)
+        _assign(self.membership, role, area=recepcion)
+        self.assertEqual(self.membership.role_assignments.count(), 2)
+
+    def test_same_role_twice_in_the_same_area_is_rejected(self):
+        role = _role(self.company_a, 'Duplicado', ['company.view'], 'duplicado')
+        taller = _area(self.company_a, 'Taller', 'taller')
+        _assign(self.membership, role, area=taller)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _assign(self.membership, role, area=taller)
+
+    def test_one_membership_carries_several_hats(self):
+        """User X @ Company A: Técnico en Taller + Recepción en Recepción."""
+        tecnico = _role(self.company_a, 'Técnico', ['company.view', 'service.manage'], 'tecnico')
+        recepcion_role = _role(self.company_a, 'Recepción', ['company.view', 'sales.orders.view'], 'recepcion-rol')
+        taller = _area(self.company_a, 'Taller', 'taller')
+        recepcion = _area(self.company_a, 'Recepción', 'recepcion')
+        _assign(self.membership, tecnico, area=taller)
+        _assign(self.membership, recepcion_role, area=recepcion)
+
+        self.assertEqual(Membership.objects.filter(user=self.user, company=self.company_a).count(), 1)
+        self.assertEqual(
+            resolve_capabilities(self.user, self.company_a),
+            frozenset({'company.view', 'service.manage', 'sales.orders.view'}),
+        )
+        self.assertEqual(
+            {a.name for a in user_areas(self.user, self.company_a)},
+            {'Taller', 'Recepción'},
+        )
+
+
+class Phase2a1ResolutionTest(TestCase):
+    """Custom roles replace the legacy fallback — they never merely add to it."""
+
+    def setUp(self):
+        self.company = _saas_company('Resolución SA', 'p21-res')
+        self.platform = _saas_user('p21_platform', is_superuser=True)
+
+    def _member(self, username, legacy_role):
+        u = _saas_user(username)
+        m = Membership.objects.create(user=u, company=self.company, role=legacy_role)
+        return u, m
+
+    def test_legacy_fallback_when_no_custom_role(self):
+        u, _ = self._member('p21_legacy_inv', 'inventory')
+        self.assertEqual(
+            resolve_capabilities(u, self.company),
+            LEGACY_ROLE_CAPABILITIES['inventory'],
+        )
+
+    def test_legacy_fallback_matches_the_phase_2a_matrix_for_every_role(self):
+        """The new resolution must reproduce Phase 2A exactly without custom roles."""
+        for legacy_role in ('customer', 'sales', 'inventory', 'technician', 'admin', 'superadmin'):
+            u, _ = self._member(f'p21_parity_{legacy_role}', legacy_role)
+            for cap_name, code in LEGACY_CAP_TO_CODE.items():
+                expected = legacy_role in COMPANY_CAPABILITIES[cap_name]
+                self.assertEqual(
+                    has_company_capability(u, self.company, cap_name), expected,
+                    f'{legacy_role}/{cap_name} divergió',
+                )
+                self.assertEqual(
+                    has_capability(u, self.company, code), expected,
+                    f'{legacy_role}/{code} divergió',
+                )
+
+    def test_custom_role_replaces_legacy_authority(self):
+        """A legacy admin restricted by a custom role must actually be restricted."""
+        u, m = self._member('p21_restricted', 'admin')
+        self.assertTrue(has_capability(u, self.company, 'memberships.manage'))
+
+        limited = _role(self.company, 'Solo lectura', ['company.view'], 'solo-lectura')
+        _assign(m, limited)
+
+        self.assertEqual(resolve_capabilities(u, self.company), frozenset({'company.view'}))
+        self.assertFalse(has_capability(u, self.company, 'memberships.manage'))
+        # ...and the Phase 2A helper agrees, so the SaaS endpoints honour it
+        self.assertFalse(
+            has_company_capability(u, self.company, CAP_MANAGE_MEMBERSHIPS)
+        )
+
+    def test_two_roles_union_their_capabilities(self):
+        u, m = self._member('p21_union', 'customer')
+        _assign(m, _role(self.company, 'A', ['company.view', 'inventory.view'], 'rol-a'))
+        _assign(m, _role(self.company, 'B', ['sales.orders.view'], 'rol-b'))
+        self.assertEqual(
+            resolve_capabilities(u, self.company),
+            frozenset({'company.view', 'inventory.view', 'sales.orders.view'}),
+        )
+
+    def test_inactive_role_grants_nothing(self):
+        u, m = self._member('p21_inactive_role', 'customer')
+        role = _role(self.company, 'Apagado', ['company.view'], 'apagado', is_active=False)
+        _assign(m, role)
+        # No active assignment remains -> falls back to the legacy role (customer = nothing)
+        self.assertEqual(resolve_capabilities(u, self.company), frozenset())
+
+    def test_inactive_assignment_grants_nothing(self):
+        u, m = self._member('p21_inactive_assign', 'customer')
+        _assign(m, _role(self.company, 'Vivo', ['company.view'], 'vivo'), is_active=False)
+        self.assertEqual(resolve_capabilities(u, self.company), frozenset())
+
+    def test_inactive_area_does_not_remove_capabilities(self):
+        """Areas are organisational: deactivating one must not change authority."""
+        u, m = self._member('p21_inactive_area', 'customer')
+        area = _area(self.company, 'Taller', 'taller')
+        _assign(m, _role(self.company, 'Con área', ['company.view'], 'con-area'), area=area)
+        area.is_active = False
+        area.save(update_fields=['is_active'])
+        self.assertEqual(resolve_capabilities(u, self.company), frozenset({'company.view'}))
+        self.assertEqual(user_areas(u, self.company), [])
+
+    def test_area_alone_grants_no_permission(self):
+        """Belonging to 'Inventario' must NOT confer inventory.adjust."""
+        u, m = self._member('p21_area_only', 'customer')
+        inventario = _area(self.company, 'Inventario', 'inventario')
+        empty_role = _role(self.company, 'Sin permisos', [], 'sin-permisos')
+        _assign(m, empty_role, area=inventario)
+
+        self.assertEqual(user_areas(u, self.company), [inventario])
+        self.assertFalse(has_capability(u, self.company, 'inventory.adjust'))
+        self.assertEqual(resolve_capabilities(u, self.company), frozenset())
+
+    def test_inactive_membership_grants_nothing_even_with_roles(self):
+        u, m = self._member('p21_dead_member', 'admin')
+        _assign(m, _role(self.company, 'Potente', sorted(ASSIGNABLE_CAPABILITY_CODES), 'potente'))
+        m.is_active = False
+        m.save(update_fields=['is_active'])
+        self.assertEqual(resolve_capabilities(u, self.company), frozenset())
+
+    def test_inactive_company_grants_nothing_even_with_roles(self):
+        u, m = self._member('p21_dead_company', 'admin')
+        _assign(m, _role(self.company, 'Potente2', sorted(ASSIGNABLE_CAPABILITY_CODES), 'potente2'))
+        self.company.is_active = False
+        self.company.save(update_fields=['is_active'])
+        self.assertEqual(resolve_capabilities(u, self.company), frozenset())
+
+    def test_platform_master_holds_every_assignable_capability(self):
+        self.assertEqual(
+            resolve_capabilities(self.platform, self.company), ASSIGNABLE_CAPABILITY_CODES,
+        )
+
+    def test_platform_master_holds_no_reserved_capability(self):
+        held = resolve_capabilities(self.platform, self.company)
+        self.assertFalse(held & RESERVED_CAPABILITY_CODES)
+
+    def test_user_without_membership_holds_nothing(self):
+        self.assertEqual(resolve_capabilities(_saas_user('p21_orphan'), self.company), frozenset())
+
+    def test_has_capability_rejects_unknown_code(self):
+        u, _ = self._member('p21_unknown', 'admin')
+        with self.assertRaises(ValueError):
+            has_capability(u, self.company, 'nope.nope')
+
+
+class Phase2a1AccessApiTest(TestCase):
+    """Areas/roles/assignments API: tenant scoping and escalation limits."""
+
+    def setUp(self):
+        cache.clear()
+        self.company_a = _saas_company('Empresa A', 'p21api-a')
+        self.company_b = _saas_company('Empresa B', 'p21api-b', tax_id='20000000022')
+
+        self.area_a = _area(self.company_a, 'Taller A', 'taller-a')
+        self.area_b = _area(self.company_b, 'Taller B', 'taller-b')
+        self.role_a = _role(self.company_a, 'Técnico A', ['company.view', 'service.manage'], 'tecnico-a')
+        self.role_b = _role(self.company_b, 'Técnico B', ['company.view'], 'tecnico-b')
+
+        self.admin_a = _saas_user('p21api_admin_a')
+        self.admin_b = _saas_user('p21api_admin_b')
+        self.sales_a = _saas_user('p21api_sales_a')
+        self.orphan = _saas_user('p21api_orphan')
+        self.platform = _saas_user('p21api_platform', is_superuser=True)
+        self.staff_a = _saas_user('p21api_staff_a')
+
+        self.m_admin_a = Membership.objects.create(
+            user=self.admin_a, company=self.company_a, role='admin')
+        self.m_admin_b = Membership.objects.create(
+            user=self.admin_b, company=self.company_b, role='admin')
+        self.m_sales_a = Membership.objects.create(
+            user=self.sales_a, company=self.company_a, role='sales')
+        self.m_staff_a = Membership.objects.create(
+            user=self.staff_a, company=self.company_a, role='customer')
+
+    def _as(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    # --- cross-tenant reads ---
+
+    def test_company_a_cannot_list_company_b_areas(self):
+        res = self._as(self.admin_a).get('/api/admin/areas/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        names = {r['name'] for r in res.data['results']}
+        self.assertIn('Taller A', names)
+        self.assertNotIn('Taller B', names)
+
+    def test_company_a_cannot_read_company_b_area_detail(self):
+        res = self._as(self.admin_a).get(f'/api/admin/areas/{self.area_b.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_company_a_cannot_list_company_b_roles(self):
+        res = self._as(self.admin_a).get('/api/admin/roles/')
+        slugs = {r['slug'] for r in res.data['results']}
+        self.assertIn('tecnico-a', slugs)
+        self.assertNotIn('tecnico-b', slugs)
+
+    def test_company_a_cannot_edit_company_b_role(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/roles/{self.role_b.pk}/', {'name': 'Secuestrado'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.role_b.refresh_from_db()
+        self.assertEqual(self.role_b.name, 'Técnico B')
+
+    def test_company_a_cannot_create_an_area_in_company_b(self):
+        res = self._as(self.admin_a).post('/api/admin/areas/', {
+            'company': self.company_b.pk, 'name': 'Intrusa', 'slug': 'intrusa',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(CompanyArea.objects.filter(slug='intrusa').exists())
+
+    def test_company_a_cannot_create_a_role_in_company_b(self):
+        res = self._as(self.admin_a).post('/api/admin/roles/', {
+            'company': self.company_b.pk, 'name': 'Intruso', 'slug': 'intruso',
+            'capabilities': ['company.view'],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # --- cross-tenant assignment attempts ---
+
+    def test_membership_of_a_cannot_receive_role_of_b(self):
+        res = self._as(self.admin_a).post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_staff_a.pk, 'role': self.role_b.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(MembershipRoleAssignment.objects.count(), 0)
+
+    def test_role_of_a_cannot_reference_area_of_b(self):
+        res = self._as(self.admin_a).post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_staff_a.pk, 'role': self.role_a.pk, 'area': self.area_b.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(MembershipRoleAssignment.objects.count(), 0)
+
+    def test_company_b_admin_cannot_assign_into_company_a(self):
+        res = self._as(self.admin_b).post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_staff_a.pk, 'role': self.role_a.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_assignments_list_is_scoped(self):
+        _assign(self.m_staff_a, self.role_a)
+        _assign(self.m_admin_b, self.role_b)
+        res = self._as(self.admin_a).get('/api/admin/membership-role-assignments/')
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['company'], self.company_a.pk)
+
+    # --- authority ---
+
+    def test_user_without_membership_is_rejected(self):
+        c = self._as(self.orphan)
+        for url in ('/api/admin/areas/', '/api/admin/roles/',
+                    '/api/admin/membership-role-assignments/', '/api/admin/capabilities/'):
+            self.assertEqual(c.get(url).status_code, status.HTTP_403_FORBIDDEN, url)
+
+    def test_anonymous_is_rejected(self):
+        self.assertEqual(
+            APIClient().get('/api/admin/roles/').status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_sales_can_read_but_not_manage_areas(self):
+        c = self._as(self.sales_a)
+        self.assertEqual(c.get('/api/admin/areas/').status_code, status.HTTP_200_OK)
+        res = c.post('/api/admin/areas/', {
+            'company': self.company_a.pk, 'name': 'Nueva', 'slug': 'nueva',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_sales_cannot_create_roles(self):
+        res = self._as(self.sales_a).post('/api/admin/roles/', {
+            'company': self.company_a.pk, 'name': 'Nuevo', 'slug': 'nuevo',
+            'capabilities': ['company.view'],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_create_area_and_role_in_own_company(self):
+        c = self._as(self.admin_a)
+        area = c.post('/api/admin/areas/', {
+            'company': self.company_a.pk, 'name': 'Caja', 'slug': 'caja',
+        }, format='json')
+        self.assertEqual(area.status_code, status.HTTP_201_CREATED)
+        role = c.post('/api/admin/roles/', {
+            'company': self.company_a.pk, 'name': 'Cajero', 'slug': 'cajero',
+            'capabilities': ['company.view', 'sales.orders.view'],
+        }, format='json')
+        self.assertEqual(role.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(role.data['capabilities'], ['company.view', 'sales.orders.view'])
+
+    def test_role_rejects_reserved_capability_via_api(self):
+        res = self._as(self.admin_a).post('/api/admin/roles/', {
+            'company': self.company_a.pk, 'name': 'Reservado', 'slug': 'reservado',
+            'capabilities': ['service.repair.manage'],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_role_rejects_unknown_capability_via_api(self):
+        res = self._as(self.admin_a).post('/api/admin/roles/', {
+            'company': self.company_a.pk, 'name': 'Falso', 'slug': 'falso',
+            'capabilities': ['inventory.teleport'],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # --- privilege escalation ---
+
+    def test_admin_cannot_delegate_a_capability_they_lack(self):
+        """A limited admin must not author a role more powerful than themselves."""
+        limited = _role(self.company_a, 'Limitado',
+                        ['company.view', 'roles.manage'], 'limitado')
+        _assign(self.m_admin_a, limited)
+
+        res = self._as(self.admin_a).post('/api/admin/roles/', {
+            'company': self.company_a.pk, 'name': 'Poderoso', 'slug': 'poderoso',
+            'capabilities': ['company.view', 'memberships.manage'],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(CompanyRole.objects.filter(slug='poderoso').exists())
+
+    def test_admin_can_delegate_capabilities_they_hold(self):
+        limited = _role(self.company_a, 'Limitado2',
+                        ['company.view', 'roles.manage', 'inventory.view'], 'limitado2')
+        _assign(self.m_admin_a, limited)
+        res = self._as(self.admin_a).post('/api/admin/roles/', {
+            'company': self.company_a.pk, 'name': 'Espejo', 'slug': 'espejo',
+            'capabilities': ['inventory.view'],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_admin_cannot_escalate_an_existing_role_beyond_their_authority(self):
+        limited = _role(self.company_a, 'Limitado3',
+                        ['company.view', 'roles.manage'], 'limitado3')
+        _assign(self.m_admin_a, limited)
+        target = _role(self.company_a, 'Objetivo', ['company.view'], 'objetivo')
+
+        res = self._as(self.admin_a).patch(f'/api/admin/roles/{target.pk}/', {
+            'capabilities': ['company.view', 'memberships.manage'],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        target.refresh_from_db()
+        self.assertEqual(target.capabilities, ['company.view'])
+
+    def test_admin_cannot_assign_a_role_stronger_than_themselves(self):
+        limited = _role(self.company_a, 'Limitado4',
+                        ['company.view', 'memberships.manage'], 'limitado4')
+        _assign(self.m_admin_a, limited)
+        powerful = _role(self.company_a, 'Fuerte',
+                         ['company.view', 'inventory.adjust'], 'fuerte')
+
+        res = self._as(self.admin_a).post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_staff_a.pk, 'role': powerful.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_platform_master_is_exempt_from_the_delegation_limit(self):
+        res = self._as(self.platform).post('/api/admin/roles/', {
+            'company': self.company_a.pk, 'name': 'Total', 'slug': 'total',
+            'capabilities': sorted(ASSIGNABLE_CAPABILITY_CODES),
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_api_never_writes_is_superuser_or_userprofile_role(self):
+        before_profile = self.staff_a.profile.role
+        c = self._as(self.admin_a)
+        c.post('/api/admin/roles/', {
+            'company': self.company_a.pk, 'name': 'Jefe', 'slug': 'jefe',
+            'capabilities': sorted(ASSIGNABLE_CAPABILITY_CODES),
+        }, format='json')
+        role = CompanyRole.objects.get(slug='jefe')
+        c.post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_staff_a.pk, 'role': role.pk,
+        }, format='json')
+
+        self.staff_a.refresh_from_db()
+        self.staff_a.profile.refresh_from_db()
+        self.assertFalse(self.staff_a.is_superuser)
+        self.assertFalse(self.staff_a.is_staff)
+        self.assertEqual(self.staff_a.profile.role, before_profile)
+        self.assertFalse(is_platform_admin(self.staff_a))
+
+    # --- lifecycle ---
+
+    def test_delete_deactivates_instead_of_destroying(self):
+        assignment = _assign(self.m_staff_a, self.role_a)
+        res = self._as(self.admin_a).delete(
+            f'/api/admin/membership-role-assignments/{assignment.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        assignment.refresh_from_db()
+        self.assertFalse(assignment.is_active)
+        self.assertTrue(MembershipRoleAssignment.objects.filter(pk=assignment.pk).exists())
+
+    def test_duplicate_assignment_via_api_is_rejected(self):
+        _assign(self.m_staff_a, self.role_a)
+        res = self._as(self.admin_a).post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_staff_a.pk, 'role': self.role_a.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_area_cannot_be_moved_between_companies(self):
+        res = self._as(self.platform).patch(f'/api/admin/areas/{self.area_a.pk}/', {
+            'company': self.company_b.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.area_a.refresh_from_db()
+        self.assertEqual(self.area_a.company_id, self.company_a.pk)
+
+    # --- catalogue and self-service ---
+
+    def test_capability_catalog_is_read_only_and_complete(self):
+        res = self._as(self.admin_a).get('/api/admin/capabilities/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data['capabilities']), len(ALL_CAPABILITY_CODES))
+        reserved = [c for c in res.data['capabilities'] if not c['assignable']]
+        self.assertTrue(reserved)
+        self.assertEqual(
+            self._as(self.admin_a).post('/api/admin/capabilities/', {}, format='json').status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def test_me_company_access_reports_source_and_capabilities(self):
+        res = self._as(self.sales_a).get('/api/me/company-access/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        row = res.data['results'][0]
+        self.assertEqual(row['company'], self.company_a.pk)
+        self.assertEqual(row['source'], 'legacy_role')
+        self.assertIn('sales.orders.manage', row['capabilities'])
+
+        _assign(self.m_sales_a, _role(self.company_a, 'Solo ver', ['company.view'], 'solo-ver'))
+        row = self._as(self.sales_a).get('/api/me/company-access/').data['results'][0]
+        self.assertEqual(row['source'], 'custom_roles')
+        self.assertEqual(row['capabilities'], ['company.view'])
+
+    def test_me_company_access_is_self_scoped(self):
+        res = self._as(self.orphan).get('/api/me/company-access/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 0)
+
+
+class Phase2a1AuditTest(TestCase):
+    """Sensitive access changes are audited with actor, company and safe metadata."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Audit 2A1', 'p21-audit')
+        self.admin = _saas_user('p21audit_admin')
+        self.m_admin = Membership.objects.create(
+            user=self.admin, company=self.company, role='admin')
+        self.staff = _saas_user('p21audit_staff')
+        self.m_staff = Membership.objects.create(
+            user=self.staff, company=self.company, role='customer')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _log(self, action):
+        return AdminAuditLog.objects.filter(action=action).first()
+
+    def test_area_created_and_updated(self):
+        res = self.client.post('/api/admin/areas/', {
+            'company': self.company.pk, 'name': 'Caja', 'slug': 'caja',
+        }, format='json')
+        log = self._log('area_created')
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.company.pk)
+        self.assertEqual(log.actor, self.admin)
+
+        self.client.patch(f"/api/admin/areas/{res.data['id']}/",
+                          {'is_active': False}, format='json')
+        self.assertIsNotNone(self._log('area_updated'))
+
+    def test_company_role_created_and_permissions_updated(self):
+        res = self.client.post('/api/admin/roles/', {
+            'company': self.company.pk, 'name': 'Cajero', 'slug': 'cajero',
+            'capabilities': ['company.view'],
+        }, format='json')
+        created = self._log('company_role_created')
+        self.assertIsNotNone(created)
+        self.assertEqual(created.metadata['capabilities'], ['company.view'])
+
+        self.client.patch(f"/api/admin/roles/{res.data['id']}/",
+                          {'capabilities': ['company.view', 'reports.view']}, format='json')
+        perms = self._log('role_permissions_updated')
+        self.assertIsNotNone(perms)
+        self.assertEqual(perms.metadata['capabilities_before'], ['company.view'])
+        self.assertEqual(perms.metadata['capabilities_after'],
+                         ['company.view', 'reports.view'])
+
+    def test_role_assignment_created_and_disabled(self):
+        role = _role(self.company, 'Asignable', ['company.view'], 'asignable')
+        res = self.client.post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_staff.pk, 'role': role.pk,
+        }, format='json')
+        created = self._log('role_assignment_created')
+        self.assertIsNotNone(created)
+        self.assertEqual(created.company_id, self.company.pk)
+
+        self.client.delete(f"/api/admin/membership-role-assignments/{res.data['id']}/")
+        self.assertIsNotNone(self._log('role_assignment_disabled'))
+
+    def test_audit_metadata_carries_no_secrets(self):
+        role = _role(self.company, 'Seguro', ['company.view'], 'seguro')
+        self.client.post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_staff.pk, 'role': role.pk,
+        }, format='json')
+        raw = ' '.join(str(log.metadata) for log in AdminAuditLog.objects.all()).lower()
+        for secret in ('password', 'pass123', 'jwt', 'bearer', 'blackdog_access',
+                       'blackdog_refresh', 'csrf', 'stripe', 'sk_', 'token'):
+            self.assertNotIn(secret, raw, f'metadata expone "{secret}"')
+
+    def test_rejected_action_creates_no_audit_log(self):
+        other = _saas_company('Otra', 'p21-audit-otra', tax_id='20000000023')
+        self.client.post('/api/admin/areas/', {
+            'company': other.pk, 'name': 'Intrusa', 'slug': 'intrusa',
+        }, format='json')
+        self.assertEqual(AdminAuditLog.objects.filter(action='area_created').count(), 0)
+
+
+class Phase2a1SeedAndRegressionTest(TestCase):
+    """Presets are per-company, and the external/legacy surfaces are untouched."""
+
+    def setUp(self):
+        cache.clear()
+        self.pilot = Company.objects.get(slug='black-dog-store')
+
+    def test_presets_are_seeded_for_the_existing_company(self):
+        self.assertGreaterEqual(self.pilot.areas.count(), 7)
+        self.assertGreaterEqual(self.pilot.roles.count(), 4)
+
+    def test_presets_belong_to_the_company_not_to_the_platform(self):
+        for area in self.pilot.areas.all():
+            self.assertEqual(area.company_id, self.pilot.pk)
+        for role in self.pilot.roles.all():
+            self.assertEqual(role.company_id, self.pilot.pk)
+
+    def test_preset_roles_mirror_the_legacy_capability_sets(self):
+        ventas = self.pilot.roles.get(slug='ventas')
+        self.assertEqual(
+            set(ventas.capabilities), set(LEGACY_ROLE_CAPABILITIES['sales']),
+        )
+        inventario = self.pilot.roles.get(slug='inventario')
+        self.assertEqual(
+            set(inventario.capabilities), set(LEGACY_ROLE_CAPABILITIES['inventory']),
+        )
+
+    def test_backfill_assigns_nobody(self):
+        """Presets are offered, not imposed: no membership was flipped."""
+        self.assertEqual(MembershipRoleAssignment.objects.count(), 0)
+
+    def test_backfill_did_not_touch_legacy_role_fields(self):
+        u = _saas_user('p21_seed_user')
+        self.assertEqual(u.profile.role, UserProfile.ROLE_CUSTOMER)
+        m = Membership.objects.create(user=u, company=self.pilot, role='inventory')
+        self.assertEqual(m.role, 'inventory')
+
+    def test_external_customer_keeps_working_without_membership(self):
+        """A shopper with no Membership is still a customer of the storefront."""
+        user = _saas_user('p21_shopper')
+        self.assertEqual(Membership.objects.filter(user=user).count(), 0)
+
+        c = APIClient()
+        self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
+
+        login = c.post('/api/auth/login/', {
+            'username': 'p21_shopper', 'password': 'Pass123!',
+        }, format='json')
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+        self.assertTrue(login.cookies.get('blackdog_access')['httponly'])
+
+        # ...and gets no internal access
+        c2 = APIClient()
+        c2.force_authenticate(user=user)
+        self.assertEqual(c2.get('/api/admin/roles/').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(c2.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_legacy_ecommerce_rbac_still_works(self):
+        admin = _saas_user('p21_legacy_admin')
+        admin.profile.role = UserProfile.ROLE_ADMIN
+        admin.profile.save()
+        c = APIClient()
+        c.force_authenticate(user=admin)
+        self.assertEqual(c.get('/api/admin/products/').status_code, status.HTTP_200_OK)
+        self.assertEqual(c.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
+
+    def test_custom_roles_do_not_leak_into_legacy_ecommerce_rbac(self):
+        """A powerful CompanyRole must not open the legacy admin surface."""
+        u = _saas_user('p21_custom_only')
+        m = Membership.objects.create(user=u, company=self.pilot, role='customer')
+        _assign(m, _role(self.pilot, 'Todo', sorted(ASSIGNABLE_CAPABILITY_CODES), 'todo'))
+
+        c = APIClient()
+        c.force_authenticate(user=u)
+        # Company surface: yes
+        self.assertEqual(c.get('/api/admin/roles/').status_code, status.HTTP_200_OK)
+        # Legacy e-commerce surface: still governed by UserProfile.role
+        self.assertEqual(c.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(
+            c.get('/api/admin/inventory/summary/').status_code, status.HTTP_403_FORBIDDEN)

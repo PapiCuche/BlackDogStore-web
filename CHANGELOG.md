@@ -9,6 +9,42 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase SaaS 2A.1 — Áreas, roles y permisos configurables por empresa
+
+**Estado: IMPLEMENTADO** (la infraestructura de acceso interno; el dominio
+comercial sigue en RBAC legacy hasta que sus datos estén tenantizados).
+
+**Migraciones: 0016 y 0017.**
+
+### Decisión arquitectónica
+`Portal externo ≠ Control interno ≠ Platform control`, sobre **una sola
+identidad** `User`. Sin `CustomerUser`/`StaffUser`/`MasterUser`.
+
+### IMPLEMENTADO
+- `store/capabilities.py` — catálogo de capacidades **en código**, propiedad de la plataforma (18 asignables, 10 reservadas). Alternativa `PermissionDefinition` evaluada y descartada; razones documentadas.
+- `CompanyArea` — áreas configurables por empresa. **Las áreas no otorgan permisos.**
+- `CompanyRole` — roles configurables por empresa, con su conjunto de capacidades.
+- `MembershipRoleAssignment` — varios roles (y áreas) por membresía, sin duplicar la Membership.
+- `resolve_capabilities()` — resolución **exclusiva**: platform master → roles propios → fallback legacy. Un rol personalizado restringe de verdad.
+- Anti-escalada: un admin de empresa solo delega capacidades que él tiene.
+- Endpoints `/api/admin/{capabilities,areas,roles,membership-role-assignments}/` y `/api/me/company-access/`, todos tenant-scoped.
+- Auditoría: `area_created/updated`, `company_role_created/updated`, `role_permissions_updated`, `role_assignment_created/updated/disabled`.
+- Presets de áreas y roles sembrados **por empresa**, sin asignarlos a nadie.
+- 74 tests nuevos: catálogo, invariantes de modelo, resolución, API cross-tenant, escalada, auditoría y regresión.
+
+### PARCIAL
+- Control interno: las capacidades `available` son asignables pero aún no las consulta ningún endpoint comercial.
+
+### PENDIENTE
+- Conectar `products.*`, `inventory.*`, `sales.*` a endpoints reales (Fase 2B/2C).
+- Módulo y portal de servicio técnico (10 capacidades reservadas).
+- Membership Invitation Flow.
+
+### Sin cambios
+`authentication.py`, JWT, cookies, CSRF, `views.py`, `admin_views.py`, `inventory_views.py`, `tenant_views.py`, `email_services.py`, `pdf_services.py`, `sales_note_services.py`, `inventory_services.py`, migraciones 0001–0015, y todo el frontend.
+
+---
+
 ## Fase SaaS 2A — RBAC tenant-aware y contexto empresarial
 
 **Estado: IMPLEMENTADO** (la infraestructura RBAC empresarial; los endpoints
@@ -46,16 +82,24 @@ comerciales siguen en RBAC legacy hasta que sus datos estén tenantizados).
 de negocio es deliberadamente posterior).
 
 ```
-Fundación SaaS                       IMPLEMENTADO
-Tenant resolution                    PARCIAL
-RBAC tenant-aware infraestructura    IMPLEMENTADO
-RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
-Tenantización Product                PENDIENTE
-Tenantización Order                  PENDIENTE
-Tenantización Inventory              PENDIENTE
-Membership Invitation Flow           PENDIENTE
-Branding                             PENDIENTE
-IMEI/Serial                          PENDIENTE
+Autenticación única                    IMPLEMENTADO
+Portal externo e-commerce              IMPLEMENTADO
+Control interno                        PARCIAL
+Platform master                        IMPLEMENTADO
+Membership                             IMPLEMENTADO
+CompanyArea                            IMPLEMENTADO
+CompanyRole                            IMPLEMENTADO
+Role assignments                       IMPLEMENTADO
+Capabilities configurables por rol     IMPLEMENTADO
+Legacy RBAC fallback                   IMPLEMENTADO / TRANSICIÓN
+Tenant resolution                      PARCIAL
+Portal cliente servicio técnico        PENDIENTE
+Product tenant-aware                   PENDIENTE
+Order tenant-aware                     PENDIENTE
+Inventory tenant-aware                 PENDIENTE
+Membership Invitation Flow             PENDIENTE
+Branding                               PENDIENTE
+IMEI/Serial                            PENDIENTE
 ```
 
 ### IMPLEMENTADO
