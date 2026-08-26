@@ -7025,3 +7025,625 @@ class SaasNoRegressionTest(TestCase):
         log = AdminAuditLog.objects.filter(action='regression_probe').first()
         self.assertIsNotNone(log)
         self.assertIsNone(log.company_id)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A — tenant-aware RBAC
+# ---------------------------------------------------------------------------
+
+from .permissions import (  # noqa: E402
+    CanManageCompanyInventory, CanManageCompanyMemberships, CanManageCompanySales,
+    CanManageCompanySettings, CanManageCompanyTechnicalService, get_user_role,
+)
+from .tenancy import (  # noqa: E402
+    CAP_MANAGE_COMPANY, CAP_MANAGE_INVENTORY, CAP_MANAGE_MEMBERSHIPS,
+    CAP_MANAGE_SALES, CAP_MANAGE_TECHNICAL_SERVICE, CAP_VIEW_COMPANY,
+    COMPANY_CAPABILITIES, GRANTABLE_BY_COMPANY_ADMIN, CompanyContext,
+    build_company_context, can_grant_company_role, can_manage_company,
+    can_manage_company_inventory, can_manage_company_memberships,
+    can_manage_company_sales, can_manage_company_technical_service,
+    get_company_role, has_company_capability, has_company_role,
+    holds_any_capability,
+)
+
+
+class Phase2aCapabilityMatrixTest(TestCase):
+    """The capability matrix is the single source of truth for company roles."""
+
+    def setUp(self):
+        self.company = _saas_company('Matriz SA', 'matriz-sa')
+        self.users = {}
+        for role in ('customer', 'sales', 'inventory', 'technician', 'admin', 'superadmin'):
+            u = _saas_user(f'cap_{role}')
+            Membership.objects.create(user=u, company=self.company, role=role)
+            self.users[role] = u
+
+    def _caps(self, role):
+        u = self.users[role]
+        return {
+            cap for cap in COMPANY_CAPABILITIES
+            if has_company_capability(u, self.company, cap)
+        }
+
+    def test_customer_is_not_operational_staff(self):
+        self.assertEqual(self._caps('customer'), set())
+
+    def test_sales_scope(self):
+        self.assertEqual(self._caps('sales'), {CAP_VIEW_COMPANY, CAP_MANAGE_SALES})
+
+    def test_inventory_scope(self):
+        self.assertEqual(self._caps('inventory'), {CAP_VIEW_COMPANY, CAP_MANAGE_INVENTORY})
+
+    def test_technician_scope(self):
+        self.assertEqual(
+            self._caps('technician'), {CAP_VIEW_COMPANY, CAP_MANAGE_TECHNICAL_SERVICE},
+        )
+
+    def test_admin_holds_every_capability(self):
+        self.assertEqual(self._caps('admin'), set(COMPANY_CAPABILITIES))
+
+    def test_legacy_superadmin_membership_behaves_like_company_admin(self):
+        self.assertEqual(self._caps('superadmin'), set(COMPANY_CAPABILITIES))
+
+    def test_named_helpers_agree_with_the_matrix(self):
+        pairs = [
+            (can_manage_company, CAP_MANAGE_COMPANY),
+            (can_manage_company_memberships, CAP_MANAGE_MEMBERSHIPS),
+            (can_manage_company_inventory, CAP_MANAGE_INVENTORY),
+            (can_manage_company_sales, CAP_MANAGE_SALES),
+            (can_manage_company_technical_service, CAP_MANAGE_TECHNICAL_SERVICE),
+        ]
+        for role, user in self.users.items():
+            for helper, cap in pairs:
+                self.assertEqual(
+                    helper(user, self.company),
+                    has_company_capability(user, self.company, cap),
+                    f'{helper.__name__} desalineado para rol {role}',
+                )
+
+    def test_unknown_capability_raises(self):
+        with self.assertRaises(ValueError):
+            has_company_capability(self.users['admin'], self.company, 'no_existe')
+
+    def test_permission_classes_reuse_the_matrix(self):
+        self.assertEqual(CanManageCompanyMemberships.capability, CAP_MANAGE_MEMBERSHIPS)
+        self.assertEqual(CanManageCompanySettings.capability, CAP_MANAGE_COMPANY)
+        self.assertEqual(CanManageCompanyInventory.capability, CAP_MANAGE_INVENTORY)
+        self.assertEqual(CanManageCompanySales.capability, CAP_MANAGE_SALES)
+        self.assertEqual(
+            CanManageCompanyTechnicalService.capability, CAP_MANAGE_TECHNICAL_SERVICE,
+        )
+
+
+class Phase2aAuthorityLevelsTest(TestCase):
+    """PLATFORM, COMPANY and LEGACY authority stay three separate things."""
+
+    def setUp(self):
+        self.company_a = _saas_company('Empresa A', 'auth-a')
+        self.company_b = _saas_company('Empresa B', 'auth-b', tax_id='20000000009')
+        self.platform = _saas_user('auth_platform', is_superuser=True)
+
+    def test_membership_superadmin_does_not_imply_platform_admin(self):
+        u = _saas_user('auth_msuper')
+        Membership.objects.create(user=u, company=self.company_a, role='superadmin')
+        self.assertFalse(is_platform_admin(u))
+        self.assertFalse(u.is_superuser)
+        # ...and confers nothing in another company
+        self.assertFalse(can_manage_company(u, self.company_b))
+        self.assertIsNone(get_company_role(u, self.company_b))
+
+    def test_legacy_userprofile_superadmin_does_not_imply_platform_admin(self):
+        u = _saas_user('auth_lsuper')
+        u.profile.role = UserProfile.ROLE_SUPERADMIN
+        u.profile.save()
+        self.assertFalse(is_platform_admin(u))
+        self.assertFalse(u.is_superuser)
+
+    def test_legacy_role_grants_nothing_in_the_saas_surface(self):
+        """UserProfile.role must never leak into company authority."""
+        u = _saas_user('auth_legacy_admin')
+        u.profile.role = UserProfile.ROLE_ADMIN
+        u.profile.save()
+        # Legacy RBAC still sees an admin...
+        self.assertEqual(get_user_role(u), UserProfile.ROLE_ADMIN)
+        # ...but the SaaS layer sees nothing, because there is no membership.
+        self.assertIsNone(get_company_role(u, self.company_a))
+        self.assertFalse(can_manage_company(u, self.company_a))
+        self.assertFalse(can_manage_company_memberships(u, self.company_a))
+        self.assertFalse(holds_any_capability(u, CAP_MANAGE_MEMBERSHIPS))
+
+    def test_platform_admin_has_authority_without_any_membership(self):
+        self.assertTrue(is_platform_admin(self.platform))
+        self.assertEqual(Membership.objects.filter(user=self.platform).count(), 0)
+        self.assertTrue(can_manage_company(self.platform, self.company_a))
+        self.assertTrue(can_manage_company(self.platform, self.company_b))
+
+    def test_platform_admin_has_no_company_ROLE(self):
+        """Platform authority is not a company role — the two must not merge."""
+        self.assertIsNone(get_company_role(self.platform, self.company_a))
+
+    def test_inactive_membership_confers_nothing(self):
+        u = _saas_user('auth_inactive')
+        Membership.objects.create(
+            user=u, company=self.company_a, role='admin', is_active=False,
+        )
+        self.assertIsNone(get_company_role(u, self.company_a))
+        self.assertFalse(can_manage_company(u, self.company_a))
+        self.assertFalse(holds_any_capability(u, CAP_MANAGE_MEMBERSHIPS))
+
+    def test_inactive_company_confers_nothing(self):
+        u = _saas_user('auth_inactive_co')
+        Membership.objects.create(user=u, company=self.company_a, role='admin')
+        self.company_a.is_active = False
+        self.company_a.save(update_fields=['is_active'])
+        self.assertIsNone(get_company_role(u, self.company_a))
+        self.assertFalse(can_manage_company(u, self.company_a))
+
+    def test_user_without_membership_has_zero_saas_permissions(self):
+        u = _saas_user('auth_orphan')
+        for cap in COMPANY_CAPABILITIES:
+            self.assertFalse(has_company_capability(u, self.company_a, cap))
+            self.assertFalse(holds_any_capability(u, cap))
+
+
+class Phase2aMultiCompanyRoleTest(TestCase):
+    """A user with several memberships keeps a distinct role in each company."""
+
+    def setUp(self):
+        self.company_a = _saas_company('Empresa A', 'multi-a')
+        self.company_b = _saas_company('Empresa B', 'multi-b', tax_id='20000000010')
+        self.company_c = _saas_company('Empresa C', 'multi-c', tax_id='20000000011')
+        self.user = _saas_user('multi_user')
+        Membership.objects.create(user=self.user, company=self.company_a, role='admin')
+        Membership.objects.create(user=self.user, company=self.company_b, role='technician')
+
+    def test_roles_are_per_company(self):
+        self.assertEqual(get_company_role(self.user, self.company_a), 'admin')
+        self.assertEqual(get_company_role(self.user, self.company_b), 'technician')
+        self.assertIsNone(get_company_role(self.user, self.company_c))
+
+    def test_admin_in_a_is_not_admin_in_b(self):
+        self.assertTrue(can_manage_company(self.user, self.company_a))
+        self.assertFalse(can_manage_company(self.user, self.company_b))
+
+    def test_technician_in_b_is_not_technician_authority_in_a_only(self):
+        # admin in A subsumes technical service; technician in B does not manage memberships
+        self.assertTrue(can_manage_company_technical_service(self.user, self.company_a))
+        self.assertTrue(can_manage_company_technical_service(self.user, self.company_b))
+        self.assertTrue(can_manage_company_memberships(self.user, self.company_a))
+        self.assertFalse(can_manage_company_memberships(self.user, self.company_b))
+
+    def test_no_global_admin_is_implied(self):
+        self.assertFalse(is_platform_admin(self.user))
+        self.assertFalse(self.user.is_superuser)
+
+    def test_has_company_role_is_scoped(self):
+        self.assertTrue(has_company_role(self.user, self.company_a, ['admin']))
+        self.assertFalse(has_company_role(self.user, self.company_b, ['admin']))
+
+    def test_holds_any_capability_is_a_coarse_gate_only(self):
+        """Holding a capability somewhere must never imply holding it everywhere."""
+        self.assertTrue(holds_any_capability(self.user, CAP_MANAGE_MEMBERSHIPS))
+        self.assertFalse(can_manage_company_memberships(self.user, self.company_b))
+
+
+class Phase2aCompanyContextTest(TestCase):
+    """CompanyContext packages authority without trusting client input."""
+
+    def setUp(self):
+        self.company_a = _saas_company('Empresa A', 'ctx-a')
+        self.company_b = _saas_company('Empresa B', 'ctx-b', tax_id='20000000012')
+        self.user = _saas_user('ctx_user')
+        Membership.objects.create(user=self.user, company=self.company_a, role='inventory')
+        self.platform = _saas_user('ctx_platform', is_superuser=True)
+
+    def test_context_from_single_membership(self):
+        ctx = build_company_context(self.user)
+        self.assertIsInstance(ctx, CompanyContext)
+        self.assertEqual(ctx.company, self.company_a)
+        self.assertEqual(ctx.role, 'inventory')
+        self.assertFalse(ctx.is_platform_admin)
+        self.assertTrue(ctx.can(CAP_MANAGE_INVENTORY))
+        self.assertFalse(ctx.can(CAP_MANAGE_MEMBERSHIPS))
+        self.assertTrue(ctx.has_role('inventory'))
+
+    def test_context_rejects_a_foreign_company_id(self):
+        with self.assertRaises(CrossTenantError):
+            build_company_context(self.user, requested_company_id=self.company_b.pk)
+
+    def test_context_requires_a_choice_when_multi_company(self):
+        Membership.objects.create(user=self.user, company=self.company_b, role='sales')
+        with self.assertRaises(NoTenantError):
+            build_company_context(self.user)
+        ctx = build_company_context(self.user, requested_company_id=self.company_b.pk)
+        self.assertEqual(ctx.role, 'sales')
+
+    def test_platform_admin_context_has_no_role_but_full_authority(self):
+        ctx = build_company_context(self.platform, requested_company_id=self.company_a.pk)
+        self.assertTrue(ctx.is_platform_admin)
+        self.assertIsNone(ctx.role)
+        self.assertIsNone(ctx.membership)
+        for cap in COMPANY_CAPABILITIES:
+            self.assertTrue(ctx.can(cap))
+
+    def test_context_capability_matches_the_matrix(self):
+        ctx = build_company_context(self.user)
+        for cap in COMPANY_CAPABILITIES:
+            self.assertEqual(
+                ctx.can(cap), has_company_capability(self.user, self.company_a, cap),
+            )
+
+    def test_context_unknown_capability_raises(self):
+        with self.assertRaises(ValueError):
+            build_company_context(self.user).can('no_existe')
+
+
+class Phase2aPrivilegeEscalationTest(TestCase):
+    """Membership endpoints must not be a path to platform authority."""
+
+    def setUp(self):
+        cache.clear()
+        self.company_a = _saas_company('Empresa A', 'esc-a')
+        self.company_b = _saas_company('Empresa B', 'esc-b', tax_id='20000000013')
+        self.branch_a = _saas_branch(self.company_a, name='Sucursal A')
+
+        self.admin_a = _saas_user('esc_admin_a')
+        self.sales_a = _saas_user('esc_sales_a')
+        self.inventory_a = _saas_user('esc_inv_a')
+        self.technician_a = _saas_user('esc_tech_a')
+        self.admin_b = _saas_user('esc_admin_b')
+        self.target = _saas_user('esc_target')
+        self.platform = _saas_user('esc_platform', is_superuser=True)
+
+        Membership.objects.create(user=self.admin_a, company=self.company_a, role='admin')
+        Membership.objects.create(user=self.sales_a, company=self.company_a, role='sales')
+        Membership.objects.create(user=self.inventory_a, company=self.company_a, role='inventory')
+        Membership.objects.create(user=self.technician_a, company=self.company_a, role='technician')
+        self.m_admin_b = Membership.objects.create(
+            user=self.admin_b, company=self.company_b, role='admin',
+        )
+
+    def _as(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def _post(self, actor, **payload):
+        # `actor` is who calls; payload keys go into the request body.
+        body = {'user': self.target.pk, 'company': self.company_a.pk, 'role': 'sales'}
+        body.update(payload)
+        return self._as(actor).post('/api/admin/memberships/', body, format='json')
+
+    # --- who may administer memberships ---
+
+    def test_company_admin_may_grant_inside_own_company(self):
+        self.assertEqual(self._post(self.admin_a).status_code, status.HTTP_201_CREATED)
+
+    def test_sales_may_not_administer_memberships(self):
+        res = self._post(self.sales_a)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Membership.objects.filter(user=self.target).exists())
+
+    def test_inventory_may_not_administer_memberships(self):
+        self.assertEqual(self._post(self.inventory_a).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_technician_may_not_administer_memberships(self):
+        self.assertEqual(self._post(self.technician_a).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_other_company_admin_gets_404_not_403(self):
+        """Company B's admin must not even learn that company A exists."""
+        res = self._post(self.admin_b)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # --- superadmin cannot be handed out by a company admin ---
+
+    def test_company_admin_cannot_grant_legacy_superadmin(self):
+        res = self._post(self.admin_a, role='superadmin')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(
+            Membership.objects.filter(user=self.target, role='superadmin').exists()
+        )
+
+    def test_platform_admin_may_still_grant_legacy_superadmin(self):
+        res = self._post(self.platform, role='superadmin')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_company_admin_cannot_escalate_an_existing_membership_to_superadmin(self):
+        m = Membership.objects.create(
+            user=self.target, company=self.company_a, role='sales',
+        )
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/memberships/{m.pk}/', {'role': 'superadmin'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        m.refresh_from_db()
+        self.assertEqual(m.role, 'sales')
+
+    def test_granting_superadmin_never_touches_is_superuser(self):
+        self._post(self.platform, role='superadmin')
+        self.target.refresh_from_db()
+        self.assertFalse(self.target.is_superuser)
+        self.assertFalse(is_platform_admin(self.target))
+
+    def test_grantable_set_excludes_superadmin_for_company_admins(self):
+        self.assertNotIn('superadmin', GRANTABLE_BY_COMPANY_ADMIN)
+        self.assertFalse(
+            can_grant_company_role(self.admin_a, self.company_a, 'superadmin')
+        )
+        self.assertTrue(
+            can_grant_company_role(self.platform, self.company_a, 'superadmin')
+        )
+
+    # --- immutable fields ---
+
+    def test_membership_company_cannot_be_changed(self):
+        m = Membership.objects.create(user=self.target, company=self.company_a, role='sales')
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/memberships/{m.pk}/',
+            {'company': self.company_b.pk, 'role': 'sales'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        m.refresh_from_db()
+        self.assertEqual(m.company_id, self.company_a.pk)  # silently ignored, not moved
+
+    def test_membership_user_cannot_be_changed(self):
+        m = Membership.objects.create(user=self.target, company=self.company_a, role='sales')
+        other = _saas_user('esc_other_target')
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/memberships/{m.pk}/', {'user': other.pk, 'role': 'inventory'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        m.refresh_from_db()
+        self.assertEqual(m.user_id, self.target.pk)
+
+    def test_api_never_touches_userprofile_role(self):
+        before = self.target.profile.role
+        self._post(self.admin_a, role='admin')
+        self.target.profile.refresh_from_db()
+        self.assertEqual(self.target.profile.role, before)
+        self.assertEqual(before, UserProfile.ROLE_CUSTOMER)
+
+    def test_api_never_touches_is_superuser(self):
+        self._post(self.admin_a, role='admin')
+        self.target.refresh_from_db()
+        self.assertFalse(self.target.is_superuser)
+
+    # --- enumeration ---
+
+    def test_missing_user_and_duplicate_membership_answer_identically(self):
+        """The endpoint must not be a platform-wide user-id oracle."""
+        Membership.objects.create(user=self.target, company=self.company_a, role='sales')
+        duplicate = self._post(self.admin_a, user=self.target.pk)
+        missing = self._post(self.admin_a, user=999999)
+        self.assertEqual(duplicate.status_code, missing.status_code)
+        self.assertEqual(duplicate.data['detail'], missing.data['detail'])
+        self.assertEqual(duplicate.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_failed_grant_leaks_no_user_details(self):
+        res = self._post(self.admin_a, user=999999)
+        raw = str(res.data).lower()
+        for leak in ('username', 'email', 'esc_', '@'):
+            self.assertNotIn(leak, raw)
+
+
+class Phase2aAuditTest(TestCase):
+    """Company-scoped actions are audited with actor, company and safe metadata."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Audit SA', 'audit-sa')
+        self.branch = _saas_branch(self.company, name='Sucursal auditoría')
+        self.admin = _saas_user('audit_admin')
+        Membership.objects.create(user=self.admin, company=self.company, role='admin')
+        self.target = _saas_user('audit_target')
+        self.platform = _saas_user('audit_platform', is_superuser=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _all_metadata(self):
+        return ' '.join(str(log.metadata) for log in AdminAuditLog.objects.all()).lower()
+
+    def test_membership_created_is_audited_with_company(self):
+        self.client.post('/api/admin/memberships/', {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'sales',
+        }, format='json')
+        log = AdminAuditLog.objects.filter(action='membership_created').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.actor, self.admin)
+        self.assertEqual(log.company_id, self.company.pk)
+        self.assertIsNotNone(log.created_at)
+
+    def test_membership_updated_is_audited_with_company(self):
+        m = Membership.objects.create(user=self.target, company=self.company, role='sales')
+        self.client.patch(
+            f'/api/admin/memberships/{m.pk}/', {'role': 'inventory'}, format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='membership_updated').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.company.pk)
+        self.assertEqual(log.metadata['role'], 'inventory')
+
+    def test_branch_created_is_audited_with_company(self):
+        self.client.post('/api/admin/branches/', {
+            'company': self.company.pk, 'name': 'Sucursal nueva',
+        }, format='json')
+        log = AdminAuditLog.objects.filter(action='branch_created').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.company.pk)
+
+    def test_company_created_and_updated_are_audited(self):
+        c = APIClient()
+        c.force_authenticate(user=self.platform)
+        c.post('/api/admin/companies/', {'name': 'Nueva', 'slug': 'nueva-sa'}, format='json')
+        created = AdminAuditLog.objects.filter(action='company_created').first()
+        self.assertIsNotNone(created)
+        self.assertIsNotNone(created.company_id)
+
+        c.patch(f'/api/admin/companies/{created.company_id}/', {'is_active': False}, format='json')
+        updated = AdminAuditLog.objects.filter(action='company_updated').first()
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.company_id, created.company_id)
+
+    def test_audit_metadata_carries_no_secrets(self):
+        self.client.post('/api/admin/memberships/', {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'sales',
+        }, format='json')
+        raw = self._all_metadata()
+        for secret in (
+            'password', 'pass123', 'jwt', 'bearer', 'blackdog_access',
+            'blackdog_refresh', 'csrf', 'stripe', 'sk_', 'pi_', 'cs_', 'token',
+        ):
+            self.assertNotIn(secret, raw, f'metadata expone "{secret}"')
+
+    def test_rejected_grant_creates_no_audit_log(self):
+        sales = _saas_user('audit_sales')
+        Membership.objects.create(user=sales, company=self.company, role='sales')
+        c = APIClient()
+        c.force_authenticate(user=sales)
+        c.post('/api/admin/memberships/', {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'admin',
+        }, format='json')
+        self.assertEqual(AdminAuditLog.objects.filter(action='membership_created').count(), 0)
+
+
+class Phase2aLegacyRbacRegressionTest(TestCase):
+    """
+    Legacy RBAC must keep working untouched.
+
+    Product, Order, StockMovement and SalesNote have no `company` column, so the
+    endpoints that manage them still authorise through UserProfile.role. Moving
+    them to Membership before the data is tenantised would grant tenant-shaped
+    permissions over globally-shared rows — a false sense of isolation.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Legacy SA', 'legacy-sa')
+        self.product = Product.objects.create(
+            name='Producto Legacy 2A', slug='producto-legacy-2a',
+            price=Decimal('500.00'), inventory=30,
+        )
+        self.users = {}
+        for role in ('customer', 'sales', 'inventory', 'technician', 'admin'):
+            u = _saas_user(f'legacy_{role}')
+            u.profile.role = role
+            u.profile.save()
+            self.users[role] = u
+        self.users['superadmin'] = _saas_user('legacy_superadmin', is_superuser=True)
+
+    def _as(self, role):
+        c = APIClient()
+        c.force_authenticate(user=self.users[role])
+        return c
+
+    def test_get_user_role_still_reads_userprofile(self):
+        for role in ('customer', 'sales', 'inventory', 'technician', 'admin'):
+            self.assertEqual(get_user_role(self.users[role]), role)
+        self.assertEqual(get_user_role(self.users['superadmin']), 'superadmin')
+
+    def test_legacy_roles_work_without_any_membership(self):
+        """The legacy surface must not start requiring a Membership."""
+        self.assertEqual(Membership.objects.count(), 0)
+        self.assertEqual(
+            self._as('admin').get('/api/admin/products/').status_code, status.HTTP_200_OK,
+        )
+
+    def test_can_view_admin_products(self):
+        for role in ('inventory', 'sales', 'admin', 'superadmin'):
+            self.assertEqual(
+                self._as(role).get('/api/admin/products/').status_code,
+                status.HTTP_200_OK, role,
+            )
+        for role in ('customer', 'technician'):
+            self.assertEqual(
+                self._as(role).get('/api/admin/products/').status_code,
+                status.HTTP_403_FORBIDDEN, role,
+            )
+
+    def test_can_manage_products(self):
+        payload = {'name': 'Nuevo Legacy', 'slug': 'nuevo-legacy-2a', 'price': '10.00', 'inventory': 1}
+        self.assertEqual(
+            self._as('sales').post('/api/admin/products/', payload, format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self._as('admin').post('/api/admin/products/', payload, format='json').status_code,
+            status.HTTP_201_CREATED,
+        )
+
+    def test_can_manage_inventory_legacy_adjust(self):
+        res = self._as('inventory').post(
+            f'/api/admin/products/{self.product.pk}/inventory-adjust/',
+            {'delta': 3, 'reason': 'Legacy 2A'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self._as('sales').post(
+                f'/api/admin/products/{self.product.pk}/inventory-adjust/',
+                {'delta': 1, 'reason': 'no'}, format='json',
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_can_view_admin_orders_and_manage_orders(self):
+        for role in ('inventory', 'sales', 'admin', 'superadmin'):
+            self.assertEqual(
+                self._as(role).get('/api/admin/orders/').status_code,
+                status.HTTP_200_OK, role,
+            )
+        for role in ('customer', 'technician'):
+            self.assertEqual(
+                self._as(role).get('/api/admin/orders/').status_code,
+                status.HTTP_403_FORBIDDEN, role,
+            )
+
+    def test_can_view_inventory_reports_and_manage_stock_movements(self):
+        for role in ('inventory', 'admin', 'superadmin'):
+            self.assertEqual(
+                self._as(role).get('/api/admin/inventory/summary/').status_code,
+                status.HTTP_200_OK, role,
+            )
+        for role in ('customer', 'sales', 'technician'):
+            self.assertEqual(
+                self._as(role).get('/api/admin/inventory/summary/').status_code,
+                status.HTTP_403_FORBIDDEN, role,
+            )
+
+        res = self._as('inventory').post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk, 'movement_type': 'manual_entry',
+            'quantity': 2, 'reason': 'Legacy 2A',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            self._as('sales').post('/api/admin/inventory/movements/', {
+                'product_id': self.product.pk, 'movement_type': 'manual_entry',
+                'quantity': 1, 'reason': 'no',
+            }, format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_can_manage_sales_notes(self):
+        order = _p60_paid_order(self.product, quantity=1)
+        for role in ('sales', 'admin', 'superadmin'):
+            res = self._as(role).get(f'/api/admin/orders/{order.pk}/sales-note/')
+            self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_404_NOT_FOUND), role)
+        for role in ('customer', 'inventory', 'technician'):
+            self.assertEqual(
+                self._as(role).get(f'/api/admin/orders/{order.pk}/sales-note/').status_code,
+                status.HTTP_403_FORBIDDEN, role,
+            )
+
+    def test_saas_membership_does_not_grant_legacy_permissions(self):
+        """A company admin with a customer UserProfile stays out of legacy admin."""
+        u = _saas_user('legacy_membership_only')
+        Membership.objects.create(user=u, company=self.company, role='admin')
+        self.assertEqual(u.profile.role, UserProfile.ROLE_CUSTOMER)
+        c = APIClient()
+        c.force_authenticate(user=u)
+        self.assertEqual(
+            c.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            c.get('/api/admin/inventory/summary/').status_code, status.HTTP_403_FORBIDDEN,
+        )

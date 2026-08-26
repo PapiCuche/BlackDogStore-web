@@ -9,20 +9,53 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase SaaS 2A — RBAC tenant-aware y contexto empresarial
+
+**Estado: IMPLEMENTADO** (la infraestructura RBAC empresarial; los endpoints
+comerciales siguen en RBAC legacy hasta que sus datos estén tenantizados).
+
+**Sin migraciones.** Esta fase no cambia el esquema.
+
+### IMPLEMENTADO
+- `tenancy.COMPANY_CAPABILITIES` — matriz de capacidades empresariales, fuente única de verdad.
+- Helpers `get_company_role`, `has_company_role`, `has_company_capability`, `can_manage_company`, `can_manage_company_memberships/_inventory/_sales/_technical_service`, `can_grant_company_role`, `holds_any_capability`.
+- `CompanyContext` + `build_company_context()`: empresa, membresía, rol y autoridad de plataforma en una estructura, resueltos sin confiar en el cliente.
+- Clases DRF `CanManageCompanyMemberships`, `CanManageCompanySettings`, `CanManageCompanyInventory`, `CanManageCompanySales`, `CanManageCompanyTechnicalService` — delegan en la matriz, no redeclaran roles.
+- Separación estricta PLATFORM / COMPANY / LEGACY con tests explícitos.
+- Un admin de empresa ya no puede asignar el rol legacy `superadmin` (403); un platform admin sí.
+- `POST /api/admin/memberships/` deja de ser oráculo de ids de usuario: misma respuesta para "no existe" y "ya es miembro".
+- `sales`/`inventory`/`technician` reciben 403 (no 404) al intentar administrar membresías de su propia empresa.
+- 63 tests nuevos: matriz de capacidades, niveles de autoridad, multi-empresa, `CompanyContext`, escalada de privilegios, auditoría y regresión del RBAC legacy.
+
+### PARCIAL
+- Tenant resolution: sin cambios respecto a Fase 1; sigue sin aplicarse al e-commerce.
+
+### PENDIENTE
+- Conectar `CanManageCompanyInventory` / `Sales` / `TechnicalService` a endpoints reales (requiere Fase 2B/2C).
+- **Membership Invitation Flow** — onboarding con consentimiento del destinatario.
+- Normalizar `UserProfile.role == "superadmin"` frente a `User.is_superuser`.
+
+### Sin cambios
+`authentication.py`, JWT, cookies, CSRF, `AccountToken`, password reset, verificación de email, `views.py`, `admin_views.py`, `inventory_views.py`, `email_services.py`, `pdf_services.py`, `sales_note_services.py`, `inventory_services.py`, migraciones, y todo el frontend.
+
+---
+
 ## Fase SaaS 1 — Fundación multiempresa
 
 **Estado: PARCIAL** (la fundación está completa; la tenantización de los modelos
 de negocio es deliberadamente posterior).
 
 ```
-Fundación SaaS                IMPLEMENTADO
-Tenant resolution             PARCIAL
-RBAC tenant-aware             PENDIENTE
-Tenantización Product         PENDIENTE
-Tenantización Order           PENDIENTE
-Tenantización Inventory       PENDIENTE
-Branding/configuración        PENDIENTE
-Serial/IMEI                   PENDIENTE
+Fundación SaaS                       IMPLEMENTADO
+Tenant resolution                    PARCIAL
+RBAC tenant-aware infraestructura    IMPLEMENTADO
+RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
+Tenantización Product                PENDIENTE
+Tenantización Order                  PENDIENTE
+Tenantización Inventory              PENDIENTE
+Membership Invitation Flow           PENDIENTE
+Branding                             PENDIENTE
+IMEI/Serial                          PENDIENTE
 ```
 
 ### IMPLEMENTADO

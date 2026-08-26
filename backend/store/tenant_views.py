@@ -39,7 +39,9 @@ from .serializers import (
 from .tenancy import (
     CrossTenantError,
     assert_branch_in_company,
-    is_company_admin,
+    can_grant_company_role,
+    can_manage_company,
+    can_manage_company_memberships,
     is_platform_admin,
     scope_queryset,
     visible_companies,
@@ -52,6 +54,17 @@ logger = logging.getLogger(__name__)
 # Deliberately identical for "not found" and "not yours" — see module docstring.
 _NOT_FOUND = 'Empresa no encontrada o sin acceso.'
 _MEMBERSHIP_NOT_FOUND = 'Membresía no encontrada o sin acceso.'
+
+# One message for every reason a target user cannot be added: does not exist,
+# already a member, not addable. Distinct messages would let a company admin
+# probe which user ids exist platform-wide. See PENDING — Membership Invitation
+# Flow in docs/saas-multiempresa.md: proper consent-based onboarding removes the
+# need to reference foreign user ids at all.
+_TARGET_USER_UNAVAILABLE = 'No se puede asignar una membresía a ese usuario.'
+_ROLE_NOT_GRANTABLE = (
+    'No tienes autoridad para asignar ese rol. El rol "superadmin" es un valor '
+    'heredado y solo un administrador de plataforma puede asignarlo.'
+)
 
 
 class AdminCompanyListView(APIView):
@@ -176,7 +189,8 @@ class AdminBranchListView(APIView):
         company = ser.validated_data['company']
 
         # Untrusted company id: must be one the caller actually administers.
-        if not (is_platform_admin(request.user) or is_company_admin(request.user, company)):
+        # can_manage_company() already short-circuits for platform admins.
+        if not can_manage_company(request.user, company):
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         branch = ser.save()
@@ -224,17 +238,22 @@ class AdminMembershipListView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        company = Company.objects.filter(pk=data['company']).first()
-        # Same response for "no such company" and "not your company".
-        if not company or not (
-            is_platform_admin(request.user) or is_company_admin(request.user, company)
-        ):
+        # A company the caller cannot even see is indistinguishable from one that
+        # does not exist (404). A company they CAN see but may not administer is
+        # an authority problem, not a visibility one (403).
+        company = visible_companies(request.user).filter(pk=data['company']).first()
+        if not company:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
-
-        target_user = User.objects.filter(pk=data['user']).first()
-        if not target_user:
+        if not can_manage_company_memberships(request.user, company):
             return Response(
-                {'detail': 'Usuario no encontrado.'}, status=status.HTTP_404_NOT_FOUND
+                {'detail': 'Se requiere rol de administrador de la empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # A company admin may not hand out the legacy `superadmin` value.
+        if not can_grant_company_role(request.user, company, data['role']):
+            return Response(
+                {'detail': _ROLE_NOT_GRANTABLE}, status=status.HTTP_403_FORBIDDEN
             )
 
         branch = None
@@ -249,10 +268,14 @@ class AdminMembershipListView(APIView):
             except CrossTenantError as exc:
                 return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        if Membership.objects.filter(user=target_user, company=company).exists():
+        # One response for every reason the target cannot be used, so the
+        # endpoint is not a platform-wide user-id oracle.
+        target_user = User.objects.filter(pk=data['user']).first()
+        if target_user is None or Membership.objects.filter(
+            user=target_user, company=company,
+        ).exists():
             return Response(
-                {'detail': 'El usuario ya tiene una membresía en esta empresa.'},
-                status=status.HTTP_400_BAD_REQUEST,
+                {'detail': _TARGET_USER_UNAVAILABLE}, status=status.HTTP_400_BAD_REQUEST
             )
 
         membership = Membership.objects.create(
@@ -315,10 +338,7 @@ class AdminMembershipDetailView(APIView):
             )
 
         # Visibility is not enough to WRITE: the caller must administer the company.
-        if not (
-            is_platform_admin(request.user)
-            or is_company_admin(request.user, membership.company)
-        ):
+        if not can_manage_company_memberships(request.user, membership.company):
             return Response(
                 {'detail': 'Se requiere rol de administrador de la empresa.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -327,6 +347,16 @@ class AdminMembershipDetailView(APIView):
         ser = MembershipUpdateSerializer(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
+
+        # `user` and `company` are absent from the update serializer by design:
+        # changing either would be a different grant, not an edit. Escalating a
+        # membership to the legacy `superadmin` value is a platform-admin action.
+        if 'role' in data and not can_grant_company_role(
+            request.user, membership.company, data['role'],
+        ):
+            return Response(
+                {'detail': _ROLE_NOT_GRANTABLE}, status=status.HTTP_403_FORBIDDEN
+            )
 
         if 'branch' in data:
             if data['branch'] is None:

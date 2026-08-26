@@ -1,6 +1,13 @@
 from rest_framework.permissions import BasePermission
 
 from .models import UserProfile
+from .tenancy import (
+    CAP_MANAGE_COMPANY,
+    CAP_MANAGE_INVENTORY,
+    CAP_MANAGE_MEMBERSHIPS,
+    CAP_MANAGE_SALES,
+    CAP_MANAGE_TECHNICAL_SERVICE,
+)
 
 _ADMIN_ROLES = frozenset([UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN])
 _MANAGE_ORDERS_ROLES = frozenset([
@@ -187,7 +194,8 @@ class HasCompanyMembership(BasePermission):
 
     A user with no membership — or whose only membership is inactive, or whose
     company is deactivated — is rejected. Business access is never implied by
-    merely being authenticated.
+    merely being authenticated, and NEVER by UserProfile.role: the legacy global
+    role grants nothing in the SaaS surface.
     """
     message = 'El usuario no pertenece a ninguna empresa activa.'
 
@@ -196,3 +204,58 @@ class HasCompanyMembership(BasePermission):
         if is_platform_admin(request.user):
             return True
         return active_memberships(request.user).exists()
+
+
+class _CompanyCapabilityPermission(BasePermission):
+    """
+    Coarse view-level gate: the caller holds `capability` in AT LEAST ONE company.
+
+    This exists so a request that could not succeed in any company is rejected
+    before its payload is parsed. It is NEVER a substitute for the per-company
+    check the view performs against the company named in the request — the
+    company only becomes known once the body/URL is read.
+
+    Role sets live in tenancy.COMPANY_CAPABILITIES; nothing is redeclared here.
+    """
+
+    capability: str = ''
+
+    def has_permission(self, request, view):
+        from .tenancy import holds_any_capability
+        return holds_any_capability(request.user, self.capability)
+
+
+class CanManageCompanyMemberships(_CompanyCapabilityPermission):
+    """Company administrators (in some company) and platform administrators."""
+    capability = CAP_MANAGE_MEMBERSHIPS
+    message = 'Se requiere rol de administrador de la empresa.'
+
+
+class CanManageCompanySettings(_CompanyCapabilityPermission):
+    """Company administrators. Reserved for company configuration endpoints."""
+    capability = CAP_MANAGE_COMPANY
+    message = 'Se requiere rol de administrador de la empresa.'
+
+
+class CanManageCompanyInventory(_CompanyCapabilityPermission):
+    """
+    Company-scoped inventory authority.
+
+    NOT wired to /api/admin/inventory/ yet: StockMovement has no company column,
+    so switching those endpoints now would grant tenant-shaped permissions over
+    globally-shared data — a false sense of isolation. See docs/saas-multiempresa.md.
+    """
+    capability = CAP_MANAGE_INVENTORY
+    message = 'Se requiere rol de inventario de la empresa.'
+
+
+class CanManageCompanySales(_CompanyCapabilityPermission):
+    """Company-scoped sales authority. Not wired to legacy sales endpoints yet."""
+    capability = CAP_MANAGE_SALES
+    message = 'Se requiere rol de ventas de la empresa.'
+
+
+class CanManageCompanyTechnicalService(_CompanyCapabilityPermission):
+    """Company-scoped technical-service authority. No endpoint uses it yet."""
+    capability = CAP_MANAGE_TECHNICAL_SERVICE
+    message = 'Se requiere rol de servicio técnico de la empresa.'

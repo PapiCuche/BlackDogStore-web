@@ -40,6 +40,8 @@ admin endpoints introduced here.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .models import Branch, Company, Membership, UserProfile
 
 
@@ -104,15 +106,205 @@ def has_company_access(user, company) -> bool:
 
 
 def company_role(user, company) -> str | None:
-    """The caller's role inside `company`, or None if they have no access."""
+    """Deprecated alias of get_company_role(), kept so Phase 1 imports keep working."""
+    return get_company_role(user, company)
+
+
+def is_company_admin(user, company) -> bool:
+    """
+    Company-level administrator (NOT a platform administrator).
+
+    Kept as the readable shorthand for the manage_company capability; the role
+    set lives in COMPANY_CAPABILITIES, not here.
+    """
+    return has_company_role(user, company, COMPANY_CAPABILITIES[CAP_MANAGE_COMPANY])
+
+
+# ---------------------------------------------------------------------------
+# Company capability matrix — SINGLE SOURCE OF TRUTH
+# ---------------------------------------------------------------------------
+#
+# Which company roles may do what INSIDE their own company. Views must never
+# re-declare role sets; they ask the helpers below.
+#
+# Scope note: every capability here is COMPANY-scoped. Holding one in company A
+# says nothing about company B, and nothing at all about platform authority —
+# that is `User.is_superuser` and only that.
+#
+# `superadmin` is a LEGACY role value kept for backwards compatibility. As a
+# Membership role it behaves like a company administrator and stays company
+# scoped; it never implies `is_platform_admin`. See can_grant_company_role().
+
+CAP_VIEW_COMPANY = 'view_company'
+CAP_MANAGE_COMPANY = 'manage_company'
+CAP_MANAGE_MEMBERSHIPS = 'manage_memberships'
+CAP_MANAGE_INVENTORY = 'manage_inventory'
+CAP_MANAGE_SALES = 'manage_sales'
+CAP_MANAGE_TECHNICAL_SERVICE = 'manage_technical_service'
+
+_ADMIN_ROLES = frozenset([UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN])
+
+COMPANY_CAPABILITIES: dict[str, frozenset[str]] = {
+    CAP_VIEW_COMPANY: frozenset([
+        UserProfile.ROLE_SALES, UserProfile.ROLE_INVENTORY,
+        UserProfile.ROLE_TECHNICIAN, *_ADMIN_ROLES,
+    ]),
+    CAP_MANAGE_COMPANY: _ADMIN_ROLES,
+    CAP_MANAGE_MEMBERSHIPS: _ADMIN_ROLES,
+    CAP_MANAGE_INVENTORY: frozenset([UserProfile.ROLE_INVENTORY, *_ADMIN_ROLES]),
+    CAP_MANAGE_SALES: frozenset([UserProfile.ROLE_SALES, *_ADMIN_ROLES]),
+    CAP_MANAGE_TECHNICAL_SERVICE: frozenset([UserProfile.ROLE_TECHNICIAN, *_ADMIN_ROLES]),
+}
+
+# `customer` is a buyer, never operational staff: it appears in no capability.
+assert all(
+    UserProfile.ROLE_CUSTOMER not in roles for roles in COMPANY_CAPABILITIES.values()
+), 'customer must never hold a company capability'
+
+# Roles a COMPANY administrator may hand out. `superadmin` is withheld: it is a
+# legacy value whose meaning is still being normalised, so only a platform
+# administrator may assign it (needed for migration/administration).
+GRANTABLE_BY_COMPANY_ADMIN = frozenset([
+    UserProfile.ROLE_CUSTOMER, UserProfile.ROLE_SALES,
+    UserProfile.ROLE_INVENTORY, UserProfile.ROLE_TECHNICIAN,
+    UserProfile.ROLE_ADMIN,
+])
+
+
+def get_company_role(user, company) -> str | None:
+    """
+    The caller's role INSIDE `company`, or None.
+
+    Returns None for a platform administrator with no membership: platform
+    authority is not a company role, and conflating the two is exactly the bug
+    this separation exists to prevent.
+    """
     membership = get_membership(user, company)
     return membership.role if membership else None
 
 
-def is_company_admin(user, company) -> bool:
-    """Company-level administrator (not necessarily a platform administrator)."""
-    return company_role(user, company) in (
-        UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+def has_company_role(user, company, allowed_roles) -> bool:
+    """Whether the caller holds one of `allowed_roles` inside `company`."""
+    role = get_company_role(user, company)
+    return role is not None and role in set(allowed_roles)
+
+
+def has_company_capability(user, company, capability: str) -> bool:
+    """
+    Whether the caller may perform `capability` inside `company`.
+
+    A platform administrator may do anything, in any company. Everyone else needs
+    an active membership, in an active company, whose role holds the capability.
+    """
+    if capability not in COMPANY_CAPABILITIES:
+        raise ValueError(f'Capacidad desconocida: {capability}')
+    if is_platform_admin(user):
+        return True
+    return has_company_role(user, company, COMPANY_CAPABILITIES[capability])
+
+
+def can_view_company(user, company) -> bool:
+    return has_company_capability(user, company, CAP_VIEW_COMPANY)
+
+
+def can_manage_company(user, company) -> bool:
+    return has_company_capability(user, company, CAP_MANAGE_COMPANY)
+
+
+def can_manage_company_memberships(user, company) -> bool:
+    return has_company_capability(user, company, CAP_MANAGE_MEMBERSHIPS)
+
+
+def can_manage_company_inventory(user, company) -> bool:
+    return has_company_capability(user, company, CAP_MANAGE_INVENTORY)
+
+
+def can_manage_company_sales(user, company) -> bool:
+    return has_company_capability(user, company, CAP_MANAGE_SALES)
+
+
+def can_manage_company_technical_service(user, company) -> bool:
+    return has_company_capability(user, company, CAP_MANAGE_TECHNICAL_SERVICE)
+
+
+def can_grant_company_role(user, company, role: str) -> bool:
+    """
+    Whether the caller may assign `role` inside `company`.
+
+    A platform administrator may assign any role. A company administrator may
+    assign anything except the legacy `superadmin` value — see
+    GRANTABLE_BY_COMPANY_ADMIN. Assigning `superadmin` as a Membership role
+    NEVER touches `User.is_superuser`, so it is not a platform escalation either
+    way; the restriction exists because the value's semantics are still legacy.
+    """
+    if is_platform_admin(user):
+        return True
+    if not can_manage_company_memberships(user, company):
+        return False
+    return role in GRANTABLE_BY_COMPANY_ADMIN
+
+
+def holds_any_capability(user, capability: str) -> bool:
+    """
+    Whether the caller holds `capability` in AT LEAST ONE company.
+
+    Used as a coarse view-level gate so a request that could not succeed in any
+    company is rejected before the payload is parsed. It is never a substitute
+    for the per-company check.
+    """
+    if capability not in COMPANY_CAPABILITIES:
+        raise ValueError(f'Capacidad desconocida: {capability}')
+    if is_platform_admin(user):
+        return True
+    allowed = COMPANY_CAPABILITIES[capability]
+    return active_memberships(user).filter(role__in=allowed).exists()
+
+
+# ---------------------------------------------------------------------------
+# Company context
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CompanyContext:
+    """
+    Everything a request needs to know about the tenant it is acting on.
+
+    Built only through build_company_context(), which resolves the company from
+    the caller's own memberships — never from raw client input.
+    """
+
+    user: object
+    company: Company
+    membership: Membership | None
+    role: str | None
+    is_platform_admin: bool
+
+    def has_role(self, *roles) -> bool:
+        return self.role is not None and self.role in set(roles)
+
+    def can(self, capability: str) -> bool:
+        """Capability check that reuses the shared matrix — no local role sets."""
+        if capability not in COMPANY_CAPABILITIES:
+            raise ValueError(f'Capacidad desconocida: {capability}')
+        if self.is_platform_admin:
+            return True
+        return self.role is not None and self.role in COMPANY_CAPABILITIES[capability]
+
+
+def build_company_context(user, requested_company_id=None) -> CompanyContext:
+    """
+    Resolve the tenant and package the caller's authority inside it.
+
+    Raises NoTenantError / CrossTenantError exactly like resolve_company_for_user.
+    """
+    company = resolve_company_for_user(user, requested_company_id)
+    membership = get_membership(user, company)
+    return CompanyContext(
+        user=user,
+        company=company,
+        membership=membership,
+        role=membership.role if membership else None,
+        is_platform_admin=is_platform_admin(user),
     )
 
 

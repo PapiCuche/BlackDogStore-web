@@ -6,14 +6,16 @@
 tenantización de los modelos de negocio queda `PENDIENTE` por diseño.
 
 ```
-Fundación SaaS                IMPLEMENTADO
-Tenant resolution             PARCIAL
-RBAC tenant-aware             PENDIENTE
-Tenantización Product         PENDIENTE
-Tenantización Order           PENDIENTE
-Tenantización Inventory       PENDIENTE
-Branding/configuración        PENDIENTE
-Serial/IMEI                   PENDIENTE
+Fundación SaaS                       IMPLEMENTADO
+Tenant resolution                    PARCIAL
+RBAC tenant-aware infraestructura    IMPLEMENTADO
+RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
+Tenantización Product                PENDIENTE
+Tenantización Order                  PENDIENTE
+Tenantización Inventory              PENDIENTE
+Membership Invitation Flow           PENDIENTE
+Branding                             PENDIENTE
+IMEI/Serial                          PENDIENTE
 ```
 
 ---
@@ -40,6 +42,10 @@ Company ──< Branch
 | Aislamiento en esos endpoints | IMPLEMENTADO | Scoping por membresía, tests de cruce. |
 | `AdminAuditLog.company` | IMPLEMENTADO | Nullable; el histórico no se reescribe. |
 | Resolución por host | PARCIAL | Implementada y testeada; ningún endpoint público la usa aún. |
+| Matriz de capacidades empresariales | IMPLEMENTADO | Fase 2A — `COMPANY_CAPABILITIES` |
+| Helpers RBAC empresariales | IMPLEMENTADO | Fase 2A — `can_manage_company_*` |
+| `CompanyContext` | IMPLEMENTADO | Fase 2A |
+| RBAC legacy (`UserProfile.role`) | IMPLEMENTADO / TRANSICIÓN | Sigue gobernando el dominio comercial |
 | Tenantización de `Product`/`Order`/… | PENDIENTE | Fase siguiente — ver §7. |
 | RBAC tenant-aware | PENDIENTE | `get_user_role()` sigue intacto — ver §5. |
 | Branding por empresa | PENDIENTE | Constantes aún en `email_services.py` / `pdf_services.py`. |
@@ -237,6 +243,109 @@ Ninguna relación se añadió "porque parecía conveniente".
 
 ---
 
+## 8-bis. RBAC tenant-aware (Fase 2A)
+
+### Tres niveles de autoridad, separados a propósito
+
+| Nivel | Se expresa como | Alcance | Quién lo concede |
+|---|---|---|---|
+| **PLATFORM** | `User.is_superuser` | Toda la plataforma | Solo Django admin / operador |
+| **COMPANY** | `Membership.role` | Una sola empresa | Admin de esa empresa (o platform admin) |
+| **LEGACY** | `UserProfile.role` | Global | Endpoint legacy de cambio de rol |
+
+Ninguno implica otro:
+
+- `Membership.role == "superadmin"` **no** hace `is_platform_admin` ni toca `User.is_superuser`.
+- `UserProfile.role == "superadmin"` **no** concede autoridad SaaS nueva.
+- Un platform admin **no tiene rol de empresa**: `get_company_role()` devuelve `None`
+  para él. Tiene toda la autoridad, pero no es "admin de la empresa X".
+
+### Matriz de capacidades
+
+Fuente única de verdad: `tenancy.COMPANY_CAPABILITIES`. Las vistas nunca
+redeclaran conjuntos de roles.
+
+| Rol de empresa | view | manage_company | memberships | inventory | sales | technical_service |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `customer` | — | — | — | — | — | — |
+| `sales` | ✓ | — | — | — | ✓ | — |
+| `inventory` | ✓ | — | — | ✓ | — | — |
+| `technician` | ✓ | — | — | — | — | ✓ |
+| `admin` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `superadmin` *(legacy)* | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **platform admin** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+`customer` no aparece en ninguna capacidad — hay un `assert` a nivel de módulo que
+lo garantiza. Todas son **company-scoped**: tenerlas en la empresa A no dice nada
+sobre la B.
+
+### Rol `superadmin` — deuda resuelta sin romper compatibilidad
+
+El valor sigue en el modelo y en las migraciones. Como rol de `Membership` se
+comporta igual que `admin` **dentro de su empresa** y nunca implica autoridad de
+plataforma.
+
+Lo que cambió: **un administrador de empresa ya no puede asignarlo**
+(`GRANTABLE_BY_COMPANY_ADMIN` lo excluye) ni escalar una membresía existente a
+ese valor. Solo un platform admin puede, porque puede necesitarlo para migración
+y administración. Los datos existentes no se tocan.
+
+### Escalada de privilegios — qué está bloqueado
+
+Un administrador de empresa **no puede**:
+
+| Intento | Resultado |
+|---|---|
+| Crear membresía en otra empresa | `404` (ni siquiera aprende que existe) |
+| Modificar membresía de otra empresa | `404` |
+| Convertir a alguien en platform admin | Imposible: la API nunca escribe `is_superuser` |
+| Cambiar `UserProfile.role` | Imposible: la API nunca lo toca |
+| Cambiar la `company` de una membresía | Campo ausente del serializer de update |
+| Cambiar el `user` de una membresía | Campo ausente del serializer de update |
+| Asignar `superadmin` | `403` |
+
+Y un `sales`, `inventory` o `technician` de la propia empresa recibe `403` al
+intentar administrar membresías — no `404`, porque la empresa sí es visible para
+ellos; el problema es de autoridad, no de visibilidad.
+
+### `CompanyContext`
+
+`build_company_context(user, requested_company_id=None)` devuelve
+`company`, `membership`, `role`, `is_platform_admin` y un `.can(capability)` que
+reutiliza la misma matriz. Resuelve la empresa con `resolve_company_for_user()`,
+así que hereda la regla de que un `company_id` del cliente solo **selecciona**
+entre empresas ya accesibles.
+
+### Enumeración de usuarios — mitigado parcialmente
+
+`POST /api/admin/memberships/` devuelve **una sola respuesta** (`400`, mismo
+texto) tanto si el usuario no existe como si ya es miembro, para que el endpoint
+no sea un oráculo de ids de usuario a nivel plataforma. Tampoco devuelve username
+ni email en el fallo.
+
+Lo que **no** resuelve: un admin de empresa todavía puede añadir a su empresa a
+cualquier usuario existente de la plataforma sin consentimiento, y así descubrir
+su username en la respuesta de éxito. Arreglarlo requiere onboarding por
+invitación — ver `PENDIENTE — Membership Invitation Flow`. No se improvisa aquí.
+
+### Qué sigue siendo legacy, y por qué
+
+`/api/admin/products/`, `/api/admin/orders/`, `/api/admin/inventory/`,
+`/api/admin/orders/{id}/sales-note/`, checkout y webhook **siguen autorizando con
+`UserProfile.role`**.
+
+Razón: `Product`, `Order`, `StockMovement` y `SalesNote` **no tienen columna
+`company`**. Cambiar sus permisos a `Membership` antes de tenantizar los datos
+daría permisos con forma de tenant sobre filas globales compartidas — una falsa
+sensación de aislamiento, que es peor que el estado actual porque invita a
+confiar en ella. La migración de esos endpoints es Fase 2B/2C.
+
+Las clases `CanManageCompanyInventory`, `CanManageCompanySales` y
+`CanManageCompanyTechnicalService` ya existen y están testeadas, pero
+deliberadamente **no están conectadas a ninguna URL** todavía.
+
+---
+
 ## 9. Deuda pendiente
 
 1. **Branding por empresa** — `_STORE_NAME`, `_STORE_RUC`, `_STORE_ADDRESS` y
@@ -258,7 +367,11 @@ Ninguna relación se añadió "porque parecía conveniente".
    la cadena de migraciones de la instalación en producción.
 8. **`bulk_create()` / `queryset.update()` saltan `Membership.clean()`** — hoy nadie
    los usa para Membership; código futuro debe llamar `assert_branch_in_company()`.
-9. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
+9. **PENDIENTE — Membership Invitation Flow.** Un admin de empresa puede añadir a
+   cualquier usuario existente de la plataforma sin su consentimiento, y así
+   confirmar su username. La mitigación actual uniforma las respuestas de error;
+   la solución real es onboarding por invitación con aceptación del destinatario.
+10. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
    cubriera `*.sqlite3`). Conviene sacarlo del índice en un commit aparte.
 
 ---
