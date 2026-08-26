@@ -944,20 +944,23 @@ Cambios estructurales posteriores a esta auditoría:
 |---|---|---|
 | 6.0 | `StockMovement` (Kardex), `SalesNote`, servicio de inventario transaccional | IMPLEMENTADO |
 | SaaS 1 | `Company`, `Branch`, `Membership`, resolución de tenant | PARCIAL |
+| SaaS 2A | Matriz de capacidades empresariales, `CompanyContext`, separación PLATFORM/COMPANY/LEGACY | IMPLEMENTADO |
 
 **Modelos de base de datos actuales**, además de los listados en la sección 7:
 `UserProfile`, `AdminAuditLog`, `AccountToken`, `StockMovement`, `SalesNote`,
 `Company`, `Branch`, `Membership`.
 
 ```
-Fundación SaaS                IMPLEMENTADO
-Tenant resolution             PARCIAL
-RBAC tenant-aware             PENDIENTE
-Tenantización Product         PENDIENTE
-Tenantización Order           PENDIENTE
-Tenantización Inventory       PENDIENTE
-Branding/configuración        PENDIENTE
-Serial/IMEI                   PENDIENTE
+Fundación SaaS                       IMPLEMENTADO
+Tenant resolution                    PARCIAL
+RBAC tenant-aware infraestructura    IMPLEMENTADO
+RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
+Tenantización Product                PENDIENTE
+Tenantización Order                  PENDIENTE
+Tenantización Inventory              PENDIENTE
+Membership Invitation Flow           PENDIENTE
+Branding                             PENDIENTE
+IMEI/Serial                          PENDIENTE
 ```
 
 **Nota sobre multiempresa:** los modelos SaaS existen pero el e-commerce

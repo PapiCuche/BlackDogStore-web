@@ -514,18 +514,24 @@ Base estructural para que la plataforma deje de asumir una sola empresa.
   qué empresa es esta petición?".
 - **Black Dog Store es el primer tenant**, creado por migración de datos — no hay
   ninguna constante de empresa en la capa de negocio.
-- **`UserProfile.role` sigue gobernando los permisos**; las membresías se crean en
-  paralelo para migrar el RBAC en una fase posterior sin prisas.
+- **Tres niveles de autoridad separados**: `User.is_superuser` (plataforma),
+  `Membership.role` (empresa) y `UserProfile.role` (legacy global). Ninguno
+  implica otro — un `Membership.role="superadmin"` no da autoridad de plataforma.
+- **El dominio comercial sigue en RBAC legacy** (`UserProfile.role`) porque
+  `Product`, `Order`, `StockMovement` y `SalesNote` todavía no tienen `company`.
+  Cambiar sus permisos antes que sus datos daría una falsa sensación de aislamiento.
 
 ```
-Fundación SaaS                IMPLEMENTADO
-Tenant resolution             PARCIAL
-RBAC tenant-aware             PENDIENTE
-Tenantización Product         PENDIENTE
-Tenantización Order           PENDIENTE
-Tenantización Inventory       PENDIENTE
-Branding/configuración        PENDIENTE
-Serial/IMEI                   PENDIENTE
+Fundación SaaS                       IMPLEMENTADO
+Tenant resolution                    PARCIAL
+RBAC tenant-aware infraestructura    IMPLEMENTADO
+RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
+Tenantización Product                PENDIENTE
+Tenantización Order                  PENDIENTE
+Tenantización Inventory              PENDIENTE
+Membership Invitation Flow           PENDIENTE
+Branding                             PENDIENTE
+IMEI/Serial                          PENDIENTE
 ```
 
 Detalle, deuda pendiente y próximas fases:
