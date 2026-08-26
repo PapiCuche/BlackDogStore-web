@@ -931,3 +931,39 @@ El MVP solo podrá considerarse desplegable cuando:
 - El checkout recoja la información comercial necesaria.
 - Se hayan probado los flujos de éxito, cancelación, error y reintento.
 
+---
+
+## Actualización — Fase SaaS 1 (fundación multiempresa)
+
+> Este documento describe el estado del proyecto en su auditoría original. Las
+> fases posteriores se registran en [CHANGELOG.md](../CHANGELOG.md).
+
+Cambios estructurales posteriores a esta auditoría:
+
+| Fase | Añade | Estado |
+|---|---|---|
+| 6.0 | `StockMovement` (Kardex), `SalesNote`, servicio de inventario transaccional | IMPLEMENTADO |
+| SaaS 1 | `Company`, `Branch`, `Membership`, resolución de tenant | PARCIAL |
+
+**Modelos de base de datos actuales**, además de los listados en la sección 7:
+`UserProfile`, `AdminAuditLog`, `AccountToken`, `StockMovement`, `SalesNote`,
+`Company`, `Branch`, `Membership`.
+
+```
+Fundación SaaS                IMPLEMENTADO
+Tenant resolution             PARCIAL
+RBAC tenant-aware             PENDIENTE
+Tenantización Product         PENDIENTE
+Tenantización Order           PENDIENTE
+Tenantización Inventory       PENDIENTE
+Branding/configuración        PENDIENTE
+Serial/IMEI                   PENDIENTE
+```
+
+**Nota sobre multiempresa:** los modelos SaaS existen pero el e-commerce
+**todavía no está tenantizado**. Catálogo, carrito, checkout, inventario y notas
+de venta operan igual que antes, sobre una única empresa implícita. La empresa
+piloto (Black Dog Store) se crea por migración de datos, no por una constante en
+el código.
+
+Detalle: [saas-multiempresa.md](saas-multiempresa.md) · [inventario-y-notas-de-venta.md](inventario-y-notas-de-venta.md)

@@ -225,6 +225,12 @@ class AdminAuditLog(models.Model):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    # SaaS Phase 1 — nullable on purpose: historical logs predate multi-tenancy
+    # and must not be rewritten. Populated going forward for company-scoped actions.
+    company = models.ForeignKey(
+        'store.Company', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='audit_logs',
+    )
 
     class Meta:
         ordering = ['-created_at']
@@ -233,7 +239,8 @@ class AdminAuditLog(models.Model):
         return f"AuditLog[{self.action}] by={self.actor_id} on {self.target_type}:{self.target_id}"
 
     @classmethod
-    def log(cls, actor, action, target_type, target_id='', metadata=None, request=None):
+    def log(cls, actor, action, target_type, target_id='', metadata=None, request=None,
+            company=None):
         ip = None
         ua = ''
         if request:
@@ -248,6 +255,7 @@ class AdminAuditLog(models.Model):
             metadata=metadata or {},
             ip_address=ip or None,
             user_agent=ua,
+            company=company,
         )
 
 
@@ -463,3 +471,161 @@ class SalesNote(models.Model):
 
     def __str__(self):
         return f"SalesNote({self.number}, order={self.order_id})"
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 1 — multi-tenant foundation
+# ---------------------------------------------------------------------------
+#
+# These models introduce the structural base for running more than one business
+# on the platform. They are ADDITIVE: nothing in the existing e-commerce flow
+# reads them yet, so the current single-company behaviour is unchanged.
+#
+# Tenant resolution is never taken from client input — see store/tenancy.py.
+
+class Company(models.Model):
+    """
+    A tenant: one business operating on the platform.
+
+    Black Dog Store is seeded as the first Company by a data migration, not by a
+    constant in the code — the platform must be able to host a completely
+    different business without touching business logic.
+    """
+
+    name = models.CharField(max_length=200)
+    legal_name = models.CharField(max_length=255, blank=True)
+    tax_id = models.CharField(max_length=20, blank=True, db_index=True)
+    slug = models.SlugField(max_length=80, unique=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name_plural = 'companies'
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def is_operational(self) -> bool:
+        """A deactivated company keeps its history but cannot transact."""
+        return self.is_active
+
+
+class Branch(models.Model):
+    """
+    A physical location belonging to exactly one Company.
+
+    The FK makes cross-company ownership structurally impossible: a Branch can
+    never belong to two companies. Code that receives a branch id must still
+    verify `branch.company_id` matches the caller's tenant — see
+    store.tenancy.assert_branch_in_company.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='branches',
+    )
+    name = models.CharField(max_length=200)
+    address = models.CharField(max_length=300, blank=True)
+    phone = models.CharField(max_length=30, blank=True)
+    email = models.EmailField(blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['company__name', 'name']
+        verbose_name_plural = 'branches'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'name'], name='unique_branch_name_per_company',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'is_active'])]
+
+    def __str__(self):
+        return f"{self.name} ({self.company.name})"
+
+
+class Membership(models.Model):
+    """
+    Links a user to a company with a role, optionally scoped to one branch.
+
+    TRANSITION NOTE (SaaS Phase 1):
+    `UserProfile.role` remains the authoritative source for permission checks in
+    this phase — `get_user_role()` is deliberately untouched. Membership records
+    are created alongside it (see migration 0015) so a later phase can switch the
+    permission layer over without a data migration under time pressure.
+
+    Role semantics during the transition:
+      - `User.is_superuser`      → PLATFORM administrator (cross-tenant, SaaS operator)
+      - `Membership.role=admin`  → COMPANY administrator (scoped to one Company)
+      - `UserProfile.role=superadmin` → legacy global role, still honoured
+    """
+
+    ROLE_CHOICES = UserProfile.ROLE_CHOICES
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='memberships',
+    )
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='memberships',
+    )
+    role = models.CharField(
+        max_length=20, choices=ROLE_CHOICES, default=UserProfile.ROLE_CUSTOMER, db_index=True,
+    )
+    branch = models.ForeignKey(
+        Branch, null=True, blank=True, on_delete=models.SET_NULL, related_name='memberships',
+    )
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['company__name', 'user__username']
+        constraints = [
+            # One membership per (user, company). A user may belong to several
+            # companies, but never twice to the same one.
+            models.UniqueConstraint(
+                fields=['user', 'company'], name='unique_membership_per_user_company',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'is_active']),
+            models.Index(fields=['user', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"Membership({self.user.username} @ {self.company.name} as {self.role})"
+
+    def clean(self):
+        """
+        Reject a branch that belongs to a different company.
+
+        Defence in depth: `save()` calls this, so every ORM object write is
+        covered, and the admin API validates the same invariant with
+        `tenancy.assert_branch_in_company()` BEFORE building the instance — the
+        endpoints do not rely on clean() alone.
+
+        Known gap: `bulk_create()` and `queryset.update()` bypass save() and
+        therefore this check. Nothing in the codebase uses them for Membership;
+        any future code that does must call assert_branch_in_company() itself.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            raise ValidationError(
+                {'branch': 'La sucursal no pertenece a la empresa de esta membresía.'}
+            )
+
+    def save(self, *args, **kwargs):
+        # full_clean is not called automatically by save(); enforce the
+        # cross-company branch rule here so the DB never holds a mismatched row.
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    @property
+    def grants_business_access(self) -> bool:
+        """A membership only confers company access while both it and the company are active."""
+        return self.is_active and self.company.is_active

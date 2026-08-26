@@ -28,6 +28,10 @@ from .inventory_views import (
     AdminLowStockView, AdminOrderSalesNotePdfView, AdminOrderSalesNoteView,
     AdminProductStockCardView, AdminStaleStockView, AdminStockMovementListView,
 )
+from .tenant_views import (
+    AdminBranchListView, AdminCompanyDetailView, AdminCompanyListView,
+    AdminMembershipDetailView, AdminMembershipListView, MyMembershipsView,
+)
 from django.urls import path, include
 
 router = DefaultRouter()
@@ -77,4 +81,12 @@ urlpatterns = [
     path('admin/products/<int:pk>/stock-card/', AdminProductStockCardView.as_view(), name='admin-product-stock-card'),
     path('admin/orders/<int:pk>/sales-note/', AdminOrderSalesNoteView.as_view(), name='admin-order-sales-note'),
     path('admin/orders/<int:pk>/sales-note/pdf/', AdminOrderSalesNotePdfView.as_view(), name='admin-order-sales-note-pdf'),
+
+    # --- SaaS Phase 1: multi-tenant foundation ---
+    path('admin/companies/', AdminCompanyListView.as_view(), name='admin-companies'),
+    path('admin/companies/<int:pk>/', AdminCompanyDetailView.as_view(), name='admin-company-detail'),
+    path('admin/branches/', AdminBranchListView.as_view(), name='admin-branches'),
+    path('admin/memberships/', AdminMembershipListView.as_view(), name='admin-memberships'),
+    path('admin/memberships/<int:pk>/', AdminMembershipDetailView.as_view(), name='admin-membership-detail'),
+    path('me/memberships/', MyMembershipsView.as_view(), name='me-memberships'),
 ]

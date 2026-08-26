@@ -3,6 +3,7 @@ from .models import (
     AccountToken, AdminAuditLog, Category, Product,
     Order, OrderItem, CartItem, Review, Coupon, UserProfile,
     SalesNote, StockMovement,
+    Branch, Company, Membership,
 )
 
 
@@ -161,3 +162,64 @@ class SalesNoteAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 1 — Company / Branch / Membership
+# ---------------------------------------------------------------------------
+
+class BranchInline(admin.TabularInline):
+    model = Branch
+    extra = 0
+    fields = ('name', 'address', 'phone', 'is_active')
+    show_change_link = True
+
+
+@admin.register(Company)
+class CompanyAdmin(admin.ModelAdmin):
+    """
+    Tenants. Deleting a company with operations is blocked by PROTECT on Branch
+    and Membership — deactivate with `is_active` instead so history is preserved.
+    """
+    list_display = ('id', 'name', 'slug', 'legal_name', 'tax_id', 'is_active', 'created_at')
+    list_filter = ('is_active', 'created_at')
+    search_fields = ('name', 'legal_name', 'tax_id', 'slug')
+    readonly_fields = ('created_at', 'updated_at')
+    prepopulated_fields = {'slug': ('name',)}
+    inlines = [BranchInline]
+
+    def has_delete_permission(self, request, obj=None):
+        # Never remove a tenant from the admin; deactivate it.
+        return False
+
+
+@admin.register(Branch)
+class BranchAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'company', 'address', 'phone', 'is_active')
+    list_filter = ('is_active', 'company')
+    search_fields = ('name', 'address', 'company__name')
+    readonly_fields = ('created_at', 'updated_at')
+    list_select_related = ('company',)
+    autocomplete_fields = ('company',)
+
+    def get_readonly_fields(self, request, obj=None):
+        # Reparenting a branch would silently move its future operations to
+        # another tenant — lock the company once the row exists.
+        base = super().get_readonly_fields(request, obj)
+        return (*base, 'company') if obj else base
+
+
+@admin.register(Membership)
+class MembershipAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'company', 'role', 'branch', 'is_active', 'created_at')
+    list_filter = ('role', 'is_active', 'company')
+    search_fields = ('user__username', 'user__email', 'company__name')
+    readonly_fields = ('created_at', 'updated_at')
+    list_select_related = ('user', 'company', 'branch')
+    autocomplete_fields = ('company', 'branch')
+
+    def get_readonly_fields(self, request, obj=None):
+        # user + company identify the membership; changing either is a different
+        # grant entirely. Create a new row instead.
+        base = super().get_readonly_fields(request, obj)
+        return (*base, 'user', 'company') if obj else base
