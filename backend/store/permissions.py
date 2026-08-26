@@ -158,3 +158,41 @@ class CanManageSalesNotes(BasePermission):
 
     def has_permission(self, request, view):
         return get_user_role(request.user) in _MANAGE_SALES_NOTES_ROLES
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 1 — multi-tenant administration
+# ---------------------------------------------------------------------------
+#
+# These are ADDITIVE. None of the permission classes above changed, and
+# get_user_role() is untouched, so existing RBAC behaves exactly as before.
+
+class IsPlatformAdmin(BasePermission):
+    """
+    SaaS PLATFORM administrator — operates the platform itself, across tenants.
+
+    During the transition this is `User.is_superuser`, which get_user_role()
+    already maps to `superadmin`, so no existing behaviour shifts.
+    """
+    message = 'Se requiere administrador de plataforma.'
+
+    def has_permission(self, request, view):
+        from .tenancy import is_platform_admin
+        return is_platform_admin(request.user)
+
+
+class HasCompanyMembership(BasePermission):
+    """
+    Caller belongs to at least one active company (or is a platform admin).
+
+    A user with no membership — or whose only membership is inactive, or whose
+    company is deactivated — is rejected. Business access is never implied by
+    merely being authenticated.
+    """
+    message = 'El usuario no pertenece a ninguna empresa activa.'
+
+    def has_permission(self, request, view):
+        from .tenancy import active_memberships, is_platform_admin
+        if is_platform_admin(request.user):
+            return True
+        return active_memberships(request.user).exists()

@@ -6369,3 +6369,659 @@ class Phase60RegressionTest(TestCase):
     def test_45_public_catalog_still_works(self):
         res = self.client.get('/api/products/')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 1 — multi-tenant foundation
+# ---------------------------------------------------------------------------
+
+from django.core.exceptions import ValidationError as DjangoValidationError  # noqa: E402
+from django.db import IntegrityError, transaction  # noqa: E402
+
+from .models import Branch, Company, Membership  # noqa: E402
+from .tenancy import (  # noqa: E402
+    CrossTenantError,
+    NoTenantError,
+    active_memberships,
+    assert_branch_in_company,
+    has_company_access,
+    is_company_admin,
+    is_platform_admin,
+    resolve_company_for_user,
+    resolve_company_from_host,
+    scope_queryset,
+    visible_companies,
+)
+
+
+def _saas_company(name='Empresa A', slug='empresa-a', **extra):
+    return Company.objects.create(
+        name=name,
+        legal_name=extra.pop('legal_name', f'{name} S.A.C.'),
+        tax_id=extra.pop('tax_id', '20000000001'),
+        slug=slug,
+        **extra,
+    )
+
+
+def _saas_branch(company, name='Sucursal principal', **extra):
+    return Branch.objects.create(company=company, name=name, **extra)
+
+
+def _saas_user(username, **extra):
+    return User.objects.create_user(username=username, password='Pass123!', **extra)
+
+
+class SaasCompanyModelTest(TestCase):
+    """Company: creation, uniqueness and deactivation semantics."""
+
+    def test_company_creation_is_valid(self):
+        c = _saas_company()
+        self.assertTrue(c.is_active)
+        self.assertTrue(c.is_operational)
+        self.assertEqual(str(c), 'Empresa A')
+        self.assertIsNotNone(c.created_at)
+
+    def test_slug_is_unique(self):
+        _saas_company(slug='duplicada')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _saas_company(name='Otra', slug='duplicada')
+
+    def test_deactivation_preserves_history(self):
+        c = _saas_company()
+        branch = _saas_branch(c)
+        user = _saas_user('saas_hist')
+        membership = Membership.objects.create(user=user, company=c, role='admin')
+
+        c.is_active = False
+        c.save(update_fields=['is_active'])
+        c.refresh_from_db()
+
+        self.assertFalse(c.is_operational)
+        # Nothing was cascaded away
+        self.assertTrue(Branch.objects.filter(pk=branch.pk).exists())
+        self.assertTrue(Membership.objects.filter(pk=membership.pk).exists())
+
+    def test_company_with_operations_cannot_be_deleted(self):
+        c = _saas_company()
+        _saas_branch(c)
+        # PROTECT on Branch.company blocks the delete
+        with self.assertRaises(Exception):
+            with transaction.atomic():
+                c.delete()
+        self.assertTrue(Company.objects.filter(pk=c.pk).exists())
+
+    def test_pilot_company_exists_from_data_migration(self):
+        """The seed migration creates the first tenant — not a code constant."""
+        pilot = Company.objects.filter(slug='black-dog-store').first()
+        self.assertIsNotNone(pilot)
+        self.assertEqual(pilot.legal_name, 'CMAU CORP E.I.R.L.')
+        self.assertEqual(pilot.tax_id, '20610159886')
+        self.assertTrue(pilot.branches.exists())
+
+    def test_no_company_name_constant_in_business_layer(self):
+        """The pilot's identity must live in the DB, not in importable code."""
+        from store import tenancy, permissions as perms_mod
+        for module in (tenancy, perms_mod):
+            for attr in dir(module):
+                if attr.isupper():
+                    value = getattr(module, attr)
+                    if isinstance(value, str):
+                        self.assertNotIn('Black Dog', value)
+
+
+class SaasBranchModelTest(TestCase):
+    """Branch: ownership by exactly one company."""
+
+    def setUp(self):
+        self.company_a = _saas_company('Empresa A', 'empresa-a')
+        self.company_b = _saas_company('Empresa B', 'empresa-b', tax_id='20000000002')
+
+    def test_branch_belongs_to_its_company(self):
+        b = _saas_branch(self.company_a)
+        self.assertEqual(b.company_id, self.company_a.pk)
+        self.assertIn(b, self.company_a.branches.all())
+        self.assertNotIn(b, self.company_b.branches.all())
+
+    def test_branch_name_unique_per_company_but_reusable_across_companies(self):
+        _saas_branch(self.company_a, name='Tienda centro')
+        # Same name in another company is fine
+        _saas_branch(self.company_b, name='Tienda centro')
+        # Same name twice in the same company is not
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _saas_branch(self.company_a, name='Tienda centro')
+
+    def test_branch_cannot_belong_to_two_companies(self):
+        """The FK is single-valued: reassigning moves it, it never belongs to both."""
+        b = _saas_branch(self.company_a)
+        self.assertEqual(Company.objects.filter(branches=b).count(), 1)
+
+    def test_assert_branch_in_company_rejects_foreign_branch(self):
+        b = _saas_branch(self.company_a)
+        assert_branch_in_company(b, self.company_a)  # no raise
+        with self.assertRaises(CrossTenantError):
+            assert_branch_in_company(b, self.company_b)
+
+
+class SaasMembershipModelTest(TestCase):
+    """Membership: user+company pairing, roles and activity."""
+
+    def setUp(self):
+        self.company_a = _saas_company('Empresa A', 'empresa-a')
+        self.company_b = _saas_company('Empresa B', 'empresa-b', tax_id='20000000002')
+        self.branch_a = _saas_branch(self.company_a)
+        self.branch_b = _saas_branch(self.company_b)
+        self.user = _saas_user('saas_member')
+
+    def test_membership_links_user_and_company(self):
+        m = Membership.objects.create(user=self.user, company=self.company_a, role='sales')
+        self.assertEqual(m.user, self.user)
+        self.assertEqual(m.company, self.company_a)
+        self.assertTrue(m.grants_business_access)
+
+    def test_all_existing_roles_are_valid(self):
+        valid = {r[0] for r in Membership.ROLE_CHOICES}
+        self.assertEqual(
+            valid,
+            {'customer', 'sales', 'inventory', 'technician', 'admin', 'superadmin'},
+        )
+
+    def test_duplicate_membership_per_company_is_rejected(self):
+        Membership.objects.create(user=self.user, company=self.company_a, role='sales')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Membership.objects.create(user=self.user, company=self.company_a, role='admin')
+
+    def test_same_user_may_belong_to_several_companies(self):
+        Membership.objects.create(user=self.user, company=self.company_a, role='sales')
+        Membership.objects.create(user=self.user, company=self.company_b, role='inventory')
+        self.assertEqual(Membership.objects.filter(user=self.user).count(), 2)
+
+    def test_inactive_membership_grants_nothing(self):
+        m = Membership.objects.create(
+            user=self.user, company=self.company_a, role='admin', is_active=False,
+        )
+        self.assertFalse(m.grants_business_access)
+        self.assertFalse(has_company_access(self.user, self.company_a))
+        self.assertEqual(active_memberships(self.user).count(), 0)
+
+    def test_membership_in_deactivated_company_grants_nothing(self):
+        Membership.objects.create(user=self.user, company=self.company_a, role='admin')
+        self.company_a.is_active = False
+        self.company_a.save(update_fields=['is_active'])
+        self.assertFalse(has_company_access(self.user, self.company_a))
+
+    def test_branch_from_another_company_is_rejected(self):
+        with self.assertRaises(DjangoValidationError):
+            Membership.objects.create(
+                user=self.user, company=self.company_a, role='sales', branch=self.branch_b,
+            )
+
+    def test_branch_from_own_company_is_accepted(self):
+        m = Membership.objects.create(
+            user=self.user, company=self.company_a, role='sales', branch=self.branch_a,
+        )
+        self.assertEqual(m.branch, self.branch_a)
+
+
+class SaasTenancyResolutionTest(TestCase):
+    """Tenant resolution never widens access based on client input."""
+
+    def setUp(self):
+        self.company_a = _saas_company('Empresa A', 'empresa-a')
+        self.company_b = _saas_company('Empresa B', 'empresa-b', tax_id='20000000002')
+        self.user_a = _saas_user('saas_res_a')
+        self.user_b = _saas_user('saas_res_b')
+        self.platform = _saas_user('saas_platform', is_superuser=True)
+        Membership.objects.create(user=self.user_a, company=self.company_a, role='admin')
+        Membership.objects.create(user=self.user_b, company=self.company_b, role='admin')
+
+    def test_single_membership_resolves_without_client_input(self):
+        self.assertEqual(resolve_company_for_user(self.user_a), self.company_a)
+
+    def test_user_without_membership_raises(self):
+        orphan = _saas_user('saas_orphan')
+        with self.assertRaises(NoTenantError):
+            resolve_company_for_user(orphan)
+
+    def test_multiple_memberships_require_explicit_choice(self):
+        Membership.objects.create(user=self.user_a, company=self.company_b, role='sales')
+        with self.assertRaises(NoTenantError):
+            resolve_company_for_user(self.user_a)
+
+    def test_requested_company_id_cannot_widen_access(self):
+        """Passing another tenant's id must not resolve to that tenant."""
+        with self.assertRaises(CrossTenantError):
+            resolve_company_for_user(self.user_a, requested_company_id=self.company_b.pk)
+
+    def test_requested_company_id_selects_among_own_companies(self):
+        Membership.objects.create(user=self.user_a, company=self.company_b, role='sales')
+        resolved = resolve_company_for_user(self.user_a, requested_company_id=self.company_b.pk)
+        self.assertEqual(resolved, self.company_b)
+
+    def test_nonexistent_and_foreign_ids_are_indistinguishable(self):
+        """Error text must not reveal whether an id belongs to another tenant."""
+        with self.assertRaises(CrossTenantError) as foreign:
+            resolve_company_for_user(self.user_a, requested_company_id=self.company_b.pk)
+        with self.assertRaises(CrossTenantError) as missing:
+            resolve_company_for_user(self.user_a, requested_company_id=999999)
+        self.assertEqual(str(foreign.exception), str(missing.exception))
+
+    def test_platform_admin_is_recognised(self):
+        self.assertTrue(is_platform_admin(self.platform))
+        self.assertFalse(is_platform_admin(self.user_a))
+        self.assertTrue(has_company_access(self.platform, self.company_a))
+        self.assertTrue(has_company_access(self.platform, self.company_b))
+
+    def test_company_admin_is_scoped_to_own_company(self):
+        self.assertTrue(is_company_admin(self.user_a, self.company_a))
+        self.assertFalse(is_company_admin(self.user_a, self.company_b))
+
+    def test_scope_queryset_returns_none_for_user_without_membership(self):
+        orphan = _saas_user('saas_orphan2')
+        qs = scope_queryset(Membership.objects.all(), orphan)
+        self.assertEqual(qs.count(), 0)
+
+    def test_scope_queryset_restricts_to_own_company(self):
+        qs = scope_queryset(Membership.objects.all(), self.user_a)
+        self.assertEqual(list(qs.values_list('company_id', flat=True)), [self.company_a.pk])
+
+    def test_visible_companies_excludes_other_tenants(self):
+        self.assertEqual(list(visible_companies(self.user_a)), [self.company_a])
+        self.assertEqual(visible_companies(self.platform).count(), Company.objects.count())
+
+    def test_resolve_company_from_host_maps_subdomain_to_slug(self):
+        self.assertEqual(resolve_company_from_host('empresa-a.example.com'), self.company_a)
+        self.assertEqual(resolve_company_from_host('empresa-a.example.com:443'), self.company_a)
+
+    def test_resolve_company_from_host_ignores_reserved_and_bare_hosts(self):
+        for host in ('www.example.com', 'api.example.com', 'example.com', 'localhost', ''):
+            self.assertIsNone(resolve_company_from_host(host))
+
+    def test_resolve_company_from_host_skips_inactive_company(self):
+        self.company_a.is_active = False
+        self.company_a.save(update_fields=['is_active'])
+        self.assertIsNone(resolve_company_from_host('empresa-a.example.com'))
+
+
+class SaasIsolationApiTest(TestCase):
+    """Cross-tenant isolation on the multi-tenant admin endpoints."""
+
+    def setUp(self):
+        cache.clear()
+        self.company_a = _saas_company('Empresa A', 'empresa-a')
+        self.company_b = _saas_company('Empresa B', 'empresa-b', tax_id='20000000002')
+        self.branch_a = _saas_branch(self.company_a, name='Sucursal A')
+        self.branch_b = _saas_branch(self.company_b, name='Sucursal B')
+
+        self.admin_a = _saas_user('saas_admin_a')
+        self.admin_b = _saas_user('saas_admin_b')
+        self.sales_a = _saas_user('saas_sales_a')
+        self.orphan = _saas_user('saas_orphan_api')
+        self.platform = _saas_user('saas_platform_api', is_superuser=True)
+
+        self.m_admin_a = Membership.objects.create(
+            user=self.admin_a, company=self.company_a, role='admin', branch=self.branch_a,
+        )
+        self.m_admin_b = Membership.objects.create(
+            user=self.admin_b, company=self.company_b, role='admin', branch=self.branch_b,
+        )
+        self.m_sales_a = Membership.objects.create(
+            user=self.sales_a, company=self.company_a, role='sales',
+        )
+
+    def _as(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    # --- listing isolation ---
+
+    def test_company_a_cannot_see_company_b_memberships(self):
+        res = self._as(self.admin_a).get('/api/admin/memberships/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        company_ids = {row['company'] for row in res.data['results']}
+        self.assertEqual(company_ids, {self.company_a.pk})
+
+    def test_company_a_cannot_read_company_b_membership_detail(self):
+        res = self._as(self.admin_a).get(f'/api/admin/memberships/{self.m_admin_b.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_company_a_cannot_modify_company_b_membership(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/memberships/{self.m_admin_b.pk}/', {'role': 'customer'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.m_admin_b.refresh_from_db()
+        self.assertEqual(self.m_admin_b.role, 'admin')
+
+    def test_company_a_cannot_grant_membership_in_company_b(self):
+        """A valid id from another tenant must not become a privilege escalation."""
+        res = self._as(self.admin_a).post('/api/admin/memberships/', {
+            'user': self.orphan.pk,
+            'company': self.company_b.pk,
+            'role': 'admin',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(
+            Membership.objects.filter(user=self.orphan, company=self.company_b).exists()
+        )
+
+    def test_company_a_cannot_list_company_b_branches(self):
+        res = self._as(self.admin_a).get('/api/admin/branches/')
+        names = {row['name'] for row in res.data['results']}
+        self.assertIn('Sucursal A', names)
+        self.assertNotIn('Sucursal B', names)
+
+    def test_company_a_cannot_read_company_b_detail(self):
+        res = self._as(self.admin_a).get(f'/api/admin/companies/{self.company_b.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_foreign_company_and_missing_company_answer_identically(self):
+        client = self._as(self.admin_a)
+        foreign = client.get(f'/api/admin/companies/{self.company_b.pk}/')
+        missing = client.get('/api/admin/companies/999999/')
+        self.assertEqual(foreign.status_code, missing.status_code)
+        self.assertEqual(foreign.data['detail'], missing.data['detail'])
+
+    # --- membership required ---
+
+    def test_user_without_membership_gets_403(self):
+        client = self._as(self.orphan)
+        for url in ('/api/admin/companies/', '/api/admin/memberships/', '/api/admin/branches/'):
+            self.assertEqual(client.get(url).status_code, status.HTTP_403_FORBIDDEN, url)
+
+    def test_inactive_membership_grants_no_access(self):
+        self.m_sales_a.is_active = False
+        self.m_sales_a.save(update_fields=['is_active'])
+        res = self._as(self.sales_a).get('/api/admin/memberships/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_membership_in_deactivated_company_grants_no_access(self):
+        self.company_a.is_active = False
+        self.company_a.save(update_fields=['is_active'])
+        res = self._as(self.admin_a).get('/api/admin/memberships/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_gets_401(self):
+        self.assertEqual(
+            APIClient().get('/api/admin/memberships/').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    # --- write authority inside own company ---
+
+    def test_non_admin_member_cannot_write_membership(self):
+        """`sales` can see its company but must not be able to grant roles."""
+        res = self._as(self.sales_a).patch(
+            f'/api/admin/memberships/{self.m_admin_a.pk}/', {'role': 'customer'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_company_admin_can_grant_inside_own_company(self):
+        res = self._as(self.admin_a).post('/api/admin/memberships/', {
+            'user': self.orphan.pk,
+            'company': self.company_a.pk,
+            'role': 'inventory',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(
+            Membership.objects.filter(user=self.orphan, company=self.company_a).exists()
+        )
+
+    def test_duplicate_membership_via_api_is_rejected(self):
+        res = self._as(self.admin_a).post('/api/admin/memberships/', {
+            'user': self.sales_a.pk,
+            'company': self.company_a.pk,
+            'role': 'inventory',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_branch_from_another_company_is_rejected_by_api(self):
+        res = self._as(self.admin_a).post('/api/admin/memberships/', {
+            'user': self.orphan.pk,
+            'company': self.company_a.pk,
+            'role': 'sales',
+            'branch': self.branch_b.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_membership_creation_is_audited_with_company(self):
+        self._as(self.admin_a).post('/api/admin/memberships/', {
+            'user': self.orphan.pk,
+            'company': self.company_a.pk,
+            'role': 'inventory',
+        }, format='json')
+        log = AdminAuditLog.objects.filter(action='membership_created').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.company_a.pk)
+        self.assertEqual(log.actor, self.admin_a)
+
+    # --- platform administrator ---
+
+    def test_platform_admin_sees_every_tenant(self):
+        res = self._as(self.platform).get('/api/admin/companies/')
+        self.assertEqual(res.data['count'], Company.objects.count())
+
+    def test_only_platform_admin_can_create_a_company(self):
+        payload = {'name': 'Empresa C', 'slug': 'empresa-c', 'tax_id': '20000000003'}
+        self.assertEqual(
+            self._as(self.admin_a).post('/api/admin/companies/', payload, format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self._as(self.platform).post('/api/admin/companies/', payload, format='json').status_code,
+            status.HTTP_201_CREATED,
+        )
+
+    def test_duplicate_slug_is_rejected_by_api(self):
+        res = self._as(self.platform).post('/api/admin/companies/', {
+            'name': 'Otra', 'slug': 'empresa-a',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_company_cannot_be_deleted_through_the_api(self):
+        res = self._as(self.platform).delete(f'/api/admin/companies/{self.company_a.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertTrue(Company.objects.filter(pk=self.company_a.pk).exists())
+
+    # --- self-scoped endpoint ---
+
+    def test_me_memberships_is_self_scoped(self):
+        res = self._as(self.admin_a).get('/api/me/memberships/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['company'], self.company_a.pk)
+        self.assertFalse(res.data['is_platform_admin'])
+
+    def test_me_memberships_empty_for_user_without_membership(self):
+        res = self._as(self.orphan).get('/api/me/memberships/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 0)
+
+
+class SaasMembershipBackfillTest(TestCase):
+    """The data migration mirrors staff roles into the pilot tenant."""
+
+    def test_pilot_branch_belongs_to_pilot_company(self):
+        pilot = Company.objects.get(slug='black-dog-store')
+        branch = pilot.branches.first()
+        self.assertIsNotNone(branch)
+        self.assertEqual(branch.company_id, pilot.pk)
+
+    def test_customers_are_not_given_a_membership(self):
+        """A shopper must not become staff of a tenant."""
+        customer = _saas_user('saas_backfill_customer')
+        self.assertEqual(customer.profile.role, UserProfile.ROLE_CUSTOMER)
+        self.assertEqual(Membership.objects.filter(user=customer).count(), 0)
+
+    def test_userprofile_is_untouched_by_the_saas_models(self):
+        """UserProfile stays the authoritative role source during the transition."""
+        user = _saas_user('saas_backfill_staff')
+        user.profile.role = UserProfile.ROLE_INVENTORY
+        user.profile.save()
+        company = _saas_company('Empresa X', 'empresa-x')
+        Membership.objects.create(user=user, company=company, role='admin')
+
+        from .permissions import get_user_role
+        # get_user_role still reads UserProfile, not Membership
+        self.assertEqual(get_user_role(user), UserProfile.ROLE_INVENTORY)
+
+
+class SaasNoRegressionTest(TestCase):
+    """The existing e-commerce must behave identically with the SaaS models present."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.product = Product.objects.create(
+            name='Producto SaaS Reg', slug='producto-saas-reg',
+            price=Decimal('1000.00'), inventory=20,
+        )
+        self.admin = _saas_user('saas_reg_admin')
+        self.admin.profile.role = UserProfile.ROLE_ADMIN
+        self.admin.profile.save()
+        self.inventory_user = _saas_user('saas_reg_inv')
+        self.inventory_user.profile.role = UserProfile.ROLE_INVENTORY
+        self.inventory_user.profile.save()
+
+    def _admin_client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.admin)
+        return c
+
+    def test_public_catalog_still_works(self):
+        res = self.client.get('/api/products/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_cart_still_works(self):
+        res = self.client.post('/api/cart/add/', {
+            'session_key': 'saas-reg-cart', 'product': self.product.pk, 'quantity': 1,
+        }, format='json')
+        self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+        self.assertEqual(CartItem.objects.filter(session_key='saas-reg-cart').count(), 1)
+
+    def test_checkout_still_creates_pending_order(self):
+        CartItem.objects.create(session_key='saas-reg-co', product=self.product, quantity=1)
+        with patch('stripe.checkout.Session.create') as mock_create:
+            mock_create.return_value = MagicMock(id='cs_saas_reg', url='https://stripe.test/x')
+            res = self.client.post('/api/payments/create-checkout-session/', {
+                'session_key': 'saas-reg-co',
+                'customer_name': 'Cliente SaaS',
+                'customer_email': 'saas@example.com',
+                'customer_phone': '999999999',
+                'document_type': 'dni',
+                'document_number': '12345678',
+                'delivery_method': 'pickup_store',
+                'receipt_type': 'boleta',
+                'accepted_terms': True,
+                'accepted_warranty_policy': True,
+            }, format='json')
+        self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+        order = Order.objects.get(stripe_session_id='cs_saas_reg')
+        self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
+
+    def _fire_webhook(self, session_id):
+        event = {
+            'type': 'checkout.session.completed',
+            'data': {'object': {'id': session_id, 'payment_intent': 'pi_saas_reg'}},
+        }
+        with patch('stripe.Webhook.construct_event', return_value=event):
+            return self.client.post(
+                '/api/payments/webhook/', data=b'{}',
+                content_type='application/json', HTTP_STRIPE_SIGNATURE='t=1,v1=fake',
+            )
+
+    def test_webhook_still_marks_paid_and_remains_idempotent(self):
+        order = Order.objects.create(
+            customer_email='saas-wh@example.com', total=Decimal('1000.00'),
+            stripe_session_id='cs_saas_wh', status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(order=order, product=self.product, quantity=2, price=self.product.price)
+
+        self._fire_webhook('cs_saas_wh')
+        self._fire_webhook('cs_saas_wh')
+        self._fire_webhook('cs_saas_wh')
+
+        order.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertTrue(order.paid)
+        # No double stock decrement, exactly one Kardex line
+        self.assertEqual(self.product.inventory, 18)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT,
+            ).count(),
+            1,
+        )
+
+    def test_payment_status_view_still_works(self):
+        Order.objects.create(
+            customer_email='saas-ps@example.com', total=Decimal('1000.00'),
+            stripe_session_id='cs_saas_ps', status=Order.Status.PAID, paid=True,
+        )
+        res = self.client.get('/api/payments/status/?session_id=cs_saas_ps')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_admin_products_and_orders_still_work(self):
+        c = self._admin_client()
+        self.assertEqual(c.get('/api/admin/products/').status_code, status.HTTP_200_OK)
+        self.assertEqual(c.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
+
+    def test_inventory_and_kardex_still_work(self):
+        c = APIClient()
+        c.force_authenticate(user=self.inventory_user)
+        res = c.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk,
+            'movement_type': 'manual_entry',
+            'quantity': 5,
+            'reason': 'Regresión SaaS',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 25)
+        self.assertEqual(
+            c.get('/api/admin/inventory/summary/').status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            c.get(f'/api/admin/products/{self.product.pk}/stock-card/').status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_sales_notes_and_pdfs_still_work(self):
+        order = _p60_paid_order(self.product, quantity=1)
+        c = self._admin_client()
+
+        note_res = c.post(f'/api/admin/orders/{order.pk}/sales-note/')
+        self.assertEqual(note_res.status_code, status.HTTP_201_CREATED)
+
+        pdf_res = c.get(f'/api/admin/orders/{order.pk}/sales-note/pdf/')
+        self.assertEqual(pdf_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(pdf_res.content.startswith(b'%PDF'))
+
+        receipt_res = c.get(f'/api/admin/orders/{order.pk}/receipt-pdf/')
+        self.assertEqual(receipt_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(receipt_res.content.startswith(b'%PDF'))
+
+    def test_login_still_sets_httponly_cookies(self):
+        _saas_user('saas_login_user')
+        res = APIClient().post('/api/auth/login/', {
+            'username': 'saas_login_user', 'password': 'Pass123!',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        access = res.cookies.get('blackdog_access')
+        self.assertIsNotNone(access)
+        self.assertTrue(access['httponly'])
+
+    def test_audit_log_company_is_nullable_and_history_survives(self):
+        """Existing audit calls pass no company; they must still work."""
+        AdminAuditLog.log(
+            actor=self.admin, action='regression_probe',
+            target_type='product', target_id=self.product.pk,
+        )
+        log = AdminAuditLog.objects.filter(action='regression_probe').first()
+        self.assertIsNotNone(log)
+        self.assertIsNone(log.company_id)

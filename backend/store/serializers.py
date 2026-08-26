@@ -7,6 +7,7 @@ from rest_framework import serializers
 from .models import (
     Category, Product, Order, OrderItem, CartItem, Review, Coupon,
     SalesNote, StockMovement,
+    Branch, Company, Membership,
 )
 
 
@@ -480,3 +481,83 @@ class SalesNoteSerializer(serializers.ModelSerializer):
 
     def get_created_by_username(self, obj):
         return obj.created_by.username if obj.created_by_id else None
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 1 — Company / Branch / Membership
+# ---------------------------------------------------------------------------
+
+class CompanySerializer(serializers.ModelSerializer):
+    branch_count = serializers.IntegerField(read_only=True, default=0)
+    membership_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = Company
+        fields = [
+            'id', 'name', 'legal_name', 'tax_id', 'slug', 'is_active',
+            'created_at', 'updated_at', 'branch_count', 'membership_count',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_slug(self, value):
+        qs = Company.objects.filter(slug=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('Ya existe una empresa con este slug.')
+        return value
+
+
+class BranchSerializer(serializers.ModelSerializer):
+    company_name = serializers.CharField(source='company.name', read_only=True)
+
+    class Meta:
+        model = Branch
+        fields = [
+            'id', 'company', 'company_name', 'name', 'address', 'phone', 'email',
+            'is_active', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'company_name', 'created_at', 'updated_at']
+
+
+class MembershipSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    company_name = serializers.CharField(source='company.name', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default=None)
+    role_label = serializers.CharField(source='get_role_display', read_only=True)
+
+    class Meta:
+        model = Membership
+        fields = [
+            'id', 'user', 'username', 'company', 'company_name',
+            'role', 'role_label', 'branch', 'branch_name', 'is_active',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'username', 'company_name', 'branch_name', 'role_label',
+            'created_at', 'updated_at',
+        ]
+
+
+class MembershipWriteSerializer(serializers.Serializer):
+    """
+    Create/update payload.
+
+    `company` is validated against the caller's own access in the view — reaching
+    this serializer never grants access to a company the caller cannot already
+    administer.
+    """
+    user = serializers.IntegerField(min_value=1)
+    company = serializers.IntegerField(min_value=1)
+    role = serializers.ChoiceField(choices=[r[0] for r in Membership.ROLE_CHOICES])
+    branch = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    is_active = serializers.BooleanField(required=False, default=True)
+
+
+class MembershipUpdateSerializer(serializers.Serializer):
+    """Partial update. `company` and `user` are immutable — recreate instead."""
+    role = serializers.ChoiceField(
+        choices=[r[0] for r in Membership.ROLE_CHOICES], required=False,
+    )
+    branch = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    is_active = serializers.BooleanField(required=False)

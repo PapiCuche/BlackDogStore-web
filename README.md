@@ -496,3 +496,37 @@ Panel: `/admin/inventory`, `/admin/inventory/movements`, `/admin/inventory/repor
 
 Detalle completo — modelos, endpoints, permisos, auditoría y pendientes:
 [docs/inventario-y-notas-de-venta.md](docs/inventario-y-notas-de-venta.md)
+
+---
+
+## Fase SaaS 1 — Fundación multiempresa
+
+Base estructural para que la plataforma deje de asumir una sola empresa.
+`Company` → `Branch` → `Membership`, más un módulo de resolución de tenant.
+
+> **Estado: PARCIAL.** Los modelos existen y los endpoints de administración
+> aíslan por empresa, pero el e-commerce **todavía no está tenantizado**:
+> catálogo, carrito, checkout, inventario y notas de venta operan exactamente
+> igual que antes.
+
+- **El tenant nunca se toma del cliente.** Un `company_id` en el body es dato a
+  validar contra las membresías del propio llamante, nunca la respuesta a "¿de
+  qué empresa es esta petición?".
+- **Black Dog Store es el primer tenant**, creado por migración de datos — no hay
+  ninguna constante de empresa en la capa de negocio.
+- **`UserProfile.role` sigue gobernando los permisos**; las membresías se crean en
+  paralelo para migrar el RBAC en una fase posterior sin prisas.
+
+```
+Fundación SaaS                IMPLEMENTADO
+Tenant resolution             PARCIAL
+RBAC tenant-aware             PENDIENTE
+Tenantización Product         PENDIENTE
+Tenantización Order           PENDIENTE
+Tenantización Inventory       PENDIENTE
+Branding/configuración        PENDIENTE
+Serial/IMEI                   PENDIENTE
+```
+
+Detalle, deuda pendiente y próximas fases:
+[docs/saas-multiempresa.md](docs/saas-multiempresa.md) · [CHANGELOG.md](CHANGELOG.md)
