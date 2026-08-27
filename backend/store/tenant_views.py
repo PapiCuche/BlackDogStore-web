@@ -22,11 +22,13 @@ or sales-note flow calls them.
 import logging
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.db.models import Count
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .company_provisioning import ProvisioningError, provision_company_access_defaults
 from .models import AdminAuditLog, Branch, Company, Membership
 from .permissions import HasCompanyMembership, IsPlatformAdmin
 from .serializers import (
@@ -97,14 +99,34 @@ class AdminCompanyListView(APIView):
     def post(self, request):
         ser = CompanySerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        company = ser.save()
+
+        # Creation and provisioning share one transaction: if the defaults cannot
+        # be created, the company is rolled back too. A tenant that exists but has
+        # no areas or roles is worse than one that was never created, because the
+        # failure is silent and only shows up when someone tries to use it.
+        try:
+            with transaction.atomic():
+                company = ser.save()
+                provisioning = provision_company_access_defaults(
+                    company, actor=request.user,
+                )
+        except ProvisioningError:
+            logger.exception('Provisioning failed while creating a company')
+            return Response(
+                {'detail': 'No se pudo inicializar la empresa. Inténtelo nuevamente.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         AdminAuditLog.log(
             actor=request.user,
             action='company_created',
             target_type='company',
             target_id=company.pk,
-            metadata={'company_id': company.pk, 'name': company.name, 'slug': company.slug},
+            metadata={
+                'company_id': company.pk, 'name': company.name, 'slug': company.slug,
+                'areas_created': provisioning['areas_created'],
+                'roles_created': provisioning['roles_created'],
+            },
             request=request,
             company=company,
         )

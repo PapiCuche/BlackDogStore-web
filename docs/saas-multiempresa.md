@@ -6,16 +6,29 @@
 tenantización de los modelos de negocio queda `PENDIENTE` por diseño.
 
 ```
-Fundación SaaS                       IMPLEMENTADO
-Tenant resolution                    PARCIAL
-RBAC tenant-aware infraestructura    IMPLEMENTADO
-RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
-Tenantización Product                PENDIENTE
-Tenantización Order                  PENDIENTE
-Tenantización Inventory              PENDIENTE
-Membership Invitation Flow           PENDIENTE
-Branding                             PENDIENTE
-IMEI/Serial                          PENDIENTE
+Autenticación única                      IMPLEMENTADO
+E-commerce / portal externo              IMPLEMENTADO
+Control interno — fundamento             IMPLEMENTADO
+Control interno — módulos completos      PENDIENTE
+Platform MASTER                          IMPLEMENTADO
+Membership                               IMPLEMENTADO
+Áreas personalizadas                     IMPLEMENTADO
+Roles personalizados                     IMPLEMENTADO
+Capabilities                             IMPLEMENTADO
+Provisioning de nuevas empresas          IMPLEMENTADO
+Demo users de desarrollo                 IMPLEMENTADO / TEMPORAL
+Platform MASTER — UI                     PENDIENTE
+Legacy RBAC fallback                     IMPLEMENTADO / TRANSICIÓN
+Tenant resolution                        PARCIAL
+Branch access multisucursal              PENDIENTE
+Product tenant-aware                     PENDIENTE
+Order/Cart/Checkout tenant-aware         PENDIENTE
+Inventory tenant-aware                   PENDIENTE
+Servicio técnico                         PENDIENTE
+Dashboard interno avanzado               PENDIENTE
+Membership Invitation Flow               PENDIENTE
+Branding                                 PENDIENTE
+IMEI/Serial                              PENDIENTE
 ```
 
 ---
@@ -346,6 +359,287 @@ deliberadamente **no están conectadas a ninguna URL** todavía.
 
 ---
 
+## 8-ter. Áreas, roles y permisos configurables (Fase 2A.1)
+
+### Tres superficies, separadas formalmente
+
+Son **superficies, no tipos de usuario**. Un mismo `User` puede estar en varias a
+la vez, y estar en una no lo excluye de otra.
+
+```
+AUTHENTICATION
+    User
+      │
+      ├── PORTAL EXTERNO / E-COMMERCE
+      │     disponible para CUALQUIER usuario
+      │     y sus partes públicas también para anónimos
+      │
+      ├── CONTROL INTERNO
+      │     requiere: User + Membership activa
+      │               + Company activa + capabilities
+      │
+      └── PLATFORM CONTROL
+            requiere: User.is_superuser
+```
+
+| Superficie | Requisito de acceso | Alcance |
+|---|---|---|
+| **PORTAL EXTERNO** | Cualquier usuario autenticado; anónimo en catálogo, carrito y checkout | Catálogo, productos, carrito, checkout, login, registro, cuenta, compras, reseñas |
+| **CONTROL INTERNO** | `User` + Membership activa + Company activa + capacidades del rol | Panel operativo de la empresa |
+| **PLATFORM CONTROL** | `User.is_superuser` — y solo eso | Todos los tenants |
+
+> **Corrección respecto a la redacción inicial de esta fase.** Se dijo «portal
+> externo = `User` sin Membership». Es incorrecto. Tener Membership **no** quita
+> el acceso al e-commerce: un técnico de una empresa sigue comprando en la tienda
+> con la misma cuenta. Lo que la Membership añade es el CONTROL INTERNO.
+
+```
+User Carlos
+├── compra productos como cliente          → portal externo
+└── Membership @ Black Dog Store           → control interno
+      └── Técnico
+```
+
+**Una sola identidad**: no hay `CustomerUser`, `StaffUser` ni `MasterUser`. El
+alcance sale de las relaciones del `User`, no de su modelo.
+
+Ningún `CompanyRole`, `Membership`, `MembershipRoleAssignment` ni `CompanyArea`
+puede convertir a alguien en MASTER. La única vía es `User.is_superuser`.
+
+Un cliente **no** recibe Membership automáticamente, y ninguna API empresarial
+escribe `is_superuser`, `is_staff` ni `UserProfile.role`.
+
+### Catálogo de capacidades — decisión de arquitectura
+
+Se evaluaron dos alternativas:
+
+**A. Tabla `PermissionDefinition`** — capacidades como filas en la base.
+**B. Catálogo en código** (`store/capabilities.py`), los roles guardan `code`.
+
+**Elegida: B.** Razones:
+
+| Criterio | Por qué gana B |
+|---|---|
+| Seguridad | La **plataforma** es dueña del vocabulario. Con una tabla, quien pudiera escribirla inventaría capacidades; el tenant definiría el alcance de su propia autoridad. Aquí solo elige de la lista. |
+| Migraciones | Añadir o renombrar una capacidad es un cambio de código y un test, no una migración de esquema más una de datos por entorno. |
+| Una sola verdad | La Fase 2A ya expresaba capacidades como constantes de código. Una tabla habría creado una segunda autoridad divergente. |
+| Integridad | Validación contra el catálogo en `clean()` **y** en el serializer, que es donde vive el significado. |
+| UI | `/api/admin/capabilities/` sirve el catálogo en solo lectura; el front no duplica la lista. |
+
+`django.contrib.auth.Permission` se descartó: es global, está atado a modelos y
+no tiene dimensión de tenant, así que no puede expresar *«esta capacidad, dentro
+de esta empresa»*.
+
+Cada capacidad declara su estado, sin fingir:
+
+| Estado | Significa |
+|---|---|
+| `active` | La plataforma la aplica hoy (`company.*`, `memberships.*`, `areas.manage`, `roles.manage`) |
+| `available` | El módulo existe pero sus endpoints siguen autorizando por RBAC legacy; asignable, aún no aplicada |
+| `reserved` | El módulo **no existe** (`service.customers.*`, `service.devices.*`, `service.orders.*`, `service.diagnostic.*`, `service.repair.*`, `service.quality.*`). Listada solo para diseño y **no asignable** |
+
+18 asignables, 10 reservadas. Un rol que intente reclamar una reservada es
+rechazado con `400`.
+
+### Áreas ≠ permisos
+
+**Regla dura, con test:** pertenecer al área «Inventario» **no** otorga
+`inventory.adjust`. La autoridad viene exclusivamente de las capacidades del rol.
+El área sirve para organización, filtros, asignaciones, dashboards y reportes.
+Desactivar un área tampoco cambia la autoridad de nadie.
+
+### Varios sombreros, una sola membresía
+
+```
+Usuario X @ Empresa A          (una sola Membership)
+  ├── Técnico    — área Taller
+  └── Recepción  — área Recepción
+```
+
+`MembershipRoleAssignment` cuelga de la Membership, así que un usuario puede
+llevar varios roles sin duplicar su pertenencia a la empresa. El mismo rol puede
+repetirse en dos áreas distintas, nunca dos veces en la misma.
+
+### Resolución de capacidades — exclusiva, no aditiva
+
+```
+1. Platform master  → todas las capacidades asignables, en cualquier empresa
+2. Roles propios    → UNIÓN de las capacidades de sus asignaciones activas
+                      (Membership.role se IGNORA)
+3. Fallback legacy  → capacidades equivalentes a Membership.role
+```
+
+El punto 2 es el importante: **si una empresa modela a alguien con roles
+personalizados, restringirlo lo restringe de verdad**. Sumar además el fallback
+legacy devolvería en silencio lo que el rol personalizado le quitó.
+
+Una empresa que no haya configurado ningún rol sigue funcionando exactamente
+como en Fase 2A — hay un test que compara ambos sistemas rol por rol y capacidad
+por capacidad.
+
+### Escalada de privilegios — política adoptada
+
+**Un administrador de empresa solo puede delegar capacidades que él mismo tiene.**
+Se aplica al crear un rol, al editar sus capacidades y al asignarlo (incluida la
+reactivación de una asignación). Sin esta regla, un admin limitado podría
+escribir un rol poderoso, asignárselo y escalar.
+
+El platform master está exento, porque necesita poder configurar tenants desde cero.
+
+### `superadmin` legacy
+
+Sin cambios respecto a 2A: sigue siendo autoridad **solo dentro de su empresa**,
+nunca implica `User.is_superuser`, y un admin de empresa no puede asignarlo.
+
+---
+
+## 8-quater. Provisioning de nuevas empresas
+
+La migración `0017` sembró presets **solo para las empresas que existían cuando
+corrió**. Una empresa creada después llegaría sin áreas ni roles.
+
+`store/company_provisioning.py` es la **única fuente en tiempo de ejecución** de
+esos defaults:
+
+```python
+provision_company_access_defaults(company) -> dict
+```
+
+- **Idempotente**: casa por `(company, slug)`; lo que ya existe se deja como está.
+- **No sobrescribe** un preset que el operador editó, renombró o desactivó.
+- **No asigna** roles a nadie, no crea Membership, no toca `UserProfile.role`,
+  `Membership.role`, `is_superuser` ni `is_staff`.
+- **Neutral**: un test escanea el archivo entero — prosa incluida — y falla si
+  aparece el nombre, razón social o RUC de cualquier tenant.
+
+Caminos que lo invocan hoy:
+
+| Camino | Cómo |
+|---|---|
+| `POST /api/admin/companies/` | Creación y provisioning en **una sola transacción**: si el provisioning falla, la empresa hace rollback. Una empresa a medio configurar es peor que una que nunca se creó, porque el fallo es silencioso. |
+| Django Admin → crear Company | `CompanyAdmin.save_model()` con `change=False`. Llamada explícita, no signal: un signal dispararía en cada escritura de Company (incluido el modelo histórico de `0015` y las fixtures), sería sorprendente y difícil de testear. |
+
+Futuros comandos de onboarding, imports y pantallas de Platform Control **deben
+usar este mismo servicio**. No se replica la lista de presets en otro sitio.
+
+> **Sobre la copia dentro de `0017`:** la migración conserva su propia lista
+> congelada a propósito, y eso **no** es duplicación a refactorizar. Una migración
+> debe reproducir lo que hizo cuando corrió; importar este módulo dejaría que un
+> cambio futuro del catálogo reescribiera la historia. `0017` es registro
+> histórico; este módulo es el default actual. Se les permite divergir.
+
+---
+
+## 8-quinquies. Mapa oficial del CONTROL INTERNO
+
+Mapa funcional aprobado. **Es un mapa, no una funcionalidad**: el estado de cada
+módulo refleja el código real, no el diseño.
+
+| Módulo | Submódulos | Estado real |
+|---|---|---|
+| **Dashboard** | operativo avanzado | `PENDIENTE` |
+| **Ventas** | Nueva venta / POS | `PENDIENTE` |
+| | Pedidos | `IMPLEMENTADO` (legacy, no tenant-aware) |
+| | Cotizaciones | `PENDIENTE` |
+| | Notas de venta | `IMPLEMENTADO` (legacy) |
+| | Devoluciones / anulaciones | `PENDIENTE` |
+| | Cuentas por cobrar · Comisiones | `PENDIENTE` |
+| **Caja** | apertura/cierre, ingresos, egresos, caja chica, métodos de pago | `PENDIENTE` |
+| **Compras** | proveedores, cotizaciones, órdenes, recepción, cuentas por pagar, costos | `PENDIENTE` |
+| **Clientes** | clientes, historial, equipos, garantías | `PENDIENTE` |
+| | Fidelización (programas, reglas, premios, reportes) | `PROPUESTA` |
+| **Productos** | Productos · Categorías | `IMPLEMENTADO` (legacy, no tenant-aware) |
+| | Marcas · Precios · Promociones · Serial/IMEI | `PENDIENTE` |
+| **Inventario** | Estado de stock · Kardex · Entradas · Salidas · Reportes | `IMPLEMENTADO` (legacy, no tenant-aware) |
+| | Alertas · Transferencias · Recuentos · Reposición · Valorización · Revalorización | `PENDIENTE` |
+| | Inventario tenant-aware | `PENDIENTE` |
+| **Servicio Técnico** | recepción, órdenes, diagnóstico, cotización, aprobación, reparación, repuestos, evidencias, control de calidad, entrega, garantías | `PENDIENTE` |
+| **Reportes** | Ventas · Inventario | `IMPLEMENTADO` (legacy, parcial) |
+| | Compras · Clientes · Caja · Técnicos · Rentabilidad · Exportaciones | `PENDIENTE` |
+| **Herramientas** | carga masiva, descargas en segundo plano, papelera | `PROPUESTA` |
+| **Dispositivos** | impresoras, etiquetadoras, periféricos | `PENDIENTE` |
+| **Fiscal / SUNAT** | — | `PENDIENTE` (fase separada) |
+| **Administración** | Empresa · Sucursales · Usuarios internos · Áreas · Roles y permisos | `IMPLEMENTADO` |
+| | Auditoría | `IMPLEMENTADO` (parcial: cubre acciones admin, no todo el dominio) |
+| | Configuración / branding | `PENDIENTE` |
+
+### Regla del sidebar futuro
+
+```
+módulo visible  =  módulo realmente implementado
+                   AND
+                   el usuario posee la capability necesaria
+```
+
+Lo que **no** queremos: que `roles.manage == true` haga aparecer un módulo que no
+existe. Y en ningún caso el frontend es la autorización — **la decisión final
+siempre está en el backend**; ocultar un botón no protege un endpoint.
+
+### Capacidades `available` ≠ aplicadas
+
+Recordatorio explícito: una capacidad en estado `available` significa que el
+módulo existe y la capacidad es asignable, **no** que algún endpoint la consulte.
+Hoy `products.*`, `inventory.*`, `sales.*`, `reports.*`, `settings.*` y
+`service.manage` no gobiernan nada: esos endpoints siguen autorizando por
+`UserProfile.role`. Un rol que las conceda no abre nada todavía.
+
+---
+
+## 8-sexies. Deuda arquitectónica: acceso multisucursal
+
+`Membership.branch` es opcional y **single-valued**: una membresía apunta a una
+sucursal o a ninguna. Eso no cubre los casos que el Control Interno va a
+necesitar:
+
+```
+Gerente     → Sucursal A + B + C
+Supervisor  → Sucursal A + B
+Técnico     → Sucursal Taller
+```
+
+Hoy la única forma de expresar «varias sucursales» es dejar `branch = NULL`, que
+significa «toda la empresa» — demasiado ancho para un supervisor de dos tiendas
+de cinco.
+
+Modelo posible para el futuro:
+
+```
+MembershipBranchAccess
+  membership
+  branch
+  is_active
+```
+
+**No se implementa en esta fase.**
+
+```
+PENDIENTE — Branch access model
+```
+
+**Debe resolverse antes o durante la fase de inventario multisucursal.**
+Tenantizar `StockMovement` por sucursal sin un modelo de acceso a múltiples
+branches obligaría a elegir entre dar a cada usuario una sola sucursal o darle
+todas — y migrar después sería mucho más caro que decidirlo ahora.
+
+---
+
+## 8-septies. Dashboard interno
+
+Las referencias visuales inspiran: selector de empresa, selector de sucursal,
+periodo, ventas, ticket promedio, utilidad, métodos de pago, ventas por empleado,
+productos más vendidos, clientes, alertas, inventario y reparaciones.
+
+```
+Dashboard interno avanzado — PENDIENTE
+```
+
+**No se implementan estos KPIs ahora, y la razón importa:** `Product`, `Order` e
+`Inventory` todavía no están tenantizados. Un dashboard que aparenta ser
+multiempresa mostrando métricas globales es peor que no tener dashboard — invita
+a tomar decisiones sobre datos de otra empresa creyendo que son propios.
+
+---
+
 ## 9. Deuda pendiente
 
 1. **Branding por empresa** — `_STORE_NAME`, `_STORE_RUC`, `_STORE_ADDRESS` y
@@ -367,11 +661,25 @@ deliberadamente **no están conectadas a ninguna URL** todavía.
    la cadena de migraciones de la instalación en producción.
 8. **`bulk_create()` / `queryset.update()` saltan `Membership.clean()`** — hoy nadie
    los usa para Membership; código futuro debe llamar `assert_branch_in_company()`.
-9. **PENDIENTE — Membership Invitation Flow.** Un admin de empresa puede añadir a
+9. **Capacidades `available` no aplicadas** — `products.*`, `inventory.*`,
+   `sales.*`, `reports.*`, `settings.*` y `service.manage` son asignables pero
+   ningún endpoint las consulta todavía: el dominio comercial sigue autorizando
+   por `UserProfile.role`. Un rol que las conceda no abre nada aún. Se conectan
+   en 2B/2C, cuando esos modelos tengan `company`.
+10. **Módulo de servicio técnico inexistente** — las 10 capacidades `service.*`
+   detalladas están reservadas y no son asignables. El portal del cliente
+   (Mis equipos, Reparaciones, Cotizaciones, Garantías, Seguimiento) está
+   PENDIENTE; cuando exista, el cliente no debe ver notas internas, costos
+   internos, auditoría, otros clientes ni datos privados del técnico.
+11. **PENDIENTE — Membership Invitation Flow.** Un admin de empresa puede añadir a
    cualquier usuario existente de la plataforma sin su consentimiento, y así
    confirmar su username. La mitigación actual uniforma las respuestas de error;
    la solución real es onboarding por invitación con aceptación del destinatario.
-10. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
+12. **PENDIENTE — Branch access model** — `Membership.branch` es single-valued;
+   no expresa «este supervisor cubre A y B». Bloquea el inventario multisucursal.
+13. **Dashboard interno avanzado** — pospuesto a propósito hasta que el dominio
+   comercial esté tenantizado.
+14. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
    cubriera `*.sqlite3`). Conviene sacarlo del índice en un commit aparte.
 
 ---
@@ -387,3 +695,52 @@ razón social, RUC, dirección, teléfono y logo; `email_services` y `pdf_servic
 leyendo de ahí.
 
 **C. Inventario serializado IMEI/serie** — trazabilidad por unidad.
+
+---
+
+## Usuarios demo de desarrollo — TEMPORAL
+
+> **SOLO DESARROLLO · ELIMINAR ANTES DE PRODUCCIÓN**
+
+Cuentas rápidas para probar roles sin crear usuarios a mano en cada prueba.
+
+```bash
+python manage.py seed_demo_users --company-slug <company-slug>
+```
+
+| Usuario | Perfil | Empresa |
+|---|---|---|
+| `dev_customer` | Cliente / e-commerce | — (sin Membership) |
+| `dev_sales` | Ventas | la indicada |
+| `dev_inventory` | Inventario | la indicada |
+| `dev_technician` | Servicio Técnico | la indicada |
+| `dev_admin` | Admin de empresa | la indicada |
+| `dev_master` | PLATFORM MASTER (`is_superuser`) | — (sin Membership) |
+
+Contraseña para todas: **`Demo123!`** — no es un secreto, es una fixture.
+
+Eliminación:
+
+```bash
+python manage.py seed_demo_users --purge
+```
+
+**Garantías:**
+
+- El comando **falla si `DEBUG=False`** y no ofrece ningún flag para saltárselo.
+- **No hay bypass de autenticación**: estas cuentas entran por el login real, con
+  JWT en cookie HttpOnly y CSRF, y pasan exactamente los mismos permisos que
+  cualquiera. El bloque de `/auth` solo **rellena** el formulario.
+- **No se apropia de cuentas reales**: la firma es el email `@example.invalid`.
+  Si `dev_admin` existe con otra identidad, el comando **aborta**; `--purge`
+  omite esa cuenta en vez de borrarla.
+- **Sin migración, sin signal, sin auto-creación** al arrancar Django. Datos de
+  desarrollo no son esquema de producción.
+- Idempotente: ejecutarlo varias veces no duplica nada.
+- El bloque de accesos rápidos de `/auth` **no se renderiza** fuera de
+  `NODE_ENV === "development"` — no es un `display:none`.
+
+**DEVELOPMENT BRIDGE / LEGACY TRANSITION:** los usuarios internos demo llevan a
+propósito `UserProfile.role` **y** `Membership + CompanyRole + assignment`,
+porque los endpoints comerciales aún autorizan por el primero y las APIs SaaS por
+el segundo. Es un síntoma de la transición, no la arquitectura final.

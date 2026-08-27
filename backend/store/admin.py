@@ -4,6 +4,7 @@ from .models import (
     Order, OrderItem, CartItem, Review, Coupon, UserProfile,
     SalesNote, StockMovement,
     Branch, Company, Membership,
+    CompanyArea, CompanyRole, MembershipRoleAssignment,
 )
 
 
@@ -192,6 +193,21 @@ class CompanyAdmin(admin.ModelAdmin):
         # Never remove a tenant from the admin; deactivate it.
         return False
 
+    def save_model(self, request, obj, form, change):
+        """
+        A company created here gets the same defaults as one created through the
+        API — same service, no second copy of the preset list.
+
+        An explicit call rather than a post_save signal: a signal would fire for
+        every Company write anywhere (including migration 0015's historical
+        model, and fixtures), which is both surprising and hard to test.
+        """
+        from .company_provisioning import provision_company_access_defaults
+
+        super().save_model(request, obj, form, change)
+        if not change:
+            provision_company_access_defaults(obj, actor=request.user)
+
 
 @admin.register(Branch)
 class BranchAdmin(admin.ModelAdmin):
@@ -223,3 +239,81 @@ class MembershipAdmin(admin.ModelAdmin):
         # grant entirely. Create a new row instead.
         base = super().get_readonly_fields(request, obj)
         return (*base, 'user', 'company') if obj else base
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 2A.1 — areas, roles and assignments
+# ---------------------------------------------------------------------------
+
+@admin.register(CompanyArea)
+class CompanyAreaAdmin(admin.ModelAdmin):
+    """Organisational areas. Areas grant no permissions — see the model."""
+    list_display = ('id', 'name', 'company', 'slug', 'sort_order', 'is_active')
+    list_filter = ('is_active', 'company')
+    search_fields = ('name', 'slug', 'company__name')
+    readonly_fields = ('created_at', 'updated_at')
+    list_select_related = ('company',)
+    autocomplete_fields = ('company',)
+
+    def get_readonly_fields(self, request, obj=None):
+        # Reparenting an area would drag its assignments into another tenant.
+        base = super().get_readonly_fields(request, obj)
+        return (*base, 'company') if obj else base
+
+    def has_delete_permission(self, request, obj=None):
+        # Deactivate instead: assignments reference areas.
+        return False
+
+
+@admin.register(CompanyRole)
+class CompanyRoleAdmin(admin.ModelAdmin):
+    """
+    Company roles and their capabilities.
+
+    Editing `capabilities` here bypasses the API's anti-escalation check, so this
+    screen is for platform operators only — Django admin access already implies
+    staff-level trust.
+    """
+    list_display = ('id', 'name', 'company', 'slug', 'capability_count', 'is_active')
+    list_filter = ('is_active', 'company')
+    search_fields = ('name', 'slug', 'company__name')
+    readonly_fields = ('created_at', 'updated_at')
+    list_select_related = ('company',)
+    autocomplete_fields = ('company',)
+
+    @admin.display(description='Capacidades')
+    def capability_count(self, obj):
+        return len(obj.capabilities or [])
+
+    def get_readonly_fields(self, request, obj=None):
+        base = super().get_readonly_fields(request, obj)
+        return (*base, 'company') if obj else base
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(MembershipRoleAssignment)
+class MembershipRoleAssignmentAdmin(admin.ModelAdmin):
+    """
+    Which staff member holds which role, optionally in which area.
+
+    `membership` and `role` are locked after creation: changing either is a
+    different grant. The model's clean() blocks cross-tenant combinations.
+    """
+    list_display = ('id', 'membership', 'role', 'area', 'is_active', 'assigned_by', 'created_at')
+    list_filter = ('is_active', 'role__company')
+    search_fields = (
+        'membership__user__username', 'role__name', 'area__name',
+        'membership__company__name',
+    )
+    readonly_fields = ('created_at', 'updated_at')
+    list_select_related = ('membership__user', 'membership__company', 'role', 'area')
+    autocomplete_fields = ('role', 'area')
+
+    def get_readonly_fields(self, request, obj=None):
+        base = super().get_readonly_fields(request, obj)
+        return (*base, 'membership', 'role') if obj else base
+
+    def has_delete_permission(self, request, obj=None):
+        return False

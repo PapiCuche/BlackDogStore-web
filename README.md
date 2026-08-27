@@ -522,17 +522,107 @@ Base estructural para que la plataforma deje de asumir una sola empresa.
   Cambiar sus permisos antes que sus datos daría una falsa sensación de aislamiento.
 
 ```
-Fundación SaaS                       IMPLEMENTADO
-Tenant resolution                    PARCIAL
-RBAC tenant-aware infraestructura    IMPLEMENTADO
-RBAC legacy                          IMPLEMENTADO / TRANSICIÓN
-Tenantización Product                PENDIENTE
-Tenantización Order                  PENDIENTE
-Tenantización Inventory              PENDIENTE
-Membership Invitation Flow           PENDIENTE
-Branding                             PENDIENTE
-IMEI/Serial                          PENDIENTE
+Autenticación única                      IMPLEMENTADO
+E-commerce / portal externo              IMPLEMENTADO
+Control interno — fundamento             IMPLEMENTADO
+Control interno — módulos completos      PENDIENTE
+Platform MASTER                          IMPLEMENTADO
+Membership                               IMPLEMENTADO
+Áreas personalizadas                     IMPLEMENTADO
+Roles personalizados                     IMPLEMENTADO
+Capabilities                             IMPLEMENTADO
+Provisioning de nuevas empresas          IMPLEMENTADO
+Demo users de desarrollo                 IMPLEMENTADO / TEMPORAL
+Platform MASTER — UI                     PENDIENTE
+Legacy RBAC fallback                     IMPLEMENTADO / TRANSICIÓN
+Tenant resolution                        PARCIAL
+Branch access multisucursal              PENDIENTE
+Product tenant-aware                     PENDIENTE
+Order/Cart/Checkout tenant-aware         PENDIENTE
+Inventory tenant-aware                   PENDIENTE
+Servicio técnico                         PENDIENTE
+Dashboard interno avanzado               PENDIENTE
+Membership Invitation Flow               PENDIENTE
+Branding                                 PENDIENTE
+IMEI/Serial                              PENDIENTE
 ```
+
+### Acceso interno configurable (Fase 2A.1)
+
+Tres superficies sobre **una sola identidad** `User`:
+
+| Superficie | Requisito | Alcance |
+|---|---|---|
+| Portal externo | **Cualquier usuario** (y anónimo en las partes públicas) | Tienda, carrito, checkout, compras, cuenta |
+| Control interno | `User` + Membership activa + Company activa + capabilities | Panel de su empresa, según sus roles |
+| Platform control | `User.is_superuser` | Todos los tenants |
+
+Son **superficies, no tipos de usuario**: un mismo `User` puede estar en varias a
+la vez. Tener Membership no deja de convertirte en cliente — un técnico de Black
+Dog sigue comprando en la tienda con la misma cuenta.
+
+Cada empresa define sus propias **áreas** (Taller, Recepción, Caja…) y sus
+propios **roles** (Técnico Senior, Almacenero…) eligiendo de un catálogo de
+capacidades que controla la plataforma. Un usuario puede llevar varios roles en
+una misma empresa sin duplicar su membresía.
+
+> **Las áreas no otorgan permisos.** Pertenecer a «Inventario» no habilita
+> `inventory.adjust`; la autoridad viene solo de las capacidades del rol.
+
+Un administrador de empresa **solo puede delegar capacidades que él mismo tiene**.
+
+Toda empresa nueva recibe sus áreas y roles iniciales mediante
+`provision_company_access_defaults()` — el mismo servicio para la API y el Django
+Admin, idempotente y neutral. Son **presets**, no las únicas opciones válidas.
 
 Detalle, deuda pendiente y próximas fases:
 [docs/saas-multiempresa.md](docs/saas-multiempresa.md) · [CHANGELOG.md](CHANGELOG.md)
+
+---
+
+## Usuarios demo de desarrollo — TEMPORAL
+
+> **SOLO DESARROLLO · ELIMINAR ANTES DE PRODUCCIÓN**
+
+Cuentas rápidas para probar roles sin crear usuarios a mano en cada prueba.
+
+```bash
+python manage.py seed_demo_users --company-slug <company-slug>
+```
+
+| Usuario | Perfil | Empresa |
+|---|---|---|
+| `dev_customer` | Cliente / e-commerce | — (sin Membership) |
+| `dev_sales` | Ventas | la indicada |
+| `dev_inventory` | Inventario | la indicada |
+| `dev_technician` | Servicio Técnico | la indicada |
+| `dev_admin` | Admin de empresa | la indicada |
+| `dev_master` | PLATFORM MASTER (`is_superuser`) | — (sin Membership) |
+
+Contraseña para todas: **`Demo123!`** — no es un secreto, es una fixture.
+
+Eliminación:
+
+```bash
+python manage.py seed_demo_users --purge
+```
+
+**Garantías:**
+
+- El comando **falla si `DEBUG=False`** y no ofrece ningún flag para saltárselo.
+- **No hay bypass de autenticación**: estas cuentas entran por el login real, con
+  JWT en cookie HttpOnly y CSRF, y pasan exactamente los mismos permisos que
+  cualquiera. El bloque de `/auth` solo **rellena** el formulario.
+- **No se apropia de cuentas reales**: la firma es el email `@example.invalid`.
+  Si `dev_admin` existe con otra identidad, el comando **aborta**; `--purge`
+  omite esa cuenta en vez de borrarla.
+- **Sin migración, sin signal, sin auto-creación** al arrancar Django. Datos de
+  desarrollo no son esquema de producción.
+- Idempotente: ejecutarlo varias veces no duplica nada.
+- El bloque de accesos rápidos de `/auth` **no se renderiza** fuera de
+  `NODE_ENV === "development"` — no es un `display:none`.
+
+**DEVELOPMENT BRIDGE / LEGACY TRANSITION:** los usuarios internos demo llevan a
+propósito `UserProfile.role` **y** `Membership + CompanyRole + assignment`,
+porque los endpoints comerciales aún autorizan por el primero y las APIs SaaS por
+el segundo. Es un síntoma de la transición, no la arquitectura final.
