@@ -9031,3 +9031,291 @@ class DemoUsersCommandTest(TestCase):
     def test_20c_no_demo_user_is_created_without_running_the_command(self):
         """No migration, signal or import may create these accounts."""
         self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.2 — internal control dashboard endpoint
+# ---------------------------------------------------------------------------
+
+class InternalDashboardTest(TestCase):
+    """
+    GET /api/me/internal-dashboard/
+
+    One safe snapshot of company context. The security surface is the same as
+    every other SaaS endpoint: no membership means no access, and `?company=`
+    only selects among companies the caller already reaches.
+    """
+
+    URL = '/api/me/internal-dashboard/'
+
+    def setUp(self):
+        cache.clear()
+        self.company_a = _saas_company('Empresa A', 'dash-a')
+        self.company_b = _saas_company('Empresa B', 'dash-b', tax_id='20888888888')
+        provision_company_access_defaults(self.company_a)
+        provision_company_access_defaults(self.company_b)
+        self.branch_a = _saas_branch(self.company_a, name='Sucursal A')
+
+        self.staff_a = _saas_user('dash_staff_a')
+        self.staff_b = _saas_user('dash_staff_b')
+        self.orphan = _saas_user('dash_orphan')
+        self.platform = _saas_user('dash_platform', is_superuser=True)
+
+        self.m_a = Membership.objects.create(
+            user=self.staff_a, company=self.company_a, role='inventory',
+            branch=self.branch_a,
+        )
+        _assign(self.m_a, self.company_a.roles.get(slug='inventario'),
+                area=self.company_a.areas.get(slug='inventario'))
+        Membership.objects.create(
+            user=self.staff_b, company=self.company_b, role='admin')
+
+    def _get(self, user, params=''):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c.get(f'{self.URL}{params}')
+
+    # --- 1-3: who is refused ---
+
+    def test_01_user_without_membership_is_denied(self):
+        res = self._get(self.orphan)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_01b_anonymous_is_denied(self):
+        self.assertEqual(
+            APIClient().get(self.URL).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_01c_legacy_role_alone_grants_nothing(self):
+        """UserProfile.role must not open the SaaS dashboard."""
+        legacy = _saas_user('dash_legacy_admin')
+        legacy.profile.role = UserProfile.ROLE_ADMIN
+        legacy.profile.save()
+        self.assertEqual(self._get(legacy).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_02_inactive_membership_is_denied(self):
+        self.m_a.is_active = False
+        self.m_a.save(update_fields=['is_active'])
+        self.assertEqual(self._get(self.staff_a).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_03_inactive_company_is_denied(self):
+        self.company_a.is_active = False
+        self.company_a.save(update_fields=['is_active'])
+        self.assertEqual(self._get(self.staff_a).status_code, status.HTTP_403_FORBIDDEN)
+
+    # --- 4: the happy path ---
+
+    def test_04_active_membership_gets_its_own_company(self):
+        res = self._get(self.staff_a)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company']['id'], self.company_a.pk)
+        self.assertFalse(res.data['requires_company_selection'])
+        self.assertEqual(res.data['membership']['branch']['name'], 'Sucursal A')
+        self.assertEqual(res.data['access']['legacy_role'], 'inventory')
+        self.assertEqual(res.data['access']['source'], 'custom_roles')
+        self.assertIn('inventory.adjust', res.data['access']['capabilities'])
+        self.assertEqual(
+            [r['slug'] for r in res.data['access']['roles']], ['inventario'])
+        self.assertEqual(
+            [a['slug'] for a in res.data['access']['areas']], ['inventario'])
+
+    # --- 5: cross tenant ---
+
+    def test_05_user_of_a_cannot_get_dashboard_of_b(self):
+        res = self._get(self.staff_a, f'?company={self.company_b.pk}')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_05b_switcher_lists_only_own_companies(self):
+        res = self._get(self.staff_a)
+        ids = {c['id'] for c in res.data['available_companies']}
+        self.assertEqual(ids, {self.company_a.pk})
+
+    # --- 6: multi-membership ---
+
+    def test_06_multi_membership_requires_selection(self):
+        Membership.objects.create(
+            user=self.staff_a, company=self.company_b, role='sales')
+        res = self._get(self.staff_a)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['requires_company_selection'])
+        self.assertIsNone(res.data['company'])
+        self.assertIsNone(res.data['organization'])
+        self.assertEqual(res.data['access']['capabilities'], [])
+        self.assertEqual(len(res.data['available_companies']), 2)
+
+    def test_06b_multi_membership_selection_works_for_own_companies(self):
+        Membership.objects.create(
+            user=self.staff_a, company=self.company_b, role='sales')
+        res = self._get(self.staff_a, f'?company={self.company_b.pk}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company']['id'], self.company_b.pk)
+        self.assertEqual(res.data['access']['legacy_role'], 'sales')
+
+    # --- 7-8: platform master ---
+
+    def test_07_master_may_select_a_company_explicitly(self):
+        res = self._get(self.platform, f'?company={self.company_b.pk}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company']['id'], self.company_b.pk)
+        self.assertTrue(res.data['access']['is_platform_admin'])
+        # Platform authority is not a company role
+        self.assertIsNone(res.data['access']['legacy_role'])
+        self.assertIsNone(res.data['membership'])
+
+    def test_08_master_without_selection_gets_no_arbitrary_company(self):
+        res = self._get(self.platform)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['requires_company_selection'])
+        self.assertIsNone(res.data['company'])
+        self.assertIsNone(res.data['organization'])
+
+    def test_08b_master_switcher_sees_every_tenant(self):
+        res = self._get(self.platform)
+        ids = {c['id'] for c in res.data['available_companies']}
+        self.assertIn(self.company_a.pk, ids)
+        self.assertIn(self.company_b.pk, ids)
+
+    # --- 9: no information leaks ---
+
+    def test_09_missing_and_foreign_company_answer_identically(self):
+        foreign = self._get(self.staff_a, f'?company={self.company_b.pk}')
+        missing = self._get(self.staff_a, '?company=999999')
+        self.assertEqual(foreign.status_code, missing.status_code)
+        self.assertEqual(foreign.data['detail'], missing.data['detail'])
+
+    def test_09b_invalid_company_parameter_is_rejected(self):
+        res = self._get(self.staff_a, '?company=abc')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_09c_foreign_company_name_never_leaks(self):
+        raw = str(self._get(self.staff_a, f'?company={self.company_b.pk}').data)
+        self.assertNotIn('Empresa B', raw)
+        self.assertNotIn('dash-b', raw)
+
+    # --- 10: counters are company scoped ---
+
+    def test_10_organization_counts_only_the_selected_company(self):
+        _saas_branch(self.company_b, name='Extra B1')
+        _saas_branch(self.company_b, name='Extra B2')
+        res = self._get(self.staff_a)
+        # company_a has exactly one branch; B's three must not be counted
+        self.assertEqual(res.data['organization']['active_branches'], 1)
+        self.assertEqual(res.data['organization']['active_memberships'], 1)
+        self.assertEqual(
+            res.data['organization']['active_areas'],
+            self.company_a.areas.filter(is_active=True).count())
+
+    def test_10b_organization_is_withheld_without_company_view(self):
+        """Counters are company information: they need the capability."""
+        stripped = _role(self.company_a, 'Sin ver', [], 'sin-ver')
+        MembershipRoleAssignment.objects.filter(membership=self.m_a).delete()
+        _assign(self.m_a, stripped)
+        res = self._get(self.staff_a)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res.data['organization'])
+
+    # --- 11-12: the rest of the system ---
+
+    def test_11_customer_without_membership_still_uses_the_storefront(self):
+        product = Product.objects.create(
+            name='Producto Dash', slug='producto-dash',
+            price=Decimal('20.00'), inventory=3)
+        c = APIClient()
+        self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            c.post('/api/cart/add/', {
+                'session_key': 'dash-cart', 'product': product.pk, 'quantity': 1,
+            }, format='json').status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(self._get(self.orphan).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_12_response_exposes_no_global_commercial_data(self):
+        """
+        Product/Order/StockMovement are not tenantised, so no figure derived from
+        them may appear here — a global number inside a per-company frame reads
+        as that company's data.
+        """
+        Product.objects.create(
+            name='Producto Global', slug='producto-global',
+            price=Decimal('999.00'), inventory=77)
+        raw = str(self._get(self.staff_a).data).lower()
+        for forbidden in (
+            'total_sales', 'revenue', 'orders', 'stock', 'profit',
+            'best_products', 'customer_count', 'inventory_value',
+            'producto global', 'stripe',
+        ):
+            self.assertNotIn(forbidden, raw, f'la respuesta expone "{forbidden}"')
+
+    # --- alerts ---
+
+    def test_alerts_report_only_safely_derivable_conditions(self):
+        res = self._get(self.staff_a)
+        codes = {a['code'] for a in res.data['alerts']}
+        # staff_a has a branch and capabilities: nothing to warn about
+        self.assertNotIn('no_branch_assigned', codes)
+        self.assertNotIn('no_capabilities', codes)
+
+    def test_alert_when_membership_has_no_branch(self):
+        self.m_a.branch = None
+        self.m_a.save(update_fields=['branch'])
+        codes = {a['code'] for a in self._get(self.staff_a).data['alerts']}
+        self.assertIn('no_branch_assigned', codes)
+
+    def test_alert_when_an_assigned_role_has_no_capabilities(self):
+        """The specific alert names the offending role, which is more actionable."""
+        empty = _role(self.company_a, 'Vacío', [], 'vacio')
+        MembershipRoleAssignment.objects.filter(membership=self.m_a).delete()
+        _assign(self.m_a, empty)
+        alerts = self._get(self.staff_a).data['alerts']
+        codes = {a['code'] for a in alerts}
+        self.assertIn('role_without_capabilities', codes)
+        self.assertTrue(
+            any('Vacío' in a['title'] for a in alerts),
+            'la alerta debe nombrar el rol sin permisos',
+        )
+
+    def test_alert_when_membership_has_no_role_at_all(self):
+        """The generic alert covers a membership with no assignment and no fallback."""
+        MembershipRoleAssignment.objects.filter(membership=self.m_a).delete()
+        self.m_a.role = UserProfile.ROLE_CUSTOMER  # legacy fallback grants nothing
+        self.m_a.save(update_fields=['role'])
+        codes = {a['code'] for a in self._get(self.staff_a).data['alerts']}
+        self.assertIn('no_capabilities', codes)
+
+    def test_alert_when_master_views_a_company_without_belonging(self):
+        codes = {
+            a['code']
+            for a in self._get(self.platform, f'?company={self.company_a.pk}').data['alerts']
+        }
+        self.assertIn('platform_admin_no_membership', codes)
+
+    # --- demo users behave as documented ---
+
+    @override_settings(DEBUG=True)
+    def test_demo_users_reach_the_dashboard_but_not_every_module(self):
+        call_command('seed_demo_users', company_slug='dash-a', stdout=StringIO())
+
+        technician = User.objects.get(username='dev_technician')
+        res = self._get(technician)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company']['id'], self.company_a.pk)
+
+        # ...and still cannot reach inventory or products
+        c = APIClient()
+        c.force_authenticate(user=technician)
+        self.assertEqual(
+            c.get('/api/admin/inventory/summary/').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(
+            c.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN)
+
+        # dev_customer has no internal access at all
+        customer = User.objects.get(username='dev_customer')
+        self.assertEqual(self._get(customer).status_code, status.HTTP_403_FORBIDDEN)
+
+    @override_settings(DEBUG=True)
+    def test_demo_master_must_choose_a_company(self):
+        call_command('seed_demo_users', company_slug='dash-a', stdout=StringIO())
+        master = User.objects.get(username='dev_master')
+        res = self._get(master)
+        self.assertTrue(res.data['requires_company_selection'])
+        self.assertTrue(res.data['access']['is_platform_admin'])

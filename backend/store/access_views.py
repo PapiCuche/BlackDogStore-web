@@ -37,14 +37,19 @@ from .serializers import (
     MembershipRoleAssignmentWriteSerializer,
 )
 from .tenancy import (
+    CrossTenantError,
+    NoTenantError,
+    active_memberships,
     can_delegate_capabilities,
     has_capability,
     is_platform_admin,
     resolve_capabilities,
+    resolve_company_for_user,
     scope_queryset,
+    user_areas,
     visible_companies,
 )
-from .throttles import AdminUsersThrottle
+from .throttles import AdminInventoryReportsThrottle, AdminUsersThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -547,3 +552,228 @@ class MyCompanyAccessView(APIView):
             'count': len(results),
             'is_platform_admin': is_platform_admin(request.user),
         })
+
+
+# ---------------------------------------------------------------------------
+# Internal control dashboard — Phase 2A.2
+# ---------------------------------------------------------------------------
+
+# How many companies the switcher will list. A platform master can see every
+# tenant; the list is for a dropdown, not for enumeration.
+_MAX_SWITCHER_COMPANIES = 100
+
+
+class InternalDashboardView(APIView):
+    """
+    GET /api/me/internal-dashboard/[?company=<id>]
+
+    One safe snapshot of the caller's company context, so the internal control
+    shell does not need four round trips to render its header.
+
+    WHAT IT DELIBERATELY DOES NOT RETURN
+    ------------------------------------
+    No sales totals, revenue, order counts, stock levels, profit, best-selling
+    products or customer counts. `Product`, `Order` and `StockMovement` have no
+    `company` column yet, so any such number would be a PLATFORM-WIDE figure
+    displayed inside a per-company dashboard. Showing a global number in a
+    tenant frame is worse than showing nothing: it reads as this company's data.
+    Those KPIs arrive when the models are tenantised (Phase 2B/2C).
+
+    TENANT RESOLUTION
+    -----------------
+    `?company=` is untrusted input. It is passed through
+    tenancy.resolve_company_for_user(), which only ever SELECTS among companies
+    the caller already has access to; a foreign id answers exactly like a
+    non-existent one.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminInventoryReportsThrottle]
+
+    def get(self, request):
+        user = request.user
+        platform_admin = is_platform_admin(user)
+        memberships = list(active_memberships(user))
+
+        # Business access is never implied by authentication alone, and never by
+        # the legacy UserProfile.role.
+        if not platform_admin and not memberships:
+            return Response(
+                {'detail': 'No tienes acceso al control interno de ninguna empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        switcher = self._switcher_companies(user, platform_admin)
+
+        requested = request.query_params.get('company')
+        if requested is not None:
+            try:
+                requested_id = int(requested)
+            except (TypeError, ValueError):
+                return Response(
+                    {'detail': 'Parámetro "company" inválido.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                company = resolve_company_for_user(user, requested_id)
+            except CrossTenantError:
+                # Same answer for "does not exist" and "not yours".
+                return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+            except NoTenantError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        elif not platform_admin and len(memberships) == 1:
+            company = memberships[0].company
+        else:
+            # Several companies, or a platform master with none chosen: the
+            # caller must pick. Returning an arbitrary company here would show
+            # someone another tenant's context by accident.
+            return Response({
+                'company': None,
+                'membership': None,
+                'access': {
+                    'is_platform_admin': platform_admin,
+                    'legacy_role': None,
+                    'roles': [],
+                    'areas': [],
+                    'capabilities': [],
+                },
+                'organization': None,
+                'available_companies': switcher,
+                'requires_company_selection': True,
+                'alerts': [],
+            })
+
+        return Response(self._snapshot(user, company, platform_admin, switcher))
+
+    # -- helpers --------------------------------------------------------------
+
+    def _switcher_companies(self, user, platform_admin):
+        """Companies the caller may open. Never wider than visible_companies()."""
+        qs = visible_companies(user).order_by('name')[:_MAX_SWITCHER_COMPANIES]
+        return [
+            {'id': c.pk, 'name': c.name, 'slug': c.slug, 'is_active': c.is_active}
+            for c in qs
+        ]
+
+    def _snapshot(self, user, company, platform_admin, switcher):
+        from .models import Branch, CompanyArea, CompanyRole, Membership
+
+        membership = (
+            Membership.objects
+            .filter(user=user, company=company, is_active=True)
+            .select_related('branch')
+            .first()
+        )
+
+        assignments = []
+        if membership is not None:
+            assignments = list(
+                membership.role_assignments
+                .filter(is_active=True, role__is_active=True)
+                .select_related('role', 'area')
+            )
+
+        capabilities = sorted(resolve_capabilities(user, company))
+
+        # Organisation counters are themselves company information: only a caller
+        # who may view the company gets them.
+        organization = None
+        if 'company.view' in capabilities:
+            organization = {
+                'active_branches': Branch.objects.filter(
+                    company=company, is_active=True).count(),
+                'active_memberships': Membership.objects.filter(
+                    company=company, is_active=True).count(),
+                'active_areas': CompanyArea.objects.filter(
+                    company=company, is_active=True).count(),
+                'active_roles': CompanyRole.objects.filter(
+                    company=company, is_active=True).count(),
+            }
+
+        return {
+            'company': {
+                'id': company.pk,
+                'name': company.name,
+                'slug': company.slug,
+                'is_active': company.is_active,
+            },
+            'membership': None if membership is None else {
+                'id': membership.pk,
+                'branch': None if membership.branch_id is None else {
+                    'id': membership.branch_id,
+                    'name': membership.branch.name,
+                },
+            },
+            'access': {
+                'is_platform_admin': platform_admin,
+                'legacy_role': membership.role if membership else None,
+                'roles': [
+                    {
+                        'id': a.role.pk, 'name': a.role.name, 'slug': a.role.slug,
+                        'area': a.area.name if a.area else None,
+                    }
+                    for a in assignments
+                ],
+                'areas': [
+                    {'id': a.pk, 'name': a.name, 'slug': a.slug}
+                    for a in user_areas(user, company)
+                ],
+                'capabilities': capabilities,
+                'source': 'custom_roles' if assignments else 'legacy_role',
+            },
+            'organization': organization,
+            'available_companies': switcher,
+            'requires_company_selection': False,
+            'alerts': self._alerts(company, membership, assignments, capabilities,
+                                   platform_admin),
+        }
+
+    def _alerts(self, company, membership, assignments, capabilities, platform_admin):
+        """
+        Real, safely-derivable conditions only.
+
+        No fabricated commercial alerts ("3 productos sin stock"): inventory is
+        not tenantised, so such a count would be platform-wide.
+        """
+        alerts = []
+
+        if not company.is_active:
+            alerts.append({
+                'level': 'critical', 'code': 'company_inactive',
+                'title': 'Empresa desactivada',
+                'detail': 'Esta empresa está desactivada; su personal no tiene acceso operativo.',
+            })
+
+        if membership is None and platform_admin:
+            alerts.append({
+                'level': 'info', 'code': 'platform_admin_no_membership',
+                'title': 'Acceso de plataforma',
+                'detail': 'Estás viendo esta empresa como administrador de plataforma, '
+                          'sin pertenecer a ella.',
+            })
+
+        if membership is not None and membership.branch_id is None:
+            alerts.append({
+                'level': 'info', 'code': 'no_branch_assigned',
+                'title': 'Sin sucursal asignada',
+                'detail': 'Tu alcance es toda la empresa. El acceso multisucursal '
+                          'granular está pendiente.',
+            })
+
+        if membership is not None and not assignments and not capabilities:
+            alerts.append({
+                'level': 'warning', 'code': 'no_capabilities',
+                'title': 'Sin permisos efectivos',
+                'detail': 'Tu membresía no tiene capacidades. Pide a un administrador '
+                          'de la empresa que te asigne un rol.',
+            })
+
+        for assignment in assignments:
+            if not assignment.role.capability_set:
+                alerts.append({
+                    'level': 'warning', 'code': 'role_without_capabilities',
+                    'title': f'Rol sin permisos: {assignment.role.name}',
+                    'detail': 'Este rol no concede ninguna capacidad.',
+                })
+
+        return alerts

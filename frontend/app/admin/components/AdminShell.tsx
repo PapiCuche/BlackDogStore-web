@@ -1,53 +1,106 @@
 "use client";
 
-import Link from "next/link";
-import { AdminNav } from "./AdminNav";
-import { roleLabel, type AuthUser } from "../../lib/auth";
+/**
+ * Internal control shell — Phase 2A.2.
+ *
+ * Replaces the old horizontal-tab layout with a sidebar + topbar application
+ * frame. Used by every /admin page, so the whole internal surface now feels like
+ * one application rather than an extension of the storefront.
+ *
+ * IMPORTANT — this is layout, not authorisation.
+ * Each page keeps its own guard (StaffGuard / AdminGuard / InternalControlGuard)
+ * and every endpoint re-checks server-side. Changing the frame changed no
+ * permission.
+ *
+ * The shell fetches the company context itself and DEGRADES GRACEFULLY: an
+ * operator with a legacy staff role but no Membership still gets the panel, with
+ * navigation driven by their legacy role. Requiring a Membership here would lock
+ * out every existing operator until their company adopts memberships.
+ */
+
+import { useEffect, useState } from "react";
+import { InternalSidebar, MobileSidebar } from "./InternalSidebar";
+import { InternalTopbar } from "./InternalTopbar";
+import {
+  NoInternalAccessError,
+  fetchInternalDashboard,
+  type InternalDashboard,
+} from "../lib/internal-api";
+import type { ModuleAccessContext } from "../lib/internal-modules";
+import type { AuthUser } from "../../lib/auth";
 
 type Props = {
   user: AuthUser;
+  /** Passed by pages that already loaded it, to avoid a second request. */
+  dashboard?: InternalDashboard | null;
+  onSelectCompany?: (companyId: number) => void;
   children: React.ReactNode;
 };
 
-export function AdminShell({ user, children }: Props) {
+export function buildAccessContext(
+  user: AuthUser,
+  dashboard: InternalDashboard | null,
+): ModuleAccessContext {
+  return {
+    capabilities: dashboard?.access.capabilities ?? [],
+    // Falls back to the session role so the legacy-only operator keeps their nav.
+    legacyRole: dashboard?.access.legacy_role ?? user.role ?? null,
+    isPlatformAdmin: Boolean(dashboard?.access.is_platform_admin),
+    hasCompanyContext: Boolean(dashboard?.company),
+  };
+}
+
+export function AdminShell({ user, dashboard, onSelectCompany, children }: Props) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [ownDashboard, setOwnDashboard] = useState<InternalDashboard | null>(null);
+  const [selfLoaded, setSelfLoaded] = useState(dashboard !== undefined);
+
+  // Only pages that did not already load the context pay for a request.
+  useEffect(() => {
+    if (dashboard !== undefined) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await fetchInternalDashboard();
+        if (!cancelled) setOwnDashboard(data);
+      } catch (err) {
+        // No company access is a legitimate state (legacy operator), not an error.
+        if (!cancelled && !(err instanceof NoInternalAccessError)) {
+          setOwnDashboard(null);
+        }
+      } finally {
+        if (!cancelled) setSelfLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboard]);
+
+  const effective = dashboard !== undefined ? dashboard : ownDashboard;
+  const access = buildAccessContext(user, effective);
+
   return (
     <div className="min-h-[calc(100vh-64px)] bg-zinc-950">
-      {/* Admin identity bar */}
-      <div className="border-b border-white/[0.06] bg-[#0a0a0a]">
-        <div className="mx-auto max-w-7xl flex items-center justify-between px-6 py-3">
-          <div className="flex items-center gap-3">
-            <div className="h-7 w-[2px] rounded-full bg-white/20" />
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-zinc-500">
-                Panel administrativo
-              </p>
-              <p className="text-sm text-zinc-300">
-                {user.first_name || user.username}
-                <span className="ml-2 rounded border border-white/10 px-1.5 py-0.5 text-[10px] font-medium text-zinc-400">
-                  {roleLabel(user.role)}
-                </span>
-              </p>
-            </div>
-          </div>
-          <Link
-            href="/"
-            className="text-xs text-zinc-500 transition hover:text-white"
-          >
-            ← Volver a la tienda
-          </Link>
-        </div>
-      </div>
+      <div className="flex">
+        <InternalSidebar access={access} />
+        <MobileSidebar
+          access={access}
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+        />
 
-      {/* Nav tabs */}
-      <div className="border-b border-white/[0.04] bg-[#080808]">
-        <div className="mx-auto max-w-7xl px-6">
-          <AdminNav role={user.role} />
+        <div className="min-w-0 flex-1">
+          <InternalTopbar
+            user={user}
+            dashboard={selfLoaded ? effective : null}
+            onOpenMenu={() => setMenuOpen(true)}
+            onSelectCompany={(companyId) => onSelectCompany?.(companyId)}
+          />
+          <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+            {children}
+          </main>
         </div>
-      </div>
-
-      {/* Page content */}
-      <div className="mx-auto max-w-7xl px-6 py-8">
-        {children}
       </div>
     </div>
   );

@@ -9,6 +9,40 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase SaaS 2A.2 — Control Interno + Dashboard empresarial v1
+
+**Estado: IMPLEMENTADO.** **Sin migraciones** — el dashboard no necesita tabla nueva.
+
+### IMPLEMENTADO
+- `GET /api/me/internal-dashboard/[?company=]` — una fotografía segura del contexto
+  de empresa: empresa, membresía, sucursal, roles, áreas, capacidades, contadores
+  de organización y avisos. Reutiliza `tenancy.resolve_company_for_user()`.
+- `InternalControlGuard` — entrar al control interno = Membership activa en Company
+  activa, o platform master. Ya no es `UserProfile.role == "admin"`. Con fallback
+  legacy para operadores sin Membership.
+- Shell nuevo: **sidebar + topbar** en lugar de pestañas horizontales; drawer en móvil.
+- `internal-modules.ts` — registro único de módulos (sidebar, accesos rápidos, mapa).
+  Metadata UX, nunca autorización. Sin enlaces a módulos inexistentes.
+- Selector de empresa; un master sin elegir ve «Selecciona una empresa», nunca un
+  tenant arbitrario.
+- Iconografía SVG inline — **sin dependencia nueva**.
+- 27 tests nuevos de seguridad del endpoint.
+
+### Eliminado
+- `AdminNav.tsx` — la navegación horizontal que sustituye el sidebar. Nadie la importaba.
+
+### PENDIENTE
+- KPIs comerciales (necesitan Product/Order/Inventory tenant-aware).
+- Pantallas de Empresa / Sucursales / Áreas / Roles (APIs listas desde 2A.1).
+- Selector multisucursal (bloqueado por `Branch access model`).
+- UI de Platform Control.
+
+### Sin cambios
+Guards legacy de negocio (`StaffGuard`/`AdminGuard` en products/orders/inventory/
+audit), `lib/auth.ts`, checkout, Stripe, webhook, emails, PDFs, e-commerce público.
+
+---
+
 ## Usuarios demo de desarrollo — TEMPORAL
 
 **Estado: IMPLEMENTADO / TEMPORAL.** Herramienta de desarrollo, no parte del
@@ -151,8 +185,13 @@ de negocio es deliberadamente posterior).
 ```
 Autenticación única                      IMPLEMENTADO
 E-commerce / portal externo              IMPLEMENTADO
-Control interno — fundamento             IMPLEMENTADO
+Control interno — shell v1               IMPLEMENTADO
+Dashboard empresarial v1                 IMPLEMENTADO
+Sidebar capability-aware                 IMPLEMENTADO
+Selector de empresa                      IMPLEMENTADO
+KPIs comerciales tenant-aware            PENDIENTE
 Control interno — módulos completos      PENDIENTE
+Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO
 Membership                               IMPLEMENTADO
 Áreas personalizadas                     IMPLEMENTADO
