@@ -55,11 +55,24 @@ export type CompanyAccess = {
   source?: "custom_roles" | "legacy_role";
 };
 
+/** A labelled series for a chart. Always company-scoped by the backend. */
+export type SeriesPoint = { label: string; value: number };
+
 export type OrganizationCounts = {
   active_branches: number;
   active_memberships: number;
   active_areas: number;
   active_roles: number;
+  assignments_per_area: SeriesPoint[];
+  assignments_per_role: SeriesPoint[];
+};
+
+export type CatalogCounts = {
+  products: number;
+  active_products: number;
+  inactive_products: number;
+  categories: number;
+  products_per_category: SeriesPoint[];
 };
 
 export type DashboardAlert = {
@@ -74,6 +87,8 @@ export type InternalDashboard = {
   membership: MembershipSummary | null;
   access: CompanyAccess;
   organization: OrganizationCounts | null;
+  /** Phase 2B: per-tenant catalogue counters. Null without `products.view`. */
+  catalog: CatalogCounts | null;
   available_companies: CompanySummary[];
   requires_company_selection: boolean;
   alerts: DashboardAlert[];

@@ -1,40 +1,57 @@
 "use client";
 
 /**
- * Internal control dashboard — Phase 2A.2.
+ * Internal control dashboard — Phase 2B.1 (visual analytics).
  *
- * Shows the operator WHERE they are (company, branch scope), WHAT they can do
- * (roles, areas, capabilities) and WHERE they can go (quick actions, modules).
+ * WHAT THE CHARTS ARE BUILT ON
+ * ----------------------------
+ * Only data the backend already computes with an explicit `company=` filter:
+ * catalogue composition and organisational structure. Every series arrives from
+ * /api/me/internal-dashboard/, gated by the same capability as the counters it
+ * sits beside.
  *
- * WHAT IT DELIBERATELY DOES NOT SHOW
- * ----------------------------------
- * No sales, revenue, order counts, stock levels or best-selling products.
- * Product, Order and StockMovement have no `company` column yet, so any such
- * figure would be platform-wide, displayed inside a per-company frame. A global
- * number in a tenant dashboard is not a small inaccuracy — it reads as this
- * company's data. Those KPIs arrive with Phase 2B/2C, into the same MetricCard.
+ * WHAT IS STILL ABSENT, AND WHY
+ * -----------------------------
+ * No sales, revenue, average ticket, payment methods, orders by status, stock by
+ * branch, best sellers, cash, purchases or repairs. Order and StockMovement have
+ * no company column yet, so any of those would be a PLATFORM-WIDE number drawn
+ * inside a tenant's dashboard — which reads as that tenant's data. They arrive
+ * with Phase 2C/2D, into these same card components.
+ *
+ * Nothing here decides authorisation. A section renders because the backend
+ * returned its data; the backend returned it because the caller's capability
+ * allowed it.
  */
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { AdminShell, buildAccessContext } from "./components/AdminShell";
 import { InternalControlGuard, type InternalContext } from "./components/InternalControlGuard";
 import {
+  DonutChart,
+  HorizontalBarChart,
+  StackedBar,
+} from "./components/charts";
+import {
   AlertsPanel,
+  ChartCard,
   Chip,
+  DashboardHeader,
+  DashboardSection,
   EmptyState,
-  MetricCard,
-  ModuleCard,
-  QuickActionCard,
-  Section,
-} from "./components/internal-ui";
+  SummaryStatCard,
+} from "./components/dashboard-ui";
+import { ModuleCard } from "./components/internal-ui";
 import {
   IconAdministration,
   IconBranch,
   IconPeople,
+  IconProducts,
   IconShield,
   IconStore,
 } from "./components/icons";
 import {
+  INTERNAL_MODULES,
   MODULE_GROUPS,
   navigableModules,
   quickActions,
@@ -48,7 +65,10 @@ function greeting(): string {
   return "Buenas noches";
 }
 
-function CompanySelectionPrompt({ onSelect, companies }: {
+function CompanySelectionPrompt({
+  onSelect,
+  companies,
+}: {
   onSelect: (id: number) => void;
   companies: { id: number; name: string; slug: string }[];
 }) {
@@ -57,7 +77,7 @@ function CompanySelectionPrompt({ onSelect, companies }: {
       <span className="inline-flex rounded-xl border border-white/15 bg-white/[0.05] p-3 text-white">
         <IconShield />
       </span>
-      <h1 className="mt-4 text-xl font-semibold text-white">
+      <h1 className="mt-4 font-display text-xl font-bold text-white">
         Selecciona una empresa
       </h1>
       <p className="mt-2 text-sm text-zinc-500">
@@ -74,7 +94,7 @@ function CompanySelectionPrompt({ onSelect, companies }: {
               key={company.id}
               type="button"
               onClick={() => onSelect(company.id)}
-              className="flex w-full items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 text-left transition hover:border-white/20 hover:bg-white/[0.04]"
+              className="flex w-full items-center gap-3 rounded-xl border border-white/[0.07] bg-[#111111] p-4 text-left transition hover:border-white/20"
             >
               <IconStore className="h-4 w-4 shrink-0 text-zinc-500" />
               <span className="min-w-0">
@@ -97,10 +117,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
   const { user, dashboard, selectCompany } = ctx;
   const [showRoadmap, setShowRoadmap] = useState(false);
 
-  const access = useMemo(
-    () => buildAccessContext(user, dashboard),
-    [user, dashboard],
-  );
+  const access = useMemo(() => buildAccessContext(user, dashboard), [user, dashboard]);
   const actions = useMemo(() => quickActions(access), [access]);
   const roadmap = useMemo(() => roadmapByGroup(), []);
   const reachableIds = useMemo(
@@ -108,10 +125,22 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
     [access],
   );
 
+  // System coverage: a state-of-the-system figure, not a business KPI.
+  const coverage = useMemo(() => {
+    // `module` is a reserved global in the Next.js bundler context — hence `entry`.
+    const counts = { implemented: 0, partial: 0, pending: 0, proposed: 0 };
+    for (const entry of INTERNAL_MODULES) counts[entry.status] += 1;
+    return [
+      { label: "Disponibles", value: counts.implemented },
+      { label: "Parciales", value: counts.partial },
+      { label: "Pendientes", value: counts.pending },
+      { label: "Propuestas", value: counts.proposed },
+    ];
+  }, []);
+
   const iconFor = (groupId: string) =>
     MODULE_GROUPS.find((g) => g.id === groupId)?.icon ?? IconAdministration;
 
-  // Platform master with no tenant chosen: never guess one for them.
   if (dashboard?.requires_company_selection) {
     return (
       <CompanySelectionPrompt
@@ -123,68 +152,152 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
 
   const company = dashboard?.company ?? null;
   const branch = dashboard?.membership?.branch ?? null;
+  const organization = dashboard?.organization ?? null;
+  const catalog = dashboard?.catalog ?? null;
   const roles = dashboard?.access.roles ?? [];
   const areas = dashboard?.access.areas ?? [];
   const capabilities = dashboard?.access.capabilities ?? [];
 
+  const scope = branch ? `Sucursal: ${branch.name}` : "Alcance: toda la empresa";
+
   return (
     <div className="space-y-10">
-      {/* ── Header ─────────────────────────────────────────────────────── */}
-      <div>
-        <h1 className="text-xl font-semibold text-white">
-          {greeting()}, {user.first_name || user.username}
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          {company ? (
-            <>
-              {company.name}
-              {branch ? ` · ${branch.name}` : " · alcance: empresa"}
-            </>
-          ) : (
-            "Panel administrativo — tu cuenta todavía no pertenece a una empresa."
-          )}
-        </p>
-      </div>
+      <DashboardHeader
+        greeting={greeting()}
+        name={user.first_name || user.username}
+        companyName={company?.name ?? null}
+        scope={company ? scope : "Sin empresa asignada"}
+        isPlatformAdmin={Boolean(dashboard?.access.is_platform_admin)}
+      />
 
-      {/* ── Organisation ───────────────────────────────────────────────── */}
-      {dashboard?.organization && (
-        <Section
-          title="Organización"
-          description="Estructura actual de la empresa."
+      {/* ── KPI row ────────────────────────────────────────────────────── */}
+      {(organization || catalog) && (
+        <DashboardSection
+          title="Resumen"
+          description="Estructura y catálogo de esta empresa."
         >
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <MetricCard
-              label="Sucursales"
-              value={dashboard.organization.active_branches}
-              icon={IconBranch}
-            />
-            <MetricCard
-              label="Personal activo"
-              value={dashboard.organization.active_memberships}
-              icon={IconPeople}
-            />
-            <MetricCard
-              label="Áreas"
-              value={dashboard.organization.active_areas}
-              icon={IconAdministration}
-            />
-            <MetricCard
-              label="Roles"
-              value={dashboard.organization.active_roles}
-              icon={IconShield}
-            />
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            {organization && (
+              <>
+                <SummaryStatCard
+                  label="Sucursales"
+                  value={organization.active_branches}
+                  icon={IconBranch}
+                />
+                <SummaryStatCard
+                  label="Personal"
+                  value={organization.active_memberships}
+                  hint="Membresías activas"
+                  icon={IconPeople}
+                />
+                <SummaryStatCard
+                  label="Áreas"
+                  value={organization.active_areas}
+                  icon={IconAdministration}
+                />
+                <SummaryStatCard
+                  label="Roles"
+                  value={organization.active_roles}
+                  icon={IconShield}
+                />
+              </>
+            )}
+            {catalog && (
+              <>
+                <SummaryStatCard
+                  label="Productos"
+                  value={catalog.products}
+                  hint={`${catalog.active_products} publicados`}
+                  icon={IconProducts}
+                />
+                <SummaryStatCard
+                  label="Categorías"
+                  value={catalog.categories}
+                  icon={IconProducts}
+                />
+              </>
+            )}
           </div>
-        </Section>
+        </DashboardSection>
+      )}
+
+      {/* ── Charts ─────────────────────────────────────────────────────── */}
+      {(catalog || organization) && (
+        <DashboardSection
+          title="Análisis"
+          description="Todo calculado exclusivamente sobre los datos de esta empresa."
+        >
+          <div className="grid gap-4 lg:grid-cols-2">
+            {catalog && (
+              <ChartCard
+                title="Estado del catálogo"
+                description="Productos publicados frente a ocultos."
+                footnote="Aún no se muestran ventas ni stock: esos modelos todavía no pertenecen a una empresa, y una cifra global aquí se leería como propia."
+              >
+                <DonutChart
+                  series={[
+                    { label: "Publicados", value: catalog.active_products },
+                    { label: "Ocultos", value: catalog.inactive_products },
+                  ]}
+                  centerLabel="productos"
+                  centerValue={catalog.products}
+                  unit="productos"
+                  emptyMessage="Todavía no hay productos en el catálogo."
+                />
+              </ChartCard>
+            )}
+
+            {catalog && (
+              <ChartCard
+                title="Productos por categoría"
+                description="Composición del catálogo."
+              >
+                <HorizontalBarChart
+                  series={catalog.products_per_category}
+                  unit="productos"
+                  emptyMessage="Todavía no hay categorías con productos."
+                />
+              </ChartCard>
+            )}
+
+            {organization && (
+              <ChartCard
+                title="Personal por área"
+                description="Asignaciones activas en cada área."
+                footnote="Las áreas son organizativas: no otorgan permisos por sí solas."
+              >
+                <HorizontalBarChart
+                  series={organization.assignments_per_area}
+                  unit="personas"
+                  emptyMessage="Todavía no hay personal asignado a áreas."
+                />
+              </ChartCard>
+            )}
+
+            {organization && (
+              <ChartCard
+                title="Personal por rol"
+                description="Cuántas personas tiene cada rol interno."
+              >
+                <HorizontalBarChart
+                  series={organization.assignments_per_role}
+                  unit="personas"
+                  emptyMessage="Todavía no hay roles asignados."
+                />
+              </ChartCard>
+            )}
+          </div>
+        </DashboardSection>
       )}
 
       {/* ── My access ──────────────────────────────────────────────────── */}
       {dashboard && (
-        <Section
+        <DashboardSection
           title="Mi acceso"
           description="Lo que tu cuenta puede hacer en esta empresa."
         >
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
-            <div className="grid gap-5 sm:grid-cols-3">
+          <div className="rounded-xl border border-white/[0.07] bg-[#111111] p-5 sm:p-6">
+            <div className="grid gap-6 sm:grid-cols-3">
               <div>
                 <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
                   Roles
@@ -222,39 +335,35 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
                 <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
                   Permisos
                 </p>
-                <p className="text-sm text-zinc-300">
-                  {capabilities.length} habilitado
-                  {capabilities.length === 1 ? "" : "s"}
+                <p className="font-display text-2xl font-bold tabular-nums text-white">
+                  {capabilities.length}
                 </p>
                 <p className="mt-0.5 text-[11px] text-zinc-600">
-                  Origen:{" "}
-                  {dashboard.access.source === "custom_roles"
-                    ? "roles personalizados"
-                    : "rol heredado"}
+                  habilitado{capabilities.length === 1 ? "" : "s"} · origen:{" "}
+                  {dashboard.access.is_platform_admin
+                    ? "plataforma"
+                    : dashboard.access.source === "custom_roles"
+                      ? "roles personalizados"
+                      : "rol heredado"}
                 </p>
               </div>
             </div>
-
-            <p className="mt-4 border-t border-white/[0.06] pt-3 text-[11px] leading-relaxed text-zinc-600">
-              Las áreas son organizativas: no otorgan permisos por sí solas. La
-              autoridad viene de las capacidades del rol.
-            </p>
           </div>
-        </Section>
+        </DashboardSection>
       )}
 
       {/* ── Alerts ─────────────────────────────────────────────────────── */}
       {dashboard && (
-        <Section
+        <DashboardSection
           title="Avisos"
           description="Condiciones reales de tu acceso y tu empresa."
         >
           <AlertsPanel alerts={dashboard.alerts} />
-        </Section>
+        </DashboardSection>
       )}
 
       {/* ── Quick actions ──────────────────────────────────────────────── */}
-      <Section
+      <DashboardSection
         title="Accesos rápidos"
         description="Solo los módulos que existen y a los que tienes acceso."
       >
@@ -262,23 +371,36 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
           <EmptyState message="Tu rol todavía no tiene módulos disponibles." />
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {actions.map((module) => (
-              <QuickActionCard
-                key={module.id}
-                href={module.href!}
-                label={module.label}
-                description={module.description}
-                icon={iconFor(module.group)}
-              />
-            ))}
+            {actions.map((module) => {
+              const Icon = iconFor(module.group);
+              return (
+                <Link
+                  key={module.id}
+                  href={module.href!}
+                  className="group flex items-start gap-3.5 rounded-xl border border-white/[0.07] bg-[#111111] p-5 transition hover:border-white/20"
+                >
+                  <span className="mt-0.5 rounded-lg border border-white/[0.06] bg-white/[0.03] p-2 text-zinc-400 transition group-hover:text-white">
+                    <Icon />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold text-white">
+                      {module.label}
+                    </span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-zinc-500">
+                      {module.description}
+                    </span>
+                  </span>
+                </Link>
+              );
+            })}
           </div>
         )}
-      </Section>
+      </DashboardSection>
 
-      {/* ── Roadmap ────────────────────────────────────────────────────── */}
-      <Section
-        title="Módulos de la empresa"
-        description="Estado real de cada módulo del control interno."
+      {/* ── System coverage + roadmap ──────────────────────────────────── */}
+      <DashboardSection
+        title="Estado del sistema"
+        description="Qué módulos del control interno existen hoy."
         action={
           <button
             type="button"
@@ -286,12 +408,19 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
             aria-expanded={showRoadmap}
             className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-400 transition hover:border-white/20 hover:text-white"
           >
-            {showRoadmap ? "Ocultar" : "Ver mapa completo"}
+            {showRoadmap ? "Ocultar mapa" : "Ver mapa completo"}
           </button>
         }
       >
-        {showRoadmap ? (
-          <div className="space-y-6">
+        <ChartCard
+          title="Cobertura de módulos"
+          description="Estado de implementación del control interno, no un indicador de negocio."
+        >
+          <StackedBar series={coverage} unit="módulos" />
+        </ChartCard>
+
+        {showRoadmap && (
+          <div className="mt-4 space-y-6">
             {roadmap.map(({ group, modules }) => {
               const GroupIcon = group.icon;
               return (
@@ -307,11 +436,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
                         label={module.label}
                         description={module.description}
                         status={module.status}
-                        // Only modules the caller can actually reach get a link;
-                        // everything else renders as inert metadata.
-                        href={
-                          reachableIds.has(module.id) ? module.href : undefined
-                        }
+                        href={reachableIds.has(module.id) ? module.href : undefined}
                       />
                     ))}
                   </div>
@@ -319,10 +444,8 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
               );
             })}
           </div>
-        ) : (
-          <EmptyState message="El mapa muestra qué módulos existen, cuáles son parciales y cuáles están pendientes." />
         )}
-      </Section>
+      </DashboardSection>
     </div>
   );
 }

@@ -220,3 +220,25 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# ---------------------------------------------------------------------------
+# Storefront tenant resolution — SaaS Phase 2B
+# ---------------------------------------------------------------------------
+#
+# The public catalogue belongs to ONE company. Which one is resolved, in order:
+#
+#   1. the request host      blackdog.example.com -> Company.slug == "blackdog"
+#   2. this setting          an explicit single-store deployment
+#   3. single-company        only when the database holds exactly ONE active
+#                            company — unambiguous by construction
+#
+# There is deliberately NO "first company in the database" fallback: on a
+# multi-tenant install that would silently serve one tenant's catalogue under
+# another tenant's domain. Step 3 is a different thing — it is not "the first of
+# many", it is "the only one" — and it disappears the moment a second company
+# exists, which is exactly when this setting becomes required. It also keeps an
+# existing single-store deployment serving its catalogue across the upgrade.
+#
+# Set it for any single-store deployment:
+#   DEFAULT_STOREFRONT_COMPANY_SLUG=mi-empresa
+DEFAULT_STOREFRONT_COMPANY_SLUG = env('DEFAULT_STOREFRONT_COMPANY_SLUG', default='')

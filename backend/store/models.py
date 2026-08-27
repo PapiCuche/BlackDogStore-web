@@ -9,16 +9,52 @@ from django.utils import timezone
 
 
 class Category(models.Model):
+    """
+    A catalogue category owned by one Company.
+
+    Phase 2B: `slug` is no longer globally unique. Two tenants may each have a
+    category called "iphone" — a global unique would have made the platform
+    unsellable to a second Apple reseller.
+    """
+
+    company = models.ForeignKey(
+        'store.Company', on_delete=models.PROTECT, related_name='categories',
+    )
     name = models.CharField(max_length=200)
-    slug = models.SlugField(unique=True)
+    slug = models.SlugField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'slug'], name='unique_category_slug_per_company',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'slug'])]
 
     def __str__(self):
         return self.name
 
 
 class Product(models.Model):
+    """
+    A catalogue product owned by one Company.
+
+    INVARIANT: a product's category must belong to the same company. Otherwise a
+    tenant could attach its product to another tenant's taxonomy and leak the
+    relationship in both directions. Enforced in clean() (so every ORM write is
+    covered) AND independently in the admin serializer, so no request path relies
+    on clean() alone.
+
+    `inventory` remains a single global-per-product integer. Now that Product
+    belongs to a Company, stock no longer crosses tenants — but it is still not
+    per-branch. See "Inventory branch isolation" in docs/saas-multiempresa.md.
+    """
+
+    company = models.ForeignKey(
+        'store.Company', on_delete=models.PROTECT, related_name='products',
+    )
     name = models.CharField(max_length=255)
-    slug = models.SlugField(unique=True)
+    slug = models.SlugField()
     description = models.TextField(blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     inventory = models.IntegerField(default=0)
@@ -28,8 +64,44 @@ class Product(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'slug'], name='unique_product_slug_per_company',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'slug']),
+            models.Index(fields=['company', 'is_active']),
+            models.Index(fields=['company', 'category']),
+        ]
+
     def __str__(self):
         return self.name
+
+    def clean(self):
+        """
+        Reject a category owned by a different company.
+
+        Known gap, consistent with the rest of the codebase: bulk_create() and
+        queryset.update() bypass save() and therefore this check. The admin
+        serializer validates the same invariant independently.
+        """
+        from django.core.exceptions import ValidationError
+
+        if (
+            self.category_id
+            and self.company_id
+            and self.category.company_id is not None
+            and self.category.company_id != self.company_id
+        ):
+            raise ValidationError(
+                {'category': 'La categoría no pertenece a la empresa de este producto.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class Coupon(models.Model):

@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import AdminAuditLog, Category, Order, OrderItem, Product, UserProfile
+from .tenancy import CATALOG_SOURCE_LEGACY, has_capability, resolve_catalog_company
 from .permissions import (
     CanManageInventory, CanManageOrderFulfillment, CanManageProducts,
     CanViewAdminOrders, CanViewAdminProducts,
@@ -36,6 +37,98 @@ logger = logging.getLogger(__name__)
 _VALID_ROLES = {r[0] for r in UserProfile.ROLE_CHOICES}
 _DEFAULT_PAGE_SIZE = 25
 _MAX_PAGE_SIZE = 100
+
+
+# --- Catalogue tenant scope (Phase 2B) -------------------------------------
+#
+# Category and Product now belong to a Company, so these endpoints stop being
+# global. Authority is the company capability (products.view / products.manage),
+# resolved against the company the caller actually acts on — never against a
+# company id taken from the request body.
+#
+# A caller with no company context at all gets 403, EXCEPT through the narrow
+# legacy bridge in tenancy.legacy_catalog_company(), which resolves to the pilot
+# tenant and to nothing else.
+
+CAP_PRODUCTS_VIEW = 'products.view'
+CAP_PRODUCTS_MANAGE = 'products.manage'
+
+# Legacy role sets, mirroring the permission classes these views used before
+# Phase 2B. They now apply ONLY on the legacy-bridge path — a pre-SaaS operator
+# working on the pilot tenant — never to a caller who has real company context.
+_LEGACY_VIEW_CATALOG_ROLES = frozenset([
+    UserProfile.ROLE_INVENTORY, UserProfile.ROLE_SALES,
+    UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+])
+_LEGACY_MANAGE_CATALOG_ROLES = frozenset([
+    UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+])
+
+_NO_CATALOG_CONTEXT = 'No tienes acceso al catálogo de ninguna empresa.'
+_NO_CATALOG_PERMISSION = 'No tienes permisos sobre el catálogo de esta empresa.'
+
+
+def _requested_company_id(request):
+    """
+    The company id named by the request, if any. UNTRUSTED — it is only ever
+    passed to tenancy, which validates it against the caller's own access.
+
+    Read from the QUERY STRING only, never from the body. Context selection and
+    object payload are different things: a stray `company` key inside a product
+    payload must not change which tenant the request acts on. It is also ignored
+    by the serializer, so it cannot be mass-assigned either.
+    """
+    raw = request.query_params.get('company')
+    if raw in (None, ''):
+        return None, False
+    try:
+        return int(raw), True
+    except (TypeError, ValueError):
+        return None, None  # invalid
+
+
+def _catalog_company(request, capability, legacy_roles):
+    """
+    Resolve the company this catalogue request acts on and authorise it, or
+    return an error Response.
+
+    Authority now lives HERE rather than in a DRF permission class, because the
+    two are inseparable: which company you act on determines what you may do in
+    it. A class that only saw `request.user` could not express that, and gating
+    with the old legacy-role classes would have refused a SaaS company admin
+    whose UserProfile.role is still `customer` — the normal state of a user
+    created through the membership API.
+
+    Two authority paths, matching resolve_catalog_company():
+
+      tenant  — the caller has company context; the company CAPABILITY decides.
+      legacy  — a pre-SaaS operator on the pilot tenant; their LEGACY ROLE
+                decides, exactly as it did before this phase.
+    """
+    requested_id, ok = _requested_company_id(request)
+    if ok is None:
+        return None, Response(
+            {'detail': 'Parámetro "company" inválido.'}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    company, source = resolve_catalog_company(request.user, requested_id)
+    if company is None:
+        return None, Response(
+            {'detail': _NO_CATALOG_CONTEXT}, status=status.HTTP_403_FORBIDDEN
+        )
+
+    if source == CATALOG_SOURCE_LEGACY:
+        if get_user_role(request.user) not in legacy_roles:
+            return None, Response(
+                {'detail': _NO_CATALOG_PERMISSION}, status=status.HTTP_403_FORBIDDEN
+            )
+        return company, None
+
+    if not has_capability(request.user, company, capability):
+        return None, Response(
+            {'detail': _NO_CATALOG_PERMISSION}, status=status.HTTP_403_FORBIDDEN
+        )
+    return company, None
 
 
 def _paginate(queryset, request):
@@ -208,10 +301,9 @@ class AdminProductListView(APIView):
     POST /api/admin/products/ — create product. CanManageProducts.
     """
 
-    def get_permissions(self):
-        if self.request.method == 'POST':
-            return [permissions.IsAuthenticated(), CanManageProducts()]
-        return [permissions.IsAuthenticated(), CanViewAdminProducts()]
+    # Authority is decided by _catalog_company(), which needs the resolved
+    # company to answer at all. See its docstring.
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_throttles(self):
         if self.request.method == 'POST':
@@ -219,7 +311,17 @@ class AdminProductListView(APIView):
         return [AdminProductsThrottle()]
 
     def get(self, request):
-        products = Product.objects.select_related('category').order_by('-created_at')
+        company, error = _catalog_company(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
+        if error:
+            return error
+
+        # Born scoped: every filter below narrows within the tenant.
+        products = (
+            Product.objects
+            .filter(company=company)
+            .select_related('category')
+            .order_by('-created_at')
+        )
 
         search = request.query_params.get('search', '').strip()
         if search:
@@ -250,9 +352,16 @@ class AdminProductListView(APIView):
         return Response({**meta, 'results': AdminProductSerializer(page_qs, many=True).data})
 
     def post(self, request):
-        ser = AdminProductWriteSerializer(data=request.data)
+        company, error = _catalog_company(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+        if error:
+            return error
+
+        ser = AdminProductWriteSerializer(
+            data=request.data, context={'company': company},
+        )
         ser.is_valid(raise_exception=True)
-        product = ser.save()
+        # company comes from the resolved context, never from the payload.
+        product = ser.save(company=company)
         AdminAuditLog.log(
             actor=request.user,
             action='product_created',
@@ -277,10 +386,7 @@ class AdminProductDetailView(APIView):
     PATCH /api/admin/products/{pk}/ — edit. CanManageProducts.
     """
 
-    def get_permissions(self):
-        if self.request.method == 'PATCH':
-            return [permissions.IsAuthenticated(), CanManageProducts()]
-        return [permissions.IsAuthenticated(), CanViewAdminProducts()]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_throttles(self):
         if self.request.method == 'PATCH':
@@ -288,16 +394,31 @@ class AdminProductDetailView(APIView):
         return [AdminProductsThrottle()]
 
     def get(self, request, pk):
-        product = get_object_or_404(Product.objects.select_related('category'), pk=pk)
+        company, error = _catalog_company(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
+        if error:
+            return error
+        # A product of another tenant answers exactly like one that does not exist.
+        product = get_object_or_404(
+            Product.objects.select_related('category').filter(company=company), pk=pk,
+        )
         return Response(AdminProductSerializer(product).data)
 
     def patch(self, request, pk):
-        product = get_object_or_404(Product.objects.select_related('category'), pk=pk)
+        company, error = _catalog_company(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+        if error:
+            return error
+        product = get_object_or_404(
+            Product.objects.select_related('category').filter(company=company), pk=pk,
+        )
         old = _product_snapshot(product)
 
-        ser = AdminProductWriteSerializer(product, data=request.data, partial=True)
+        ser = AdminProductWriteSerializer(
+            product, data=request.data, partial=True, context={'company': company},
+        )
         ser.is_valid(raise_exception=True)
-        product = ser.save()
+        # company is never in the payload, so a product cannot be moved between
+        # tenants by editing an id.
+        product = ser.save(company=company)
         new = _product_snapshot(product)
 
         changed = {
@@ -389,22 +510,27 @@ class AdminCategoryListView(APIView):
     POST /api/admin/categories/ — create. CanManageProducts.
     """
 
-    def get_permissions(self):
-        if self.request.method == 'POST':
-            return [permissions.IsAuthenticated(), CanManageProducts()]
-        return [permissions.IsAuthenticated(), CanViewAdminProducts()]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_throttles(self):
         return [AdminCategoriesThrottle()]
 
     def get(self, request):
-        categories = Category.objects.order_by('name')
+        company, error = _catalog_company(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
+        if error:
+            return error
+        categories = Category.objects.filter(company=company).order_by('name')
         return Response(CategorySerializer(categories, many=True).data)
 
     def post(self, request):
-        ser = AdminCategoryWriteSerializer(data=request.data)
+        company, error = _catalog_company(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+        if error:
+            return error
+        ser = AdminCategoryWriteSerializer(
+            data=request.data, context={'company': company},
+        )
         ser.is_valid(raise_exception=True)
-        category = ser.save()
+        category = ser.save(company=company)
         AdminAuditLog.log(
             actor=request.user,
             action='category_created',

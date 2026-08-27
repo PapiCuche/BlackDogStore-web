@@ -638,6 +638,7 @@ class InternalDashboardView(APIView):
                     'capabilities': [],
                 },
                 'organization': None,
+                'catalog': None,
                 'available_companies': switcher,
                 'requires_company_selection': True,
                 'alerts': [],
@@ -688,7 +689,21 @@ class InternalDashboardView(APIView):
                     company=company, is_active=True).count(),
                 'active_roles': CompanyRole.objects.filter(
                     company=company, is_active=True).count(),
+                # Series for the dashboard charts. Same capability gate as the
+                # counters above — a distribution is company information too.
+                'assignments_per_area': self._assignments_per_area(company),
+                'assignments_per_role': self._assignments_per_role(company),
             }
+
+        # Catalogue counters — safe from Phase 2B onward because Category and
+        # Product now belong to a company, so these are genuinely per-tenant and
+        # not a platform-wide figure wearing a tenant's frame.
+        #
+        # Still ABSENT on purpose: stock totals, inventory value, sales, orders
+        # and profit. Order and StockMovement have no company column yet.
+        catalog = None
+        if 'products.view' in capabilities:
+            catalog = self._catalog_snapshot(company)
 
         return {
             'company': {
@@ -722,11 +737,98 @@ class InternalDashboardView(APIView):
                 'source': 'custom_roles' if assignments else 'legacy_role',
             },
             'organization': organization,
+            'catalog': catalog,
             'available_companies': switcher,
             'requires_company_selection': False,
             'alerts': self._alerts(company, membership, assignments, capabilities,
                                    platform_admin),
         }
+
+    # -- chart series (Phase 2B.1) -------------------------------------------
+    #
+    # Every series below is computed with an explicit `company=` filter. They are
+    # DISTRIBUTIONS of data this dashboard already reports as totals, so they add
+    # no new exposure — but they are gated by the same capability all the same,
+    # because "how your catalogue is shaped" is company information.
+    #
+    # Deliberately NOT here: anything derived from Order or StockMovement. Those
+    # models have no company column, so a chart built on them would be a
+    # platform-wide figure drawn inside a tenant's dashboard.
+
+    _MAX_SERIES_BUCKETS = 8
+
+    def _catalog_snapshot(self, company):
+        from django.db.models import Count, Q
+
+        from .models import Category, Product
+
+        total = Product.objects.filter(company=company).count()
+        active = Product.objects.filter(company=company, is_active=True).count()
+
+        # Products per category, biggest first. Uncategorised products are shown
+        # as their own bucket rather than dropped — a chart that silently omits
+        # rows misrepresents the total it sits next to.
+        rows = list(
+            Category.objects
+            .filter(company=company)
+            .annotate(product_count=Count('product', filter=Q(product__company=company)))
+            .order_by('-product_count', 'name')
+            .values('id', 'name', 'product_count')[:self._MAX_SERIES_BUCKETS]
+        )
+        series = [
+            {'label': r['name'], 'value': r['product_count']} for r in rows
+        ]
+        uncategorised = Product.objects.filter(
+            company=company, category__isnull=True,
+        ).count()
+        if uncategorised:
+            series.append({'label': 'Sin categoría', 'value': uncategorised})
+
+        return {
+            'products': total,
+            'active_products': active,
+            'inactive_products': total - active,
+            'categories': Category.objects.filter(company=company).count(),
+            'products_per_category': series,
+        }
+
+    def _assignments_per_area(self, company):
+        from django.db.models import Count, Q
+
+        from .models import CompanyArea
+
+        rows = (
+            CompanyArea.objects
+            .filter(company=company, is_active=True)
+            .annotate(member_count=Count(
+                'role_assignments',
+                filter=Q(role_assignments__is_active=True,
+                         role_assignments__membership__is_active=True),
+                distinct=True,
+            ))
+            .order_by('-member_count', 'sort_order', 'name')
+            .values('id', 'name', 'member_count')[:self._MAX_SERIES_BUCKETS]
+        )
+        return [{'label': r['name'], 'value': r['member_count']} for r in rows]
+
+    def _assignments_per_role(self, company):
+        from django.db.models import Count, Q
+
+        from .models import CompanyRole
+
+        rows = (
+            CompanyRole.objects
+            .filter(company=company, is_active=True)
+            .annotate(member_count=Count(
+                'assignments',
+                filter=Q(assignments__is_active=True,
+                         assignments__membership__is_active=True),
+                distinct=True,
+            ))
+            .order_by('-member_count', 'name')
+            .values('id', 'name', 'member_count')[:self._MAX_SERIES_BUCKETS]
+        )
+        return [{'label': r['name'], 'value': r['member_count']} for r in rows]
 
     def _alerts(self, company, membership, assignments, capabilities, platform_admin):
         """
