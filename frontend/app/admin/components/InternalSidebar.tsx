@@ -1,0 +1,157 @@
+"use client";
+
+/**
+ * Internal control sidebar — Phase 2A.2.
+ *
+ * Renders only modules that are implemented, routable and reachable by the
+ * caller (see internal-modules.ts). A module that does not exist never becomes a
+ * link here; the honest roadmap lives on the dashboard instead.
+ *
+ * This is navigation, not authorisation. Every route it points at enforces its
+ * own permissions, and every endpoint behind them re-checks server-side.
+ */
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { IconClose, IconDashboard } from "./icons";
+import {
+  navigableGroups,
+  type ModuleAccessContext,
+} from "../lib/internal-modules";
+
+type Props = {
+  access: ModuleAccessContext;
+  /** Mobile drawer only: closes the panel after navigating. */
+  onNavigate?: () => void;
+  onClose?: () => void;
+};
+
+function isActive(pathname: string, href: string): boolean {
+  if (href === "/admin") return pathname === "/admin";
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+export function InternalSidebarContent({ access, onNavigate, onClose }: Props) {
+  const pathname = usePathname();
+  const groups = navigableGroups(access);
+
+  const linkClass = (active: boolean) =>
+    `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${
+      active
+        ? "bg-white/[0.08] font-medium text-white"
+        : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"
+    }`;
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-zinc-500">
+            Control interno
+          </p>
+          <p className="mt-0.5 text-sm font-semibold text-white">Black Dog Store</p>
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Cerrar menú"
+            className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-white/5 hover:text-white lg:hidden"
+          >
+            <IconClose />
+          </button>
+        )}
+      </div>
+
+      <nav
+        aria-label="Módulos del control interno"
+        className="flex-1 overflow-y-auto px-3 py-4"
+      >
+        <Link
+          href="/admin"
+          onClick={onNavigate}
+          aria-current={isActive(pathname, "/admin") ? "page" : undefined}
+          className={linkClass(isActive(pathname, "/admin"))}
+        >
+          <IconDashboard className="h-[18px] w-[18px] shrink-0" />
+          Dashboard
+        </Link>
+
+        {groups.map(({ group, modules }) => {
+          const GroupIcon = group.icon;
+          return (
+            <div key={group.id} className="mt-6">
+              <p className="mb-1.5 flex items-center gap-2 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-600">
+                <GroupIcon className="h-3.5 w-3.5" />
+                {group.label}
+              </p>
+              <div className="space-y-0.5">
+                {modules.map((module) => {
+                  const active = isActive(pathname, module.href!);
+                  return (
+                    <Link
+                      key={module.id}
+                      href={module.href!}
+                      onClick={onNavigate}
+                      aria-current={active ? "page" : undefined}
+                      className={`${linkClass(active)} pl-8`}
+                    >
+                      {module.label}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </nav>
+
+      <div className="border-t border-white/[0.06] px-3 py-3">
+        <Link
+          href="/"
+          onClick={onNavigate}
+          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-zinc-500 transition hover:bg-white/[0.04] hover:text-white"
+        >
+          ← Volver a la tienda
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+/** Desktop: sticky rail. Hidden below lg, where the drawer takes over. */
+export function InternalSidebar({ access }: { access: ModuleAccessContext }) {
+  return (
+    <aside className="hidden w-[260px] shrink-0 border-r border-white/[0.06] bg-[#080808] lg:block">
+      <div className="sticky top-0 h-screen">
+        <InternalSidebarContent access={access} />
+      </div>
+    </aside>
+  );
+}
+
+/** Mobile: drawer over a dimmed backdrop. */
+export function MobileSidebar({
+  access,
+  open,
+  onClose,
+}: {
+  access: ModuleAccessContext;
+  open: boolean;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 lg:hidden">
+      <button
+        type="button"
+        aria-label="Cerrar menú"
+        onClick={onClose}
+        className="absolute inset-0 h-full w-full bg-black/70"
+      />
+      <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-white/10 bg-[#080808]">
+        <InternalSidebarContent access={access} onNavigate={onClose} onClose={onClose} />
+      </div>
+    </div>
+  );
+}

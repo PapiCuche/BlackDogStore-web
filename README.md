@@ -524,8 +524,13 @@ Base estructural para que la plataforma deje de asumir una sola empresa.
 ```
 Autenticación única                      IMPLEMENTADO
 E-commerce / portal externo              IMPLEMENTADO
-Control interno — fundamento             IMPLEMENTADO
+Control interno — shell v1               IMPLEMENTADO
+Dashboard empresarial v1                 IMPLEMENTADO
+Sidebar capability-aware                 IMPLEMENTADO
+Selector de empresa                      IMPLEMENTADO
+KPIs comerciales tenant-aware            PENDIENTE
 Control interno — módulos completos      PENDIENTE
+Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO
 Membership                               IMPLEMENTADO
 Áreas personalizadas                     IMPLEMENTADO
@@ -546,6 +551,22 @@ Membership Invitation Flow               PENDIENTE
 Branding                                 PENDIENTE
 IMEI/Serial                              PENDIENTE
 ```
+
+### Control Interno v1 (Fase 2A.2)
+
+`/admin` es ahora una aplicación empresarial con sidebar y topbar, no el panel
+admin del e-commerce. Muestra empresa, sucursal, roles, áreas y permisos efectivos.
+
+Entrar requiere **Membership activa en Company activa** (o platform master), no el
+rol legacy — por eso un vendedor o un técnico ven el dashboard. Abrir el dashboard
+no es abrir cada módulo: cada endpoint sigue decidiendo en el backend.
+
+> El dashboard **no muestra ventas, ingresos ni stock**. `Product`, `Order` y
+> `StockMovement` aún no son tenant-aware, así que esas cifras serían globales
+> mostradas como si fueran de la empresa. Llegan en 2B/2C.
+
+El sidebar solo enlaza módulos que **existen** y a los que tienes acceso; el resto
+aparece en el mapa del dashboard con su estado real.
 
 ### Acceso interno configurable (Fase 2A.1)
 

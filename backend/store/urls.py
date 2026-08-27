@@ -35,7 +35,7 @@ from .tenant_views import (
 from .access_views import (
     AdminAreaDetailView, AdminAreaListView, AdminRoleAssignmentDetailView,
     AdminRoleAssignmentListView, AdminRoleDetailView, AdminRoleListView,
-    CapabilityCatalogView, MyCompanyAccessView,
+    CapabilityCatalogView, InternalDashboardView, MyCompanyAccessView,
 )
 from django.urls import path, include
 
@@ -104,4 +104,5 @@ urlpatterns = [
     path('admin/membership-role-assignments/', AdminRoleAssignmentListView.as_view(), name='admin-role-assignments'),
     path('admin/membership-role-assignments/<int:pk>/', AdminRoleAssignmentDetailView.as_view(), name='admin-role-assignment-detail'),
     path('me/company-access/', MyCompanyAccessView.as_view(), name='me-company-access'),
+    path('me/internal-dashboard/', InternalDashboardView.as_view(), name='me-internal-dashboard'),
 ]

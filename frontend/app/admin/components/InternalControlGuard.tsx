@@ -1,0 +1,191 @@
+"use client";
+
+/**
+ * Gate for the internal control surface — Phase 2A.2.
+ *
+ * Replaces AdminGuard on the SHELL and DASHBOARD only. Entering the internal
+ * control means: an active Membership in an active Company, or platform master.
+ * It explicitly does NOT mean UserProfile.role === "admin", which is why a
+ * salesperson or a technician can now open the dashboard at all.
+ *
+ * Opening the dashboard is not opening every module: each business page keeps
+ * its own guard, and every endpoint enforces its own permissions server-side.
+ *
+ * LEGACY FALLBACK — deliberate.
+ * A user with a legacy staff role but no Membership (the state of every existing
+ * operator until companies adopt memberships) must keep working. For them the
+ * guard passes with `dashboard === null`, and the shell renders in legacy mode:
+ * no company header, sidebar driven by the legacy role. Requiring a Membership
+ * here would lock existing operators out of a panel they use today.
+ */
+
+import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
+import {
+  NoInternalAccessError,
+  fetchInternalDashboard,
+  type InternalDashboard,
+} from "../lib/internal-api";
+import { getCurrentUser, isStaffRole, type AuthUser } from "../../lib/auth";
+
+export type InternalContext = {
+  user: AuthUser;
+  /** null when the caller reaches the panel through the legacy role only. */
+  dashboard: InternalDashboard | null;
+  selectedCompanyId: number | null;
+  selectCompany: (companyId: number | null) => void;
+  reload: () => void;
+};
+
+type Props = {
+  children: (ctx: InternalContext) => React.ReactNode;
+};
+
+function Centered({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-[70vh] items-center justify-center px-6">
+      <div className="w-full max-w-md text-center">{children}</div>
+    </div>
+  );
+}
+
+function Spinner({ label }: { label: string }) {
+  return (
+    <Centered>
+      <div
+        className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent"
+        role="status"
+        aria-label={label}
+      />
+      <p className="mt-4 text-sm text-zinc-500">{label}</p>
+    </Centered>
+  );
+}
+
+function Denied({ title, message }: { title: string; message: string }) {
+  return (
+    <Centered>
+      <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-10">
+        <p className="text-xs font-semibold uppercase tracking-[0.3em] text-white/40">
+          Control interno
+        </p>
+        <h1 className="mt-2 text-2xl font-bold text-white">{title}</h1>
+        <p className="mt-4 text-sm text-zinc-400">{message}</p>
+        <Link
+          href="/"
+          className="mt-6 inline-block rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200"
+        >
+          Volver a la tienda
+        </Link>
+      </div>
+    </Centered>
+  );
+}
+
+export function InternalControlGuard({ children }: Props) {
+  const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
+  const [dashboard, setDashboard] = useState<InternalDashboard | null>(null);
+  const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [denied, setDenied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getCurrentUser().then((u) => {
+      if (!cancelled) setUser(u);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (user === undefined || user === null) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const data = await fetchInternalDashboard(selectedCompanyId);
+        if (cancelled) return;
+        setDashboard(data);
+        setDenied(false);
+        setError(null);
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof NoInternalAccessError) {
+          // No company access. A legacy staff role still gets in (see docstring).
+          setDashboard(null);
+          setDenied(!isStaffRole(user));
+          setError(null);
+        } else {
+          setError(err instanceof Error ? err.message : "Error inesperado.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, selectedCompanyId, reloadKey]);
+
+  const selectCompany = useCallback((companyId: number | null) => {
+    setLoading(true);
+    setSelectedCompanyId(companyId);
+  }, []);
+
+  const reload = useCallback(() => {
+    setLoading(true);
+    setReloadKey((k) => k + 1);
+  }, []);
+
+  if (user === undefined) return <Spinner label="Verificando sesión…" />;
+
+  if (user === null) {
+    return (
+      <Denied
+        title="Inicia sesión"
+        message="Necesitas iniciar sesión para acceder al control interno."
+      />
+    );
+  }
+
+  if (loading) return <Spinner label="Cargando control interno…" />;
+
+  if (error) {
+    return (
+      <Centered>
+        <div className="rounded-2xl border border-red-500/25 bg-red-500/[0.07] p-8">
+          <h1 className="text-lg font-semibold text-white">No se pudo cargar</h1>
+          <p className="mt-3 text-sm text-red-300">{error}</p>
+          <button
+            type="button"
+            onClick={reload}
+            className="mt-6 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-zinc-200"
+          >
+            Reintentar
+          </button>
+        </div>
+      </Centered>
+    );
+  }
+
+  if (denied) {
+    return (
+      <Denied
+        title="Sin acceso interno"
+        message="Tu cuenta no pertenece a ninguna empresa activa. Si trabajas en una,
+                 pide a su administración que te dé de alta."
+      />
+    );
+  }
+
+  return (
+    <>
+      {children({ user, dashboard, selectedCompanyId, selectCompany, reload })}
+    </>
+  );
+}

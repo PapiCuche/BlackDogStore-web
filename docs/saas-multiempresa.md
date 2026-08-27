@@ -8,8 +8,13 @@ tenantización de los modelos de negocio queda `PENDIENTE` por diseño.
 ```
 Autenticación única                      IMPLEMENTADO
 E-commerce / portal externo              IMPLEMENTADO
-Control interno — fundamento             IMPLEMENTADO
+Control interno — shell v1               IMPLEMENTADO
+Dashboard empresarial v1                 IMPLEMENTADO
+Sidebar capability-aware                 IMPLEMENTADO
+Selector de empresa                      IMPLEMENTADO
+KPIs comerciales tenant-aware            PENDIENTE
 Control interno — módulos completos      PENDIENTE
+Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO
 Membership                               IMPLEMENTADO
 Áreas personalizadas                     IMPLEMENTADO
@@ -640,6 +645,114 @@ a tomar decisiones sobre datos de otra empresa creyendo que son propios.
 
 ---
 
+## 8-octies. Control Interno v1 (Fase 2A.2)
+
+### La superficie
+
+`/admin` deja de ser «el panel admin del e-commerce» y pasa a ser una aplicación
+empresarial con su propio marco: **sidebar + topbar**, no pestañas horizontales.
+La ruta se conserva por compatibilidad; renombrarla a `/control` o `/workspace`
+queda como decisión futura, no se toca ahora.
+
+Las tres superficies siguen separadas: la tienda no cambió visualmente, y el
+control interno no vive dentro de ella.
+
+### Guard nuevo — `InternalControlGuard`
+
+Entrar al control interno ya **no** significa `UserProfile.role == "admin"`.
+Significa: **Membership activa en Company activa**, o platform master. Por eso un
+vendedor o un técnico ahora pueden abrir el dashboard.
+
+Abrir el dashboard **no** es abrir cada módulo: cada página conserva su guard
+(`StaffGuard` / `AdminGuard`) y **cada endpoint sigue decidiendo en el backend**.
+
+> **Fallback legacy, deliberado.** Un operador con rol legacy pero **sin**
+> Membership — el estado de todos los operadores actuales hasta que las empresas
+> adopten membresías — sigue entrando. El guard pasa con `dashboard === null` y el
+> shell renderiza en modo legacy. Exigir Membership aquí habría dejado fuera a
+> quienes usan el panel hoy.
+
+### Endpoint agregado
+
+`GET /api/me/internal-dashboard/[?company=<id>]` devuelve una sola fotografía
+segura: empresa, membresía, sucursal, roles, áreas, capacidades, contadores de
+organización y avisos.
+
+**Lo que NO devuelve, y por qué:** ninguna cifra de ventas, ingresos, pedidos,
+stock, utilidad, productos más vendidos ni clientes. `Product`, `Order` y
+`StockMovement` no tienen columna `company`, así que cualquiera de esas cifras
+sería **global** mostrada dentro de un marco por empresa. Un número global en un
+dashboard de tenant no es una imprecisión menor: se lee como el dato de esa
+empresa. Llegan con 2B/2C, al mismo `MetricCard`.
+
+`?company=` es input no confiable: pasa por `resolve_company_for_user()`, que
+solo **selecciona** entre empresas que el llamante ya alcanza. Una empresa ajena
+responde exactamente igual que una inexistente.
+
+| Situación | Respuesta |
+|---|---|
+| Sin Membership y sin `is_superuser` | `403` |
+| Membership o empresa inactiva | `403` |
+| Una sola Membership | `200`, su empresa, sin selector |
+| Varias Membership sin elegir | `200`, `requires_company_selection: true`, sin datos |
+| Platform master sin elegir | igual — **nunca se le adivina un tenant** |
+| Empresa ajena o inexistente | `404`, mismo texto |
+
+Los contadores de organización solo se devuelven a quien tiene `company.view`:
+también son información de la empresa.
+
+### Avisos
+
+Solo condiciones **realmente derivables** de forma segura: empresa desactivada,
+platform master viendo una empresa sin pertenecer, membresía sin sucursal,
+membresía sin capacidades, rol asignado sin permisos. **No** se fabrican avisos
+comerciales tipo «3 productos sin stock»: el inventario no está tenantizado, así
+que ese número sería global.
+
+### Registro de módulos
+
+`frontend/app/admin/lib/internal-modules.ts` es la fuente única de la navegación,
+los accesos rápidos y el mapa de módulos. **Es metadata UX, no autorización.**
+
+```
+visible y clickeable = status === "implemented"
+                       AND el usuario tiene acceso
+                       AND el módulo tiene href
+```
+
+Un módulo inexistente **nunca** se vuelve un enlace muerto: aparece únicamente en
+el mapa del dashboard, con su estado real.
+
+Declara **dos predicados a propósito**: `requiredCapabilities` (el modelo
+objetivo) y `legacyRoles` (lo que el endpoint comprueba hoy). Declarar solo
+capacidades haría que el sidebar mostrara enlaces que luego dan `403` — peor que
+un chequeo de rol, porque parece correcto. Según cada módulo se tenantice,
+`legacyRoles` desaparece y `requiredCapabilities` pasa a gobernar, sin tocar el
+resolver.
+
+### MASTER
+
+El badge sale de `access.is_platform_admin`, que el backend deriva de
+`User.is_superuser` **y solo de eso** — nunca de un rol llamado `superadmin`, que
+es un valor legacy con alcance de empresa. Un master sin empresa elegida ve
+«Selecciona una empresa», no un tenant arbitrario. Las herramientas globales de
+plataforma son otra superficie y siguen **PENDIENTE**.
+
+### Sucursal
+
+Se muestra `Sucursal: <nombre>` cuando existe, y `Alcance: empresa` cuando
+`Membership.branch` es `NULL`. **No** se añadió selector multisucursal: sería una
+UI que permite elegir sucursales que el modelo todavía no sabe restringir. Ver
+`PENDIENTE — Branch access model`.
+
+### Iconografía
+
+SVG inline en `app/admin/components/icons.tsx`. **Sin dependencia nueva**: el
+proyecto solo trae `next`, `react` y `react-dom`, y traer un paquete de iconos
+completo para una docena de glifos era mal negocio.
+
+---
+
 ## 9. Deuda pendiente
 
 1. **Branding por empresa** — `_STORE_NAME`, `_STORE_RUC`, `_STORE_ADDRESS` y
@@ -677,9 +790,14 @@ a tomar decisiones sobre datos de otra empresa creyendo que son propios.
    la solución real es onboarding por invitación con aceptación del destinatario.
 12. **PENDIENTE — Branch access model** — `Membership.branch` es single-valued;
    no expresa «este supervisor cubre A y B». Bloquea el inventario multisucursal.
-13. **Dashboard interno avanzado** — pospuesto a propósito hasta que el dominio
+13. **KPIs comerciales tenant-aware** — el dashboard tiene el marco visual
+   (`MetricCard`) pero ninguna métrica comercial, porque sería global. Se llenan
+   en 2B/2C.
+14. **Pantallas de Empresa / Sucursales / Áreas / Roles** — las APIs existen desde
+   2A.1, las pantallas no. Aparecen como `Parcial` en el mapa, sin enlace.
+15. **Dashboard interno avanzado** — pospuesto a propósito hasta que el dominio
    comercial esté tenantizado.
-14. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
+16. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
    cubriera `*.sqlite3`). Conviene sacarlo del índice en un commit aparte.
 
 ---

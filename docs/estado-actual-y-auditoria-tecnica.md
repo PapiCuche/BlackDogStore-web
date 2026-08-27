@@ -948,6 +948,7 @@ Cambios estructurales posteriores a esta auditoría:
 | SaaS 2A.1 | `CompanyArea`, `CompanyRole`, `MembershipRoleAssignment`, catálogo de capacidades | IMPLEMENTADO |
 | SaaS 2A.1 cierre | Provisioning de empresas, corrección de superficies, mapa del Control Interno | IMPLEMENTADO |
 | Demo users | `seed_demo_users` — cuentas de prueba de roles | IMPLEMENTADO / **TEMPORAL, eliminar antes de producción** |
+| SaaS 2A.2 | Control Interno v1: shell sidebar+topbar, dashboard empresarial, endpoint agregado | IMPLEMENTADO |
 
 **Modelos de base de datos actuales**, además de los listados en la sección 7:
 `UserProfile`, `AdminAuditLog`, `AccountToken`, `StockMovement`, `SalesNote`,
@@ -956,8 +957,13 @@ Cambios estructurales posteriores a esta auditoría:
 ```
 Autenticación única                      IMPLEMENTADO
 E-commerce / portal externo              IMPLEMENTADO
-Control interno — fundamento             IMPLEMENTADO
+Control interno — shell v1               IMPLEMENTADO
+Dashboard empresarial v1                 IMPLEMENTADO
+Sidebar capability-aware                 IMPLEMENTADO
+Selector de empresa                      IMPLEMENTADO
+KPIs comerciales tenant-aware            PENDIENTE
 Control interno — módulos completos      PENDIENTE
+Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO
 Membership                               IMPLEMENTADO
 Áreas personalizadas                     IMPLEMENTADO
