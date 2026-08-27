@@ -9,6 +9,47 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase SaaS 2C — Order / Cart / Checkout tenant-aware
+
+**Estado: IMPLEMENTADO.** Migraciones **0021, 0022, 0023**.
+
+### IMPLEMENTADO
+- `Order.company` y `Coupon.company` (FK PROTECT). `UNIQUE(company, code)` en cupones.
+- Invariante `Order.company == item.product.company`, en `clean()` y en un guard
+  a nivel de conjunto para `bulk_create()`.
+- Carrito con tenancy lógica (`session_key` + `product.company`) — **sin** modelo
+  `Cart` ni columna `CartItem.company`. Un navegador puede tener un carrito por
+  storefront a la vez.
+- Checkout: tenant del storefront, cupón scopeado, carrito scopeado.
+- Webhook: tenant desde `Order.company`; la metadata de Stripe se **contrasta**,
+  nunca se impone; mismatch → rechazo registrado.
+- Limpieza de carrito post-pago acotada a la empresa del pedido.
+- Historial de cliente aislado por storefront; id ajeno → 404.
+- Administración de pedidos tenant-scoped con `sales.orders.view/manage`.
+- KPIs comerciales reales: ventas de hoy, ticket promedio, ingresos, pendientes,
+  por despachar, tendencia de 7 días y pedidos por estado.
+- 4 índices `(company, …)` en `Order`; 1 en `Coupon`.
+- 61 tests nuevos.
+
+### Cambios de comportamiento
+- `/api/orders/` ya no devuelve todos los pedidos a un usuario de staff — era una
+  fuga cross-tenant. La administración vive en `/api/admin/orders/`.
+- Un superusuario debe indicar `?company=` en la administración de pedidos.
+
+### Corregido durante la fase
+- Al retirar `IsAdminRole` del reenvío de email se amplió el acceso a `sales` e
+  `inventory`. Restaurado a solo-admin con un conjunto legacy propio.
+
+### PENDIENTE
+- `SalesNote.number` sigue siendo global · `StockMovement` sin columna `company`
+  · emails sin branding por empresa · utilidad (no hay modelo de costos).
+
+### Sin cambios
+Login, JWT, cookies, CSRF, password reset, verificación de email, catálogo
+público, reviews, firma del webhook, idempotencia, PDFs.
+
+---
+
 ## Fase SaaS 2B.1 — Dashboard visual del Control Interno
 
 **Estado: IMPLEMENTADO.** **Sin migraciones.**
@@ -261,8 +302,18 @@ Dashboard catalog KPIs                   IMPLEMENTADO
 Dashboard visual / analytics UI          IMPLEMENTADO
 Gráficos tenant-safe                     IMPLEMENTADO
 KPIs comerciales reales                  PENDIENTE
-Cart tenant-aware                        PARCIAL (límite cerrado, 2C)
-Order tenant-aware                       PENDIENTE 2C
+Coupon tenant-aware                      IMPLEMENTADO
+Cart tenant-aware                        IMPLEMENTADO
+Order tenant-aware                       IMPLEMENTADO
+Checkout tenant-aware                    IMPLEMENTADO
+Stripe tenant-safe                       IMPLEMENTADO
+Customer order isolation                 IMPLEMENTADO
+Admin order isolation                    IMPLEMENTADO
+Sales capabilities                       IMPLEMENTADO
+Dashboard sales KPIs                     IMPLEMENTADO
+Dashboard sales charts                   IMPLEMENTADO
+StockMovement explicit tenancy           PENDIENTE 2D
+Profitability                            PENDIENTE (sin modelo de costos)
 Inventory company isolation              PARCIAL
 Inventory branch isolation               PENDIENTE 2D
 Dashboard sales KPIs                     PENDIENTE

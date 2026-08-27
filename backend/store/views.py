@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 import stripe
@@ -11,9 +12,15 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon, UserProfile
+from .models import (
+    Category, Product, Order, OrderItem, CartItem, Review, Coupon, UserProfile,
+    assert_items_match_order,
+)
 from .inventory_services import record_sale_stock_movements
-from .tenancy import resolve_storefront_company, storefront_categories, storefront_products
+from .tenancy import (
+    resolve_storefront_company, storefront_cart_items, storefront_categories,
+    storefront_coupon, storefront_orders, storefront_products,
+)
 from .permissions import get_user_role
 from .email_services import send_order_emails_after_payment
 from .serializers import (
@@ -32,6 +39,9 @@ from .throttles import (
     CartThrottle,
     PaymentStatusThrottle,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -125,13 +135,16 @@ class CouponValidateView(APIView):
         code = request.data.get('code', '').upper().strip()
         if not code:
             return Response({'detail': 'Código requerido.'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            coupon = Coupon.objects.get(code=code, is_active=True)
-            if coupon.expires_at and coupon.expires_at < timezone.now():
-                return Response({'detail': 'El cupón ha expirado.'}, status=status.HTTP_400_BAD_REQUEST)
-            return Response(CouponSerializer(coupon).data)
-        except Coupon.DoesNotExist:
-            return Response({'detail': 'Cupón no válido o inactivo.'}, status=status.HTTP_404_NOT_FOUND)
+        # Scoped to this storefront: two tenants may run the same code, and
+        # honouring another company's discount is a leak and a financial error.
+        coupon = storefront_coupon(request, code)
+        if coupon is None:
+            return Response(
+                {'detail': 'Cupón no válido o inactivo.'}, status=status.HTTP_404_NOT_FOUND
+            )
+        if coupon.expires_at and coupon.expires_at < timezone.now():
+            return Response({'detail': 'El cupón ha expirado.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(CouponSerializer(coupon).data)
 
 
 class OrderViewSet(viewsets.ReadOnlyModelViewSet):
@@ -140,13 +153,18 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
-        if not user.is_authenticated:
-            return Order.objects.none()
-        role = get_user_role(user)
-        if role in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN, UserProfile.ROLE_SALES) or user.is_staff:
-            return Order.objects.prefetch_related('items__product').all()
-        return Order.objects.prefetch_related('items__product').filter(user=user)
+        """
+        The customer's own orders ON THIS STOREFRONT.
+
+        Phase 2C removed the staff shortcut that returned every order in the
+        database. This is the CUSTOMER surface: a staff member browsing the shop
+        is a customer here like anyone else, and internal order administration
+        lives at /api/admin/orders/ with its own tenant scoping. The old branch
+        would now expose every tenant's orders to any staff user.
+        """
+        return storefront_orders(self.request, self.request.user).prefetch_related(
+            'items__product',
+        )
 
 
 class CreateCheckoutSessionView(APIView):
@@ -173,9 +191,20 @@ class CreateCheckoutSessionView(APIView):
         customer_email = validated['customer_email']
         coupon_code = validated.get('coupon_code', '').upper().strip()
 
-        # Load cart and validate stock
+        # Phase 2C — the checkout's tenant comes from the STOREFRONT, never from
+        # the request body. A `company` field in the payload is not consulted
+        # anywhere in this flow.
+        storefront_company = resolve_storefront_company(request)
+        if storefront_company is None:
+            return Response(
+                {'detail': 'No se pudo determinar la tienda. Inténtelo nuevamente.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Load cart scoped to session AND storefront, so a cart holding another
+        # tenant's products simply is not visible to this checkout.
         cart_items = list(
-            CartItem.objects.select_related('product').filter(session_key=session_key)
+            storefront_cart_items(request, session_key).select_related('product')
         )
         if not cart_items:
             return Response(
@@ -211,29 +240,29 @@ class CreateCheckoutSessionView(APIView):
         discount_amount = Decimal('0.00')
         applied_coupon = None
         if coupon_code:
-            try:
-                coupon = Coupon.objects.get(code=coupon_code, is_active=True)
-                if coupon.expires_at and coupon.expires_at < timezone.now():
-                    return Response(
-                        {'detail': 'El cupón ha expirado.'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                discount_multiplier = (
-                    (Decimal('100') - Decimal(str(coupon.discount_percent))) / Decimal('100')
-                )
-                discount_amount = (subtotal * (1 - discount_multiplier)).quantize(Decimal('0.01'))
-                applied_coupon = coupon
-            except Coupon.DoesNotExist:
+            coupon = storefront_coupon(request, coupon_code)
+            if coupon is None:
                 return Response(
                     {'detail': 'Cupón no válido o inactivo.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if coupon.expires_at and coupon.expires_at < timezone.now():
+                return Response(
+                    {'detail': 'El cupón ha expirado.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            discount_multiplier = (
+                (Decimal('100') - Decimal(str(coupon.discount_percent))) / Decimal('100')
+            )
+            discount_amount = (subtotal * (1 - discount_multiplier)).quantize(Decimal('0.01'))
+            applied_coupon = coupon
 
         total = (subtotal - discount_amount).quantize(Decimal('0.01'))
 
         # Create order inside a transaction — cart NOT deleted, inventory NOT decremented
         with transaction.atomic():
             order = Order.objects.create(
+                company=storefront_company,
                 user=request.user if request.user.is_authenticated else None,
                 customer_name=customer_name,
                 customer_email=customer_email,
@@ -257,6 +286,10 @@ class CreateCheckoutSessionView(APIView):
                 accepted_terms=validated['accepted_terms'],
                 accepted_warranty_policy=validated['accepted_warranty_policy'],
             )
+            # Belt and braces: the cart queryset already guarantees this, but the
+            # invariant is asserted before writing rather than trusted.
+            assert_items_match_order(order, [item.product for item in cart_items])
+
             for item in cart_items:
                 OrderItem.objects.create(
                     order=order,
@@ -287,7 +320,9 @@ class CreateCheckoutSessionView(APIView):
                 success_url=f"{domain}/checkout/success?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url=f"{domain}/checkout?cancelled=true",
                 customer_email=customer_email or None,
-                metadata={'order_id': str(order.id)},
+                # Informational only. The webhook CHECKS this against
+                # Order.company; it never resolves the tenant from it.
+                metadata={'order_id': str(order.id), 'company_id': str(order.company_id)},
             )
         except stripe.StripeError as e:
             order.status = Order.Status.FAILED
@@ -337,6 +372,18 @@ class StripeWebhookView(APIView):
         return Response({'status': 'success'})
 
     def _handle_checkout_completed(self, session_obj):
+        """
+        Confirm a payment.
+
+        TENANT RESOLUTION IN A WEBHOOK (Phase 2C)
+        -----------------------------------------
+        The company comes from `Order.company` — the database — and from nowhere
+        else. Specifically NOT from the request host: Stripe calls a single
+        endpoint, so the host says nothing about which tenant sold what. And not
+        from Stripe metadata either: metadata is convenient for humans reading
+        the dashboard, but it is data we sent to a third party and got back, so
+        it can only ever be CHECKED against the database, never trusted over it.
+        """
         stripe_session_id = session_obj.get('id', '')
         payment_intent_id = session_obj.get('payment_intent', '') or ''
 
@@ -349,6 +396,16 @@ class StripeWebhookView(APIView):
             return
         except Order.MultipleObjectsReturned:
             # stripe_session_id has a unique constraint but catch defensively
+            return
+
+        # If we did send a company in the metadata, it must agree with the order.
+        # A mismatch means something is wrong upstream; refuse rather than guess.
+        metadata_company = (session_obj.get('metadata') or {}).get('company_id')
+        if metadata_company not in (None, '') and str(metadata_company) != str(order.company_id):
+            logger.error(
+                'Stripe metadata company mismatch for order %s: metadata=%s, order=%s',
+                order.pk, metadata_company, order.company_id,
+            )
             return
 
         # Idempotency guard — if already paid, do nothing
@@ -379,7 +436,13 @@ class StripeWebhookView(APIView):
 
             # Clear cart only after payment is confirmed
             if order.cart_session_key:
-                CartItem.objects.filter(session_key=order.cart_session_key).delete()
+                # Scoped to the order's own tenant. A browser may hold carts in
+                # several storefronts under one session key; paying at one must
+                # not empty the others.
+                CartItem.objects.filter(
+                    session_key=order.cart_session_key,
+                    product__company=order.company_id,
+                ).delete()
 
             # Schedule transactional emails to fire after this transaction commits.
             # on_commit guarantees payment is persisted before email goes out.
@@ -466,10 +529,12 @@ class CartViewSet(
     throttle_classes = [CartThrottle]
 
     def get_queryset(self):
+        """
+        Scoped by session AND storefront. One browser may hold a cart in several
+        tenants at once; each storefront sees only its own.
+        """
         session_key = self.request.query_params.get('session_key')
-        if session_key:
-            return CartItem.objects.filter(session_key=session_key)
-        return CartItem.objects.none()
+        return storefront_cart_items(self.request, session_key).select_related('product')
 
     def partial_update(self, request, *args, **kwargs):
         """PATCH /api/cart/{id}/?session_key=... — only quantity allowed; validates stock."""
@@ -480,10 +545,11 @@ class CartViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Scoped to this storefront: an item of another tenant's cart answers
+        # like one that does not exist, even with the right session key.
         item = get_object_or_404(
-            CartItem.objects.select_related('product'),
+            storefront_cart_items(request, session_key).select_related('product'),
             pk=kwargs.get('pk'),
-            session_key=session_key,
         )
 
         try:

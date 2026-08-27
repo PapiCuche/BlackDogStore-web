@@ -75,6 +75,19 @@ export type CatalogCounts = {
   products_per_category: SeriesPoint[];
 };
 
+/** Commercial KPIs. Null unless the caller holds `sales.orders.view`. */
+export type SalesSnapshot = {
+  today_revenue: string;
+  today_orders: number;
+  total_revenue: string;
+  total_paid_orders: number;
+  average_ticket: string;
+  pending_payment: number;
+  awaiting_fulfillment: number;
+  revenue_trend: SeriesPoint[];
+  orders_by_status: SeriesPoint[];
+};
+
 export type DashboardAlert = {
   level: "info" | "warning" | "critical";
   code: string;
@@ -89,6 +102,8 @@ export type InternalDashboard = {
   organization: OrganizationCounts | null;
   /** Phase 2B: per-tenant catalogue counters. Null without `products.view`. */
   catalog: CatalogCounts | null;
+  /** Phase 2C: real, per-tenant sales figures. */
+  sales: SalesSnapshot | null;
   available_companies: CompanySummary[];
   requires_company_selection: boolean;
   alerts: DashboardAlert[];

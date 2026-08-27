@@ -19,8 +19,18 @@ Dashboard catalog KPIs                   IMPLEMENTADO
 Dashboard visual / analytics UI          IMPLEMENTADO
 Gráficos tenant-safe                     IMPLEMENTADO
 KPIs comerciales reales                  PENDIENTE
-Cart tenant-aware                        PARCIAL (límite cerrado, 2C)
-Order tenant-aware                       PENDIENTE 2C
+Coupon tenant-aware                      IMPLEMENTADO
+Cart tenant-aware                        IMPLEMENTADO
+Order tenant-aware                       IMPLEMENTADO
+Checkout tenant-aware                    IMPLEMENTADO
+Stripe tenant-safe                       IMPLEMENTADO
+Customer order isolation                 IMPLEMENTADO
+Admin order isolation                    IMPLEMENTADO
+Sales capabilities                       IMPLEMENTADO
+Dashboard sales KPIs                     IMPLEMENTADO
+Dashboard sales charts                   IMPLEMENTADO
+StockMovement explicit tenancy           PENDIENTE 2D
+Profitability                            PENDIENTE (sin modelo de costos)
 Inventory company isolation              PARCIAL
 Inventory branch isolation               PENDIENTE 2D
 Dashboard sales KPIs                     PENDIENTE
@@ -966,6 +976,125 @@ opacidad), que ya existían.
 
 ---
 
+## 8-undecies. Comercio tenant-aware (Fase 2C)
+
+### Grafo cerrado
+
+```
+Company
+ ├── Category ── Product ──┬── CartItem   (tenant lógico, sin columna)
+ │                         ├── OrderItem  ── Order ── Company  (explícito)
+ │                         ├── Review
+ │                         └── StockMovement
+ └── Coupon
+```
+
+**Invariante:** `Order.company == item.product.company` para todos los items.
+
+### Por qué `Order.company` explícito y no derivado
+
+El tenant **no** se infiere de los items en cada lectura. La orden la usan la
+administración, los reportes, el dashboard, el fulfillment, la auditoría, el
+portal del cliente, el webhook y los emails; hacer que cada uno la re-derive por
+un join sería lento y fácil de equivocar una vez. La invariante se impone al
+escribir: `OrderItem.clean()` para escrituras de objeto y
+`assert_items_match_order()` para las masivas — **`bulk_create()` no llama a
+`clean()`**, así que una comprobación a nivel de conjunto tenía que existir.
+
+### Carrito sin modelo `Cart`
+
+Un carrito es `session_key` + la empresa del storefront, derivada por
+`CartItem.product.company`. **No se añadió** un modelo `Cart` ni una columna
+`CartItem.company`: ninguno diría nada que el producto no diga ya, y un campo
+duplicado es una segunda fuente de verdad que puede desincronizarse.
+
+Consecuencia deliberada: **un navegador puede tener varios carritos a la vez**,
+uno por storefront, compartiendo session key. Es correcto — la misma persona
+comprando en dos tenants tiene dos carritos, y vaciar uno no debe tocar el otro.
+
+Todas las operaciones están scopeadas: listar, añadir, actualizar cantidad,
+borrar y la carga del checkout.
+
+### Cupones
+
+`Coupon.company` con `UNIQUE(company, code)`. Dos empresas pueden correr
+`BIENVENIDO10` a la vez; honrar el descuento de otra sería a la vez una fuga y un
+error financiero. El checkout busca `Coupon.objects.filter(company=..., code=...)`,
+nunca global.
+
+### Checkout
+
+El tenant sale del **storefront**, nunca del body. Un campo `company` en el
+payload no se consulta en ningún punto del flujo. El carrito se carga ya
+scopeado, así que un carrito con productos de otro tenant sencillamente **no es
+visible** para este checkout: el estado mixto no llega al paso de crear la orden.
+
+### Webhook — resolución de tenant
+
+`Order.company`, de la base de datos, y de ningún otro sitio.
+
+- **No del host**: Stripe llama a un único endpoint, así que el host no dice nada
+  sobre quién vendió.
+- **No de la metadata**: enviamos `company_id` a Stripe y vuelve; es dato que pasó
+  por un tercero, así que solo puede **contrastarse** contra la base, nunca
+  imponerse sobre ella. Si no coincide, se registra y se rechaza.
+
+### Limpieza del carrito post-pago
+
+Antes borraba todo el `session_key`. Ahora borra
+`session_key + product__company=order.company`: pagar en un storefront no puede
+vaciar el carrito que el navegador tiene en otro.
+
+### Historial del cliente
+
+Un mismo `User` puede comprar en varias empresas — es **una identidad, no varias**.
+Pero dentro del storefront A solo ve sus pedidos de A: listar los de B filtraría
+lo que compró en otro sitio hacia la cuenta de un negocio sin relación. Conocer el
+id de un pedido ajeno devuelve `404`.
+
+> **Cambio de comportamiento:** `/api/orders/` devolvía **todos** los pedidos de
+> la base a cualquier usuario de staff. Con los pedidos tenantizados eso era una
+> fuga cross-tenant, así que ese atajo desapareció. La administración interna vive
+> en `/api/admin/orders/`, que scopea por empresa y comprueba capacidades.
+
+### Administración de pedidos
+
+`sales.orders.view` / `sales.orders.manage` son ya autoridad efectiva. Listado,
+detalle, fulfillment, PDF de recibo, reenvío de email y notas de venta están
+scopeados; un pedido ajeno responde igual que uno inexistente. El reenvío de email
+sigue siendo **solo admin**: pone un mensaje en la bandeja de un cliente, que es
+una autoridad más estrecha que mover un pedido por el fulfillment.
+
+> **Cambio de comportamiento:** un superusuario debe indicar `?company=`. Con los
+> pedidos tenantizados ya no existe «todos los pedidos».
+
+### KPIs comerciales — qué cuenta como venta
+
+Un pedido **pagado**, y nada más. `pending_payment`, `failed`, `cancelled`,
+`expired` y `refunded` no son ingresos; contarlos inflaría cada cifra del
+dashboard y lo volvería inútil para decidir.
+
+Los ingresos se fechan por **`paid_at`**, no `created_at`: un pedido creado ayer y
+pagado hoy es dinero de hoy. Las fechas se calculan en la zona horaria del
+proyecto, así que «hoy» es el hoy del operador.
+
+KPIs: ventas de hoy, pedidos de hoy, ticket promedio, ingresos totales, pedidos
+pagados, pendientes de pago, por despachar. Gráficos: ventas de los últimos 7
+días (los días sin ventas se dibujan en cero, no se omiten — un hueco se lee como
+dato faltante) y pedidos por estado. Todo bajo `sales.orders.view`.
+
+> **No se muestra utilidad ni margen.** El sistema no tiene modelo de costos, así
+> que cualquier «utilidad» sería ingresos con una resta inventada. Un dashboard
+> que adivina es peor que uno que calla.
+
+### Inventario
+
+`Order.company == Product.company == StockMovement.product.company` para toda
+`sale_exit`. Eso cierra el cruce **a nivel de empresa**. El stock por sucursal
+sigue siendo Fase 2D.
+
+---
+
 ## 9. Deuda pendiente
 
 1. **Branding por empresa** — `_STORE_NAME`, `_STORE_RUC`, `_STORE_ADDRESS` y
@@ -1024,7 +1153,16 @@ opacidad), que ya existían.
 19. **KPIs comerciales del dashboard** — el marco visual (`ChartCard`,
    `SummaryStatCard`) está listo, pero no hay ninguna métrica de ventas, caja o
    stock porque sus modelos siguen siendo globales. Se llenan en 2C/2D.
-20. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
+20. **`SalesNote.number` sigue siendo un correlativo global** (`NV-000001`). Con
+   dos empresas emitiendo notas, la numeración se intercala entre tenants. La
+   nota en sí ya está scopeada por su pedido; lo que falta es la serie por
+   empresa. Deuda conocida, no escondida.
+21. **`StockMovement` no tiene columna `company`** — alcanza su tenant a través
+   del producto. Las capabilities `inventory.*` todavía no gobiernan sus
+   endpoints. Fase 2D.
+22. **Emails sin branding por empresa** — `Order.company` ya está disponible para
+   personalizarlos, pero las plantillas siguen usando las constantes del piloto.
+23. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
    cubriera `*.sqlite3`). Conviene sacarlo del índice en un commit aparte.
 
 ---

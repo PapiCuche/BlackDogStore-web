@@ -108,7 +108,7 @@ class ProductModelTest(TestCase):
 
 class CouponModelTest(TestCase):
     def test_active_coupon(self):
-        coupon = Coupon.objects.create(
+        coupon = Coupon.objects.create(company=_pilot_company(),
             code="DESCUENTO10",
             discount_percent=10,
             is_active=True,
@@ -118,7 +118,7 @@ class CouponModelTest(TestCase):
         self.assertIsNone(coupon.expires_at)
 
     def test_inactive_coupon(self):
-        coupon = Coupon.objects.create(
+        coupon = Coupon.objects.create(company=_pilot_company(),
             code="VENCIDO",
             discount_percent=20,
             is_active=False,
@@ -127,7 +127,7 @@ class CouponModelTest(TestCase):
 
     def test_expired_coupon_still_has_future_date(self):
         past = timezone.now() - timedelta(days=1)
-        coupon = Coupon.objects.create(
+        coupon = Coupon.objects.create(company=_pilot_company(),
             code="PASADO",
             discount_percent=15,
             is_active=True,
@@ -302,7 +302,7 @@ class Phase50ProductAPITest(TestCase):
 class CouponAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.coupon = Coupon.objects.create(
+        self.coupon = Coupon.objects.create(company=_pilot_company(),
             code="BDOG10",
             discount_percent=10,
             is_active=True,
@@ -404,7 +404,7 @@ class OrderModelTest(TestCase):
         )
 
     def test_create_order_str(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name="Carlos García",
             customer_email="carlos@example.com",
             total=Decimal("4299.00"),
@@ -413,7 +413,7 @@ class OrderModelTest(TestCase):
         self.assertFalse(order.paid)
 
     def test_order_paid_field_defaults_false(self):
-        order = Order.objects.create(total=Decimal("100.00"))
+        order = Order.objects.create(company=_pilot_company(), total=Decimal("100.00"))
         self.assertFalse(order.paid)
 
 
@@ -587,7 +587,7 @@ class CheckoutFlowTest(TestCase):
     @patch("stripe.checkout.Session.create")
     def test_checkout_applies_coupon_discount_from_db(self, mock_create):
         mock_create.return_value = self._mock_stripe_session()
-        Coupon.objects.create(code="FASE1TEST", discount_percent=10, is_active=True)
+        Coupon.objects.create(company=_pilot_company(), code="FASE1TEST", discount_percent=10, is_active=True)
         response = self.client.post(
             "/api/payments/create-checkout-session/",
             self._base_body(coupon_code="FASE1TEST"),
@@ -626,7 +626,7 @@ class StripeWebhookTest(TestCase):
             inventory=10,
         )
         self.session_key = "webhook-test-session-001"
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_email="webhook@example.com",
             total=Decimal("799.00"),
             cart_session_key=self.session_key,
@@ -715,7 +715,7 @@ class PaymentStatusViewTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_email="status@example.com",
             total=Decimal("1299.00"),
             stripe_session_id="cs_test_status_001",
@@ -755,7 +755,7 @@ class PaymentStatusViewTest(TestCase):
         """Authenticated user must get 403 when trying to read another user's order status."""
         requester = User.objects.create_user(username="requester_x", password="pass")
         owner = User.objects.create_user(username="owner_x", password="pass")
-        owner_order = Order.objects.create(
+        owner_order = Order.objects.create(company=_pilot_company(),
             user=owner,
             customer_email="owner@example.com",
             total=Decimal("999.00"),
@@ -852,13 +852,13 @@ class OrderViewSetAccessTest(TestCase):
         self.client = APIClient()
         self.user1 = User.objects.create_user(username="orders_user1", password="pass")
         self.user2 = User.objects.create_user(username="orders_user2", password="pass")
-        self.order_u1 = Order.objects.create(
+        self.order_u1 = Order.objects.create(company=_pilot_company(),
             user=self.user1,
             customer_email="u1@example.com",
             total=Decimal("500.00"),
             status=Order.Status.PAID,
         )
-        self.order_u2 = Order.objects.create(
+        self.order_u2 = Order.objects.create(company=_pilot_company(),
             user=self.user2,
             customer_email="u2@example.com",
             total=Decimal("300.00"),
@@ -2147,13 +2147,13 @@ class OrderViewSetRBACTest(TestCase):
         self.admin_user = User.objects.create_user(username='rbac_admin', password='Pass123!')
         self.admin_user.profile.role = UserProfile.ROLE_ADMIN
         self.admin_user.profile.save()
-        self.order1 = Order.objects.create(
+        self.order1 = Order.objects.create(company=_pilot_company(),
             user=self.customer1,
             customer_email='c1@example.com',
             total=Decimal('100.00'),
             status=Order.Status.PAID,
         )
-        self.order2 = Order.objects.create(
+        self.order2 = Order.objects.create(company=_pilot_company(),
             user=self.customer2,
             customer_email='c2@example.com',
             total=Decimal('200.00'),
@@ -2173,21 +2173,30 @@ class OrderViewSetRBACTest(TestCase):
         response = self.client.get(f'/api/orders/{self.order2.id}/')
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_sales_sees_all_orders(self):
+    def test_sales_only_sees_its_own_orders_on_the_customer_endpoint(self):
+        """
+        BEHAVIOUR CHANGE, Phase 2C. /api/orders/ is the CUSTOMER surface.
+
+        It used to return every order in the database to any staff user. With
+        orders tenantised that shortcut became a cross-tenant leak: a salesperson
+        of company A would see company B's orders. Internal administration lives
+        at /api/admin/orders/, which scopes by company and checks capabilities.
+        """
         self.client.force_authenticate(user=self.sales_user)
         response = self.client.get('/api/orders/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         ids = [o['id'] for o in response.json()]
-        self.assertIn(self.order1.id, ids)
-        self.assertIn(self.order2.id, ids)
+        # order1 belongs to user1, order2 to user2; the salesperson owns neither
+        self.assertNotIn(self.order1.id, ids)
+        self.assertNotIn(self.order2.id, ids)
 
-    def test_admin_sees_all_orders(self):
+    def test_admin_only_sees_its_own_orders_on_the_customer_endpoint(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get('/api/orders/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         ids = [o['id'] for o in response.json()]
-        self.assertIn(self.order1.id, ids)
-        self.assertIn(self.order2.id, ids)
+        self.assertNotIn(self.order1.id, ids)
+        self.assertNotIn(self.order2.id, ids)
 
     def test_anon_gets_401(self):
         response = self.client.get('/api/orders/')
@@ -2204,7 +2213,7 @@ class Phase30RegressionTest(TestCase):
         self.product = Product.objects.create(company=_pilot_company(),
             name='Reg Product', slug='reg-product-30', price=Decimal('100.00'), inventory=10, category=cat
         )
-        self.coupon = Coupon.objects.create(code='REGCOUPON30', discount_percent=10, is_active=True)
+        self.coupon = Coupon.objects.create(company=_pilot_company(), code='REGCOUPON30', discount_percent=10, is_active=True)
         self.user = User.objects.create_user(username='reg30_user', password='StrongPass123!')
 
     def test_login_still_works(self):
@@ -3194,7 +3203,7 @@ def _make_order(customer_name='Test Customer', customer_email='test@example.com'
     )
     if fulfillment_status is not None:
         kwargs['fulfillment_status'] = fulfillment_status
-    return Order.objects.create(**kwargs)
+    return Order.objects.create(company=_pilot_company(), **kwargs)
 
 
 class Phase33AdminOrderAccessTest(TestCase):
@@ -3247,9 +3256,22 @@ class Phase33AdminOrderAccessTest(TestCase):
         self.client.force_authenticate(user=self.admin)
         self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
 
-    def test_superadmin_can_list_orders(self):
+    def test_superadmin_must_select_a_company_to_list_orders(self):
+        """
+        BEHAVIOUR CHANGE, Phase 2C. A superuser is a PLATFORM master: with orders
+        tenantised there is no longer "all orders". They name the tenant, exactly
+        as the catalogue and the dashboard already require.
+        """
         self.client.force_authenticate(user=self.superadmin)
-        self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.get('/api/admin/orders/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        pilot = _pilot_company()
+        self.assertEqual(
+            self.client.get(f'/api/admin/orders/?company={pilot.pk}').status_code,
+            status.HTTP_200_OK,
+        )
 
     def test_sales_can_get_detail(self):
         self.client.force_authenticate(user=self.sales)
@@ -3398,7 +3420,7 @@ class Phase33AdminOrderDetailSecurityTest(TestCase):
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
         self.client.force_authenticate(user=self.admin)
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_name='Secure Test',
             customer_email='secure@example.com',
             status=Order.Status.PAID,
@@ -3474,9 +3496,10 @@ class Phase33FulfillmentStatusChangeTest(TestCase):
         res = self._patch(self.sales)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
-    def test_superadmin_can_change_fulfillment_status(self):
-        res = self._patch(self.superadmin)
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
+    def test_superadmin_must_select_a_company_to_change_fulfillment(self):
+        """Phase 2C: a platform master names the tenant it acts on."""
+        self.assertEqual(self._patch(self.superadmin).status_code,
+                         status.HTTP_403_FORBIDDEN)
 
     def test_inventory_can_set_preparing(self):
         res = self._patch(self.inventory, data={'fulfillment_status': 'preparing'})
@@ -3696,7 +3719,7 @@ class Phase33FulfillmentModelDefaultTest(TestCase):
     """fulfillment_status field defaults to pending on new orders."""
 
     def test_new_order_defaults_to_pending(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Default Test',
             customer_email='default@example.com',
             total=Decimal('100.00'),
@@ -3743,7 +3766,7 @@ class Phase33RegressionTest(TestCase):
 
     def test_existing_order_has_fulfillment_status_field(self):
         """Orders created before migration must have fulfillment_status = pending."""
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 Order',
             customer_email='reg33@example.com',
             total=Decimal('100.00'),
@@ -3751,7 +3774,7 @@ class Phase33RegressionTest(TestCase):
         self.assertEqual(order.fulfillment_status, 'pending')
 
     def test_admin_order_list_returns_fulfillment_status_in_results(self):
-        Order.objects.create(
+        Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 FulfCheck',
             customer_email='fulfcheck@example.com',
             total=Decimal('200.00'),
@@ -3763,7 +3786,7 @@ class Phase33RegressionTest(TestCase):
 
     def test_checkout_creates_order_with_pending_fulfillment_status(self):
         """Checkout flow must create orders with fulfillment_status='pending' (not affected by Phase 3.3)."""
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 Checkout',
             customer_email='checkout33@example.com',
             status=Order.Status.PENDING_PAYMENT,
@@ -3774,7 +3797,7 @@ class Phase33RegressionTest(TestCase):
 
     def test_webhook_update_fields_does_not_include_fulfillment_status(self):
         """Simulates the webhook save to verify fulfillment_status is never written by the webhook."""
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 Webhook',
             customer_email='webhook33@example.com',
             status=Order.Status.PENDING_PAYMENT,
@@ -3794,7 +3817,7 @@ class Phase33RegressionTest(TestCase):
 
     def test_fulfillment_status_change_is_atomic_with_audit_log(self):
         """Verifies that fulfillment_status change and audit log are created together."""
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 Atomic',
             customer_email='atomic33@example.com',
             total=Decimal('100.00'),
@@ -4189,7 +4212,7 @@ class Phase40AdminOrderDetailCommercialFieldsTest(TestCase):
         self.admin = User.objects.create_user(username='p40_admin', password='Pass123!')
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_name='P40 Cliente',
             customer_email='p40cliente@blackdog.pe',
             total=Decimal('500.00'),
@@ -4266,7 +4289,7 @@ def _make_paid_order(**kwargs):
         stripe_payment_intent_id='pi_test_41',
     )
     defaults.update(kwargs)
-    order = Order.objects.create(**defaults)
+    order = Order.objects.create(company=_pilot_company(), **defaults)
     OrderItem.objects.create(order=order, product=product, quantity=1, price='9999.00')
     return order
 
@@ -4587,7 +4610,7 @@ class Phase41WebhookEmailIntegrationTest(TestCase):
         self.product = Product.objects.create(company=_pilot_company(),
             name='iMac M3', slug='imac-m3-41w', price='5999.00', inventory=3, category=cat,
         )
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_name='Pedro Salas', customer_email='pedro@example.com',
             customer_phone='936449537', document_type='dni', document_number='87654321',
             delivery_method='pickup_store', receipt_type='boleta',
@@ -4738,7 +4761,7 @@ def _make_paid_order_42(**kwargs):
         stripe_payment_intent_id='pi_test_42_base',
     )
     defaults.update(kwargs)
-    order = Order.objects.create(**defaults)
+    order = Order.objects.create(company=_pilot_company(), **defaults)
     OrderItem.objects.create(order=order, product=product, quantity=1, price='9999.00')
     return order
 
@@ -5191,7 +5214,7 @@ def _make_paid_order_43(**kwargs):
         stripe_payment_intent_id='pi_test_43_base',
     )
     defaults.update(kwargs)
-    order = Order.objects.create(**defaults)
+    order = Order.objects.create(company=_pilot_company(), **defaults)
     OrderItem.objects.create(order=order, product=product, quantity=1, price='8999.00')
     return order
 
@@ -5618,7 +5641,7 @@ def _p60_product(name='iPhone 15 Pro P60', inventory=10, price='5599.00'):
 
 
 def _p60_paid_order(product, quantity=2, **extra):
-    order = Order.objects.create(
+    order = Order.objects.create(company=_pilot_company(),
         customer_name='Cliente Demo',
         customer_email='cliente@example.com',
         customer_phone='+51 999 999 999',
@@ -5905,7 +5928,7 @@ class Phase60SaleStockMovementTest(TestCase):
         self.client = APIClient()
         self.product = _p60_product(name='AirPods P60', inventory=10, price='999.00')
         self.session_key = 'p60-webhook-session'
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_email='p60@example.com',
             total=Decimal('1998.00'),
             cart_session_key=self.session_key,
@@ -6053,7 +6076,7 @@ class Phase60ReportsTest(TestCase):
         self.assertEqual(top['revenue'], '800.00')
 
     def test_21b_best_selling_ignores_unpaid_orders(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_email='pending@example.com',
             total=Decimal('200.00'),
             status=Order.Status.PENDING_PAYMENT,
@@ -6133,7 +6156,7 @@ class Phase60SalesNoteTest(TestCase):
             stripe_session_id='cs_test_p60_note',
             stripe_payment_intent_id='pi_test_p60_note',
         )
-        self.unpaid_order = Order.objects.create(
+        self.unpaid_order = Order.objects.create(company=_pilot_company(),
             customer_email='pending@example.com',
             total=Decimal('4999.00'),
             status=Order.Status.PENDING_PAYMENT,
@@ -6350,7 +6373,7 @@ class Phase60RegressionTest(TestCase):
         self.assertEqual(self.product.inventory, 20)
 
     def test_39_webhook_still_marks_order_paid(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_email='reg2@example.com',
             total=Decimal('1000.00'),
             stripe_session_id='cs_test_reg_p60_2',
@@ -6372,7 +6395,7 @@ class Phase60RegressionTest(TestCase):
         self.assertEqual(order.stripe_payment_intent_id, 'pi_reg_p60')
 
     def test_40_payment_status_view_still_works(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_email='reg3@example.com',
             total=Decimal('1000.00'),
             stripe_session_id='cs_test_reg_p60_3',
@@ -6983,7 +7006,7 @@ class SaasNoRegressionTest(TestCase):
             )
 
     def test_webhook_still_marks_paid_and_remains_idempotent(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_email='saas-wh@example.com', total=Decimal('1000.00'),
             stripe_session_id='cs_saas_wh', status=Order.Status.PENDING_PAYMENT,
         )
@@ -7007,7 +7030,7 @@ class SaasNoRegressionTest(TestCase):
         )
 
     def test_payment_status_view_still_works(self):
-        Order.objects.create(
+        Order.objects.create(company=_pilot_company(),
             customer_email='saas-ps@example.com', total=Decimal('1000.00'),
             stripe_session_id='cs_saas_ps', status=Order.Status.PAID, paid=True,
         )
@@ -7645,7 +7668,12 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
         )
 
     def test_can_view_admin_orders_and_manage_orders(self):
-        for role in ('inventory', 'sales', 'admin', 'superadmin'):
+        """
+        Phase 2C: orders are tenantised, so the legacy bridge carries these
+        operators — and a platform master (`superadmin`) is excluded from the
+        bridge on purpose and must name a tenant.
+        """
+        for role in ('inventory', 'sales', 'admin'):
             self.assertEqual(
                 self._as(role).get('/api/admin/orders/').status_code,
                 status.HTTP_200_OK, role,
@@ -7655,6 +7683,11 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
                 self._as(role).get('/api/admin/orders/').status_code,
                 status.HTTP_403_FORBIDDEN, role,
             )
+        pilot = _pilot_company()
+        self.assertEqual(
+            self._as('superadmin').get(f'/api/admin/orders/?company={pilot.pk}').status_code,
+            status.HTTP_200_OK,
+        )
 
     def test_can_view_inventory_reports_and_manage_stock_movements(self):
         for role in ('inventory', 'admin', 'superadmin'):
@@ -7682,8 +7715,13 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
         )
 
     def test_can_manage_sales_notes(self):
+        """
+        Phase 2C: sales notes hang off an order, so they are tenant-scoped too.
+        The legacy bridge carries sales and admin; a platform master is excluded
+        from it by design and names the tenant instead.
+        """
         order = _p60_paid_order(self.product, quantity=1)
-        for role in ('sales', 'admin', 'superadmin'):
+        for role in ('sales', 'admin'):
             res = self._as(role).get(f'/api/admin/orders/{order.pk}/sales-note/')
             self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_404_NOT_FOUND), role)
         for role in ('customer', 'inventory', 'technician'):
@@ -9981,9 +10019,11 @@ class Phase2bDashboardCatalogTest(TestCase):
         scan would have flagged that as a leak.
         """
         data = self._get(self.user_a).data
+        # Phase 2C added `sales`. Pinning the key set means a new field must be
+        # a deliberate change, reviewed here.
         self.assertEqual(
             set(data.keys()),
-            {'company', 'membership', 'access', 'organization', 'catalog',
+            {'company', 'membership', 'access', 'organization', 'catalog', 'sales',
              'available_companies', 'requires_company_selection', 'alerts'},
         )
         # Phase 2B.1 added the chart series; the point of pinning the key set is
@@ -10195,3 +10235,656 @@ class Phase2b1DashboardSeriesTest(TestCase):
         self.assertEqual(data['catalog']['products'], 0)
         self.assertEqual(data['catalog']['products_per_category'], [])
         self.assertEqual(data['status_code'] if 'status_code' in data else 200, 200)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2C — tenant-aware commerce
+# ---------------------------------------------------------------------------
+
+from .models import assert_items_match_order  # noqa: E402
+from .tenancy import (  # noqa: E402
+    storefront_cart_items, storefront_coupon, storefront_orders,
+)
+
+
+def _coupon(company, code='PROMO10', percent=10, **extra):
+    return Coupon.objects.create(
+        company=company, code=code, discount_percent=percent, **extra,
+    )
+
+
+def _order(company, user=None, total='100.00', paid=False, **extra):
+    from django.utils import timezone as dj_tz
+    order = Order.objects.create(
+        company=company, user=user,
+        customer_email=extra.pop('customer_email', 'c@example.com'),
+        total=Decimal(total),
+        status=Order.Status.PAID if paid else Order.Status.PENDING_PAYMENT,
+        paid=paid,
+        paid_at=dj_tz.now() if paid else None,
+        **extra,
+    )
+    return order
+
+
+class Phase2cModelTest(TestCase):
+    """Ownership and the order/item invariant."""
+
+    def setUp(self):
+        self.a = _saas_company('Empresa A', '2c-a', tax_id='21000000001')
+        self.b = _saas_company('Empresa B', '2c-b', tax_id='21000000002')
+        self.prod_a = _prod(self.a, 'Producto A', '2c-prod-a')
+        self.prod_b = _prod(self.b, 'Producto B', '2c-prod-b')
+
+    def test_backfill_assigned_every_order_and_coupon(self):
+        self.assertEqual(Order.objects.filter(company__isnull=True).count(), 0)
+        self.assertEqual(Coupon.objects.filter(company__isnull=True).count(), 0)
+
+    def test_same_coupon_code_may_exist_in_two_companies(self):
+        _coupon(self.a, 'BIENVENIDO10')
+        _coupon(self.b, 'BIENVENIDO10')
+        self.assertEqual(Coupon.objects.filter(code='BIENVENIDO10').count(), 2)
+
+    def test_coupon_code_is_unique_within_a_company(self):
+        _coupon(self.a, 'UNICO')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _coupon(self.a, 'UNICO')
+
+    def test_order_item_rejects_a_product_of_another_company(self):
+        order = _order(self.a)
+        with self.assertRaises(DjangoValidationError):
+            OrderItem.objects.create(
+                order=order, product=self.prod_b, quantity=1, price=Decimal('10'))
+
+    def test_order_item_accepts_a_product_of_its_own_company(self):
+        order = _order(self.a)
+        item = OrderItem.objects.create(
+            order=order, product=self.prod_a, quantity=1, price=Decimal('10'))
+        self.assertEqual(item.product.company_id, order.company_id)
+
+    def test_bulk_guard_catches_what_clean_cannot(self):
+        """bulk_create() bypasses clean(); the set-level guard must not."""
+        order = _order(self.a)
+        with self.assertRaises(DjangoValidationError):
+            assert_items_match_order(order, [self.prod_a, self.prod_b])
+        assert_items_match_order(order, [self.prod_a])  # no raise
+
+    def test_company_with_orders_cannot_be_deleted(self):
+        _order(self.a)
+        with self.assertRaises(Exception):
+            with transaction.atomic():
+                self.a.delete()
+
+    def test_a_new_company_starts_with_no_orders_or_coupons(self):
+        fresh = _saas_company('Nueva', '2c-nueva', tax_id='21000000003')
+        self.assertEqual(fresh.orders.count(), 0)
+        self.assertEqual(fresh.coupons.count(), 0)
+
+
+class Phase2cCartIsolationTest(TestCase):
+    """One browser, several storefronts, several logical carts."""
+
+    SESSION = 'shared-browser-session'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-cart-a', tax_id='21000000004')
+        self.b = _saas_company('Empresa B', '2c-cart-b', tax_id='21000000005')
+        self.prod_a = _prod(self.a, 'Producto A', '2c-cart-prod-a', inventory=20)
+        self.prod_b = _prod(self.b, 'Producto B', '2c-cart-prod-b', inventory=20)
+        self.client = APIClient()
+
+    def _add(self, product, quantity=1):
+        return self.client.post('/api/cart/add/', {
+            'session_key': self.SESSION, 'product': product.pk, 'quantity': quantity,
+        }, format='json')
+
+    def test_storefront_a_accepts_its_own_product(self):
+        with _storefront_of(self.a):
+            self.assertEqual(self._add(self.prod_a).status_code, status.HTTP_200_OK)
+
+    def test_storefront_a_rejects_a_product_of_b(self):
+        with _storefront_of(self.a):
+            res = self._add(self.prod_b)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(CartItem.objects.count(), 0)
+
+    def test_two_carts_coexist_under_one_session_key(self):
+        with _storefront_of(self.a):
+            self._add(self.prod_a)
+        with _storefront_of(self.b):
+            self._add(self.prod_b)
+        self.assertEqual(CartItem.objects.filter(session_key=self.SESSION).count(), 2)
+
+    def test_list_shows_only_the_current_storefront(self):
+        with _storefront_of(self.a):
+            self._add(self.prod_a)
+        with _storefront_of(self.b):
+            self._add(self.prod_b)
+
+        with _storefront_of(self.a):
+            data = self.client.get(f'/api/cart/?session_key={self.SESSION}').json()
+        ids = {row['product']['id'] if isinstance(row['product'], dict) else row['product']
+               for row in data}
+        self.assertIn(self.prod_a.pk, ids)
+        self.assertNotIn(self.prod_b.pk, ids)
+
+    def test_update_cannot_touch_another_storefronts_item(self):
+        with _storefront_of(self.b):
+            self._add(self.prod_b)
+        item_b = CartItem.objects.get(product=self.prod_b)
+
+        with _storefront_of(self.a):
+            res = self.client.patch(
+                f'/api/cart/{item_b.pk}/?session_key={self.SESSION}',
+                {'quantity': 9}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        item_b.refresh_from_db()
+        self.assertEqual(item_b.quantity, 1)
+
+    def test_delete_cannot_touch_another_storefronts_item(self):
+        with _storefront_of(self.b):
+            self._add(self.prod_b)
+        item_b = CartItem.objects.get(product=self.prod_b)
+
+        with _storefront_of(self.a):
+            res = self.client.delete(
+                f'/api/cart/{item_b.pk}/?session_key={self.SESSION}')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(CartItem.objects.filter(pk=item_b.pk).exists())
+
+    def test_unresolved_storefront_shows_an_empty_cart(self):
+        with _storefront_of(self.a):
+            self._add(self.prod_a)
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=''):
+            self.assertEqual(
+                self.client.get(f'/api/cart/?session_key={self.SESSION}').json(), [])
+
+
+class Phase2cCouponIsolationTest(TestCase):
+    """A coupon belongs to one storefront, however common the code."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-cup-a', tax_id='21000000006')
+        self.b = _saas_company('Empresa B', '2c-cup-b', tax_id='21000000007')
+        self.coupon_b = _coupon(self.b, 'BIENVENIDO10', 10)
+        self.client = APIClient()
+
+    def test_storefront_a_cannot_validate_a_coupon_of_b(self):
+        with _storefront_of(self.a):
+            res = self.client.post('/api/coupons/validate/',
+                                   {'code': 'BIENVENIDO10'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_storefront_b_validates_its_own_coupon(self):
+        with _storefront_of(self.b):
+            res = self.client.post('/api/coupons/validate/',
+                                   {'code': 'BIENVENIDO10'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_helper_never_crosses_tenants(self):
+        from django.test import RequestFactory
+        request = RequestFactory().post('/')
+        with _storefront_of(self.a):
+            self.assertIsNone(storefront_coupon(request, 'BIENVENIDO10'))
+        with _storefront_of(self.b):
+            self.assertEqual(storefront_coupon(request, 'BIENVENIDO10'), self.coupon_b)
+
+
+class Phase2cCheckoutTest(TestCase):
+    """Checkout derives its tenant from the storefront and nothing else."""
+
+    SESSION = '2c-checkout-session'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-chk-a', tax_id='21000000008')
+        self.b = _saas_company('Empresa B', '2c-chk-b', tax_id='21000000009')
+        self.prod_a = _prod(self.a, 'Producto A', '2c-chk-prod-a', inventory=10, price='100.00')
+        self.prod_b = _prod(self.b, 'Producto B', '2c-chk-prod-b', inventory=10, price='100.00')
+        self.client = APIClient()
+
+    def _payload(self, **extra):
+        base = {
+            'session_key': self.SESSION,
+            'customer_name': 'Cliente',
+            'customer_email': 'c@example.com',
+            'customer_phone': '999999999',
+            'document_type': 'dni',
+            'document_number': '12345678',
+            'delivery_method': 'pickup_store',
+            'receipt_type': 'boleta',
+            'accepted_terms': True,
+            'accepted_warranty_policy': True,
+        }
+        base.update(extra)
+        return base
+
+    def _checkout(self, session_id='cs_2c'):
+        with patch('stripe.checkout.Session.create') as mock_create:
+            mock_create.return_value = MagicMock(id=session_id, url='https://stripe.test/x')
+            return self.client.post('/api/payments/create-checkout-session/',
+                                    self._payload(), format='json'), mock_create
+
+    def test_order_belongs_to_the_storefront_company(self):
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            res, _ = self._checkout()
+        self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+        order = Order.objects.get(stripe_session_id='cs_2c')
+        self.assertEqual(order.company_id, self.a.pk)
+        self.assertEqual(order.items.first().product.company_id, self.a.pk)
+
+    def test_company_in_the_payload_is_ignored(self):
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            with patch('stripe.checkout.Session.create') as mock_create:
+                mock_create.return_value = MagicMock(id='cs_2c_payload', url='u')
+                self.client.post('/api/payments/create-checkout-session/',
+                                 self._payload(company=self.b.pk), format='json')
+        self.assertEqual(
+            Order.objects.get(stripe_session_id='cs_2c_payload').company_id, self.a.pk)
+
+    def test_a_cart_of_another_tenant_is_invisible_to_this_checkout(self):
+        """The cross-tenant cart cannot even reach the order-creation step."""
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_b, quantity=1)
+        with _storefront_of(self.a):
+            res, _ = self._checkout()
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.filter(stripe_session_id='cs_2c').count(), 0)
+
+    def test_coupon_of_another_tenant_is_rejected(self):
+        _coupon(self.b, 'SOLO_B', 50)
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            with patch('stripe.checkout.Session.create') as mock_create:
+                mock_create.return_value = MagicMock(id='cs_2c_cup', url='u')
+                res = self.client.post('/api/payments/create-checkout-session/',
+                                       self._payload(coupon_code='SOLO_B'), format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_own_coupon_is_applied(self):
+        _coupon(self.a, 'MITAD', 50)
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            with patch('stripe.checkout.Session.create') as mock_create:
+                mock_create.return_value = MagicMock(id='cs_2c_own', url='u')
+                self.client.post('/api/payments/create-checkout-session/',
+                                 self._payload(coupon_code='MITAD'), format='json')
+        order = Order.objects.get(stripe_session_id='cs_2c_own')
+        self.assertEqual(order.total, Decimal('50.00'))
+
+    def test_stripe_metadata_carries_the_company(self):
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            _res, mock_create = self._checkout('cs_2c_meta')
+        metadata = mock_create.call_args.kwargs['metadata']
+        self.assertEqual(metadata['company_id'], str(self.a.pk))
+
+
+class Phase2cWebhookTest(TestCase):
+    """The webhook resolves its tenant from the database, never from the request."""
+
+    SESSION = '2c-webhook-session'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-wh-a', tax_id='21000000010')
+        self.b = _saas_company('Empresa B', '2c-wh-b', tax_id='21000000011')
+        self.prod_a = _prod(self.a, 'Producto A', '2c-wh-prod-a', inventory=10)
+        self.prod_b = _prod(self.b, 'Producto B', '2c-wh-prod-b', inventory=10)
+
+        self.order = _order(self.a, stripe_session_id='cs_wh_2c')
+        OrderItem.objects.create(
+            order=self.order, product=self.prod_a, quantity=2, price=self.prod_a.price)
+        self.order.cart_session_key = self.SESSION
+        self.order.save(update_fields=['cart_session_key'])
+
+        # Two carts under one session key, one per storefront
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=2)
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_b, quantity=1)
+        self.client = APIClient()
+
+    def _fire(self, session_id='cs_wh_2c', metadata=None):
+        event = {
+            'type': 'checkout.session.completed',
+            'data': {'object': {
+                'id': session_id, 'payment_intent': 'pi_2c',
+                **({'metadata': metadata} if metadata is not None else {}),
+            }},
+        }
+        with patch('stripe.Webhook.construct_event', return_value=event):
+            return self.client.post('/api/payments/webhook/', data=b'{}',
+                                    content_type='application/json',
+                                    HTTP_STRIPE_SIGNATURE='t=1,v1=fake')
+
+    def test_payment_is_confirmed_for_the_orders_own_company(self):
+        self._fire()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        movement = StockMovement.objects.get(order=self.order)
+        self.assertEqual(movement.product.company_id, self.a.pk)
+
+    def test_cart_cleanup_only_empties_the_paid_storefront(self):
+        """Paying at one storefront must not empty the browser's other cart."""
+        self._fire()
+        remaining = CartItem.objects.filter(session_key=self.SESSION)
+        self.assertEqual(remaining.count(), 1)
+        self.assertEqual(remaining.first().product_id, self.prod_b.pk)
+
+    def test_replayed_webhook_stays_idempotent(self):
+        self._fire()
+        self._fire()
+        self._fire()
+        self.prod_a.refresh_from_db()
+        self.assertEqual(self.prod_a.inventory, 8)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=self.order, movement_type=StockMovement.SALE_EXIT).count(),
+            1,
+        )
+
+    def test_metadata_company_mismatch_is_refused(self):
+        """Metadata came back from a third party; it is checked, never trusted."""
+        res = self._fire(metadata={'company_id': str(self.b.pk)})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.order.refresh_from_db()
+        self.assertNotEqual(self.order.status, Order.Status.PAID)
+        self.assertEqual(StockMovement.objects.filter(order=self.order).count(), 0)
+
+    def test_matching_metadata_is_accepted(self):
+        self._fire(metadata={'company_id': str(self.a.pk)})
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+
+    def test_webhook_host_never_decides_the_tenant(self):
+        """Stripe calls one endpoint; the host says nothing about the seller."""
+        with _storefront_of(self.b):
+            self._fire()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertEqual(self.order.company_id, self.a.pk)
+
+
+class Phase2cCustomerOrderIsolationTest(TestCase):
+    """One identity, several storefronts, separate histories."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-hist-a', tax_id='21000000012')
+        self.b = _saas_company('Empresa B', '2c-hist-b', tax_id='21000000013')
+        self.user = _saas_user('2c_shopper')
+        self.order_a = _order(self.a, user=self.user, total='100.00', paid=True)
+        self.order_b = _order(self.b, user=self.user, total='200.00', paid=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_history_shows_only_the_current_storefront(self):
+        with _storefront_of(self.a):
+            ids = [o['id'] for o in self.client.get('/api/orders/').json()]
+        self.assertIn(self.order_a.pk, ids)
+        self.assertNotIn(self.order_b.pk, ids)
+
+    def test_the_other_storefront_shows_the_other_history(self):
+        with _storefront_of(self.b):
+            ids = [o['id'] for o in self.client.get('/api/orders/').json()]
+        self.assertIn(self.order_b.pk, ids)
+        self.assertNotIn(self.order_a.pk, ids)
+
+    def test_knowing_the_id_does_not_expose_a_foreign_order(self):
+        with _storefront_of(self.a):
+            res = self.client.get(f'/api/orders/{self.order_b.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_users_order_is_never_visible(self):
+        other = _saas_user('2c_other_shopper')
+        foreign = _order(self.a, user=other, paid=True)
+        with _storefront_of(self.a):
+            ids = [o['id'] for o in self.client.get('/api/orders/').json()]
+        self.assertNotIn(foreign.pk, ids)
+
+    def test_same_user_is_one_identity_not_two(self):
+        self.assertEqual(Order.objects.filter(user=self.user).count(), 2)
+        from django.test import RequestFactory
+        request = RequestFactory().get('/')
+        with _storefront_of(self.a):
+            self.assertEqual(storefront_orders(request, self.user).count(), 1)
+
+
+class Phase2cAdminOrderIsolationTest(TestCase):
+    """Internal order administration is tenant-scoped and capability-driven."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-adm-a', tax_id='21000000014')
+        self.b = _saas_company('Empresa B', '2c-adm-b', tax_id='21000000015')
+        provision_company_access_defaults(self.a)
+        provision_company_access_defaults(self.b)
+
+        self.prod_a = _prod(self.a, 'Producto A', '2c-adm-prod-a')
+        self.order_a = _order(self.a, total='150.00', paid=True)
+        OrderItem.objects.create(
+            order=self.order_a, product=self.prod_a, quantity=1, price=Decimal('150'))
+        self.order_b = _order(self.b, total='999.00', paid=True)
+
+        self.admin_a = _saas_user('2c_admin_a')
+        ma = Membership.objects.create(user=self.admin_a, company=self.a, role='admin')
+        _assign(ma, self.a.roles.get(slug='administrador'))
+
+        self.viewer_a = _saas_user('2c_viewer_a')
+        mv = Membership.objects.create(user=self.viewer_a, company=self.a, role='customer')
+        _assign(mv, _role(self.a, 'Solo ver pedidos',
+                          ['company.view', 'sales.orders.view'], '2c-solo-ver'))
+
+        self.admin_b = _saas_user('2c_admin_b')
+        mb = Membership.objects.create(user=self.admin_b, company=self.b, role='admin')
+        _assign(mb, self.b.roles.get(slug='administrador'))
+
+        self.platform = _saas_user('2c_platform', is_superuser=True)
+
+    def _as(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_admin_of_a_lists_only_its_own_orders(self):
+        res = self._as(self.admin_a).get('/api/admin/orders/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        ids = {o['id'] for o in res.data['results']}
+        self.assertIn(self.order_a.pk, ids)
+        self.assertNotIn(self.order_b.pk, ids)
+
+    def test_foreign_order_detail_answers_like_a_missing_one(self):
+        foreign = self._as(self.admin_a).get(f'/api/admin/orders/{self.order_b.pk}/')
+        missing = self._as(self.admin_a).get('/api/admin/orders/999999/')
+        self.assertEqual(foreign.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(foreign.status_code, missing.status_code)
+
+    def test_admin_of_a_cannot_change_fulfillment_of_b(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/orders/{self.order_b.pk}/fulfillment-status/',
+            {'fulfillment_status': 'shipped'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.order_b.refresh_from_db()
+        self.assertEqual(self.order_b.fulfillment_status, Order.FulfillmentStatus.PENDING)
+
+    def test_admin_of_a_cannot_download_the_receipt_of_b(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/orders/{self.order_b.pk}/receipt-pdf/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_of_a_cannot_issue_a_sales_note_for_b(self):
+        res = self._as(self.admin_a).post(
+            f'/api/admin/orders/{self.order_b.pk}/sales-note/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(SalesNote.objects.count(), 0)
+
+    def test_orders_view_alone_cannot_change_fulfillment(self):
+        res = self._as(self.viewer_a).patch(
+            f'/api/admin/orders/{self.order_a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'shipped'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_orders_view_can_read(self):
+        self.assertEqual(
+            self._as(self.viewer_a).get('/api/admin/orders/').status_code,
+            status.HTTP_200_OK)
+
+    def test_member_without_sales_capabilities_is_refused(self):
+        user = _saas_user('2c_no_sales')
+        m = Membership.objects.create(user=user, company=self.a, role='customer')
+        _assign(m, _role(self.a, 'Sin ventas', ['company.view'], '2c-sin-ventas'))
+        self.assertEqual(
+            self._as(user).get('/api/admin/orders/').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    def test_master_selects_a_company_explicitly(self):
+        res_a = self._as(self.platform).get(f'/api/admin/orders/?company={self.a.pk}')
+        res_b = self._as(self.platform).get(f'/api/admin/orders/?company={self.b.pk}')
+        self.assertEqual({o['id'] for o in res_a.data['results']}, {self.order_a.pk})
+        self.assertEqual({o['id'] for o in res_b.data['results']}, {self.order_b.pk})
+
+    def test_master_without_selection_gets_nothing(self):
+        self.assertEqual(
+            self._as(self.platform).get('/api/admin/orders/').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    def test_multi_company_user_does_not_inherit_permissions(self):
+        """Manage in A, read-only in B."""
+        user = _saas_user('2c_multi')
+        ma = Membership.objects.create(user=user, company=self.a, role='admin')
+        _assign(ma, self.a.roles.get(slug='administrador'))
+        mb = Membership.objects.create(user=user, company=self.b, role='customer')
+        _assign(mb, _role(self.b, 'Ver pedidos B',
+                          ['company.view', 'sales.orders.view'], '2c-ver-b'))
+
+        client = self._as(user)
+        self.assertEqual(
+            client.patch(
+                f'/api/admin/orders/{self.order_a.pk}/fulfillment-status/?company={self.a.pk}',
+                {'fulfillment_status': 'confirmed'}, format='json').status_code,
+            status.HTTP_200_OK)
+        self.assertEqual(
+            client.get(f'/api/admin/orders/?company={self.b.pk}').status_code,
+            status.HTTP_200_OK)
+        self.assertEqual(
+            client.patch(
+                f'/api/admin/orders/{self.order_b.pk}/fulfillment-status/?company={self.b.pk}',
+                {'fulfillment_status': 'shipped'}, format='json').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    def test_fulfillment_change_is_audited_with_company(self):
+        self._as(self.admin_a).patch(
+            f'/api/admin/orders/{self.order_a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'}, format='json')
+        log = AdminAuditLog.objects.filter(
+            action='order_fulfillment_status_changed').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.a.pk)
+        raw = str(log.metadata).lower()
+        for secret in ('stripe', 'cs_', 'pi_', 'token'):
+            self.assertNotIn(secret, raw)
+
+
+class Phase2cDashboardSalesTest(TestCase):
+    """Commercial KPIs are real, per tenant, and honest about what they omit."""
+
+    URL = '/api/me/internal-dashboard/'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-kpi-a', tax_id='21000000016')
+        self.b = _saas_company('Empresa B', '2c-kpi-b', tax_id='21000000017')
+        provision_company_access_defaults(self.a)
+        provision_company_access_defaults(self.b)
+
+        _order(self.a, total='100.00', paid=True)
+        _order(self.a, total='300.00', paid=True)
+        _order(self.a, total='999.00', paid=False)          # pending: not a sale
+        cancelled = _order(self.a, total='500.00', paid=False)
+        cancelled.status = Order.Status.CANCELLED
+        cancelled.save(update_fields=['status'])
+        _order(self.b, total='7000.00', paid=True)
+
+        self.user_a = _saas_user('2c_kpi_a')
+        ma = Membership.objects.create(user=self.user_a, company=self.a, role='admin')
+        _assign(ma, self.a.roles.get(slug='administrador'))
+        self.user_b = _saas_user('2c_kpi_b')
+        mb = Membership.objects.create(user=self.user_b, company=self.b, role='admin')
+        _assign(mb, self.b.roles.get(slug='administrador'))
+        self.platform = _saas_user('2c_kpi_platform', is_superuser=True)
+
+    def _get(self, user, params=''):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c.get(f'{self.URL}{params}')
+
+    def test_only_paid_orders_count_as_revenue(self):
+        sales = self._get(self.user_a).data['sales']
+        self.assertEqual(sales['total_revenue'], '400.00')
+        self.assertEqual(sales['total_paid_orders'], 2)
+        self.assertEqual(sales['pending_payment'], 1)
+
+    def test_average_ticket_is_computed_over_paid_orders(self):
+        self.assertEqual(self._get(self.user_a).data['sales']['average_ticket'], '200.00')
+
+    def test_average_ticket_of_nothing_is_zero_not_an_error(self):
+        empty = _saas_company('Vacía', '2c-kpi-vacia', tax_id='21000000018')
+        provision_company_access_defaults(empty)
+        user = _saas_user('2c_kpi_empty')
+        m = Membership.objects.create(user=user, company=empty, role='admin')
+        _assign(m, empty.roles.get(slug='administrador'))
+        sales = self._get(user).data['sales']
+        self.assertEqual(sales['average_ticket'], '0.00')
+        self.assertEqual(sales['total_revenue'], '0.00')
+
+    def test_revenue_never_crosses_tenants(self):
+        self.assertEqual(self._get(self.user_a).data['sales']['total_revenue'], '400.00')
+        self.assertEqual(self._get(self.user_b).data['sales']['total_revenue'], '7000.00')
+
+    def test_master_sees_the_selected_company_only(self):
+        self.assertEqual(
+            self._get(self.platform, f'?company={self.a.pk}').data['sales']['total_revenue'],
+            '400.00')
+        self.assertEqual(
+            self._get(self.platform, f'?company={self.b.pk}').data['sales']['total_revenue'],
+            '7000.00')
+
+    def test_todays_revenue_uses_paid_at(self):
+        sales = self._get(self.user_a).data['sales']
+        # Both paid orders were paid now, so today's revenue equals the total
+        self.assertEqual(sales['today_revenue'], '400.00')
+        self.assertEqual(sales['today_orders'], 2)
+
+    def test_revenue_trend_has_one_point_per_day_including_empty_ones(self):
+        trend = self._get(self.user_a).data['sales']['revenue_trend']
+        self.assertEqual(len(trend), 7)
+        self.assertEqual(trend[-1]['value'], 400.0)
+        self.assertTrue(all(isinstance(p['value'], (int, float)) for p in trend))
+
+    def test_orders_by_status_covers_every_status(self):
+        series = self._get(self.user_a).data['sales']['orders_by_status']
+        self.assertEqual(len(series), len(Order.Status.choices))
+        by_label = {row['label']: row['value'] for row in series}
+        self.assertEqual(by_label['Pagado'], 2)
+        self.assertEqual(by_label['Cancelado'], 1)
+
+    def test_sales_are_withheld_without_the_capability(self):
+        user = _saas_user('2c_kpi_nocaps')
+        m = Membership.objects.create(user=user, company=self.a, role='customer')
+        _assign(m, _role(self.a, 'Sin ventas KPI', ['company.view'], '2c-kpi-sin'))
+        self.assertIsNone(self._get(user).data['sales'])
+
+    def test_no_profit_figure_is_reported(self):
+        """There is no cost model, so a margin would be an invented number."""
+        sales = self._get(self.user_a).data['sales']
+        self.assertEqual(
+            set(sales.keys()),
+            {'today_revenue', 'today_orders', 'total_revenue', 'total_paid_orders',
+             'average_ticket', 'pending_payment', 'awaiting_fulfillment',
+             'revenue_trend', 'orders_by_status'},
+        )
+        for forbidden in ('profit', 'margin', 'utilidad', 'cost'):
+            self.assertNotIn(forbidden, str(sales).lower())

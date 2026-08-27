@@ -563,6 +563,12 @@ class MyCompanyAccessView(APIView):
 _MAX_SWITCHER_COMPANIES = 100
 
 
+def _money(value):
+    """Normalise an aggregate that may be None into a 2-decimal amount."""
+    from decimal import Decimal
+    return (value or Decimal('0')).quantize(Decimal('0.01'))
+
+
 class InternalDashboardView(APIView):
     """
     GET /api/me/internal-dashboard/[?company=<id>]
@@ -639,6 +645,7 @@ class InternalDashboardView(APIView):
                 },
                 'organization': None,
                 'catalog': None,
+                'sales': None,
                 'available_companies': switcher,
                 'requires_company_selection': True,
                 'alerts': [],
@@ -705,6 +712,13 @@ class InternalDashboardView(APIView):
         if 'products.view' in capabilities:
             catalog = self._catalog_snapshot(company)
 
+        # Commercial KPIs — real from Phase 2C, because Order now belongs to a
+        # company. Gated by the sales capability: revenue is not something every
+        # member of a company should see.
+        sales = None
+        if 'sales.orders.view' in capabilities:
+            sales = self._sales_snapshot(company)
+
         return {
             'company': {
                 'id': company.pk,
@@ -738,6 +752,7 @@ class InternalDashboardView(APIView):
             },
             'organization': organization,
             'catalog': catalog,
+            'sales': sales,
             'available_companies': switcher,
             'requires_company_selection': False,
             'alerts': self._alerts(company, membership, assignments, capabilities,
@@ -791,6 +806,108 @@ class InternalDashboardView(APIView):
             'categories': Category.objects.filter(company=company).count(),
             'products_per_category': series,
         }
+
+    # -- commercial KPIs (Phase 2C) ------------------------------------------
+    #
+    # WHAT COUNTS AS A SALE
+    # ---------------------
+    # A PAID order, and nothing else. `pending_payment`, `failed`, `cancelled`,
+    # `expired` and `refunded` are not revenue — counting them would inflate every
+    # figure on this dashboard and make it useless for decisions.
+    #
+    # Revenue is dated by `paid_at`, not `created_at`: an order created yesterday
+    # and paid today is today's money. Dates are computed in the project timezone
+    # (settings.TIME_ZONE), so "today" means the operator's today.
+    #
+    # NOT SHOWN, ON PURPOSE: profit or margin. There is no cost model in the
+    # system, so any "profit" figure would be revenue with a made-up subtraction.
+    # A dashboard that guesses is worse than one that stays silent.
+
+    SALES_TREND_DAYS = 7
+
+    def _sales_snapshot(self, company):
+        from django.db.models import Avg, Count, Sum
+        from django.utils import timezone as dj_timezone
+
+        from .models import Order
+
+        paid = Order.objects.filter(company=company, status=Order.Status.PAID, paid=True)
+        today = dj_timezone.localdate()
+
+        today_paid = paid.filter(paid_at__date=today)
+        today_agg = today_paid.aggregate(revenue=Sum('total'), orders=Count('id'))
+        all_agg = paid.aggregate(revenue=Sum('total'), orders=Count('id'), ticket=Avg('total'))
+
+        pipeline = Order.objects.filter(company=company)
+
+        return {
+            'today_revenue': str(_money(today_agg['revenue'])),
+            'today_orders': today_agg['orders'] or 0,
+            'total_revenue': str(_money(all_agg['revenue'])),
+            'total_paid_orders': all_agg['orders'] or 0,
+            # Average of nothing is 0, not a division error.
+            'average_ticket': str(_money(all_agg['ticket'])),
+            'pending_payment': pipeline.filter(
+                status=Order.Status.PENDING_PAYMENT).count(),
+            'awaiting_fulfillment': paid.filter(
+                fulfillment_status__in=[
+                    Order.FulfillmentStatus.PENDING,
+                    Order.FulfillmentStatus.CONFIRMED,
+                    Order.FulfillmentStatus.PREPARING,
+                ],
+            ).count(),
+            'revenue_trend': self._revenue_trend(company),
+            'orders_by_status': self._orders_by_status(company),
+        }
+
+    def _revenue_trend(self, company):
+        """Paid revenue per day for the last week, oldest first. Empty days show 0."""
+        from datetime import timedelta
+
+        from django.db.models import Sum
+        from django.utils import timezone as dj_timezone
+
+        from .models import Order
+
+        today = dj_timezone.localdate()
+        start = today - timedelta(days=self.SALES_TREND_DAYS - 1)
+
+        rows = (
+            Order.objects
+            .filter(company=company, status=Order.Status.PAID, paid=True,
+                    paid_at__date__gte=start, paid_at__date__lte=today)
+            .values('paid_at__date')
+            .annotate(revenue=Sum('total'))
+        )
+        by_day = {row['paid_at__date']: row['revenue'] for row in rows}
+
+        # Days with no sales are rendered as zero rather than skipped: a gap in a
+        # trend line reads as missing data, not as a quiet day.
+        series = []
+        for offset in range(self.SALES_TREND_DAYS):
+            day = start + timedelta(days=offset)
+            series.append({
+                'label': day.strftime('%d/%m'),
+                'value': float(_money(by_day.get(day))),
+            })
+        return series
+
+    def _orders_by_status(self, company):
+        from django.db.models import Count
+
+        from .models import Order
+
+        counts = dict(
+            Order.objects.filter(company=company)
+            .values_list('status')
+            .annotate(n=Count('id'))
+        )
+        labels = dict(Order.Status.choices)
+        # Fixed order so the chart does not reshuffle between refreshes.
+        return [
+            {'label': labels[value], 'value': counts.get(value, 0)}
+            for value, _label in Order.Status.choices
+        ]
 
     def _assignments_per_area(self, company):
         from django.db.models import Count, Q

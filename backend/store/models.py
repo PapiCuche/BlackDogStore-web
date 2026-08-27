@@ -105,12 +105,32 @@ class Product(models.Model):
 
 
 class Coupon(models.Model):
-    code = models.CharField(max_length=50, unique=True)
+    """
+    A discount code owned by one Company.
+
+    Phase 2C: `code` is no longer globally unique. Two tenants may each run a
+    "BIENVENIDO10" campaign — a global unique would have made the second one
+    impossible, and silently sharing one company's coupon with another would be
+    worse.
+    """
+
+    company = models.ForeignKey(
+        'store.Company', on_delete=models.PROTECT, related_name='coupons',
+    )
+    code = models.CharField(max_length=50)
     discount_percent = models.PositiveSmallIntegerField(
         validators=[MinValueValidator(1), MaxValueValidator(100)]
     )
     is_active = models.BooleanField(default=True)
     expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'code'], name='unique_coupon_code_per_company',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'code'])]
 
     def __str__(self):
         return f"{self.code} — {self.discount_percent}%"
@@ -148,6 +168,17 @@ class Order(models.Model):
         BOLETA = 'boleta', 'Boleta'
         FACTURA = 'factura', 'Factura'
 
+    # Phase 2C — explicit ownership.
+    #
+    # The tenant is NOT inferred from the items on every read. An order is used
+    # by administration, reports, the dashboard, fulfillment, auditing, the
+    # customer portal, the webhook and emails; making each of those re-derive the
+    # company through a join would be both slow and easy to get wrong once. The
+    # invariant `Order.company == every OrderItem.product.company` is enforced at
+    # write time instead — see checkout and OrderItem validation.
+    company = models.ForeignKey(
+        'store.Company', on_delete=models.PROTECT, related_name='orders',
+    )
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     customer_name = models.CharField(max_length=255, blank=True)
     customer_email = models.EmailField(blank=True)
@@ -208,12 +239,34 @@ class Order(models.Model):
     accepted_terms = models.BooleanField(default=False)
     accepted_warranty_policy = models.BooleanField(default=False)
 
+    class Meta:
+        # Every admin list, dashboard KPI and report starts by narrowing to one
+        # company and then filters by date or status — these match that shape.
+        indexes = [
+            models.Index(fields=['company', '-created_at']),
+            models.Index(fields=['company', 'paid_at']),
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'fulfillment_status']),
+        ]
+
     def __str__(self):
         owner = self.customer_name or self.user or "Anon"
         return f"Order #{self.id} [{self.status}] - {owner}"
 
 
 class OrderItem(models.Model):
+    """
+    A line of an order.
+
+    INVARIANT: `item.product.company == item.order.company`. Without it a tenant
+    could attach another tenant's product to its own order and drag it through
+    checkout, Stripe, the webhook and stock.
+
+    Enforced in `clean()` (covering every ORM object write) AND, critically, in
+    `assert_items_match_order()` for bulk paths — `bulk_create()` does NOT call
+    `clean()`, so a set-level check has to exist for code that uses it.
+    """
+
     order = models.ForeignKey(Order, related_name='items', on_delete=models.CASCADE)
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
@@ -221,6 +274,42 @@ class OrderItem(models.Model):
 
     def __str__(self):
         return f"{self.quantity} x {self.product.name}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not (self.order_id and self.product_id):
+            return
+        order_company = self.order.company_id
+        if order_company is None:
+            return  # pre-Phase-2C row being backfilled
+        if self.product.company_id != order_company:
+            raise ValidationError(
+                {'product': 'El producto no pertenece a la empresa de este pedido.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+def assert_items_match_order(order, products):
+    """
+    Set-level guard for bulk paths — `bulk_create()` bypasses `clean()`.
+
+    Raises ValidationError if any product belongs to a different company than the
+    order. Call this BEFORE writing, not after.
+    """
+    from django.core.exceptions import ValidationError
+
+    if order.company_id is None:
+        return
+    foreign = [p for p in products if p.company_id != order.company_id]
+    if foreign:
+        raise ValidationError(
+            f'Los productos {[p.pk for p in foreign]} no pertenecen a la empresa '
+            f'{order.company_id} del pedido {order.pk}.'
+        )
 
 
 class CartItem(models.Model):

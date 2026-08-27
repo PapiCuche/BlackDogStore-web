@@ -31,6 +31,7 @@ import {
   DonutChart,
   HorizontalBarChart,
   StackedBar,
+  VerticalBarChart,
 } from "./components/charts";
 import {
   AlertsPanel,
@@ -40,13 +41,16 @@ import {
   DashboardSection,
   EmptyState,
   SummaryStatCard,
+  formatSoles,
 } from "./components/dashboard-ui";
 import { ModuleCard } from "./components/internal-ui";
 import {
   IconAdministration,
   IconBranch,
+  IconCash,
   IconPeople,
   IconProducts,
+  IconSales,
   IconShield,
   IconStore,
 } from "./components/icons";
@@ -154,6 +158,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
   const branch = dashboard?.membership?.branch ?? null;
   const organization = dashboard?.organization ?? null;
   const catalog = dashboard?.catalog ?? null;
+  const sales = dashboard?.sales ?? null;
   const roles = dashboard?.access.roles ?? [];
   const areas = dashboard?.access.areas ?? [];
   const capabilities = dashboard?.access.capabilities ?? [];
@@ -169,6 +174,77 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
         scope={company ? scope : "Sin empresa asignada"}
         isPlatformAdmin={Boolean(dashboard?.access.is_platform_admin)}
       />
+
+      {/* ── Commercial KPIs (Phase 2C) ─────────────────────────────────── */}
+      {sales && (
+        <DashboardSection
+          title="Ventas"
+          description="Pedidos pagados de esta empresa. No incluye pendientes ni cancelados."
+        >
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            <SummaryStatCard
+              label="Ventas hoy"
+              value={formatSoles(sales.today_revenue)}
+              hint={`${sales.today_orders} pedido${sales.today_orders === 1 ? "" : "s"}`}
+              icon={IconCash}
+            />
+            <SummaryStatCard
+              label="Ticket promedio"
+              value={formatSoles(sales.average_ticket)}
+              hint="Sobre pedidos pagados"
+              icon={IconSales}
+            />
+            <SummaryStatCard
+              label="Pedidos pagados"
+              value={sales.total_paid_orders}
+              icon={IconSales}
+            />
+            <SummaryStatCard
+              label="Ingresos totales"
+              value={formatSoles(sales.total_revenue)}
+              icon={IconCash}
+            />
+            <SummaryStatCard
+              label="Pendientes de pago"
+              value={sales.pending_payment}
+              hint="Checkout iniciado sin pagar"
+              icon={IconSales}
+            />
+            <SummaryStatCard
+              label="Por despachar"
+              value={sales.awaiting_fulfillment}
+              hint="Pagados, aún no enviados"
+              icon={IconSales}
+            />
+          </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <ChartCard
+              title="Ventas últimos 7 días"
+              description="Importe pagado por día, fechado por la fecha de pago."
+              footnote="No se muestra utilidad: el sistema no tiene un modelo de costos, así que cualquier margen sería una cifra inventada."
+            >
+              <VerticalBarChart
+                series={sales.revenue_trend}
+                unit="soles"
+                formatValue={formatSoles}
+                emptyMessage="Todavía no hay ventas pagadas en el período."
+              />
+            </ChartCard>
+
+            <ChartCard
+              title="Pedidos por estado"
+              description="Distribución de todos los pedidos de la empresa."
+            >
+              <HorizontalBarChart
+                series={sales.orders_by_status}
+                unit="pedidos"
+                emptyMessage="Todavía no hay pedidos."
+              />
+            </ChartCard>
+          </div>
+        </DashboardSection>
+      )}
 
       {/* ── KPI row ────────────────────────────────────────────────────── */}
       {(organization || catalog) && (

@@ -555,6 +555,70 @@ def storefront_products(request):
     return Product.objects.filter(company=company, is_active=True)
 
 
+def storefront_cart_items(request, session_key):
+    """
+    The cart of this browser session ON THIS STOREFRONT.
+
+    CART TENANCY WITHOUT A CART MODEL (Phase 2C)
+    --------------------------------------------
+    A cart is identified by `session_key` + the storefront's company, derived
+    through `CartItem.product.company`. No `Cart` model and no `CartItem.company`
+    column were added, because neither would tell us anything the product does
+    not already say — and a duplicated company field is a second source of truth
+    that can drift out of sync with the product it points at.
+
+    A consequence worth stating: one browser can hold SEVERAL logical carts at
+    once, one per storefront, sharing a session key. That is correct — the same
+    person shopping at two tenants has two carts, and emptying one must not touch
+    the other.
+
+    Returns an EMPTY queryset when the storefront does not resolve, matching the
+    catalogue's safe failure.
+    """
+    from .models import CartItem
+
+    company = resolve_storefront_company(request)
+    if company is None or not session_key:
+        return CartItem.objects.none()
+    return CartItem.objects.filter(
+        session_key=session_key, product__company=company,
+    )
+
+
+def storefront_coupon(request, code):
+    """
+    A coupon of THIS storefront's tenant, or None.
+
+    Never a global lookup: two tenants may run the same code, and honouring
+    another company's discount is both a leak and a financial error.
+    """
+    from .models import Coupon
+
+    company = resolve_storefront_company(request)
+    if company is None or not code:
+        return None
+    return Coupon.objects.filter(
+        company=company, code=code, is_active=True,
+    ).first()
+
+
+def storefront_orders(request, user):
+    """
+    The authenticated customer's orders ON THIS STOREFRONT.
+
+    The same User may buy from several tenants — that is one identity, not
+    several. But inside storefront A they must see only their orders from A:
+    listing B's would leak what they bought elsewhere into an unrelated business's
+    account page.
+    """
+    from .models import Order
+
+    company = resolve_storefront_company(request)
+    if company is None or not user or not user.is_authenticated:
+        return Order.objects.none()
+    return Order.objects.filter(user=user, company=company)
+
+
 def storefront_categories(request):
     """Categories of the storefront's tenant. Empty when unresolved."""
     from .models import Category

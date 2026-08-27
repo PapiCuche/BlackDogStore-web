@@ -535,8 +535,18 @@ Dashboard catalog KPIs                   IMPLEMENTADO
 Dashboard visual / analytics UI          IMPLEMENTADO
 Gráficos tenant-safe                     IMPLEMENTADO
 KPIs comerciales reales                  PENDIENTE
-Cart tenant-aware                        PARCIAL (límite cerrado, 2C)
-Order tenant-aware                       PENDIENTE 2C
+Coupon tenant-aware                      IMPLEMENTADO
+Cart tenant-aware                        IMPLEMENTADO
+Order tenant-aware                       IMPLEMENTADO
+Checkout tenant-aware                    IMPLEMENTADO
+Stripe tenant-safe                       IMPLEMENTADO
+Customer order isolation                 IMPLEMENTADO
+Admin order isolation                    IMPLEMENTADO
+Sales capabilities                       IMPLEMENTADO
+Dashboard sales KPIs                     IMPLEMENTADO
+Dashboard sales charts                   IMPLEMENTADO
+StockMovement explicit tenancy           PENDIENTE 2D
+Profitability                            PENDIENTE (sin modelo de costos)
 Inventory company isolation              PARCIAL
 Inventory branch isolation               PENDIENTE 2D
 Dashboard sales KPIs                     PENDIENTE
@@ -562,6 +572,26 @@ Membership Invitation Flow               PENDIENTE
 Branding                                 PENDIENTE
 IMEI/Serial                              PENDIENTE
 ```
+
+### Comercio multiempresa (Fase 2C)
+
+`Order` y `Coupon` pertenecen a una `Company`. El flujo completo —carrito,
+checkout, Stripe, webhook, inventario— conserva el tenant de punta a punta.
+
+- **Un navegador puede tener un carrito por tienda** a la vez: el carrito es
+  `session_key` + la empresa del producto, sin modelo `Cart`.
+- **El checkout toma su empresa del storefront**, nunca del body.
+- **El webhook resuelve el tenant desde `Order.company`**, no desde el host (Stripe
+  llama a un único endpoint) ni desde la metadata (que solo se contrasta).
+- **El cliente ve en cada tienda solo sus pedidos de esa tienda**, con una única cuenta.
+- Dos empresas pueden correr el mismo código de cupón.
+
+El dashboard muestra ya **ventas reales por empresa**: ventas de hoy, ticket
+promedio, ingresos, pendientes de pago, por despachar, tendencia de 7 días y
+pedidos por estado.
+
+> **Sin utilidad ni margen.** No hay modelo de costos, así que cualquier cifra de
+> margen sería una resta inventada.
 
 ### Dashboard visual del Control Interno (Fase 2B.1)
 

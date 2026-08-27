@@ -34,7 +34,8 @@ from .inventory_services import (
     get_products_without_movement,
     get_stock_card,
 )
-from .models import AdminAuditLog, Order, Product, SalesNote, StockMovement
+from .models import AdminAuditLog, Order, Product, SalesNote, StockMovement, UserProfile
+from .tenancy import has_capability, resolve_catalog_company
 from .permissions import (
     CanManageSalesNotes,
     CanManageStockMovements,
@@ -305,9 +306,7 @@ class AdminProductStockCardView(APIView):
         # Phase 2B: Product now has an owner, so the Kardex of another tenant's
         # product must not be readable even though StockMovement itself is not
         # tenantised yet. A foreign product answers like a missing one.
-        from .tenancy import resolve_catalog_company_only
-
-        company = resolve_catalog_company_only(request.user)
+        company, _source = resolve_catalog_company(request.user)
         products = Product.objects.all() if company is None else Product.objects.filter(
             company=company)
         try:
@@ -335,6 +334,54 @@ _SALES_NOTE_NOTICE = (
     'Documento interno de venta. No válido como comprobante electrónico SUNAT.'
 )
 
+CAP_SALES_NOTES = 'sales.notes.manage'
+_LEGACY_SALES_NOTES_ROLES = frozenset([
+    UserProfile.ROLE_SALES, UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+])
+
+
+def _sales_note_order(request, pk):
+    """
+    Resolve the order a sales-note request acts on, scoped to the caller's tenant.
+
+    Authority mirrors the catalogue and order views: the company capability when
+    the caller has company context, the legacy role when they reach the pilot
+    through the bridge. Returns (order, error_response).
+    """
+    from .permissions import get_user_role
+    from .tenancy import CATALOG_SOURCE_LEGACY
+
+    company, source = resolve_catalog_company(request.user)
+    if company is None:
+        return None, Response(
+            {'detail': 'No tienes acceso a los datos de ninguna empresa.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if source == CATALOG_SOURCE_LEGACY:
+        if get_user_role(request.user) not in _LEGACY_SALES_NOTES_ROLES:
+            return None, Response(
+                {'detail': 'No tienes permisos sobre las notas de venta.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    elif not has_capability(request.user, company, CAP_SALES_NOTES):
+        return None, Response(
+            {'detail': 'No tienes permisos sobre las notas de venta.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # An order of another tenant answers exactly like one that does not exist.
+    order = (
+        Order.objects.filter(company=company)
+        .prefetch_related('items__product')
+        .filter(pk=pk)
+        .first()
+    )
+    if order is None:
+        return None, Response(
+            {'detail': 'Orden no encontrada.'}, status=status.HTTP_404_NOT_FOUND
+        )
+    return order, None
+
 
 class AdminOrderSalesNoteView(APIView):
     """
@@ -344,14 +391,13 @@ class AdminOrderSalesNoteView(APIView):
     Issuing a note never touches payment state and never touches inventory.
     """
 
-    permission_classes = [permissions.IsAuthenticated, CanManageSalesNotes]
+    permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminSalesNotesThrottle]
 
     def get(self, request, pk):
-        try:
-            order = Order.objects.get(pk=pk)
-        except Order.DoesNotExist:
-            return Response({'detail': 'Orden no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+        order, error = _sales_note_order(request, pk)
+        if error:
+            return error
 
         note = SalesNote.objects.filter(order=order).select_related('order', 'created_by').first()
         if not note:
@@ -363,10 +409,9 @@ class AdminOrderSalesNoteView(APIView):
         return Response({**SalesNoteSerializer(note).data, 'notice': _SALES_NOTE_NOTICE})
 
     def post(self, request, pk):
-        try:
-            order = Order.objects.get(pk=pk)
-        except Order.DoesNotExist:
-            return Response({'detail': 'Orden no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+        order, error = _sales_note_order(request, pk)
+        if error:
+            return error
 
         try:
             note, created = get_or_create_sales_note(order, actor=request.user)
@@ -396,14 +441,13 @@ class AdminOrderSalesNoteView(APIView):
 class AdminOrderSalesNotePdfView(APIView):
     """GET /api/admin/orders/{pk}/sales-note/pdf/ — download the internal note PDF."""
 
-    permission_classes = [permissions.IsAuthenticated, CanManageSalesNotes]
+    permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminSalesNotesThrottle]
 
     def get(self, request, pk):
-        try:
-            order = Order.objects.prefetch_related('items__product').get(pk=pk)
-        except Order.DoesNotExist:
-            return Response({'detail': 'Orden no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+        order, error = _sales_note_order(request, pk)
+        if error:
+            return error
 
         note = SalesNote.objects.filter(order=order).select_related('order').first()
         if not note:

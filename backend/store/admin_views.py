@@ -52,6 +52,9 @@ _MAX_PAGE_SIZE = 100
 
 CAP_PRODUCTS_VIEW = 'products.view'
 CAP_PRODUCTS_MANAGE = 'products.manage'
+CAP_ORDERS_VIEW = 'sales.orders.view'
+CAP_ORDERS_MANAGE = 'sales.orders.manage'
+CAP_SALES_NOTES = 'sales.notes.manage'
 
 # Legacy role sets, mirroring the permission classes these views used before
 # Phase 2B. They now apply ONLY on the legacy-bridge path — a pre-SaaS operator
@@ -63,9 +66,28 @@ _LEGACY_VIEW_CATALOG_ROLES = frozenset([
 _LEGACY_MANAGE_CATALOG_ROLES = frozenset([
     UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
 ])
+# Orders (Phase 2C). Same shape as the catalogue sets: they apply only on the
+# legacy-bridge path, for a pre-SaaS operator working on the pilot tenant.
+_LEGACY_VIEW_ORDERS_ROLES = frozenset([
+    UserProfile.ROLE_INVENTORY, UserProfile.ROLE_SALES,
+    UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+])
+_LEGACY_MANAGE_ORDERS_ROLES = frozenset([
+    UserProfile.ROLE_INVENTORY, UserProfile.ROLE_SALES,
+    UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+])
+_LEGACY_SALES_NOTES_ROLES = frozenset([
+    UserProfile.ROLE_SALES, UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+])
+# Resending a customer email was admin-only before Phase 2C (IsAdminRole) and
+# stays admin-only: it puts a message in a customer's inbox, which is a narrower
+# authority than moving an order through fulfillment.
+_LEGACY_RESEND_EMAIL_ROLES = frozenset([
+    UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+])
 
-_NO_CATALOG_CONTEXT = 'No tienes acceso al catálogo de ninguna empresa.'
-_NO_CATALOG_PERMISSION = 'No tienes permisos sobre el catálogo de esta empresa.'
+_NO_CATALOG_CONTEXT = 'No tienes acceso a los datos de ninguna empresa.'
+_NO_CATALOG_PERMISSION = 'No tienes permisos sobre estos datos en esta empresa.'
 
 
 def _requested_company_id(request):
@@ -87,7 +109,7 @@ def _requested_company_id(request):
         return None, None  # invalid
 
 
-def _catalog_company(request, capability, legacy_roles):
+def _company_context(request, capability, legacy_roles):
     """
     Resolve the company this catalogue request acts on and authorise it, or
     return an error Response.
@@ -311,7 +333,7 @@ class AdminProductListView(APIView):
         return [AdminProductsThrottle()]
 
     def get(self, request):
-        company, error = _catalog_company(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
+        company, error = _company_context(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
         if error:
             return error
 
@@ -352,7 +374,7 @@ class AdminProductListView(APIView):
         return Response({**meta, 'results': AdminProductSerializer(page_qs, many=True).data})
 
     def post(self, request):
-        company, error = _catalog_company(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+        company, error = _company_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
         if error:
             return error
 
@@ -394,7 +416,7 @@ class AdminProductDetailView(APIView):
         return [AdminProductsThrottle()]
 
     def get(self, request, pk):
-        company, error = _catalog_company(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
+        company, error = _company_context(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
         if error:
             return error
         # A product of another tenant answers exactly like one that does not exist.
@@ -404,7 +426,7 @@ class AdminProductDetailView(APIView):
         return Response(AdminProductSerializer(product).data)
 
     def patch(self, request, pk):
-        company, error = _catalog_company(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+        company, error = _company_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
         if error:
             return error
         product = get_object_or_404(
@@ -516,14 +538,14 @@ class AdminCategoryListView(APIView):
         return [AdminCategoriesThrottle()]
 
     def get(self, request):
-        company, error = _catalog_company(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
+        company, error = _company_context(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
         if error:
             return error
         categories = Category.objects.filter(company=company).order_by('name')
         return Response(CategorySerializer(categories, many=True).data)
 
     def post(self, request):
-        company, error = _catalog_company(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+        company, error = _company_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
         if error:
             return error
         ser = AdminCategoryWriteSerializer(
@@ -560,12 +582,26 @@ class AdminOrderListView(APIView):
     GET /api/admin/orders/ — paginated order list with filters.
     Roles: inventory, sales, admin, superadmin.
     """
-    permission_classes = [permissions.IsAuthenticated, CanViewAdminOrders]
+    # Authority is decided by _company_context(), which needs the resolved
+    # company to answer at all — same reasoning as the catalogue views.
+    permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrdersThrottle]
 
     def get(self, request):
         from datetime import datetime
-        orders = Order.objects.select_related('user').prefetch_related('items').order_by('-created_at')
+
+        company, error = _company_context(request, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES)
+        if error:
+            return error
+
+        # Born scoped: every filter below narrows within the tenant.
+        orders = (
+            Order.objects
+            .filter(company=company)
+            .select_related('user')
+            .prefetch_related('items')
+            .order_by('-created_at')
+        )
 
         search = request.query_params.get('search', '').strip()
         if search:
@@ -614,12 +650,17 @@ class AdminOrderDetailView(APIView):
     Roles: inventory, sales, admin, superadmin.
     No stripe_session_id, no payment_error.
     """
-    permission_classes = [permissions.IsAuthenticated, CanViewAdminOrders]
+    permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrdersThrottle]
 
     def get(self, request, pk):
+        company, error = _company_context(request, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES)
+        if error:
+            return error
+        # An order of another tenant answers exactly like one that does not exist.
         order = get_object_or_404(
-            Order.objects.select_related('user').prefetch_related('items__product'),
+            Order.objects.filter(company=company)
+            .select_related('user').prefetch_related('items__product'),
             pk=pk,
         )
         return Response(AdminOrderDetailSerializer(order).data)
@@ -631,14 +672,19 @@ class AdminOrderResendEmailView(APIView):
     Manually resends the customer confirmation email (with PDF).
     Roles: admin, superadmin only (NOT sales/inventory/technician).
     """
-    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+    permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrderEmailResendThrottle]
 
     def post(self, request, pk):
         from .email_services import resend_order_confirmation_email
 
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, _LEGACY_RESEND_EMAIL_ROLES)
+        if error:
+            return error
+
         try:
-            order = Order.objects.prefetch_related("items__product").get(pk=pk)
+            order = Order.objects.filter(company=company).prefetch_related(
+                "items__product").get(pk=pk)
         except Order.DoesNotExist:
             return Response({"detail": "Orden no encontrada."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -666,6 +712,7 @@ class AdminOrderResendEmailView(APIView):
             action="order_confirmation_email_resent",
             target_type="order",
             target_id=order.pk,
+            company=company,
             metadata={
                 "order_id": order.pk,
                 "customer_email": order.customer_email,
@@ -689,12 +736,17 @@ class AdminOrderReceiptPdfView(APIView):
     Roles: inventory, sales, admin, superadmin (CanViewAdminOrders).
     Technician and customer are blocked.
     """
-    permission_classes = [permissions.IsAuthenticated, CanViewAdminOrders]
+    permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrdersThrottle]
 
     def get(self, request, pk):
+        company, error = _company_context(request, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES)
+        if error:
+            return error
+
         try:
-            order = Order.objects.prefetch_related("items__product").get(pk=pk)
+            order = Order.objects.filter(company=company).prefetch_related(
+                "items__product").get(pk=pk)
         except Order.DoesNotExist:
             return Response({"detail": "Orden no encontrada."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -720,6 +772,7 @@ class AdminOrderReceiptPdfView(APIView):
             action="order_receipt_pdf_downloaded",
             target_type="order",
             target_id=order.pk,
+            company=company,
             metadata={"order_id": order.pk, "customer_email": order.customer_email},
             request=request,
         )
@@ -736,17 +789,22 @@ class AdminOrderFulfillmentView(APIView):
     inventory role: limited to preparing/ready_for_pickup/shipped/delivered.
     sales/admin/superadmin: any value.
     """
-    permission_classes = [permissions.IsAuthenticated, CanManageOrderFulfillment]
+    permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrderStatusChangeThrottle]
 
     def patch(self, request, pk):
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, _LEGACY_MANAGE_ORDERS_ROLES)
+        if error:
+            return error
+
         ser = AdminOrderFulfillmentSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
         new_fs = ser.validated_data['fulfillment_status']
         note = ser.validated_data.get('note', '').strip()
 
-        order = get_object_or_404(Order, pk=pk)
+        # Scoped: an admin of company A can never move company B's order.
+        order = get_object_or_404(Order.objects.filter(company=company), pk=pk)
 
         role = get_user_role(request.user)
         if role == UserProfile.ROLE_INVENTORY and new_fs not in _INVENTORY_ALLOWED_FULFILLMENT:
@@ -766,6 +824,7 @@ class AdminOrderFulfillmentView(APIView):
                 action='order_fulfillment_status_changed',
                 target_type='order',
                 target_id=order.pk,
+                company=company,
                 metadata={
                     'order_id': order.pk,
                     'customer_email': order.customer_email,

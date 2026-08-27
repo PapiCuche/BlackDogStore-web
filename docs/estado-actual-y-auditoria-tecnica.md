@@ -951,6 +951,7 @@ Cambios estructurales posteriores a esta auditoría:
 | SaaS 2A.2 | Control Interno v1: shell sidebar+topbar, dashboard empresarial, endpoint agregado | IMPLEMENTADO |
 | SaaS 2B | Catálogo tenant-aware: `Category.company`, `Product.company`, storefront por host, aislamiento público | IMPLEMENTADO |
 | SaaS 2B.1 | Dashboard visual: gráficos tenant-safe, series de catálogo y organización, SVG propio | IMPLEMENTADO |
+| SaaS 2C | Comercio tenant-aware: `Order.company`, `Coupon.company`, carrito lógico, checkout, webhook, KPIs de ventas | IMPLEMENTADO |
 
 **Modelos de base de datos actuales**, además de los listados en la sección 7:
 `UserProfile`, `AdminAuditLog`, `AccountToken`, `StockMovement`, `SalesNote`,
@@ -970,8 +971,18 @@ Dashboard catalog KPIs                   IMPLEMENTADO
 Dashboard visual / analytics UI          IMPLEMENTADO
 Gráficos tenant-safe                     IMPLEMENTADO
 KPIs comerciales reales                  PENDIENTE
-Cart tenant-aware                        PARCIAL (límite cerrado, 2C)
-Order tenant-aware                       PENDIENTE 2C
+Coupon tenant-aware                      IMPLEMENTADO
+Cart tenant-aware                        IMPLEMENTADO
+Order tenant-aware                       IMPLEMENTADO
+Checkout tenant-aware                    IMPLEMENTADO
+Stripe tenant-safe                       IMPLEMENTADO
+Customer order isolation                 IMPLEMENTADO
+Admin order isolation                    IMPLEMENTADO
+Sales capabilities                       IMPLEMENTADO
+Dashboard sales KPIs                     IMPLEMENTADO
+Dashboard sales charts                   IMPLEMENTADO
+StockMovement explicit tenancy           PENDIENTE 2D
+Profitability                            PENDIENTE (sin modelo de costos)
 Inventory company isolation              PARCIAL
 Inventory branch isolation               PENDIENTE 2D
 Dashboard sales KPIs                     PENDIENTE
