@@ -193,6 +193,21 @@ class CompanyAdmin(admin.ModelAdmin):
         # Never remove a tenant from the admin; deactivate it.
         return False
 
+    def save_model(self, request, obj, form, change):
+        """
+        A company created here gets the same defaults as one created through the
+        API — same service, no second copy of the preset list.
+
+        An explicit call rather than a post_save signal: a signal would fire for
+        every Company write anywhere (including migration 0015's historical
+        model, and fixtures), which is both surprising and hard to test.
+        """
+        from .company_provisioning import provision_company_access_defaults
+
+        super().save_model(request, obj, form, change)
+        if not change:
+            provision_company_access_defaults(obj, actor=request.user)
+
 
 @admin.register(Branch)
 class BranchAdmin(admin.ModelAdmin):

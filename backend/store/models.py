@@ -635,10 +635,23 @@ class Membership(models.Model):
 # SaaS Phase 2A.1 — configurable areas, roles and assignments
 # ---------------------------------------------------------------------------
 #
-# Three surfaces, kept apart on purpose:
-#   EXTERNAL PORTAL  a User with no Membership — the e-commerce customer
-#   INTERNAL CONTROL a User with an active Membership in an active Company
-#   PLATFORM CONTROL User.is_superuser, and only that
+# Three surfaces, kept apart on purpose. They are SURFACES, not user types: one
+# User may stand on more than one at the same time.
+#
+#   EXTERNAL PORTAL   the e-commerce. Open to ANY user — and its public parts to
+#                     anonymous visitors too. Holding a Membership does not take
+#                     it away: a Black Dog technician is still a customer when
+#                     they buy something.
+#   INTERNAL CONTROL  requires User + active Membership + active Company +
+#                     the capabilities of their roles.
+#   PLATFORM CONTROL  requires User.is_superuser, and only that.
+#
+# So a single identity can be all three at once:
+#
+#   User Carlos
+#     ├── buys products as a customer          (external portal)
+#     └── Membership @ Black Dog Store         (internal control)
+#           └── Técnico
 #
 # Nothing in this module can turn a user into a platform master.
 

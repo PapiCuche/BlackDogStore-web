@@ -946,30 +946,37 @@ Cambios estructurales posteriores a esta auditoría:
 | SaaS 1 | `Company`, `Branch`, `Membership`, resolución de tenant | PARCIAL |
 | SaaS 2A | Matriz de capacidades empresariales, `CompanyContext`, separación PLATFORM/COMPANY/LEGACY | IMPLEMENTADO |
 | SaaS 2A.1 | `CompanyArea`, `CompanyRole`, `MembershipRoleAssignment`, catálogo de capacidades | IMPLEMENTADO |
+| SaaS 2A.1 cierre | Provisioning de empresas, corrección de superficies, mapa del Control Interno | IMPLEMENTADO |
+| Demo users | `seed_demo_users` — cuentas de prueba de roles | IMPLEMENTADO / **TEMPORAL, eliminar antes de producción** |
 
 **Modelos de base de datos actuales**, además de los listados en la sección 7:
 `UserProfile`, `AdminAuditLog`, `AccountToken`, `StockMovement`, `SalesNote`,
 `Company`, `Branch`, `Membership`, `CompanyArea`, `CompanyRole`, `MembershipRoleAssignment`.
 
 ```
-Autenticación única                    IMPLEMENTADO
-Portal externo e-commerce              IMPLEMENTADO
-Control interno                        PARCIAL
-Platform master                        IMPLEMENTADO
-Membership                             IMPLEMENTADO
-CompanyArea                            IMPLEMENTADO
-CompanyRole                            IMPLEMENTADO
-Role assignments                       IMPLEMENTADO
-Capabilities configurables por rol     IMPLEMENTADO
-Legacy RBAC fallback                   IMPLEMENTADO / TRANSICIÓN
-Tenant resolution                      PARCIAL
-Portal cliente servicio técnico        PENDIENTE
-Product tenant-aware                   PENDIENTE
-Order tenant-aware                     PENDIENTE
-Inventory tenant-aware                 PENDIENTE
-Membership Invitation Flow             PENDIENTE
-Branding                               PENDIENTE
-IMEI/Serial                            PENDIENTE
+Autenticación única                      IMPLEMENTADO
+E-commerce / portal externo              IMPLEMENTADO
+Control interno — fundamento             IMPLEMENTADO
+Control interno — módulos completos      PENDIENTE
+Platform MASTER                          IMPLEMENTADO
+Membership                               IMPLEMENTADO
+Áreas personalizadas                     IMPLEMENTADO
+Roles personalizados                     IMPLEMENTADO
+Capabilities                             IMPLEMENTADO
+Provisioning de nuevas empresas          IMPLEMENTADO
+Demo users de desarrollo                 IMPLEMENTADO / TEMPORAL
+Platform MASTER — UI                     PENDIENTE
+Legacy RBAC fallback                     IMPLEMENTADO / TRANSICIÓN
+Tenant resolution                        PARCIAL
+Branch access multisucursal              PENDIENTE
+Product tenant-aware                     PENDIENTE
+Order/Cart/Checkout tenant-aware         PENDIENTE
+Inventory tenant-aware                   PENDIENTE
+Servicio técnico                         PENDIENTE
+Dashboard interno avanzado               PENDIENTE
+Membership Invitation Flow               PENDIENTE
+Branding                                 PENDIENTE
+IMEI/Serial                              PENDIENTE
 ```
 
 **Nota sobre multiempresa:** los modelos SaaS existen pero el e-commerce

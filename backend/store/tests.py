@@ -8336,7 +8336,13 @@ class Phase2a1SeedAndRegressionTest(TestCase):
         self.assertEqual(m.role, 'inventory')
 
     def test_external_customer_keeps_working_without_membership(self):
-        """A shopper with no Membership is still a customer of the storefront."""
+        """
+        A shopper with no Membership is a customer of the storefront.
+
+        Note this is one CASE, not the definition: the external portal is open to
+        any user. See test_membership_holder_is_still_an_external_customer for
+        the other direction.
+        """
         user = _saas_user('p21_shopper')
         self.assertEqual(Membership.objects.filter(user=user).count(), 0)
 
@@ -8378,3 +8384,650 @@ class Phase2a1SeedAndRegressionTest(TestCase):
         self.assertEqual(c.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(
             c.get('/api/admin/inventory/summary/').status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1 closure — provisioning and surface separation
+# ---------------------------------------------------------------------------
+
+from .company_provisioning import (  # noqa: E402
+    PRESET_AREAS, PRESET_ROLES, ProvisioningError,
+    provision_company_access_defaults,
+)
+
+
+class Phase2a1ProvisioningTest(TestCase):
+    """New companies get their default areas and roles, idempotently."""
+
+    def setUp(self):
+        cache.clear()
+        self.platform = _saas_user('prov_platform', is_superuser=True)
+        self.company_admin = _saas_user('prov_company_admin')
+        self.existing = _saas_company('Existente SA', 'prov-existente')
+        Membership.objects.create(
+            user=self.company_admin, company=self.existing, role='admin')
+
+    def _as(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def _create_via_api(self, slug='nueva-sa', name='Nueva SA'):
+        return self._as(self.platform).post('/api/admin/companies/', {
+            'name': name, 'slug': slug, 'tax_id': '20111111111',
+        }, format='json')
+
+    # --- 1 & 2: a company created through the API is provisioned ---
+
+    def test_01_new_company_via_api_gets_preset_areas(self):
+        res = self._create_via_api()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        company = Company.objects.get(slug='nueva-sa')
+        self.assertEqual(company.areas.count(), len(PRESET_AREAS))
+        self.assertEqual(
+            {a.slug for a in company.areas.all()},
+            {slug for _n, slug, _o in PRESET_AREAS},
+        )
+
+    def test_02_new_company_via_api_gets_preset_roles(self):
+        self._create_via_api()
+        company = Company.objects.get(slug='nueva-sa')
+        self.assertEqual(company.roles.count(), len(PRESET_ROLES))
+        ventas = company.roles.get(slug='ventas')
+        self.assertIn('sales.orders.manage', ventas.capabilities)
+
+    # --- 3: idempotency ---
+
+    def test_03_running_provisioning_twice_does_not_duplicate(self):
+        first = provision_company_access_defaults(self.existing)
+        second = provision_company_access_defaults(self.existing)
+
+        self.assertEqual(len(first['areas_created']), len(PRESET_AREAS))
+        self.assertEqual(second['areas_created'], [])
+        self.assertEqual(second['roles_created'], [])
+        self.assertEqual(self.existing.areas.count(), len(PRESET_AREAS))
+        self.assertEqual(self.existing.roles.count(), len(PRESET_ROLES))
+
+    # --- 4: an edited preset is never overwritten ---
+
+    def test_04_edited_preset_is_not_overwritten(self):
+        provision_company_access_defaults(self.existing)
+        role = self.existing.roles.get(slug='ventas')
+        role.name = 'Ventas Mostrador'
+        role.capabilities = ['company.view']
+        role.save()
+
+        area = self.existing.areas.get(slug='caja')
+        area.name = 'Caja Principal'
+        area.is_active = False
+        area.save()
+
+        provision_company_access_defaults(self.existing)
+
+        role.refresh_from_db()
+        area.refresh_from_db()
+        self.assertEqual(role.name, 'Ventas Mostrador')
+        self.assertEqual(role.capabilities, ['company.view'])
+        self.assertEqual(area.name, 'Caja Principal')
+        self.assertFalse(area.is_active)
+
+    # --- 5: tenant isolation ---
+
+    def test_05_provisioning_company_a_does_not_touch_company_b(self):
+        other = _saas_company('Otra SA', 'prov-otra', tax_id='20222222222')
+        provision_company_access_defaults(self.existing)
+
+        self.assertEqual(other.areas.count(), 0)
+        self.assertEqual(other.roles.count(), 0)
+        for area in CompanyArea.objects.filter(company=self.existing):
+            self.assertEqual(area.company_id, self.existing.pk)
+
+        provision_company_access_defaults(other)
+        self.assertEqual(other.areas.count(), len(PRESET_AREAS))
+        # ...and A still has exactly its own, not doubled
+        self.assertEqual(self.existing.areas.count(), len(PRESET_AREAS))
+
+    # --- 6: neutrality ---
+
+    def test_06_presets_contain_no_tenant_specific_data(self):
+        import store.capabilities as capabilities_mod
+        import store.company_provisioning as provisioning_mod
+
+        for module in (provisioning_mod, capabilities_mod):
+            source = open(module.__file__, encoding='utf-8').read().lower()
+            for tenant_token in ('black dog', 'blackdog', 'cmau', '20610159886'):
+                self.assertNotIn(
+                    tenant_token, source,
+                    f'{module.__name__} contiene datos de un tenant concreto',
+                )
+
+    # --- 7-9: provisioning changes nothing about identity ---
+
+    def test_07_provisioning_creates_no_membership(self):
+        before = Membership.objects.count()
+        provision_company_access_defaults(self.existing)
+        self.assertEqual(Membership.objects.count(), before)
+        self.assertEqual(MembershipRoleAssignment.objects.count(), 0)
+
+    def test_08_provisioning_does_not_change_userprofile_role(self):
+        user = _saas_user('prov_profile_probe')
+        before = user.profile.role
+        self._create_via_api(slug='prov-probe', name='Probe SA')
+        user.profile.refresh_from_db()
+        self.assertEqual(user.profile.role, before)
+        self.assertEqual(before, UserProfile.ROLE_CUSTOMER)
+
+    def test_09_provisioning_does_not_change_is_superuser_or_is_staff(self):
+        user = _saas_user('prov_super_probe')
+        self._create_via_api(slug='prov-probe2', name='Probe 2 SA')
+        user.refresh_from_db()
+        self.company_admin.refresh_from_db()
+        self.assertFalse(user.is_superuser)
+        self.assertFalse(user.is_staff)
+        self.assertFalse(self.company_admin.is_superuser)
+        self.assertFalse(self.company_admin.is_staff)
+
+    # --- 10-11: authority around company creation ---
+
+    def test_10_company_created_by_platform_master_is_operational(self):
+        self._create_via_api(slug='operativa-sa', name='Operativa SA')
+        company = Company.objects.get(slug='operativa-sa')
+
+        # A membership in it resolves real capabilities straight away
+        staff = _saas_user('prov_new_staff')
+        membership = Membership.objects.create(
+            user=staff, company=company, role='customer')
+        _assign(membership, company.roles.get(slug='inventario'))
+
+        self.assertIn('inventory.adjust', resolve_capabilities(staff, company))
+        self.assertTrue(has_capability(staff, company, 'inventory.view'))
+
+    def test_11_company_admin_still_cannot_create_a_company(self):
+        res = self._as(self.company_admin).post('/api/admin/companies/', {
+            'name': 'Intrusa SA', 'slug': 'intrusa-sa',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Company.objects.filter(slug='intrusa-sa').exists())
+
+    # --- 12: the Django admin path uses the same service ---
+
+    def test_12_django_admin_creation_provisions_the_same_defaults(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from store.admin import CompanyAdmin
+
+        admin_instance = CompanyAdmin(Company, AdminSite())
+        request = type('R', (), {'user': self.platform})()
+        company = Company(name='Admin SA', slug='admin-sa', tax_id='20333333333')
+
+        admin_instance.save_model(request, company, form=None, change=False)
+
+        self.assertEqual(company.areas.count(), len(PRESET_AREAS))
+        self.assertEqual(company.roles.count(), len(PRESET_ROLES))
+
+    def test_12b_django_admin_edit_does_not_re_provision(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from store.admin import CompanyAdmin
+
+        provision_company_access_defaults(self.existing)
+        self.existing.areas.get(slug='caja').delete()
+
+        admin_instance = CompanyAdmin(Company, AdminSite())
+        request = type('R', (), {'user': self.platform})()
+        self.existing.name = 'Existente Renombrada'
+        admin_instance.save_model(request, self.existing, form=None, change=True)
+
+        # change=True must not silently recreate what an operator removed
+        self.assertEqual(self.existing.areas.count(), len(PRESET_AREAS) - 1)
+
+    # --- misc ---
+
+    def test_unsaved_company_is_rejected(self):
+        with self.assertRaises(ProvisioningError):
+            provision_company_access_defaults(Company(name='X', slug='x'))
+
+    def test_api_creation_is_audited_with_provisioning_summary(self):
+        self._create_via_api(slug='auditada-sa', name='Auditada SA')
+        log = AdminAuditLog.objects.filter(action='company_created').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(len(log.metadata['areas_created']), len(PRESET_AREAS))
+        self.assertEqual(len(log.metadata['roles_created']), len(PRESET_ROLES))
+
+    def test_preset_roles_only_reference_assignable_capabilities(self):
+        for _name, slug, _desc, caps in PRESET_ROLES:
+            self.assertTrue(
+                set(caps) <= ASSIGNABLE_CAPABILITY_CODES,
+                f'preset {slug} referencia capacidades no asignables',
+            )
+
+
+class Phase2a1SurfaceSeparationTest(TestCase):
+    """
+    The three surfaces are surfaces, not user types.
+
+    Holding a Membership does NOT remove e-commerce access — the earlier wording
+    "external portal = User without Membership" was wrong.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Superficies SA', 'surf-sa')
+        self.product = Product.objects.create(
+            name='Producto Superficie', slug='producto-superficie',
+            price=Decimal('100.00'), inventory=10,
+        )
+        provision_company_access_defaults(self.company)
+
+        # Carlos: customer AND technician of the same company
+        self.carlos = _saas_user('surf_carlos')
+        self.membership = Membership.objects.create(
+            user=self.carlos, company=self.company, role='technician')
+        _assign(self.membership, self.company.roles.get(slug='servicio-tecnico'))
+
+    def test_membership_holder_is_still_an_external_customer(self):
+        """The other direction of the corrected rule."""
+        c = APIClient()
+
+        # public catalogue, anonymously
+        self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
+
+        # ...and Carlos can still shop, Membership notwithstanding
+        self.assertEqual(
+            c.post('/api/cart/add/', {
+                'session_key': 'surf-carlos-cart',
+                'product': self.product.pk, 'quantity': 1,
+            }, format='json').status_code,
+            status.HTTP_200_OK,
+        )
+        login = c.post('/api/auth/login/', {
+            'username': 'surf_carlos', 'password': 'Pass123!',
+        }, format='json')
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+        self.assertTrue(login.cookies.get('blackdog_access')['httponly'])
+
+    def test_anonymous_can_use_the_public_part_of_the_external_portal(self):
+        c = APIClient()
+        self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            c.get('/api/cart/?session_key=surf-anon').status_code, status.HTTP_200_OK)
+
+    def test_same_user_holds_internal_control_too(self):
+        c = APIClient()
+        c.force_authenticate(user=self.carlos)
+        self.assertEqual(c.get('/api/me/company-access/').status_code, status.HTTP_200_OK)
+        self.assertIn('service.manage', resolve_capabilities(self.carlos, self.company))
+
+    def test_user_may_belong_to_two_companies_with_different_roles(self):
+        other = _saas_company('Otra Superficie', 'surf-otra', tax_id='20444444444')
+        provision_company_access_defaults(other)
+        m2 = Membership.objects.create(user=self.carlos, company=other, role='customer')
+        _assign(m2, other.roles.get(slug='ventas'))
+
+        self.assertIn('service.manage', resolve_capabilities(self.carlos, self.company))
+        self.assertNotIn('sales.orders.manage', resolve_capabilities(self.carlos, self.company))
+        self.assertIn('sales.orders.manage', resolve_capabilities(self.carlos, other))
+        self.assertNotIn('service.manage', resolve_capabilities(self.carlos, other))
+
+    def test_no_company_object_can_create_a_platform_master(self):
+        """Roles, areas, memberships and assignments must never reach is_superuser."""
+        powerful = _role(self.company, 'Omnipotente',
+                         sorted(ASSIGNABLE_CAPABILITY_CODES), 'omnipotente')
+        _assign(self.membership, powerful)
+
+        self.carlos.refresh_from_db()
+        self.assertFalse(self.carlos.is_superuser)
+        self.assertFalse(self.carlos.is_staff)
+        self.assertFalse(is_platform_admin(self.carlos))
+        # ...and a second company remains out of reach
+        other = _saas_company('Fuera', 'surf-fuera', tax_id='20555555555')
+        self.assertEqual(resolve_capabilities(self.carlos, other), frozenset())
+
+
+# ---------------------------------------------------------------------------
+# Development-only demo users — TEMPORARY
+# ---------------------------------------------------------------------------
+
+from io import StringIO  # noqa: E402
+
+from django.core.management import call_command  # noqa: E402
+from django.core.management.base import CommandError  # noqa: E402
+
+from .management.commands.seed_demo_users import (  # noqa: E402
+    ALL_DEMO_USERNAMES, DEMO_INTERNAL_USERS, DEMO_PASSWORD, demo_email,
+)
+
+
+@override_settings(DEBUG=True)
+class DemoUsersCommandTest(TestCase):
+    """
+    `seed_demo_users` is a development fixture, not a product feature.
+
+    These tests pin the safety properties: it refuses production, it never
+    hijacks a real account, and no CompanyRole it creates can make anyone a
+    platform master.
+    """
+
+    DEMO_COMPANY_SLUG = 'demo-users-co'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Demo Users SA', self.DEMO_COMPANY_SLUG)
+
+    def _seed(self, slug=None):
+        out = StringIO()
+        call_command(
+            'seed_demo_users', company_slug=slug or self.DEMO_COMPANY_SLUG, stdout=out,
+        )
+        return out.getvalue()
+
+    def _purge(self):
+        out = StringIO()
+        call_command('seed_demo_users', purge=True, stdout=out)
+        return out.getvalue()
+
+    # --- 1: production is refused, with no escape hatch ---
+
+    @override_settings(DEBUG=False)
+    def test_01_debug_false_is_rejected(self):
+        with self.assertRaises(CommandError) as ctx:
+            call_command('seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG)
+        self.assertIn('desarrollo', str(ctx.exception))
+        self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)
+
+    @override_settings(DEBUG=False)
+    def test_01b_purge_is_also_rejected_in_production(self):
+        with self.assertRaises(CommandError):
+            call_command('seed_demo_users', purge=True)
+
+    def test_01c_command_offers_no_production_override_flag(self):
+        """
+        Introspect the real parser rather than scanning the source text: this
+        catches a bypass flag whatever it is called, and does not trip over
+        prose that merely *mentions* one.
+        """
+        from store.management.commands.seed_demo_users import Command
+
+        parser = Command().create_parser('manage.py', 'seed_demo_users')
+        declared = {
+            opt for action in parser._actions for opt in action.option_strings
+        }
+        self.assertEqual(
+            declared,
+            {'-h', '--help', '--version', '-v', '--verbosity', '--settings',
+             '--pythonpath', '--traceback', '--no-color', '--force-color',
+             '--skip-checks', '--company-slug', '--purge'},
+        )
+        for opt in declared:
+            self.assertNotIn('force-production', opt)
+            self.assertNotIn('ignore-debug', opt)
+
+    @override_settings(DEBUG=False)
+    def test_01d_unknown_bypass_kwargs_do_not_help(self):
+        """
+        An invented override keyword must not run the command.
+
+        Django rejects unknown options with TypeError, which is itself the proof
+        that no such escape hatch is declared; CommandError is accepted too so
+        the test states the intent rather than Django's exact mechanism.
+        """
+        with self.assertRaises((TypeError, CommandError)):
+            call_command(
+                'seed_demo_users',
+                company_slug=self.DEMO_COMPANY_SLUG,
+                force_production=True,
+            )
+        self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)
+
+    # --- 2: the six accounts ---
+
+    def test_02_creates_the_six_demo_users(self):
+        self._seed()
+        for username in ALL_DEMO_USERNAMES:
+            user = User.objects.filter(username=username).first()
+            self.assertIsNotNone(user, username)
+            self.assertEqual(user.email, demo_email(username))
+            self.assertTrue(user.check_password(DEMO_PASSWORD), username)
+        self.assertEqual(len(ALL_DEMO_USERNAMES), 6)
+
+    # --- 3-7: memberships ---
+
+    def test_03_customer_gets_no_membership(self):
+        self._seed()
+        customer = User.objects.get(username='dev_customer')
+        self.assertEqual(Membership.objects.filter(user=customer).count(), 0)
+        self.assertEqual(customer.profile.role, UserProfile.ROLE_CUSTOMER)
+        self.assertEqual(resolve_capabilities(customer, self.company), frozenset())
+
+    def test_04_to_07_internal_users_get_the_right_membership(self):
+        self._seed()
+        for username, legacy_role, _role_slug, _area_slug in DEMO_INTERNAL_USERS:
+            user = User.objects.get(username=username)
+            membership = Membership.objects.filter(user=user, company=self.company).first()
+            self.assertIsNotNone(membership, username)
+            self.assertEqual(membership.role, legacy_role, username)
+            self.assertTrue(membership.is_active, username)
+            self.assertEqual(user.profile.role, legacy_role, username)
+
+    # --- 8: custom role + area ---
+
+    def test_08_internal_users_get_their_company_role_and_area(self):
+        self._seed()
+        for username, _legacy, role_slug, area_slug in DEMO_INTERNAL_USERS:
+            membership = Membership.objects.get(
+                user__username=username, company=self.company)
+            assignment = membership.role_assignments.filter(is_active=True).first()
+            self.assertIsNotNone(assignment, username)
+            self.assertEqual(assignment.role.slug, role_slug, username)
+            self.assertIsNotNone(assignment.area, username)
+            self.assertEqual(assignment.area.slug, area_slug, username)
+            # role and area belong to the same company as the membership
+            self.assertEqual(assignment.role.company_id, self.company.pk)
+            self.assertEqual(assignment.area.company_id, self.company.pk)
+
+    def test_08b_internal_users_resolve_real_capabilities(self):
+        self._seed()
+        inventory = User.objects.get(username='dev_inventory')
+        sales = User.objects.get(username='dev_sales')
+        self.assertIn('inventory.adjust', resolve_capabilities(inventory, self.company))
+        self.assertNotIn('inventory.adjust', resolve_capabilities(sales, self.company))
+        self.assertIn('sales.orders.manage', resolve_capabilities(sales, self.company))
+
+    # --- 9-10: idempotency ---
+
+    def test_09_assignments_are_not_duplicated(self):
+        self._seed()
+        self._seed()
+        self._seed()
+        for username, _l, _r, _a in DEMO_INTERNAL_USERS:
+            membership = Membership.objects.get(
+                user__username=username, company=self.company)
+            self.assertEqual(membership.role_assignments.count(), 1, username)
+
+    def test_10_second_run_is_idempotent(self):
+        self._seed()
+        counts = (
+            User.objects.filter(username__startswith='dev_').count(),
+            Membership.objects.count(),
+            MembershipRoleAssignment.objects.count(),
+            CompanyArea.objects.filter(company=self.company).count(),
+            CompanyRole.objects.filter(company=self.company).count(),
+        )
+        self._seed()
+        self.assertEqual(
+            (
+                User.objects.filter(username__startswith='dev_').count(),
+                Membership.objects.count(),
+                MembershipRoleAssignment.objects.count(),
+                CompanyArea.objects.filter(company=self.company).count(),
+                CompanyRole.objects.filter(company=self.company).count(),
+            ),
+            counts,
+        )
+
+    def test_10b_reseeding_restores_a_disabled_assignment(self):
+        self._seed()
+        assignment = MembershipRoleAssignment.objects.filter(
+            membership__user__username='dev_sales').first()
+        assignment.is_active = False
+        assignment.save()
+        self._seed()
+        assignment.refresh_from_db()
+        self.assertTrue(assignment.is_active)
+
+    # --- 11-13: MASTER ---
+
+    def test_11_dev_master_is_a_platform_master_without_membership(self):
+        self._seed()
+        master = User.objects.get(username='dev_master')
+        self.assertTrue(master.is_superuser)
+        self.assertTrue(master.is_staff)
+        self.assertEqual(Membership.objects.filter(user=master).count(), 0)
+        self.assertTrue(is_platform_admin(master))
+
+    def test_12_dev_admin_is_not_a_platform_master(self):
+        self._seed()
+        admin = User.objects.get(username='dev_admin')
+        self.assertFalse(admin.is_superuser)
+        self.assertFalse(admin.is_staff)
+        self.assertFalse(is_platform_admin(admin))
+        # ...even though it holds every company capability in its own company
+        self.assertEqual(
+            resolve_capabilities(admin, self.company), ASSIGNABLE_CAPABILITY_CODES)
+        # ...and nothing at all in another one
+        other = _saas_company('Ajena', 'demo-ajena', tax_id='20666666666')
+        self.assertEqual(resolve_capabilities(admin, other), frozenset())
+
+    def test_13_no_company_role_turns_a_user_into_a_master(self):
+        self._seed()
+        for username, _l, _r, _a in DEMO_INTERNAL_USERS:
+            user = User.objects.get(username=username)
+            self.assertFalse(user.is_superuser, username)
+            self.assertFalse(is_platform_admin(user), username)
+
+    # --- 14-15: company validation ---
+
+    def test_14_unknown_company_is_rejected(self):
+        with self.assertRaises(CommandError) as ctx:
+            call_command('seed_demo_users', company_slug='no-existe')
+        self.assertIn('no-existe', str(ctx.exception))
+        self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)
+
+    def test_15_inactive_company_is_rejected(self):
+        self.company.is_active = False
+        self.company.save(update_fields=['is_active'])
+        with self.assertRaises(CommandError) as ctx:
+            call_command('seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG)
+        self.assertIn('desactivada', str(ctx.exception))
+
+    def test_15b_company_slug_is_required(self):
+        with self.assertRaises(CommandError):
+            call_command('seed_demo_users')
+
+    def test_15c_command_works_with_any_company_slug(self):
+        """No tenant is hardcoded: a different company works identically."""
+        other = _saas_company('Servicio Técnico X', 'servicio-tecnico-x',
+                              tax_id='20777777777')
+        self._seed(slug='servicio-tecnico-x')
+        self.assertEqual(
+            Membership.objects.filter(company=other).count(), len(DEMO_INTERNAL_USERS))
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_15d_command_source_hardcodes_no_tenant(self):
+        import store.management.commands.seed_demo_users as mod
+        source = open(mod.__file__, encoding='utf-8').read().lower()
+        for token in ('black dog', 'blackdog', 'cmau', '20610159886'):
+            self.assertNotIn(token, source)
+
+    # --- 16: never hijack a real account ---
+
+    def test_16_existing_non_demo_username_aborts(self):
+        real = User.objects.create_user(
+            username='dev_admin', email='persona.real@empresa.com', password='Real123!')
+        with self.assertRaises(CommandError) as ctx:
+            call_command('seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG)
+        self.assertIn('otra identidad', str(ctx.exception))
+
+        real.refresh_from_db()
+        self.assertEqual(real.email, 'persona.real@empresa.com')
+        self.assertTrue(real.check_password('Real123!'))
+        self.assertFalse(real.is_superuser)
+
+    # --- 17-18: purge ---
+
+    def test_17_purge_removes_the_demo_users(self):
+        self._seed()
+        self.assertEqual(
+            User.objects.filter(username__startswith='dev_').count(), 6)
+        self._purge()
+        self.assertEqual(
+            User.objects.filter(username__startswith='dev_').count(), 0)
+        self.assertEqual(Membership.objects.count(), 0)
+        self.assertEqual(MembershipRoleAssignment.objects.count(), 0)
+
+    def test_17b_purge_leaves_company_areas_and_roles_alone(self):
+        self._seed()
+        areas = CompanyArea.objects.filter(company=self.company).count()
+        roles = CompanyRole.objects.filter(company=self.company).count()
+        self._purge()
+        self.assertEqual(CompanyArea.objects.filter(company=self.company).count(), areas)
+        self.assertEqual(CompanyRole.objects.filter(company=self.company).count(), roles)
+
+    def test_18_purge_never_deletes_a_lookalike_account(self):
+        real = User.objects.create_user(
+            username='dev_master', email='jefe.real@empresa.com', password='Real123!')
+        output = self._purge()
+        real.refresh_from_db()
+        self.assertTrue(User.objects.filter(username='dev_master').exists())
+        self.assertEqual(real.email, 'jefe.real@empresa.com')
+        self.assertIn('OMITIDO', output)
+
+    def test_18b_purge_is_safe_when_nothing_was_seeded(self):
+        self._purge()  # must not raise
+        self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)
+
+    # --- 19-20: the rest of the system is untouched ---
+
+    def test_19_internal_demo_users_can_still_use_the_public_storefront(self):
+        """Holding a Membership does not remove e-commerce access."""
+        self._seed()
+        product = Product.objects.create(
+            name='Producto Demo Users', slug='producto-demo-users',
+            price=Decimal('50.00'), inventory=5,
+        )
+        c = APIClient()
+        self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            c.post('/api/cart/add/', {
+                'session_key': 'demo-users-cart', 'product': product.pk, 'quantity': 1,
+            }, format='json').status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_20_demo_users_authenticate_through_the_real_login(self):
+        """No bypass: real login, real HttpOnly cookies, real CSRF flow."""
+        self._seed()
+        c = APIClient()
+        res = c.post('/api/auth/login/', {
+            'username': 'dev_technician', 'password': DEMO_PASSWORD,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        access = res.cookies.get('blackdog_access')
+        self.assertIsNotNone(access)
+        self.assertTrue(access['httponly'])
+        self.assertNotIn('token', res.data)
+
+    def test_20b_demo_users_get_no_extra_authority(self):
+        """dev_technician must not reach the legacy admin surface."""
+        self._seed()
+        technician = User.objects.get(username='dev_technician')
+        c = APIClient()
+        c.force_authenticate(user=technician)
+        self.assertEqual(
+            c.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(
+            c.get('/api/admin/inventory/summary/').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_20c_no_demo_user_is_created_without_running_the_command(self):
+        """No migration, signal or import may create these accounts."""
+        self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)

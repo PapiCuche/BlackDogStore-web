@@ -9,6 +9,73 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Usuarios demo de desarrollo — TEMPORAL
+
+**Estado: IMPLEMENTADO / TEMPORAL.** Herramienta de desarrollo, no parte del
+producto. **Sin migraciones.**
+
+### IMPLEMENTADO
+- `python manage.py seed_demo_users --company-slug <slug>` crea 6 cuentas de
+  prueba (`dev_customer`, `dev_sales`, `dev_inventory`, `dev_technician`,
+  `dev_admin`, `dev_master`) con contraseña `Demo123!`.
+- `--purge` las elimina.
+- Reutiliza `provision_company_access_defaults()`; no duplica presets ni
+  hardcodea ninguna empresa — funciona con cualquier `--company-slug`.
+- Bloque "Accesos de desarrollo" en `/auth`, que **solo rellena** el formulario.
+- 29 tests.
+
+### Garantías de seguridad
+- Falla con `DEBUG=False`, sin flag de override (test que introspecciona el parser).
+- Sin bypass de auth: login real, JWT en cookie HttpOnly, CSRF y permisos normales.
+- No se apropia de cuentas reales (firma por email `@example.invalid`); aborta si
+  el username está ocupado por otra identidad, y `--purge` la omite.
+- Sin migración, sin signal, sin auto-creación al arrancar.
+- El bloque de `/auth` no se renderiza fuera de `NODE_ENV === "development"`.
+
+### PENDIENTE
+- Eliminar estas cuentas y el bloque de `/auth` antes de producción.
+
+---
+
+## Fase SaaS 2A.1 — Cierre arquitectónico
+
+**Estado: IMPLEMENTADO.** Sin migraciones nuevas: el provisioning no requiere
+cambio de esquema. `0016` y `0017` sin tocar.
+
+### Corregido
+- **Definición de portal externo.** Se había documentado «portal externo = `User`
+  sin Membership». Es incorrecto: tener Membership no quita el acceso al
+  e-commerce. Corregido en `models.py`, `tests.py`, `README.md` y
+  `docs/saas-multiempresa.md`, con test en ambas direcciones.
+
+### IMPLEMENTADO
+- `store/company_provisioning.py` — `provision_company_access_defaults(company)`:
+  única fuente en tiempo de ejecución de áreas y roles preset. Idempotente,
+  neutral (test que escanea el archivo entero), no sobrescribe ediciones del
+  operador, no asigna roles ni toca identidad.
+- Conectado a `POST /api/admin/companies/` en una sola transacción con la
+  creación, y a `CompanyAdmin.save_model()` para el Django Admin.
+- Auditoría de `company_created` ampliada con el resumen del provisioning.
+- Mapa oficial del CONTROL INTERNO documentado con el estado **real** de cada
+  módulo (no el diseñado).
+- Deuda `PENDIENTE — Branch access model` documentada: `Membership.branch` es
+  single-valued y no expresa acceso a varias sucursales. Bloquea el inventario
+  multisucursal.
+- `Dashboard interno avanzado` marcado PENDIENTE con su razón.
+- 21 tests nuevos: provisioning (idempotencia, no sobrescritura, aislamiento,
+  neutralidad, no toca identidad, Django Admin) y separación de superficies.
+
+### PENDIENTE
+- Branch access model · Dashboard interno · módulos del Control Interno ·
+  Membership Invitation Flow · tenantización del dominio comercial.
+
+### Sin cambios
+Frontend, catálogo, carrito, checkout, Stripe, webhook, `PaymentStatusView`,
+emails, PDFs, inventario legacy, `SalesNote`, login, JWT, cookies, CSRF,
+migraciones 0001–0017.
+
+---
+
 ## Fase SaaS 2A.1 — Áreas, roles y permisos configurables por empresa
 
 **Estado: IMPLEMENTADO** (la infraestructura de acceso interno; el dominio
@@ -82,24 +149,29 @@ comerciales siguen en RBAC legacy hasta que sus datos estén tenantizados).
 de negocio es deliberadamente posterior).
 
 ```
-Autenticación única                    IMPLEMENTADO
-Portal externo e-commerce              IMPLEMENTADO
-Control interno                        PARCIAL
-Platform master                        IMPLEMENTADO
-Membership                             IMPLEMENTADO
-CompanyArea                            IMPLEMENTADO
-CompanyRole                            IMPLEMENTADO
-Role assignments                       IMPLEMENTADO
-Capabilities configurables por rol     IMPLEMENTADO
-Legacy RBAC fallback                   IMPLEMENTADO / TRANSICIÓN
-Tenant resolution                      PARCIAL
-Portal cliente servicio técnico        PENDIENTE
-Product tenant-aware                   PENDIENTE
-Order tenant-aware                     PENDIENTE
-Inventory tenant-aware                 PENDIENTE
-Membership Invitation Flow             PENDIENTE
-Branding                               PENDIENTE
-IMEI/Serial                            PENDIENTE
+Autenticación única                      IMPLEMENTADO
+E-commerce / portal externo              IMPLEMENTADO
+Control interno — fundamento             IMPLEMENTADO
+Control interno — módulos completos      PENDIENTE
+Platform MASTER                          IMPLEMENTADO
+Membership                               IMPLEMENTADO
+Áreas personalizadas                     IMPLEMENTADO
+Roles personalizados                     IMPLEMENTADO
+Capabilities                             IMPLEMENTADO
+Provisioning de nuevas empresas          IMPLEMENTADO
+Demo users de desarrollo                 IMPLEMENTADO / TEMPORAL
+Platform MASTER — UI                     PENDIENTE
+Legacy RBAC fallback                     IMPLEMENTADO / TRANSICIÓN
+Tenant resolution                        PARCIAL
+Branch access multisucursal              PENDIENTE
+Product tenant-aware                     PENDIENTE
+Order/Cart/Checkout tenant-aware         PENDIENTE
+Inventory tenant-aware                   PENDIENTE
+Servicio técnico                         PENDIENTE
+Dashboard interno avanzado               PENDIENTE
+Membership Invitation Flow               PENDIENTE
+Branding                                 PENDIENTE
+IMEI/Serial                              PENDIENTE
 ```
 
 ### IMPLEMENTADO

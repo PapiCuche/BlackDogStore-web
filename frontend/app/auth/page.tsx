@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { login, logout, getCurrentUser, register, AuthUser } from "../lib/auth";
+import { DevQuickLogin } from "./components/DevQuickLogin";
 
 export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
@@ -268,6 +269,19 @@ export default function AuthPage() {
                 </div>
               )}
             </div>
+
+            {/* Development-only. Renders nothing outside `next dev`. */}
+            {isLogin && (
+              <DevQuickLogin
+                onUse={(demoUsername, demoPassword) => {
+                  // Fills the form only — the real login still has to be submitted.
+                  setUsername(demoUsername);
+                  setPassword(demoPassword);
+                  setError(null);
+                  setSuccess(null);
+                }}
+              />
+            )}
 
           </div>
         </div>
