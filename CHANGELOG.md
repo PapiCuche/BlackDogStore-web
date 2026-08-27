@@ -9,6 +9,71 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase SaaS 2B.1 — Dashboard visual del Control Interno
+
+**Estado: IMPLEMENTADO.** **Sin migraciones.**
+
+### IMPLEMENTADO
+- Dashboard rediseñado: cabecera con contexto, fila de KPIs, zona de análisis,
+  mi acceso, avisos, accesos rápidos y cobertura del sistema.
+- **5 gráficos, todos tenant-safe**: estado del catálogo (anillo), productos por
+  categoría (barras), personal por área (barras), personal por rol (barras) y
+  cobertura de módulos (barra apilada).
+- Series nuevas en `/api/me/internal-dashboard/`: `catalog.inactive_products`,
+  `catalog.products_per_category`, `organization.assignments_per_area`,
+  `organization.assignments_per_role`. Mismo gate de capacidad que los totales;
+  acotadas a 8 buckets; filas con solo `{label, value}`.
+- Gráficos en **SVG propio, sin dependencia nueva** — el proyecto mantiene sus
+  tres dependencias de runtime. Magnitud por opacidad, no por tono.
+- Accesibilidad: cada gráfico es `role="img"` con `aria-label` **y** tabla oculta
+  con las mismas cifras.
+- Componentes nuevos: `charts.tsx` (`HorizontalBarChart`, `DonutChart`,
+  `StackedBar`) y `dashboard-ui.tsx` (`DashboardHeader`, `DashboardSection`,
+  `SummaryStatCard`, `ChartCard`, `AlertsPanel`, `DashboardSkeleton`).
+- 16 tests nuevos de aislamiento de las series.
+
+### Paleta
+Sin colores nuevos: tokens de `globals.css` (`#080808` / `#111111` / `#1a1a1a`,
+escala zinc) más la textura `dot-grid` ya existente.
+
+### PENDIENTE
+- KPIs comerciales (ventas, caja, stock, pedidos): bloqueados hasta que `Order` y
+  `StockMovement` sean tenant-aware.
+
+### Sin cambios
+E-commerce público, checkout, Stripe, webhook, carrito, auth, guards de negocio.
+
+---
+
+## Fase SaaS 2B — Catálogo tenant-aware
+
+**Estado: IMPLEMENTADO.** Migraciones **0018, 0019, 0020**.
+
+### IMPLEMENTADO
+- `Category.company` y `Product.company` (FK PROTECT). Slugs únicos **por empresa**.
+- Invariante `Product.company == Product.category.company`, validada en modelo y serializer.
+- Backfill del catálogo histórico al tenant piloto, identificado por firma (empresa más antigua), no por nombre.
+- `resolve_storefront_company()`: host → `DEFAULT_STOREFRONT_COMPANY_SLUG` → empresa activa única. Sin resolución, catálogo vacío. **Sin fallback a "la primera empresa".**
+- Catálogo público aislado: querysets que **nacen scopeados** (listado, slug, categoría, búsqueda, reseñas).
+- **Límite del carrito**: `/api/cart/add/` solo acepta productos del storefront actual. `Cart.company` NO añadido.
+- `products.view` / `products.manage` son autoridad real en los endpoints admin de catálogo.
+- Bridge legacy acotado **al tenant piloto**; platform master excluido y obligado a elegir empresa.
+- KPIs de catálogo en el dashboard interno, por empresa.
+- Django Admin muestra la empresa; `company` bloqueada tras crear.
+- 63 tests nuevos.
+
+### Cambio de comportamiento
+- `GET /api/admin/products/` sin `?company=` devuelve **403** a un superusuario: con el catálogo tenantizado no existe «todos los productos».
+- `?company=` se lee solo del query string, nunca del body.
+
+### PENDIENTE
+- Order / Cart / Checkout tenant-aware (2C) · `StockMovement` (2D) · `Product.inventory` por sucursal.
+
+### Sin cambios
+Stripe, webhook, `PaymentStatusView`, checkout, emails, PDFs, login, JWT, cookies, CSRF.
+
+---
+
 ## Fase SaaS 2A.2 — Control Interno + Dashboard empresarial v1
 
 **Estado: IMPLEMENTADO.** **Sin migraciones** — el dashboard no necesita tabla nueva.
@@ -189,7 +254,18 @@ Control interno — shell v1               IMPLEMENTADO
 Dashboard empresarial v1                 IMPLEMENTADO
 Sidebar capability-aware                 IMPLEMENTADO
 Selector de empresa                      IMPLEMENTADO
-KPIs comerciales tenant-aware            PENDIENTE
+Category tenant-aware                    IMPLEMENTADO
+Product tenant-aware                     IMPLEMENTADO
+Public catalog isolation                 IMPLEMENTADO
+Dashboard catalog KPIs                   IMPLEMENTADO
+Dashboard visual / analytics UI          IMPLEMENTADO
+Gráficos tenant-safe                     IMPLEMENTADO
+KPIs comerciales reales                  PENDIENTE
+Cart tenant-aware                        PARCIAL (límite cerrado, 2C)
+Order tenant-aware                       PENDIENTE 2C
+Inventory company isolation              PARCIAL
+Inventory branch isolation               PENDIENTE 2D
+Dashboard sales KPIs                     PENDIENTE
 Control interno — módulos completos      PENDIENTE
 Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO

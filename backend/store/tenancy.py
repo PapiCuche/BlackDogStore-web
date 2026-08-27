@@ -497,6 +497,74 @@ def resolve_company_for_user(user, requested_company_id=None) -> Company:
     )
 
 
+def resolve_storefront_company(request) -> Company | None:
+    """
+    Resolve the tenant whose catalogue this PUBLIC request should see.
+
+    Order, most specific first:
+
+      1. The request HOST. Set by DNS and the reverse proxy, not by page
+         JavaScript, so it is not attacker-controlled the way a body field is.
+      2. settings.DEFAULT_STOREFRONT_COMPANY_SLUG — an explicit single-store
+         deployment naming its own tenant.
+      3. DEBUG only, and only when the database holds exactly ONE active company.
+
+    Returns None when nothing resolves, and the public views then serve an EMPTY
+    catalogue. An empty storefront is the safe failure: serving somebody else's
+    products is not.
+
+    There is deliberately no "first company in the database" fallback. On a
+    multi-tenant install that would quietly hand one tenant's catalogue to
+    another tenant's domain, and nothing in the response would reveal it.
+
+    A `company` id in the request body is NEVER consulted here: the public
+    surface has no authenticated identity to validate it against.
+    """
+    from django.conf import settings
+
+    company = resolve_company_from_host(request.get_host() if request else '')
+    if company is not None:
+        return company
+
+    slug = getattr(settings, 'DEFAULT_STOREFRONT_COMPANY_SLUG', '') or ''
+    if slug:
+        return Company.objects.filter(slug=slug.strip().lower(), is_active=True).first()
+
+    # Exactly ONE active company: unambiguous by construction, so there is
+    # nothing to leak — it is not "the first of many", it is "the only one".
+    #
+    # This is not a convenience: without it, every existing single-store
+    # deployment would serve an EMPTY catalogue the moment it applied these
+    # migrations, until someone noticed and set the env var. The fallback stops
+    # firing the instant a second company exists, which is precisely when the
+    # operator must configure per-tenant hosts or the slug above.
+    active = Company.objects.filter(is_active=True)
+    if active.count() == 1:
+        return active.first()
+
+    return None
+
+
+def storefront_products(request):
+    """Active products of the storefront's tenant. Empty when unresolved."""
+    from .models import Product
+
+    company = resolve_storefront_company(request)
+    if company is None:
+        return Product.objects.none()
+    return Product.objects.filter(company=company, is_active=True)
+
+
+def storefront_categories(request):
+    """Categories of the storefront's tenant. Empty when unresolved."""
+    from .models import Category
+
+    company = resolve_storefront_company(request)
+    if company is None:
+        return Category.objects.none()
+    return Category.objects.filter(company=company)
+
+
 def resolve_company_from_host(host: str) -> Company | None:
     """
     Map a request host to a Company via its slug (DESIGNED, not yet wired up).
@@ -519,6 +587,102 @@ def resolve_company_from_host(host: str) -> Company | None:
 # ---------------------------------------------------------------------------
 # Guards
 # ---------------------------------------------------------------------------
+
+def pilot_company() -> Company | None:
+    """
+    The installation's first tenant — the one migration 0015 created.
+
+    Identified by signature (oldest row), not by name, so an installation whose
+    first tenant is a different business resolves to ITS own first tenant.
+    """
+    return Company.objects.order_by('pk').first()
+
+
+def legacy_catalog_company(user) -> Company | None:
+    """
+    LEGACY BRIDGE — Phase 2B, temporary and deliberately narrow.
+
+    An operator who holds a legacy staff role (UserProfile.role) but no
+    Membership is the state of every pre-SaaS operator. Before Phase 2B the
+    catalogue was global, so they managed all of it; now it has owners.
+
+    The dangerous reading would be "legacy admin sees everything", which on a
+    multi-tenant install means one company's staff administering another's
+    catalogue. So this bridge returns EXACTLY ONE company — the pilot — and
+    never any other. A legacy operator therefore keeps working on the catalogue
+    they always managed, and gains access to nothing new.
+
+    Returns None for customers, for technicians (never had catalogue access) and
+    for anyone who does have a Membership: they go through normal resolution.
+
+    DEBT: this disappears once every operator holds a Membership. Tracked in
+    docs/saas-multiempresa.md.
+    """
+    from .permissions import get_user_role
+
+    if not user or not user.is_authenticated:
+        return None
+    if is_platform_admin(user):
+        # A platform master is not a pre-SaaS operator. Bridging them to the
+        # pilot would silently pick a tenant for someone whose whole role is to
+        # act across tenants — they must name the company explicitly.
+        return None
+    if active_memberships(user).exists():
+        return None  # has real company context; the bridge is not for them
+
+    role = get_user_role(user)
+    if role not in (
+        UserProfile.ROLE_SALES, UserProfile.ROLE_INVENTORY,
+        UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+    ):
+        return None
+
+    pilot = pilot_company()
+    return pilot if pilot is not None and pilot.is_active else None
+
+
+# How a catalogue request obtained its company. The caller needs to know,
+# because the two sources carry different authority.
+CATALOG_SOURCE_TENANT = 'tenant'          # membership or platform master
+CATALOG_SOURCE_LEGACY = 'legacy_bridge'   # pre-SaaS operator, pilot tenant only
+
+
+def resolve_catalog_company(user, requested_company_id=None):
+    """
+    Resolve the company an INTERNAL catalogue request acts on.
+
+    Returns `(company, source)`; `(None, None)` when nothing applies.
+
+    Two sources, and the distinction matters:
+
+      CATALOG_SOURCE_TENANT — the caller has a Membership (or is a platform
+        master naming a company). Authority is the company CAPABILITY:
+        products.view / products.manage. This is the real model.
+
+      CATALOG_SOURCE_LEGACY — the caller has no company context at all, only a
+        legacy staff role. They get the PILOT tenant and nothing else, and their
+        authority remains the legacy DRF permission class the view already
+        applied. Giving them capabilities they never had would be inventing
+        authority; refusing them outright would lock every pre-SaaS operator out
+        of the catalogue they have always managed.
+    """
+    try:
+        return resolve_company_for_user(user, requested_company_id), CATALOG_SOURCE_TENANT
+    except (NoTenantError, CrossTenantError):
+        # A caller naming a company they cannot reach never falls back: the
+        # bridge is for callers with no context, not for rejected requests.
+        if requested_company_id is None:
+            bridged = legacy_catalog_company(user)
+            if bridged is not None:
+                return bridged, CATALOG_SOURCE_LEGACY
+        return None, None
+
+
+def resolve_catalog_company_only(user, requested_company_id=None) -> Company | None:
+    """Company alone, for callers that do not care how it was resolved."""
+    company, _source = resolve_catalog_company(user, requested_company_id)
+    return company
+
 
 def assert_branch_in_company(branch, company) -> None:
     """

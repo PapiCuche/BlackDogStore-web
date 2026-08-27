@@ -238,7 +238,19 @@ class AdminProductSerializer(serializers.ModelSerializer):
 
 
 class AdminProductWriteSerializer(serializers.ModelSerializer):
-    """Write serializer: validates and saves product create/update."""
+    """
+    Write serializer for product create/update.
+
+    Phase 2B: `company` is deliberately ABSENT from `fields`. It cannot be mass
+    assigned, and it is never read from the payload — the view passes the
+    resolved company to save(). That is what prevents a product being moved
+    between tenants by editing an id.
+
+    The category queryset is narrowed to the same company, so a category id
+    belonging to another tenant is rejected as an invalid choice rather than
+    silently accepted.
+    """
+
     slug = serializers.SlugField(required=False, allow_blank=True, max_length=50)
     image_url = serializers.URLField(required=False, allow_blank=True, max_length=500, default='')
     description = serializers.CharField(required=False, allow_blank=True, default='')
@@ -246,6 +258,17 @@ class AdminProductWriteSerializer(serializers.ModelSerializer):
         queryset=Category.objects.all(), required=False, allow_null=True, default=None
     )
     is_active = serializers.BooleanField(required=False, default=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        company = self.context.get('company')
+        if company is not None:
+            self.fields['category'].queryset = Category.objects.filter(company=company)
+
+    @property
+    def _company(self):
+        """The tenant this write belongs to: context first, then the instance."""
+        return self.context.get('company') or getattr(self.instance, 'company', None)
 
     class Meta:
         model = Product
@@ -265,22 +288,36 @@ class AdminProductWriteSerializer(serializers.ModelSerializer):
         return value
 
     def validate_slug(self, value):
+        # Uniqueness is per company now: two tenants may both sell "iphone-15".
         if not value:
             return value
-        qs = Product.objects.filter(slug=value)
+        qs = Product.objects.filter(slug=value, company=self._company)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
-            raise serializers.ValidationError('Ya existe un producto con este slug.')
+            raise serializers.ValidationError(
+                'Ya existe un producto con este slug en esta empresa.'
+            )
         return value
 
     def validate(self, attrs):
+        company = self._company
+
+        # Defence in depth: the queryset above already rejects a foreign category,
+        # but the invariant is stated here too so no code path depends on the
+        # field construction alone.
+        category = attrs.get('category') or getattr(self.instance, 'category', None)
+        if category is not None and company is not None and category.company_id != company.pk:
+            raise serializers.ValidationError(
+                {'category': 'La categoría no pertenece a la empresa de este producto.'}
+            )
+
         if not self.instance and not attrs.get('slug'):
             base = slugify(attrs.get('name', ''))[:45]
             if not base:
                 raise serializers.ValidationError({'slug': 'No se pudo generar un slug desde el nombre.'})
             slug, counter = base, 1
-            while Product.objects.filter(slug=slug).exists():
+            while Product.objects.filter(slug=slug, company=company).exists():
                 slug = f'{base}-{counter}'
                 counter += 1
             attrs['slug'] = slug
@@ -360,7 +397,13 @@ class AdminOrderFulfillmentSerializer(serializers.Serializer):
 
 
 class AdminCategoryWriteSerializer(serializers.ModelSerializer):
-    """Write serializer for admin category create."""
+    """
+    Write serializer for admin category create.
+
+    `company` is absent from `fields` on purpose — it comes from the resolved
+    request context, never from the payload.
+    """
+
     slug = serializers.SlugField(required=False, allow_blank=True, max_length=50)
 
     class Meta:
@@ -368,23 +411,31 @@ class AdminCategoryWriteSerializer(serializers.ModelSerializer):
         fields = ['name', 'slug']
         extra_kwargs = {'slug': {'validators': []}}
 
+    @property
+    def _company(self):
+        return self.context.get('company') or getattr(self.instance, 'company', None)
+
     def validate_slug(self, value):
+        # Per company: two tenants may each have a category "iphone".
         if not value:
             return value
-        qs = Category.objects.filter(slug=value)
+        qs = Category.objects.filter(slug=value, company=self._company)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
-            raise serializers.ValidationError('Ya existe una categoría con este slug.')
+            raise serializers.ValidationError(
+                'Ya existe una categoría con este slug en esta empresa.'
+            )
         return value
 
     def validate(self, attrs):
+        company = self._company
         if not self.instance and not attrs.get('slug'):
             base = slugify(attrs.get('name', ''))[:45]
             if not base:
                 raise serializers.ValidationError({'slug': 'No se pudo generar un slug.'})
             slug, counter = base, 1
-            while Category.objects.filter(slug=slug).exists():
+            while Category.objects.filter(slug=slug, company=company).exists():
                 slug = f'{base}-{counter}'
                 counter += 1
             attrs['slug'] = slug

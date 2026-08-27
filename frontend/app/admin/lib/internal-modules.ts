@@ -156,12 +156,14 @@ export const INTERNAL_MODULES: InternalModule[] = [
     label: "Productos",
     description: "Catálogo, precios y estado de publicación.",
     href: "/admin/products",
+    // Phase 2B: Product is tenantised, so `products.view` is now REAL authority
+    // on this endpoint. The legacy bridge is gone for this module only —
+    // orders and inventory still need theirs until their models are tenantised.
     requiredCapabilities: ["products.view"],
-    legacyRoles: STAFF_ROLES,
     status: "implemented",
     quickAction: true,
   },
-  { id: "products.categories", group: "products", label: "Categorías", description: "Taxonomía del catálogo.", status: "pending" },
+  { id: "products.categories", group: "products", label: "Categorías", description: "Taxonomía del catálogo. API tenant-aware, pantalla pendiente.", status: "partial" },
 
   // ── Inventario ───────────────────────────────────────────────────────────
   {

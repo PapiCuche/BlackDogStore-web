@@ -38,28 +38,53 @@ from .models import AccountToken, AdminAuditLog, Category, Product, Coupon, Orde
 User = get_user_model()
 
 
+def _storefront_of(company):
+    """
+    Pin the public storefront to `company` for the duration of a block.
+
+    Needed by any test that creates a SECOND company: the single-company
+    fallback in tenancy.resolve_storefront_company() correctly stops firing once
+    the tenant is ambiguous, and the test must then say which storefront it means
+    — exactly as a real multi-tenant deployment has to.
+    """
+    return override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=company.slug)
+
+
+def _pilot_company():
+    """
+    The installation's first tenant.
+
+    Every test database runs the full migration chain, so migration 0015 has
+    already created the pilot company — the same one migration 0019 backfilled
+    the catalogue onto. Tests that do not care WHICH tenant they are in use this
+    one; tests about isolation create their own companies explicitly.
+    """
+    from .models import Company
+    return Company.objects.order_by('pk').first()
+
+
 # ---------------------------------------------------------------------------
 # Phase 0.1 tests
 # ---------------------------------------------------------------------------
 
 class CategoryModelTest(TestCase):
     def test_create_and_str(self):
-        cat = Category.objects.create(name="MacBook", slug="macbook-test")
+        cat = Category.objects.create(company=_pilot_company(), name="MacBook", slug="macbook-test")
         self.assertEqual(str(cat), "MacBook")
         self.assertEqual(cat.slug, "macbook-test")
 
     def test_slug_unique(self):
-        Category.objects.create(name="iPad", slug="ipad-test")
+        Category.objects.create(company=_pilot_company(), name="iPad", slug="ipad-test")
         with self.assertRaises(Exception):
-            Category.objects.create(name="iPad Copia", slug="ipad-test")
+            Category.objects.create(company=_pilot_company(), name="iPad Copia", slug="ipad-test")
 
 
 class ProductModelTest(TestCase):
     def setUp(self):
-        self.category = Category.objects.create(name="MacBook", slug="macbook-model-test")
+        self.category = Category.objects.create(company=_pilot_company(), name="MacBook", slug="macbook-model-test")
 
     def test_create_product(self):
-        product = Product.objects.create(
+        product = Product.objects.create(company=_pilot_company(),
             name="MacBook Pro M4",
             slug="macbook-pro-m4-test",
             price=Decimal("9999.00"),
@@ -71,7 +96,7 @@ class ProductModelTest(TestCase):
         self.assertEqual(product.inventory, 5)
 
     def test_product_defaults(self):
-        product = Product.objects.create(
+        product = Product.objects.create(company=_pilot_company(),
             name="Test Product Defaults",
             slug="test-product-defaults-001",
             price=Decimal("100.00"),
@@ -114,8 +139,8 @@ class CouponModelTest(TestCase):
 class ProductAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.category = Category.objects.create(name="iPad Test", slug="ipad-api-test")
-        self.product = Product.objects.create(
+        self.category = Category.objects.create(company=_pilot_company(), name="iPad Test", slug="ipad-api-test")
+        self.product = Product.objects.create(company=_pilot_company(),
             name="iPad Pro M4 Test",
             slug="ipad-pro-m4-api-test",
             price=Decimal("3999.00"),
@@ -165,8 +190,8 @@ class Phase50ProductAPITest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.cat = Category.objects.create(name="Mac Phase50", slug="mac-p50")
-        self.p1 = Product.objects.create(
+        self.cat = Category.objects.create(company=_pilot_company(), name="Mac Phase50", slug="mac-p50")
+        self.p1 = Product.objects.create(company=_pilot_company(),
             name="MacBook Air P50",
             slug="macbook-air-p50",
             price=Decimal("4999.00"),
@@ -174,7 +199,7 @@ class Phase50ProductAPITest(TestCase):
             category=self.cat,
             is_active=True,
         )
-        self.p2 = Product.objects.create(
+        self.p2 = Product.objects.create(company=_pilot_company(),
             name="MacBook Pro P50",
             slug="macbook-pro-p50",
             price=Decimal("9999.00"),
@@ -182,7 +207,7 @@ class Phase50ProductAPITest(TestCase):
             category=self.cat,
             is_active=True,
         )
-        self.p3 = Product.objects.create(
+        self.p3 = Product.objects.create(company=_pilot_company(),
             name="Mac Studio P50",
             slug="mac-studio-p50",
             price=Decimal("7499.00"),
@@ -190,7 +215,7 @@ class Phase50ProductAPITest(TestCase):
             category=self.cat,
             is_active=True,
         )
-        self.inactive = Product.objects.create(
+        self.inactive = Product.objects.create(company=_pilot_company(),
             name="Inactive Mac P50",
             slug="inactive-mac-p50",
             price=Decimal("1.00"),
@@ -260,7 +285,7 @@ class Phase50ProductAPITest(TestCase):
         self.assertEqual(res.status_code, 200)
 
     def test_product_without_category_does_not_crash(self):
-        Product.objects.create(
+        Product.objects.create(company=_pilot_company(),
             name="No Category P50",
             slug="no-cat-p50",
             price=Decimal("99.00"),
@@ -316,8 +341,8 @@ class CouponAPITest(TestCase):
 class CartAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.category = Category.objects.create(name="Cables Test", slug="cables-cart-test")
-        self.product = Product.objects.create(
+        self.category = Category.objects.create(company=_pilot_company(), name="Cables Test", slug="cables-cart-test")
+        self.product = Product.objects.create(company=_pilot_company(),
             name="Cable USB-C Test",
             slug="cable-usbc-cart-test",
             price=Decimal("149.00"),
@@ -371,7 +396,7 @@ class CartAPITest(TestCase):
 
 class OrderModelTest(TestCase):
     def setUp(self):
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name="iPhone Test Order",
             slug="iphone-test-order-001",
             price=Decimal("4299.00"),
@@ -401,7 +426,7 @@ class CartStockValidationTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name="iPhone 16 Pro Stock Test",
             slug="iphone-16-pro-stock-test",
             price=Decimal("5999.00"),
@@ -468,7 +493,7 @@ class CheckoutFlowTest(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name="MacBook Air M3 Checkout Test",
             slug="macbook-air-m3-checkout-test",
             price=Decimal("7499.00"),
@@ -594,7 +619,7 @@ class StripeWebhookTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name="AirPods Pro Webhook Test",
             slug="airpods-pro-webhook-test",
             price=Decimal("799.00"),
@@ -768,7 +793,7 @@ class CheckoutStripeErrorTest(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name="iPhone Stripe Error Test",
             slug="iphone-stripe-error-test",
             price=Decimal("4999.00"),
@@ -966,7 +991,7 @@ class CartPatchTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name='iPhone 16 Patch Test',
             slug='iphone-16-patch-test',
             price=Decimal('5999.00'),
@@ -1002,7 +1027,7 @@ class CartPatchTest(TestCase):
 
     def test_patch_ignores_session_key_in_body(self):
         """session_key in body must be ignored; only quantity changes."""
-        other_product = Product.objects.create(
+        other_product = Product.objects.create(company=_pilot_company(),
             name='Other Product',
             slug='other-product-patch',
             price=Decimal('100.00'),
@@ -1019,7 +1044,7 @@ class CartPatchTest(TestCase):
 
     def test_patch_ignores_product_in_body(self):
         """product in body must be ignored; only quantity changes."""
-        other_product = Product.objects.create(
+        other_product = Product.objects.create(company=_pilot_company(),
             name='Other Product Patch',
             slug='other-product-patch-2',
             price=Decimal('100.00'),
@@ -1046,8 +1071,8 @@ class ReviewSecurityTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.category = Category.objects.create(name='Review Cat', slug='review-cat-test')
-        self.product = Product.objects.create(
+        self.category = Category.objects.create(company=_pilot_company(), name='Review Cat', slug='review-cat-test')
+        self.product = Product.objects.create(company=_pilot_company(),
             name='Review Product Test',
             slug='review-product-test',
             price=Decimal('999.00'),
@@ -2175,8 +2200,8 @@ class Phase30RegressionTest(TestCase):
     def setUp(self):
         self.client = APIClient()
         cache.clear()
-        cat = Category.objects.create(name='Reg Cat', slug='reg-cat-30')
-        self.product = Product.objects.create(
+        cat = Category.objects.create(company=_pilot_company(), name='Reg Cat', slug='reg-cat-30')
+        self.product = Product.objects.create(company=_pilot_company(),
             name='Reg Product', slug='reg-product-30', price=Decimal('100.00'), inventory=10, category=cat
         )
         self.coupon = Coupon.objects.create(code='REGCOUPON30', discount_percent=10, is_active=True)
@@ -2486,7 +2511,7 @@ class Audit31ExtraFieldsIgnoredTest(TestCase):
 # ---------------------------------------------------------------------------
 
 def _make_product(name, slug, price='100.00', inventory=10, is_active=True, category=None):
-    return Product.objects.create(
+    return Product.objects.create(company=_pilot_company(),
         name=name, slug=slug, price=Decimal(price),
         inventory=inventory, is_active=is_active, category=category,
     )
@@ -2517,7 +2542,7 @@ class AdminProductListAccessTest(TestCase):
         self.client = APIClient()
         cache.clear()
         self.roles = _make_roles('pla')
-        cat = Category.objects.create(name='PLA Cat', slug='pla-cat')
+        cat = Category.objects.create(company=_pilot_company(), name='PLA Cat', slug='pla-cat')
         _make_product('PLA Product', 'pla-product', category=cat)
 
     def test_anon_gets_401(self):
@@ -2544,9 +2569,23 @@ class AdminProductListAccessTest(TestCase):
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
         self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_200_OK)
 
-    def test_superadmin_can_list(self):
+    def test_superadmin_must_select_a_company(self):
+        """
+        BEHAVIOUR CHANGE, Phase 2B. A superuser is a PLATFORM master: with the
+        catalogue tenantised there is no longer such a thing as "all products".
+        They must name the tenant they are acting on, exactly as the internal
+        dashboard already required.
+        """
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SUPERADMIN])
-        self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.get('/api/admin/products/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        pilot = _pilot_company()
+        self.assertEqual(
+            self.client.get(f'/api/admin/products/?company={pilot.pk}').status_code,
+            status.HTTP_200_OK,
+        )
 
     def test_response_has_pagination_structure(self):
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
@@ -2579,7 +2618,7 @@ class AdminProductListFilterTest(TestCase):
         self.admin = User.objects.create_user(username='pf_admin', password='Pass123!')
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
-        self.cat = Category.objects.create(name='PF Cat', slug='pf-cat')
+        self.cat = Category.objects.create(company=_pilot_company(), name='PF Cat', slug='pf-cat')
         self.p1 = _make_product('iPhone 15', 'iphone-15-pf', inventory=5, is_active=True, category=self.cat)
         self.p2 = _make_product('MacBook Air', 'macbook-air-pf', inventory=0, is_active=True)
         self.p3 = _make_product('Old iPad', 'old-ipad-pf', inventory=2, is_active=False)
@@ -2631,7 +2670,7 @@ class AdminProductCreateTest(TestCase):
         self.client = APIClient()
         cache.clear()
         self.roles = _make_roles('pc')
-        self.cat = Category.objects.create(name='PC Cat', slug='pc-cat')
+        self.cat = Category.objects.create(company=_pilot_company(), name='PC Cat', slug='pc-cat')
 
     def _base_payload(self, **overrides):
         data = {
@@ -2675,9 +2714,15 @@ class AdminProductCreateTest(TestCase):
         self.assertIn('id', response.json())
 
     def test_superadmin_can_create(self):
+        # Phase 2B: a platform master names the tenant it creates into.
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SUPERADMIN])
-        response = self.client.post('/api/admin/products/', self._base_payload(name='Super Product'), format='json')
+        pilot = _pilot_company()
+        response = self.client.post(
+            f'/api/admin/products/?company={pilot.pk}',
+            self._base_payload(name='Super Product'), format='json',
+        )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Product.objects.get(name='Super Product').company_id, pilot.pk)
 
     def test_price_zero_rejected(self):
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
@@ -2731,7 +2776,7 @@ class AdminProductDetailTest(TestCase):
         self.client = APIClient()
         cache.clear()
         self.roles = _make_roles('pd')
-        self.cat = Category.objects.create(name='PD Cat', slug='pd-cat')
+        self.cat = Category.objects.create(company=_pilot_company(), name='PD Cat', slug='pd-cat')
         self.product = _make_product('PD iPhone', 'pd-iphone', price='999.00', inventory=10, category=self.cat)
 
     def test_anon_get_401(self):
@@ -2941,7 +2986,7 @@ class AdminCategoryTest(TestCase):
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
         self.customer = User.objects.create_user(username='catcustomer', password='Pass123!')
-        Category.objects.create(name='Cat A', slug='cat-a-test')
+        Category.objects.create(company=_pilot_company(), name='Cat A', slug='cat-a-test')
 
     def test_anon_gets_401(self):
         self.assertEqual(self.client.get('/api/admin/categories/').status_code, status.HTTP_401_UNAUTHORIZED)
@@ -2983,7 +3028,7 @@ class ProductIsActivePublicCatalogTest(TestCase):
     def setUp(self):
         self.client = APIClient()
         cache.clear()
-        cat = Category.objects.create(name='PUB Cat', slug='pub-cat')
+        cat = Category.objects.create(company=_pilot_company(), name='PUB Cat', slug='pub-cat')
         self.active = _make_product('Active Pub', 'active-pub', is_active=True, category=cat)
         self.inactive = _make_product('Inactive Pub', 'inactive-pub', is_active=False, category=cat)
         self.admin = User.objects.create_user(username='pub_admin', password='Pass123!')
@@ -3031,7 +3076,7 @@ class Phase32RegressionTest(TestCase):
     def setUp(self):
         self.client = APIClient()
         cache.clear()
-        cat = Category.objects.create(name='Reg32 Cat', slug='reg32-cat')
+        cat = Category.objects.create(company=_pilot_company(), name='Reg32 Cat', slug='reg32-cat')
         self.product = _make_product('Reg32 Product', 'reg32-product', price='500.00', inventory=10, category=cat)
         self.user = User.objects.create_user(username='reg32_user', password='Pass123!')
 
@@ -3670,7 +3715,7 @@ class Phase33RegressionTest(TestCase):
     def setUp(self):
         self.client = APIClient()
         cache.clear()
-        cat = Category.objects.create(name='Reg33 Cat', slug='reg33-cat')
+        cat = Category.objects.create(company=_pilot_company(), name='Reg33 Cat', slug='reg33-cat')
         self.product = _make_product('Reg33 Product', 'reg33-product', price='500.00', inventory=10, category=cat)
         self.user = User.objects.create_user(username='reg33_user', password='Pass123!')
         self.admin = User.objects.create_user(username='reg33_admin', password='Pass123!')
@@ -3784,7 +3829,7 @@ class Phase40CheckoutValidationTest(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name='P40 Product',
             slug='p40-product',
             price=Decimal('500.00'),
@@ -4197,8 +4242,9 @@ class Phase40AdminOrderDetailCommercialFieldsTest(TestCase):
 
 def _make_paid_order(**kwargs):
     """Factory for a fully paid order with one item."""
-    cat, _ = Category.objects.get_or_create(name='Mac41', defaults={'slug': 'mac-41'})
+    cat, _ = Category.objects.get_or_create(company=_pilot_company(), name='Mac41', defaults={'slug': 'mac-41'})
     product, _ = Product.objects.get_or_create(
+        company=_pilot_company(),
         slug='mbp-m3-41',
         defaults={'name': 'MacBook Pro M3', 'price': '9999.00', 'inventory': 5, 'category': cat},
     )
@@ -4537,8 +4583,8 @@ class Phase41WebhookEmailIntegrationTest(TestCase):
 
     def setUp(self):
         mail.outbox = []
-        cat = Category.objects.create(name='Mac41W', slug='mac-41w')
-        self.product = Product.objects.create(
+        cat = Category.objects.create(company=_pilot_company(), name='Mac41W', slug='mac-41w')
+        self.product = Product.objects.create(company=_pilot_company(),
             name='iMac M3', slug='imac-m3-41w', price='5999.00', inventory=3, category=cat,
         )
         self.order = Order.objects.create(
@@ -4676,8 +4722,9 @@ class Phase41AdminDetailEmailFlagsTest(TestCase):
 
 def _make_paid_order_42(**kwargs):
     """Factory for Phase 4.2 tests — separate slugs to avoid UNIQUE conflicts."""
-    cat, _ = Category.objects.get_or_create(name='Mac42', defaults={'slug': 'mac-42'})
+    cat, _ = Category.objects.get_or_create(company=_pilot_company(), name='Mac42', defaults={'slug': 'mac-42'})
     product, _ = Product.objects.get_or_create(
+        company=_pilot_company(),
         slug='mbp-m3-42',
         defaults={'name': 'MacBook Pro M3 42', 'price': '9999.00', 'inventory': 5, 'category': cat},
     )
@@ -5128,8 +5175,9 @@ class Phase42AdminReceiptPdfEndpointTest(TestCase):
 
 def _make_paid_order_43(**kwargs):
     """Factory for Phase 4.3 tests — separate slugs to avoid UNIQUE conflicts."""
-    cat, _ = Category.objects.get_or_create(name='Mac43', defaults={'slug': 'mac-43'})
+    cat, _ = Category.objects.get_or_create(company=_pilot_company(), name='Mac43', defaults={'slug': 'mac-43'})
     product, _ = Product.objects.get_or_create(
+        company=_pilot_company(),
         slug='mbp-m3-43',
         defaults={'name': 'MacBook Pro M3 43', 'price': '8999.00', 'inventory': 3, 'category': cat},
     )
@@ -5561,7 +5609,7 @@ def _p60_users():
 
 
 def _p60_product(name='iPhone 15 Pro P60', inventory=10, price='5599.00'):
-    return Product.objects.create(
+    return Product.objects.create(company=_pilot_company(),
         name=name,
         slug=name.lower().replace(' ', '-'),
         price=Decimal(price),
@@ -6876,7 +6924,7 @@ class SaasNoRegressionTest(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name='Producto SaaS Reg', slug='producto-saas-reg',
             price=Decimal('1000.00'), inventory=20,
         )
@@ -7520,7 +7568,7 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
     def setUp(self):
         cache.clear()
         self.company = _saas_company('Legacy SA', 'legacy-sa')
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name='Producto Legacy 2A', slug='producto-legacy-2a',
             price=Decimal('500.00'), inventory=30,
         )
@@ -7550,7 +7598,12 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
         )
 
     def test_can_view_admin_products(self):
-        for role in ('inventory', 'sales', 'admin', 'superadmin'):
+        """
+        Phase 2B: the catalogue is tenantised, so the legacy bridge carries these
+        operators — and a platform master (`superadmin`) is excluded from the
+        bridge on purpose and must name a tenant.
+        """
+        for role in ('inventory', 'sales', 'admin'):
             self.assertEqual(
                 self._as(role).get('/api/admin/products/').status_code,
                 status.HTTP_200_OK, role,
@@ -7560,6 +7613,11 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
                 self._as(role).get('/api/admin/products/').status_code,
                 status.HTTP_403_FORBIDDEN, role,
             )
+        pilot = _pilot_company()
+        self.assertEqual(
+            self._as('superadmin').get(f'/api/admin/products/?company={pilot.pk}').status_code,
+            status.HTTP_200_OK,
+        )
 
     def test_can_manage_products(self):
         payload = {'name': 'Nuevo Legacy', 'slug': 'nuevo-legacy-2a', 'price': '10.00', 'inventory': 1}
@@ -7635,15 +7693,26 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
             )
 
     def test_saas_membership_does_not_grant_legacy_permissions(self):
-        """A company admin with a customer UserProfile stays out of legacy admin."""
+        """
+        A Membership with the legacy `admin` value but NO custom role resolves,
+        through the legacy fallback, to that role's capabilities — which include
+        products.*. So it reaches the tenantised catalogue of ITS OWN company,
+        and nothing else: inventory is still legacy and stays shut.
+        """
         u = _saas_user('legacy_membership_only')
         Membership.objects.create(user=u, company=self.company, role='admin')
         self.assertEqual(u.profile.role, UserProfile.ROLE_CUSTOMER)
         c = APIClient()
         c.force_authenticate(user=u)
+
+        res = c.get('/api/admin/products/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # ...and only its own company's catalogue
         self.assertEqual(
-            c.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN,
+            {p['slug'] for p in res.data['results']},
+            {p.slug for p in Product.objects.filter(company=self.company)},
         )
+
         self.assertEqual(
             c.get('/api/admin/inventory/summary/').status_code, status.HTTP_403_FORBIDDEN,
         )
@@ -8380,8 +8449,10 @@ class Phase2a1SeedAndRegressionTest(TestCase):
         c.force_authenticate(user=u)
         # Company surface: yes
         self.assertEqual(c.get('/api/admin/roles/').status_code, status.HTTP_200_OK)
-        # Legacy e-commerce surface: still governed by UserProfile.role
-        self.assertEqual(c.get('/api/admin/products/').status_code, status.HTTP_403_FORBIDDEN)
+        # Phase 2B: products ARE now governed by the company capability, so a
+        # role holding products.view opens them. That is the migration working.
+        self.assertEqual(c.get('/api/admin/products/').status_code, status.HTTP_200_OK)
+        # Inventory is still legacy: StockMovement has no company column yet.
         self.assertEqual(
             c.get('/api/admin/inventory/summary/').status_code, status.HTTP_403_FORBIDDEN)
 
@@ -8613,7 +8684,7 @@ class Phase2a1SurfaceSeparationTest(TestCase):
     def setUp(self):
         cache.clear()
         self.company = _saas_company('Superficies SA', 'surf-sa')
-        self.product = Product.objects.create(
+        self.product = Product.objects.create(company=_pilot_company(),
             name='Producto Superficie', slug='producto-superficie',
             price=Decimal('100.00'), inventory=10,
         )
@@ -8629,17 +8700,18 @@ class Phase2a1SurfaceSeparationTest(TestCase):
         """The other direction of the corrected rule."""
         c = APIClient()
 
-        # public catalogue, anonymously
-        self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
+        with _storefront_of(_pilot_company()):
+            # public catalogue, anonymously
+            self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
 
-        # ...and Carlos can still shop, Membership notwithstanding
-        self.assertEqual(
-            c.post('/api/cart/add/', {
-                'session_key': 'surf-carlos-cart',
-                'product': self.product.pk, 'quantity': 1,
-            }, format='json').status_code,
-            status.HTTP_200_OK,
-        )
+            # ...and Carlos can still shop, Membership notwithstanding
+            self.assertEqual(
+                c.post('/api/cart/add/', {
+                    'session_key': 'surf-carlos-cart',
+                    'product': self.product.pk, 'quantity': 1,
+                }, format='json').status_code,
+                status.HTTP_200_OK,
+            )
         login = c.post('/api/auth/login/', {
             'username': 'surf_carlos', 'password': 'Pass123!',
         }, format='json')
@@ -8991,18 +9063,19 @@ class DemoUsersCommandTest(TestCase):
     def test_19_internal_demo_users_can_still_use_the_public_storefront(self):
         """Holding a Membership does not remove e-commerce access."""
         self._seed()
-        product = Product.objects.create(
+        product = Product.objects.create(company=_pilot_company(),
             name='Producto Demo Users', slug='producto-demo-users',
             price=Decimal('50.00'), inventory=5,
         )
         c = APIClient()
-        self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
-        self.assertEqual(
-            c.post('/api/cart/add/', {
-                'session_key': 'demo-users-cart', 'product': product.pk, 'quantity': 1,
-            }, format='json').status_code,
-            status.HTTP_200_OK,
-        )
+        with _storefront_of(_pilot_company()):
+            self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
+            self.assertEqual(
+                c.post('/api/cart/add/', {
+                    'session_key': 'demo-users-cart', 'product': product.pk, 'quantity': 1,
+                }, format='json').status_code,
+                status.HTTP_200_OK,
+            )
 
     def test_20_demo_users_authenticate_through_the_real_login(self):
         """No bypass: real login, real HttpOnly cookies, real CSRF flow."""
@@ -9216,17 +9289,18 @@ class InternalDashboardTest(TestCase):
     # --- 11-12: the rest of the system ---
 
     def test_11_customer_without_membership_still_uses_the_storefront(self):
-        product = Product.objects.create(
+        product = Product.objects.create(company=_pilot_company(),
             name='Producto Dash', slug='producto-dash',
             price=Decimal('20.00'), inventory=3)
         c = APIClient()
-        self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
-        self.assertEqual(
-            c.post('/api/cart/add/', {
-                'session_key': 'dash-cart', 'product': product.pk, 'quantity': 1,
-            }, format='json').status_code,
-            status.HTTP_200_OK,
-        )
+        with _storefront_of(_pilot_company()):
+            self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
+            self.assertEqual(
+                c.post('/api/cart/add/', {
+                    'session_key': 'dash-cart', 'product': product.pk, 'quantity': 1,
+                }, format='json').status_code,
+                status.HTTP_200_OK,
+            )
         self.assertEqual(self._get(self.orphan).status_code, status.HTTP_403_FORBIDDEN)
 
     def test_12_response_exposes_no_global_commercial_data(self):
@@ -9235,7 +9309,7 @@ class InternalDashboardTest(TestCase):
         them may appear here — a global number inside a per-company frame reads
         as that company's data.
         """
-        Product.objects.create(
+        Product.objects.create(company=_pilot_company(),
             name='Producto Global', slug='producto-global',
             price=Decimal('999.00'), inventory=77)
         raw = str(self._get(self.staff_a).data).lower()
@@ -9319,3 +9393,805 @@ class InternalDashboardTest(TestCase):
         res = self._get(master)
         self.assertTrue(res.data['requires_company_selection'])
         self.assertTrue(res.data['access']['is_platform_admin'])
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B — tenant-aware catalogue
+# ---------------------------------------------------------------------------
+
+from .tenancy import (  # noqa: E402
+    CATALOG_SOURCE_LEGACY, CATALOG_SOURCE_TENANT, legacy_catalog_company,
+    pilot_company, resolve_catalog_company, resolve_storefront_company,
+    storefront_categories, storefront_products,
+)
+
+
+def _cat(company, name, slug):
+    return Category.objects.create(company=company, name=name, slug=slug)
+
+
+def _prod(company, name, slug, category=None, price='100.00', inventory=10, is_active=True):
+    return Product.objects.create(
+        company=company, name=name, slug=slug, category=category,
+        price=Decimal(price), inventory=inventory, is_active=is_active,
+    )
+
+
+class Phase2bCatalogModelTest(TestCase):
+    """Ownership, per-company uniqueness and the category/product invariant."""
+
+    def setUp(self):
+        self.a = _saas_company('Empresa A', 'cat-a')
+        self.b = _saas_company('Empresa B', 'cat-b', tax_id='20777000001')
+
+    def test_backfill_assigned_the_seed_catalogue_to_the_pilot(self):
+        pilot = pilot_company()
+        self.assertIsNotNone(pilot)
+        self.assertGreater(Product.objects.filter(company=pilot).count(), 0)
+        self.assertEqual(Product.objects.filter(company__isnull=True).count(), 0)
+        self.assertEqual(Category.objects.filter(company__isnull=True).count(), 0)
+
+    def test_same_category_slug_may_exist_in_two_companies(self):
+        # The seed migration already gave the pilot an "iphone" category, so this
+        # asserts per company rather than globally — which is the point.
+        _cat(self.a, 'iPhone', 'iphone')
+        _cat(self.b, 'iPhone', 'iphone')  # must not clash
+        self.assertEqual(Category.objects.filter(slug='iphone', company=self.a).count(), 1)
+        self.assertEqual(Category.objects.filter(slug='iphone', company=self.b).count(), 1)
+        self.assertGreaterEqual(Category.objects.filter(slug='iphone').count(), 2)
+
+    def test_category_slug_is_unique_within_a_company(self):
+        _cat(self.a, 'iPhone', 'iphone')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _cat(self.a, 'iPhone Bis', 'iphone')
+
+    def test_same_product_slug_may_exist_in_two_companies(self):
+        _prod(self.a, 'iPhone 15', 'iphone-15')
+        _prod(self.b, 'iPhone 15', 'iphone-15')
+        self.assertEqual(Product.objects.filter(slug='iphone-15').count(), 2)
+
+    def test_product_slug_is_unique_within_a_company(self):
+        _prod(self.a, 'iPhone 15', 'iphone-15')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _prod(self.a, 'Otro', 'iphone-15')
+
+    def test_product_rejects_a_category_of_another_company(self):
+        foreign = _cat(self.b, 'Ajena', 'ajena')
+        with self.assertRaises(DjangoValidationError):
+            _prod(self.a, 'Producto', 'producto', category=foreign)
+
+    def test_product_accepts_a_category_of_its_own_company(self):
+        own = _cat(self.a, 'Propia', 'propia')
+        product = _prod(self.a, 'Producto', 'producto', category=own)
+        self.assertEqual(product.category_id, own.pk)
+
+    def test_company_with_catalogue_cannot_be_deleted(self):
+        _prod(self.a, 'Protegido', 'protegido')
+        with self.assertRaises(Exception):
+            with transaction.atomic():
+                self.a.delete()
+
+    def test_a_new_company_starts_with_an_empty_catalogue(self):
+        fresh = _saas_company('Nueva', 'cat-nueva', tax_id='20777000002')
+        provision_company_access_defaults(fresh)
+        self.assertEqual(fresh.products.count(), 0)
+        self.assertEqual(fresh.categories.count(), 0)
+
+
+class Phase2bStorefrontResolutionTest(TestCase):
+    """The public catalogue resolves ONE tenant, and never guesses."""
+
+    def setUp(self):
+        cache.clear()
+        self.pilot = pilot_company()
+        self.b = _saas_company('Empresa B', 'store-b', tax_id='20777000003')
+        self.p_a = _prod(self.pilot, 'Producto A', 'producto-compartido')
+        self.p_b = _prod(self.b, 'Producto B', 'producto-compartido')
+
+    def _factory(self, host='testserver'):
+        from django.test import RequestFactory
+        return RequestFactory(SERVER_NAME=host).get('/api/products/')
+
+    def test_host_subdomain_selects_the_tenant(self):
+        with override_settings(ALLOWED_HOSTS=['*']):
+            self.assertEqual(
+                resolve_storefront_company(self._factory('store-b.example.com')), self.b)
+
+    def test_host_ignores_the_port(self):
+        with override_settings(ALLOWED_HOSTS=['*']):
+            self.assertEqual(
+                resolve_storefront_company(self._factory('store-b.example.com:8443')), self.b)
+
+    def test_setting_is_used_when_the_host_says_nothing(self):
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='store-b'):
+            self.assertEqual(resolve_storefront_company(self._factory()), self.b)
+
+    def test_inactive_company_never_serves_a_storefront(self):
+        self.b.is_active = False
+        self.b.save(update_fields=['is_active'])
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='store-b',
+                               ALLOWED_HOSTS=['*']):
+            self.assertIsNone(resolve_storefront_company(self._factory()))
+            self.assertIsNone(
+                resolve_storefront_company(self._factory('store-b.example.com')))
+
+    def test_unknown_host_and_unset_setting_resolve_to_nothing(self):
+        """Two companies, no hint: an EMPTY catalogue is the safe failure."""
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='', ALLOWED_HOSTS=['*']):
+            self.assertIsNone(resolve_storefront_company(self._factory('nadie.example.com')))
+            self.assertEqual(storefront_products(self._factory()).count(), 0)
+
+    def test_never_falls_back_to_the_first_company(self):
+        """The dangerous fallback must not exist: two tenants, no guess."""
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=''):
+            self.assertIsNone(resolve_storefront_company(self._factory()))
+
+    def test_single_active_company_resolves_unambiguously(self):
+        """An existing single-store install must keep serving after the upgrade."""
+        self.b.is_active = False
+        self.b.save(update_fields=['is_active'])
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=''):
+            self.assertEqual(resolve_storefront_company(self._factory()), self.pilot)
+
+    def test_reserved_subdomains_are_ignored(self):
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='', ALLOWED_HOSTS=['*']):
+            for host in ('www.example.com', 'api.example.com', 'admin.example.com',
+                         'app.example.com', 'example.com'):
+                self.assertIsNone(resolve_storefront_company(self._factory(host)), host)
+
+
+class Phase2bPublicCatalogIsolationTest(TestCase):
+    """Each storefront serves only its own catalogue."""
+
+    def setUp(self):
+        cache.clear()
+        # Two purpose-built tenants rather than reusing the pilot: the seed
+        # migration already gave the pilot an "iphone" category, and this test is
+        # about two storefronts holding the SAME slugs.
+        self.a = _saas_company('Empresa A', 'pub-a', tax_id='20777000010')
+        self.b = _saas_company('Empresa B', 'pub-b', tax_id='20777000004')
+
+        self.cat_a = _cat(self.a, 'iPhone', 'iphone')
+        self.cat_b = _cat(self.b, 'iPhone', 'iphone')
+        self.prod_a = _prod(self.a, 'iPhone 15 A', 'iphone-15', category=self.cat_a)
+        self.prod_b = _prod(self.b, 'iPhone 15 B', 'iphone-15', category=self.cat_b)
+        self.client = APIClient()
+
+    def _as_storefront(self, company):
+        return _storefront_of(company)
+
+    def test_product_list_is_isolated(self):
+        with self._as_storefront(self.b):
+            slugs = {p['slug'] for p in self.client.get('/api/products/').json()}
+            names = {p['name'] for p in self.client.get('/api/products/').json()}
+        self.assertIn('iPhone 15 B', names)
+        self.assertNotIn('iPhone 15 A', names)
+        self.assertIn('iphone-15', slugs)
+
+    def test_same_slug_resolves_per_storefront(self):
+        with self._as_storefront(self.a):
+            a = self.client.get('/api/products/?slug=iphone-15').json()
+        with self._as_storefront(self.b):
+            b = self.client.get('/api/products/?slug=iphone-15').json()
+        self.assertEqual(len(a), 1)
+        self.assertEqual(len(b), 1)
+        self.assertEqual(a[0]['name'], 'iPhone 15 A')
+        self.assertEqual(b[0]['name'], 'iPhone 15 B')
+
+    def test_search_is_isolated(self):
+        with self._as_storefront(self.b):
+            names = {p['name'] for p in self.client.get('/api/products/?search=iPhone').json()}
+        self.assertEqual(names, {'iPhone 15 B'})
+
+    def test_category_filter_is_isolated(self):
+        """A category slug shared by both tenants filters within the storefront."""
+        with self._as_storefront(self.b):
+            names = {p['name'] for p in self.client.get('/api/products/?category=iphone').json()}
+        self.assertEqual(names, {'iPhone 15 B'})
+
+    def test_category_list_is_isolated(self):
+        with self._as_storefront(self.b):
+            ids = {c['id'] for c in self.client.get('/api/categories/').json()}
+        self.assertIn(self.cat_b.pk, ids)
+        self.assertNotIn(self.cat_a.pk, ids)
+
+    def test_reviews_are_isolated_through_their_product(self):
+        Review.objects.create(product=self.prod_a, author_name='X', rating=5, comment='ok')
+        with self._as_storefront(self.b):
+            data = self.client.get(f'/api/reviews/?product={self.prod_a.pk}').json()
+        self.assertEqual(len(data), 0)
+
+    def test_unresolved_storefront_serves_an_empty_catalogue(self):
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=''):
+            self.assertEqual(self.client.get('/api/products/').json(), [])
+            self.assertEqual(self.client.get('/api/categories/').json(), [])
+
+    # --- cart boundary ---
+
+    def test_cart_rejects_a_product_of_another_storefront(self):
+        with self._as_storefront(self.b):
+            res = self.client.post('/api/cart/add/', {
+                'session_key': 'cross-cart', 'product': self.prod_a.pk, 'quantity': 1,
+            }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(CartItem.objects.filter(session_key='cross-cart').count(), 0)
+
+    def test_cart_accepts_a_product_of_its_own_storefront(self):
+        with self._as_storefront(self.b):
+            res = self.client.post('/api/cart/add/', {
+                'session_key': 'own-cart', 'product': self.prod_b.pk, 'quantity': 1,
+            }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(CartItem.objects.filter(session_key='own-cart').count(), 1)
+
+
+class Phase2bAdminCatalogIsolationTest(TestCase):
+    """Internal catalogue endpoints are tenant-scoped and capability-driven."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'adm-a', tax_id='20777000005')
+        self.b = _saas_company('Empresa B', 'adm-b', tax_id='20777000006')
+        provision_company_access_defaults(self.a)
+        provision_company_access_defaults(self.b)
+
+        self.cat_a = _cat(self.a, 'Cat A', 'cat-a-slug')
+        self.cat_b = _cat(self.b, 'Cat B', 'cat-b-slug')
+        self.prod_a = _prod(self.a, 'Producto A', 'prod-a', category=self.cat_a)
+        self.prod_b = _prod(self.b, 'Producto B', 'prod-b', category=self.cat_b)
+
+        # admin of A, through the SaaS model (custom role with products.manage)
+        self.admin_a = _saas_user('cat_admin_a')
+        m = Membership.objects.create(user=self.admin_a, company=self.a, role='admin')
+        _assign(m, self.a.roles.get(slug='administrador'))
+
+        # a member of A that can only VIEW the catalogue
+        self.viewer_a = _saas_user('cat_viewer_a')
+        mv = Membership.objects.create(user=self.viewer_a, company=self.a, role='customer')
+        _assign(mv, _role(self.a, 'Solo ver', ['company.view', 'products.view'], 'solo-ver-cat'))
+
+        self.admin_b = _saas_user('cat_admin_b')
+        mb = Membership.objects.create(user=self.admin_b, company=self.b, role='admin')
+        _assign(mb, self.b.roles.get(slug='administrador'))
+
+        self.platform = _saas_user('cat_platform', is_superuser=True)
+
+    def _as(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    # --- listing ---
+
+    def test_admin_of_a_lists_only_its_own_products(self):
+        res = self._as(self.admin_a).get('/api/admin/products/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        slugs = {p['slug'] for p in res.data['results']}
+        self.assertIn('prod-a', slugs)
+        self.assertNotIn('prod-b', slugs)
+
+    def test_admin_of_a_lists_only_its_own_categories(self):
+        res = self._as(self.admin_a).get('/api/admin/categories/')
+        slugs = {c['slug'] for c in res.data}
+        self.assertIn('cat-a-slug', slugs)
+        self.assertNotIn('cat-b-slug', slugs)
+
+    def test_search_does_not_cross_tenants(self):
+        res = self._as(self.admin_a).get('/api/admin/products/?search=Producto')
+        slugs = {p['slug'] for p in res.data['results']}
+        self.assertEqual(slugs, {'prod-a'})
+
+    # --- detail ---
+
+    def test_foreign_product_detail_answers_like_a_missing_one(self):
+        foreign = self._as(self.admin_a).get(f'/api/admin/products/{self.prod_b.pk}/')
+        missing = self._as(self.admin_a).get('/api/admin/products/999999/')
+        self.assertEqual(foreign.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(foreign.status_code, missing.status_code)
+
+    def test_admin_of_a_cannot_modify_a_product_of_b(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/products/{self.prod_b.pk}/', {'name': 'Secuestrado'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.prod_b.refresh_from_db()
+        self.assertEqual(self.prod_b.name, 'Producto B')
+
+    def test_admin_of_a_cannot_deactivate_a_product_of_b(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/products/{self.prod_b.pk}/', {'is_active': False}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.prod_b.refresh_from_db()
+        self.assertTrue(self.prod_b.is_active)
+
+    # --- creation ---
+
+    def test_created_product_belongs_to_the_callers_company(self):
+        res = self._as(self.admin_a).post('/api/admin/products/', {
+            'name': 'Nuevo A', 'slug': 'nuevo-a', 'price': '50.00', 'inventory': 1,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Product.objects.get(slug='nuevo-a').company_id, self.a.pk)
+
+    def test_company_in_the_payload_is_ignored(self):
+        """Mass assignment must not move a product into another tenant."""
+        res = self._as(self.admin_a).post('/api/admin/products/', {
+            'name': 'Intruso', 'slug': 'intruso', 'price': '50.00', 'inventory': 1,
+            'company': self.b.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Product.objects.get(slug='intruso').company_id, self.a.pk)
+
+    def test_product_cannot_be_moved_between_companies_by_patch(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/products/{self.prod_a.pk}/',
+            {'company': self.b.pk, 'name': 'Renombrado'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.prod_a.refresh_from_db()
+        self.assertEqual(self.prod_a.company_id, self.a.pk)
+        self.assertEqual(self.prod_a.name, 'Renombrado')
+
+    def test_product_rejects_a_category_of_another_company_via_api(self):
+        res = self._as(self.admin_a).post('/api/admin/products/', {
+            'name': 'Con categoría ajena', 'slug': 'cat-ajena', 'price': '10.00',
+            'inventory': 1, 'category': self.cat_b.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Product.objects.filter(slug='cat-ajena').exists())
+
+    def test_created_category_belongs_to_the_callers_company(self):
+        res = self._as(self.admin_a).post('/api/admin/categories/', {
+            'name': 'Nueva Cat', 'slug': 'nueva-cat',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Category.objects.get(slug='nueva-cat').company_id, self.a.pk)
+
+    def test_same_slug_can_be_created_in_two_companies_via_api(self):
+        for user, company in ((self.admin_a, self.a), (self.admin_b, self.b)):
+            res = self._as(user).post('/api/admin/products/', {
+                'name': 'Compartido', 'slug': 'compartido', 'price': '10.00', 'inventory': 1,
+            }, format='json')
+            self.assertEqual(res.status_code, status.HTTP_201_CREATED, company.slug)
+        self.assertEqual(Product.objects.filter(slug='compartido').count(), 2)
+
+    # --- capabilities are real authority now ---
+
+    def test_products_view_alone_cannot_write(self):
+        res = self._as(self.viewer_a).post('/api/admin/products/', {
+            'name': 'No permitido', 'slug': 'no-permitido', 'price': '10.00', 'inventory': 1,
+        }, format='json')
+        self.assertIn(res.status_code, (status.HTTP_403_FORBIDDEN,))
+        self.assertFalse(Product.objects.filter(slug='no-permitido').exists())
+
+    def test_products_view_can_read(self):
+        res = self._as(self.viewer_a).get('/api/admin/products/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_member_without_product_capabilities_is_refused(self):
+        user = _saas_user('cat_no_caps')
+        m = Membership.objects.create(user=user, company=self.a, role='customer')
+        _assign(m, _role(self.a, 'Nada', ['company.view'], 'nada-cat'))
+        self.assertEqual(
+            self._as(user).get('/api/admin/products/').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    def test_inactive_membership_loses_catalogue_access(self):
+        Membership.objects.filter(user=self.admin_a, company=self.a).update(is_active=False)
+        self.assertEqual(
+            self._as(self.admin_a).get('/api/admin/products/').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    def test_inactive_company_loses_catalogue_access(self):
+        self.a.is_active = False
+        self.a.save(update_fields=['is_active'])
+        self.assertEqual(
+            self._as(self.admin_a).get('/api/admin/products/').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    def test_user_without_membership_or_legacy_role_is_refused(self):
+        orphan = _saas_user('cat_orphan')
+        self.assertEqual(
+            self._as(orphan).get('/api/admin/products/').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    # --- platform master ---
+
+    def test_master_selects_a_company_explicitly(self):
+        res_a = self._as(self.platform).get(f'/api/admin/products/?company={self.a.pk}')
+        res_b = self._as(self.platform).get(f'/api/admin/products/?company={self.b.pk}')
+        self.assertEqual({p['slug'] for p in res_a.data['results']}, {'prod-a'})
+        self.assertEqual({p['slug'] for p in res_b.data['results']}, {'prod-b'})
+
+    def test_master_never_sees_tenants_mixed(self):
+        res = self._as(self.platform).get(f'/api/admin/products/?company={self.a.pk}')
+        slugs = {p['slug'] for p in res.data['results']}
+        self.assertNotIn('prod-b', slugs)
+
+    def test_master_without_selection_gets_no_arbitrary_catalogue(self):
+        res = self._as(self.platform).get('/api/admin/products/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    # --- multi-company user ---
+
+    def test_multi_company_user_does_not_inherit_permissions_across_tenants(self):
+        """Manage in A, view-only in B — the roles must not bleed."""
+        user = _saas_user('cat_multi')
+        ma = Membership.objects.create(user=user, company=self.a, role='admin')
+        _assign(ma, self.a.roles.get(slug='administrador'))
+        mb = Membership.objects.create(user=user, company=self.b, role='customer')
+        _assign(mb, _role(self.b, 'Solo ver B', ['company.view', 'products.view'], 'solo-ver-b'))
+
+        client = self._as(user)
+        # In A: may create
+        self.assertEqual(
+            client.post(f'/api/admin/products/?company={self.a.pk}', {
+                'name': 'En A', 'slug': 'en-a', 'price': '10.00', 'inventory': 1,
+            }, format='json').status_code,
+            status.HTTP_201_CREATED,
+        )
+        # In B: may read...
+        self.assertEqual(
+            client.get(f'/api/admin/products/?company={self.b.pk}').status_code,
+            status.HTTP_200_OK)
+        # ...but not write
+        self.assertEqual(
+            client.post(f'/api/admin/products/?company={self.b.pk}', {
+                'name': 'En B', 'slug': 'en-b', 'price': '10.00', 'inventory': 1,
+            }, format='json').status_code,
+            status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Product.objects.filter(slug='en-b').exists())
+
+
+class Phase2bLegacyBridgeTest(TestCase):
+    """
+    The legacy bridge keeps pre-SaaS operators working — on the pilot ONLY.
+
+    The failure mode this guards against: a legacy admin with no Membership
+    quietly administering every tenant's catalogue.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.pilot = pilot_company()
+        self.other = _saas_company('Otra', 'bridge-otra', tax_id='20777000007')
+        self.prod_pilot = _prod(self.pilot, 'Del piloto', 'del-piloto')
+        self.prod_other = _prod(self.other, 'De la otra', 'de-la-otra')
+
+        self.legacy_admin = _saas_user('bridge_admin')
+        self.legacy_admin.profile.role = UserProfile.ROLE_ADMIN
+        self.legacy_admin.profile.save()
+
+    def _as(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_legacy_admin_keeps_working(self):
+        res = self._as(self.legacy_admin).get('/api/admin/products/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_legacy_admin_sees_only_the_pilot_catalogue(self):
+        """The whole point: the bridge must not hand over every tenant."""
+        res = self._as(self.legacy_admin).get('/api/admin/products/')
+        slugs = {p['slug'] for p in res.data['results']}
+        self.assertIn('del-piloto', slugs)
+        self.assertNotIn('de-la-otra', slugs)
+
+    def test_legacy_admin_cannot_touch_another_tenants_product(self):
+        res = self._as(self.legacy_admin).patch(
+            f'/api/admin/products/{self.prod_other.pk}/', {'name': 'X'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_bridge_resolves_only_the_pilot(self):
+        self.assertEqual(legacy_catalog_company(self.legacy_admin), self.pilot)
+
+    def test_bridge_does_not_apply_to_customers(self):
+        customer = _saas_user('bridge_customer')
+        self.assertIsNone(legacy_catalog_company(customer))
+
+    def test_bridge_does_not_apply_to_technicians(self):
+        tech = _saas_user('bridge_tech')
+        tech.profile.role = UserProfile.ROLE_TECHNICIAN
+        tech.profile.save()
+        self.assertIsNone(legacy_catalog_company(tech))
+
+    def test_bridge_does_not_apply_to_users_with_a_membership(self):
+        """A real company context always wins over the bridge."""
+        Membership.objects.create(
+            user=self.legacy_admin, company=self.other, role='admin')
+        self.assertIsNone(legacy_catalog_company(self.legacy_admin))
+        company, source = resolve_catalog_company(self.legacy_admin)
+        self.assertEqual(company, self.other)
+        self.assertEqual(source, CATALOG_SOURCE_TENANT)
+
+    def test_bridge_source_is_reported(self):
+        company, source = resolve_catalog_company(self.legacy_admin)
+        self.assertEqual(company, self.pilot)
+        self.assertEqual(source, CATALOG_SOURCE_LEGACY)
+
+    def test_naming_a_foreign_company_does_not_fall_back_to_the_bridge(self):
+        company, source = resolve_catalog_company(
+            self.legacy_admin, requested_company_id=self.other.pk)
+        self.assertIsNone(company)
+        self.assertIsNone(source)
+
+
+class Phase2bDashboardCatalogTest(TestCase):
+    """Catalogue counters on the internal dashboard are per tenant."""
+
+    URL = '/api/me/internal-dashboard/'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'dashcat-a', tax_id='20777000008')
+        self.b = _saas_company('Empresa B', 'dashcat-b', tax_id='20777000009')
+        provision_company_access_defaults(self.a)
+        provision_company_access_defaults(self.b)
+
+        for i in range(3):
+            _prod(self.a, f'A{i}', f'a-{i}')
+        for i in range(8):
+            _prod(self.b, f'B{i}', f'b-{i}')
+        _cat(self.a, 'Cat A', 'dashcat-cat-a')
+
+        self.user_a = _saas_user('dashcat_a')
+        ma = Membership.objects.create(user=self.user_a, company=self.a, role='admin')
+        _assign(ma, self.a.roles.get(slug='administrador'))
+        self.user_b = _saas_user('dashcat_b')
+        mb = Membership.objects.create(user=self.user_b, company=self.b, role='admin')
+        _assign(mb, self.b.roles.get(slug='administrador'))
+        self.platform = _saas_user('dashcat_platform', is_superuser=True)
+
+    def _get(self, user, params=''):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c.get(f'{self.URL}{params}')
+
+    def test_counts_are_per_company(self):
+        self.assertEqual(self._get(self.user_a).data['catalog']['products'], 3)
+        self.assertEqual(self._get(self.user_b).data['catalog']['products'], 8)
+
+    def test_master_sees_the_selected_company_only(self):
+        self.assertEqual(
+            self._get(self.platform, f'?company={self.a.pk}').data['catalog']['products'], 3)
+        self.assertEqual(
+            self._get(self.platform, f'?company={self.b.pk}').data['catalog']['products'], 8)
+
+    def test_categories_are_counted_per_company(self):
+        self.assertEqual(self._get(self.user_a).data['catalog']['categories'], 1)
+        self.assertEqual(self._get(self.user_b).data['catalog']['categories'], 0)
+
+    def test_active_products_are_counted_separately(self):
+        Product.objects.filter(company=self.a, slug='a-0').update(is_active=False)
+        catalog = self._get(self.user_a).data['catalog']
+        self.assertEqual(catalog['products'], 3)
+        self.assertEqual(catalog['active_products'], 2)
+
+    def test_catalog_is_withheld_without_products_view(self):
+        user = _saas_user('dashcat_nocaps')
+        m = Membership.objects.create(user=user, company=self.a, role='customer')
+        _assign(m, _role(self.a, 'Sin productos', ['company.view'], 'sin-productos'))
+        self.assertIsNone(self._get(user).data['catalog'])
+
+    def test_dashboard_still_exposes_no_sales_or_stock_figures(self):
+        """
+        Checks the response STRUCTURE, not substrings: "orders" legitimately
+        appears inside capability codes like `sales.orders.view`, and a substring
+        scan would have flagged that as a leak.
+        """
+        data = self._get(self.user_a).data
+        self.assertEqual(
+            set(data.keys()),
+            {'company', 'membership', 'access', 'organization', 'catalog',
+             'available_companies', 'requires_company_selection', 'alerts'},
+        )
+        # Phase 2B.1 added the chart series; the point of pinning the key set is
+        # that a new key must be a deliberate change, reviewed here.
+        self.assertEqual(
+            set(data['catalog'].keys()),
+            {'products', 'active_products', 'inactive_products', 'categories',
+             'products_per_category'})
+        self.assertEqual(
+            set(data['organization'].keys()),
+            {'active_branches', 'active_memberships', 'active_areas', 'active_roles',
+             'assignments_per_area', 'assignments_per_role'})
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B.1 — dashboard chart series
+# ---------------------------------------------------------------------------
+
+class Phase2b1DashboardSeriesTest(TestCase):
+    """
+    The series that feed the dashboard charts are strictly per company.
+
+    A distribution is company information just like a total, so it carries the
+    same capability gate — and it must never aggregate across tenants.
+    """
+
+    URL = '/api/me/internal-dashboard/'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'series-a', tax_id='20999000001')
+        self.b = _saas_company('Empresa B', 'series-b', tax_id='20999000002')
+        provision_company_access_defaults(self.a)
+        provision_company_access_defaults(self.b)
+
+        # A: 2 categories (3 + 1 products) + 1 uncategorised, one of them hidden
+        self.cat_a1 = _cat(self.a, 'Teléfonos', 'telefonos')
+        self.cat_a2 = _cat(self.a, 'Accesorios', 'accesorios-a')
+        for i in range(3):
+            _prod(self.a, f'A tel {i}', f'a-tel-{i}', category=self.cat_a1)
+        _prod(self.a, 'A acc', 'a-acc', category=self.cat_a2)
+        _prod(self.a, 'A suelto', 'a-suelto', is_active=False)
+
+        # B: a much bigger catalogue, to prove it never bleeds into A
+        self.cat_b = _cat(self.b, 'Teléfonos', 'telefonos')
+        for i in range(9):
+            _prod(self.b, f'B tel {i}', f'b-tel-{i}', category=self.cat_b)
+
+        self.admin_a = _saas_user('series_admin_a')
+        ma = Membership.objects.create(user=self.admin_a, company=self.a, role='admin')
+        _assign(ma, self.a.roles.get(slug='administrador'),
+                area=self.a.areas.get(slug='administracion'))
+        self.admin_b = _saas_user('series_admin_b')
+        mb = Membership.objects.create(user=self.admin_b, company=self.b, role='admin')
+        _assign(mb, self.b.roles.get(slug='administrador'))
+        self.platform = _saas_user('series_platform', is_superuser=True)
+
+    def _get(self, user, params=''):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c.get(f'{self.URL}{params}')
+
+    # --- catalogue series ---
+
+    def test_products_per_category_is_company_scoped(self):
+        series = self._get(self.admin_a).data['catalog']['products_per_category']
+        by_label = {row['label']: row['value'] for row in series}
+        self.assertEqual(by_label['Teléfonos'], 3)
+        self.assertEqual(by_label['Accesorios'], 1)
+        # B also has a "Teléfonos" with 9 products; it must not be added in
+        self.assertNotIn(9, by_label.values())
+
+    def test_uncategorised_products_get_their_own_bucket(self):
+        """A chart that silently drops rows misrepresents the total beside it."""
+        series = self._get(self.admin_a).data['catalog']['products_per_category']
+        by_label = {row['label']: row['value'] for row in series}
+        self.assertEqual(by_label['Sin categoría'], 1)
+        self.assertEqual(
+            sum(by_label.values()),
+            self._get(self.admin_a).data['catalog']['products'],
+        )
+
+    def test_active_and_inactive_split_matches_the_total(self):
+        catalog = self._get(self.admin_a).data['catalog']
+        self.assertEqual(catalog['products'], 5)
+        self.assertEqual(catalog['active_products'], 4)
+        self.assertEqual(catalog['inactive_products'], 1)
+        self.assertEqual(
+            catalog['active_products'] + catalog['inactive_products'],
+            catalog['products'],
+        )
+
+    def test_each_company_sees_only_its_own_catalogue_series(self):
+        a = self._get(self.admin_a).data['catalog']
+        b = self._get(self.admin_b).data['catalog']
+        self.assertEqual(a['products'], 5)
+        self.assertEqual(b['products'], 9)
+        self.assertNotEqual(a['products_per_category'], b['products_per_category'])
+
+    # --- organisation series ---
+
+    def test_assignments_per_area_is_company_scoped(self):
+        series = self._get(self.admin_a).data['organization']['assignments_per_area']
+        by_label = {row['label']: row['value'] for row in series}
+        self.assertEqual(by_label['Administración'], 1)
+        # Every other area of A exists but has nobody
+        self.assertEqual(by_label['Ventas'], 0)
+        self.assertEqual(len(series), self.a.areas.filter(is_active=True).count())
+
+    def test_assignments_per_role_is_company_scoped(self):
+        series = self._get(self.admin_a).data['organization']['assignments_per_role']
+        by_label = {row['label']: row['value'] for row in series}
+        self.assertEqual(by_label['Administrador'], 1)
+        self.assertEqual(by_label['Ventas'], 0)
+
+    def test_inactive_membership_is_not_counted_in_the_series(self):
+        user = _saas_user('series_inactive')
+        m = Membership.objects.create(
+            user=user, company=self.a, role='sales', is_active=False)
+        _assign(m, self.a.roles.get(slug='ventas'),
+                area=self.a.areas.get(slug='ventas'))
+        series = self._get(self.admin_a).data['organization']['assignments_per_area']
+        by_label = {row['label']: row['value'] for row in series}
+        self.assertEqual(by_label['Ventas'], 0)
+
+    def test_inactive_assignment_is_not_counted_in_the_series(self):
+        user = _saas_user('series_inactive_assign')
+        m = Membership.objects.create(user=user, company=self.a, role='sales')
+        _assign(m, self.a.roles.get(slug='ventas'),
+                area=self.a.areas.get(slug='ventas'), is_active=False)
+        series = self._get(self.admin_a).data['organization']['assignments_per_area']
+        by_label = {row['label']: row['value'] for row in series}
+        self.assertEqual(by_label['Ventas'], 0)
+
+    # --- capability gating ---
+
+    def test_series_are_withheld_without_the_capability(self):
+        user = _saas_user('series_nocaps')
+        m = Membership.objects.create(user=user, company=self.a, role='customer')
+        _assign(m, _role(self.a, 'Solo empresa', ['company.view'], 'solo-empresa'))
+        data = self._get(user).data
+        # company.view grants the organisation block...
+        self.assertIsNotNone(data['organization'])
+        self.assertIn('assignments_per_area', data['organization'])
+        # ...but not the catalogue, which needs products.view
+        self.assertIsNone(data['catalog'])
+
+    def test_no_series_at_all_without_company_view(self):
+        user = _saas_user('series_nothing')
+        m = Membership.objects.create(user=user, company=self.a, role='customer')
+        _assign(m, _role(self.a, 'Nada de nada', [], 'nada-de-nada'))
+        data = self._get(user).data
+        self.assertIsNone(data['organization'])
+        self.assertIsNone(data['catalog'])
+
+    # --- platform master ---
+
+    def test_master_series_follow_the_selected_company(self):
+        a = self._get(self.platform, f'?company={self.a.pk}').data
+        b = self._get(self.platform, f'?company={self.b.pk}').data
+        self.assertEqual(a['catalog']['products'], 5)
+        self.assertEqual(b['catalog']['products'], 9)
+
+    def test_master_series_never_aggregate_across_tenants(self):
+        a = self._get(self.platform, f'?company={self.a.pk}').data
+        total = sum(row['value'] for row in a['catalog']['products_per_category'])
+        self.assertEqual(total, 5)  # not 14
+
+    # --- shape and safety ---
+
+    def test_series_are_bounded(self):
+        """A chart is not a data dump: the backend caps how many buckets it returns."""
+        for i in range(20):
+            _cat(self.a, f'Cat {i}', f'cat-{i}')
+        series = self._get(self.admin_a).data['catalog']['products_per_category']
+        # 8 category buckets at most, plus the uncategorised one
+        self.assertLessEqual(len(series), 9)
+
+    def test_series_expose_no_sales_or_stock_data(self):
+        data = self._get(self.admin_a).data
+        self.assertEqual(
+            set(data['catalog'].keys()),
+            {'products', 'active_products', 'inactive_products', 'categories',
+             'products_per_category'},
+        )
+        self.assertEqual(
+            set(data['organization'].keys()),
+            {'active_branches', 'active_memberships', 'active_areas', 'active_roles',
+             'assignments_per_area', 'assignments_per_role'},
+        )
+
+    def test_series_rows_carry_only_label_and_value(self):
+        """No ids or internal fields leak through a chart payload."""
+        data = self._get(self.admin_a).data
+        for key in ('products_per_category',):
+            for row in data['catalog'][key]:
+                self.assertEqual(set(row.keys()), {'label', 'value'})
+        for key in ('assignments_per_area', 'assignments_per_role'):
+            for row in data['organization'][key]:
+                self.assertEqual(set(row.keys()), {'label', 'value'})
+
+    def test_empty_company_returns_empty_series_not_an_error(self):
+        empty = _saas_company('Vacía', 'series-vacia', tax_id='20999000003')
+        provision_company_access_defaults(empty)
+        user = _saas_user('series_empty_admin')
+        m = Membership.objects.create(user=user, company=empty, role='admin')
+        _assign(m, empty.roles.get(slug='administrador'))
+        data = self._get(user).data
+        self.assertEqual(data['catalog']['products'], 0)
+        self.assertEqual(data['catalog']['products_per_category'], [])
+        self.assertEqual(data['status_code'] if 'status_code' in data else 200, 200)

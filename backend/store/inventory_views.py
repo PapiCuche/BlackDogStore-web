@@ -302,8 +302,16 @@ class AdminProductStockCardView(APIView):
     throttle_classes = [AdminInventoryReportsThrottle]
 
     def get(self, request, pk):
+        # Phase 2B: Product now has an owner, so the Kardex of another tenant's
+        # product must not be readable even though StockMovement itself is not
+        # tenantised yet. A foreign product answers like a missing one.
+        from .tenancy import resolve_catalog_company_only
+
+        company = resolve_catalog_company_only(request.user)
+        products = Product.objects.all() if company is None else Product.objects.filter(
+            company=company)
         try:
-            product = Product.objects.get(pk=pk)
+            product = products.get(pk=pk)
         except Product.DoesNotExist:
             return Response(
                 {'detail': 'Producto no encontrado.'}, status=status.HTTP_404_NOT_FOUND

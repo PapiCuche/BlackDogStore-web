@@ -528,7 +528,18 @@ Control interno — shell v1               IMPLEMENTADO
 Dashboard empresarial v1                 IMPLEMENTADO
 Sidebar capability-aware                 IMPLEMENTADO
 Selector de empresa                      IMPLEMENTADO
-KPIs comerciales tenant-aware            PENDIENTE
+Category tenant-aware                    IMPLEMENTADO
+Product tenant-aware                     IMPLEMENTADO
+Public catalog isolation                 IMPLEMENTADO
+Dashboard catalog KPIs                   IMPLEMENTADO
+Dashboard visual / analytics UI          IMPLEMENTADO
+Gráficos tenant-safe                     IMPLEMENTADO
+KPIs comerciales reales                  PENDIENTE
+Cart tenant-aware                        PARCIAL (límite cerrado, 2C)
+Order tenant-aware                       PENDIENTE 2C
+Inventory company isolation              PARCIAL
+Inventory branch isolation               PENDIENTE 2D
+Dashboard sales KPIs                     PENDIENTE
 Control interno — módulos completos      PENDIENTE
 Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO
@@ -551,6 +562,36 @@ Membership Invitation Flow               PENDIENTE
 Branding                                 PENDIENTE
 IMEI/Serial                              PENDIENTE
 ```
+
+### Dashboard visual del Control Interno (Fase 2B.1)
+
+`/admin` muestra ahora KPIs y **gráficos** de la empresa activa: estado del
+catálogo, productos por categoría, personal por área y por rol, y cobertura de
+módulos del sistema.
+
+> **No hay ventas, caja ni stock en el dashboard.** `Order` y `StockMovement`
+> todavía no pertenecen a una empresa: cualquier cifra suya sería un número de
+> toda la plataforma mostrado como si fuera de esta empresa. Llegan en 2C/2D.
+
+Gráficos en SVG propio, sin añadir dependencias — la marca es monocroma, así que
+la magnitud se codifica con opacidad y no con color. Cada gráfico lleva
+`aria-label` y una tabla oculta con las mismas cifras.
+
+### Catálogo multiempresa (Fase 2B)
+
+`Category` y `Product` pertenecen a una `Company`. Los slugs son únicos **por
+empresa**: dos tenants pueden tener cada uno `iphone-15`.
+
+El storefront público resuelve su tenant por **host** (`empresa.dominio.com`), o
+por `DEFAULT_STOREFRONT_COMPANY_SLUG`, o —si solo hay una empresa activa— por esa
+única empresa. Sin resolución sirve un catálogo **vacío**: es el fallo seguro.
+
+> Con una sola empresa no hay que configurar nada. En cuanto crees la segunda,
+> define `DEFAULT_STOREFRONT_COMPANY_SLUG` o sirve por subdominios.
+
+`products.view` / `products.manage` ya gobiernan de verdad los endpoints admin de
+catálogo. Un superusuario debe indicar `?company=`: con el catálogo tenantizado ya
+no existe «todos los productos».
 
 ### Control Interno v1 (Fase 2A.2)
 

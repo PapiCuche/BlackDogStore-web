@@ -12,7 +12,18 @@ Control interno — shell v1               IMPLEMENTADO
 Dashboard empresarial v1                 IMPLEMENTADO
 Sidebar capability-aware                 IMPLEMENTADO
 Selector de empresa                      IMPLEMENTADO
-KPIs comerciales tenant-aware            PENDIENTE
+Category tenant-aware                    IMPLEMENTADO
+Product tenant-aware                     IMPLEMENTADO
+Public catalog isolation                 IMPLEMENTADO
+Dashboard catalog KPIs                   IMPLEMENTADO
+Dashboard visual / analytics UI          IMPLEMENTADO
+Gráficos tenant-safe                     IMPLEMENTADO
+KPIs comerciales reales                  PENDIENTE
+Cart tenant-aware                        PARCIAL (límite cerrado, 2C)
+Order tenant-aware                       PENDIENTE 2C
+Inventory company isolation              PARCIAL
+Inventory branch isolation               PENDIENTE 2D
+Dashboard sales KPIs                     PENDIENTE
 Control interno — módulos completos      PENDIENTE
 Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO
@@ -753,6 +764,208 @@ completo para una docena de glifos era mal negocio.
 
 ---
 
+## 8-nonies. Catálogo tenant-aware (Fase 2B)
+
+### Grafo real, verificado en código
+
+```
+Company
+  ├── Category  (PROTECT)
+  └── Product   (PROTECT)
+        ├── OrderItem.product      (PROTECT)   → tenant derivado, Fase 2C
+        ├── CartItem.product       (CASCADE)   → tenant derivado, Fase 2C
+        ├── Review.product         (CASCADE)   → tenant derivado
+        └── StockMovement.product  (PROTECT)   → tenant derivado, Fase 2D
+```
+
+`Category` y `Product` ahora tienen dueño. Todo lo demás alcanza su tenant **a
+través de `Product`** — no se añadió un `company` redundante a `Review`,
+`CartItem` ni `OrderItem`: sería una segunda fuente de verdad que puede
+desincronizarse.
+
+### Unicidad por empresa
+
+`Category.slug` y `Product.slug` dejan de ser únicos globalmente. Dos empresas
+pueden tener cada una `iphone` e `iphone-15` — un `UNIQUE` global habría hecho la
+plataforma invendible a un segundo revendedor Apple. Constraints nuevas:
+`unique_category_slug_per_company` y `unique_product_slug_per_company`.
+
+### Invariante producto/categoría
+
+`Product.company == Product.category.company`. Se valida en tres sitios
+independientes: `Product.clean()` (cubre toda escritura ORM), el queryset del
+serializer (una categoría ajena ni siquiera es una opción válida) y una
+comprobación explícita en `validate()`. Ningún camino depende de uno solo.
+
+### Migraciones
+
+| # | Qué hace |
+|---|---|
+| `0018_catalog_company_nullable` | `company` nullable, quita el UNIQUE global de los slugs, añade índices `(company, slug)`, `(company, is_active)`, `(company, category)` y las constraints por empresa |
+| `0019_backfill_catalog_company` | Data migration: adopta el catálogo existente |
+| `0020_catalog_company_required` | `company` pasa a obligatorio |
+
+Tres pasos, no uno: hacer `NOT NULL` de golpe habría fallado en cualquier base
+con catálogo. `0020` está escrita a mano porque `makemigrations` pregunta
+interactivamente por un valor por defecto, y la respuesta no es un valor — es
+«0019 ya llenó todas las filas».
+
+**Cómo identifica `0019` al tenant piloto:** por la **firma** de la migración
+`0015`, es decir la `Company` más antigua (menor pk), no por el slug
+`black-dog-store`. Una instalación cuyo primer tenant sea otro negocio
+backfillea sobre *su* primer tenant sin tocar código. Si no existe ninguna
+empresa, la migración **falla ruidosamente** en vez de inventar un dueño.
+
+Probado: cadena limpia `0001→0020` desde cero; upgrade sobre una base con
+catálogo, pedidos, carritos y reseñas históricos **sin pérdida** (precio, stock,
+imagen y relaciones intactos); reverso `0020→0018` sin borrar nada.
+
+### Resolución de tenant — storefront público
+
+`resolve_storefront_company(request)`, en orden:
+
+1. **Host** — `blackdog.example.com` → `Company.slug == "blackdog"`. Lo fija DNS
+   y el proxy, no el JavaScript de la página.
+2. **`DEFAULT_STOREFRONT_COMPANY_SLUG`** — despliegue explícito de una sola tienda.
+3. **Empresa activa única** — solo cuando la base tiene exactamente **una**.
+
+Sin resolución → **catálogo vacío**. Un storefront vacío es el fallo seguro;
+servir productos de otro no lo es.
+
+> **No existe** un fallback a «la primera empresa de la base». El paso 3 no es
+> «la primera de muchas», es «la única», y deja de aplicar en cuanto existe una
+> segunda — que es justo cuando la variable pasa a ser obligatoria. Ese paso
+> también es lo que evita que un despliegue de una sola tienda se quede a oscuras
+> al aplicar estas migraciones.
+
+Para desarrollo en `localhost` no hace falta configurar nada mientras haya una
+sola empresa. En cuanto crees la segunda, define
+`DEFAULT_STOREFRONT_COMPANY_SLUG` o sirve por subdominios.
+
+### Catálogo público aislado
+
+Los querysets **nacen scopeados**: `storefront_products()` /
+`storefront_categories()` filtran por tenant *antes* que slug, categoría,
+búsqueda u orden. Nunca se busca en global para luego ocultar en el serializer —
+eso se filtra por `count()`, paginación y ordenación mucho antes de llegar al
+serializer.
+
+Reseñas: se filtran por `product__in=storefront_products(request)`.
+
+### Límite del carrito
+
+`Cart` es Fase 2C, pero tenantizar `Product` abre un vector nuevo: un storefront
+podría meter el id de un producto ajeno en su carrito y arrastrarlo al checkout.
+`/api/cart/add/` busca ahora dentro de `storefront_products(request)`, así que un
+producto de otro tenant responde igual que uno inexistente. **No** se añadió
+`Cart.company`.
+
+### Capabilities reales
+
+`products.view` y `products.manage` son ya **autoridad efectiva** sobre
+`/api/admin/products/` y `/api/admin/categories/`. Las clases de permiso DRF
+legacy se retiraron de esas vistas: no podían expresar la decisión, porque *en
+qué empresa actúas* determina *qué puedes hacer*, y además rechazaban a un admin
+SaaS cuyo `UserProfile.role` sigue siendo `customer` — el estado normal de un
+usuario creado por la API de membresías.
+
+### Bridge legacy — acotado al piloto
+
+Un operador con rol legacy y **sin** Membership resuelve al **tenant piloto y a
+ninguno más**, y su autoridad sigue siendo su rol legacy. La lectura peligrosa
+—«admin legacy ve todo»— habría significado que el personal de una empresa
+administre el catálogo de otra.
+
+Un **platform master está excluido del bridge**: no es un operador pre-SaaS, y
+elegirle un tenant en silencio contradice que su función es actuar entre tenants.
+Debe nombrar la empresa con `?company=`.
+
+> **Cambio de comportamiento:** `GET /api/admin/products/` sin `?company=`
+> devuelve `403` a un superusuario. Con el catálogo tenantizado ya no existe
+> «todos los productos».
+
+`?company=` se lee **solo del query string**, nunca del body: seleccionar
+contexto y enviar un payload son cosas distintas, y una clave `company` perdida
+dentro de un producto no debe cambiar el tenant sobre el que actúas.
+
+---
+
+## 8-decies. Dashboard visual (Fase 2B.1)
+
+### Qué se ve, y qué deliberadamente no
+
+El dashboard del control interno pasa de una lista de contadores a una vista de
+gestión: cabecera con contexto, fila de KPIs, cuatro gráficos, mi acceso, avisos,
+accesos rápidos y cobertura del sistema.
+
+**Gráficos activos** — todos calculados con un filtro `company=` explícito:
+
+| Gráfico | Tipo | Datos | Gate |
+|---|---|---|---|
+| Estado del catálogo | Anillo | publicados vs ocultos | `products.view` |
+| Productos por categoría | Barras | composición del catálogo | `products.view` |
+| Personal por área | Barras | asignaciones activas | `company.view` |
+| Personal por rol | Barras | asignaciones activas | `company.view` |
+| Cobertura de módulos | Barra apilada | estado del sistema (frontend) | — |
+
+**Ausentes a propósito:** ventas por día, utilidad, ticket promedio, ingresos,
+egresos, métodos de pago, pedidos por estado, stock por sucursal, más vendidos,
+mejores clientes, caja, compras, reparaciones, garantías y comisiones.
+
+`Order` y `StockMovement` **no tienen columna `company`**. Cualquiera de esas
+cifras sería un número **de toda la plataforma** dibujado dentro del marco de una
+empresa — y un número global en un dashboard de tenant no se lee como un error de
+alcance, se lee como el dato de esa empresa. Llegan con 2C/2D, a estas mismas
+tarjetas.
+
+### Por qué SVG a mano y no una librería de gráficos
+
+El proyecto tiene **tres dependencias de runtime**: `next`, `react`, `react-dom`.
+Recharts —o cualquier opción basada en d3— triplicaría ese grafo para tres formas
+simples: barras horizontales, un anillo y una barra apilada. Ninguna necesita
+escalas, ejes, transiciones ni hit-testing más allá de un `title`.
+
+La paleta lo decide igual de claro. Black Dog Store es **estrictamente monocroma**
+(`#080808` / `#111111` / `#1a1a1a`, texto zinc), así que casi todo lo que aporta
+una librería de charts —escalas categóricas de color, temas, leyendas en doce
+tonos— es exactamente lo que **no** debe aparecer. Devolver los defaults de una
+librería a escala de grises cuesta más que dibujar las formas.
+
+Mismo criterio que `icons.tsx`. La magnitud se codifica con **opacidad**, no con
+tono: mantiene la marca y sigue siendo legible para daltonismo.
+
+### Accesibilidad de los gráficos
+
+Un gráfico es una imagen para un lector de pantalla. Cada uno lleva `role="img"`
+con `aria-label` descriptivo **y una tabla oculta** (`sr-only`) con las mismas
+cifras — los datos se leen, no solo la figura.
+
+### Series del endpoint
+
+`GET /api/me/internal-dashboard/` añade, con el **mismo gate de capacidad** que
+los totales que acompañan:
+
+- `catalog.inactive_products`, `catalog.products_per_category`
+- `organization.assignments_per_area`, `organization.assignments_per_role`
+
+Una distribución es información de la empresa igual que un total. Cada fila lleva
+solo `{label, value}` — ningún id ni campo interno se filtra por un payload de
+gráfico. Las series están **acotadas a 8 buckets**: un gráfico no es un volcado
+de datos.
+
+Los productos sin categoría aparecen como su propio bucket en lugar de omitirse:
+un gráfico que descarta filas en silencio contradice el total que tiene al lado.
+
+### Paleta
+
+Sin colores nuevos. Se usan los tokens de `globals.css`: fondo `#080808`,
+superficie `#111111`, blanco a baja opacidad para elevación, escala zinc para
+texto, y la textura `dot-grid` que ya formaba parte del lenguaje visual. Los
+únicos acentos cromáticos son los estados de aviso (rojo/ámbar a muy baja
+opacidad), que ya existían.
+
+---
+
 ## 9. Deuda pendiente
 
 1. **Branding por empresa** — `_STORE_NAME`, `_STORE_RUC`, `_STORE_ADDRESS` y
@@ -797,7 +1010,21 @@ completo para una docena de glifos era mal negocio.
    2A.1, las pantallas no. Aparecen como `Parcial` en el mapa, sin enlace.
 15. **Dashboard interno avanzado** — pospuesto a propósito hasta que el dominio
    comercial esté tenantizado.
-16. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
+16. **`Product.inventory` sigue siendo un entero global por producto.** Ahora que
+   `Product` tiene dueño, el stock ya **no cruza empresas** — pero sigue sin ser
+   por sucursal. `Inventory company isolation: PARCIAL` ·
+   `Inventory branch isolation: PENDIENTE` (Fase 2D, bloqueada por
+   `Branch access model`).
+17. **`StockMovement` no está tenantizado.** Su `Product` ya lo está, y el Kardex
+   por producto se scopea por eso, pero los endpoints de inventario siguen
+   autorizando por rol legacy. Las capabilities `inventory.*` **no** gobiernan
+   todavía.
+18. **Bridge legacy del catálogo** — desaparece cuando todo operador tenga
+   Membership.
+19. **KPIs comerciales del dashboard** — el marco visual (`ChartCard`,
+   `SummaryStatCard`) está listo, pero no hay ninguna métrica de ventas, caja o
+   stock porque sus modelos siguen siendo globales. Se llenan en 2C/2D.
+20. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
    cubriera `*.sqlite3`). Conviene sacarlo del índice en un commit aparte.
 
 ---

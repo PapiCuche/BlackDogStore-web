@@ -10,16 +10,54 @@ from .models import (
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'slug')
+    """
+    Phase 2B: categories belong to a company.
+
+    The Django admin is the PLATFORM operator's tool, not the company-admin SaaS
+    surface, so it deliberately shows every tenant. It is not subject to the
+    company capability rules — admin access already implies operator trust.
+    """
+
+    list_display = ('id', 'name', 'slug', 'company')
+    list_filter = ('company',)
+    search_fields = ('name', 'slug', 'company__name')
+    list_select_related = ('company',)
+    autocomplete_fields = ('company',)
     prepopulated_fields = {'slug': ('name',)}
+
+    def get_readonly_fields(self, request, obj=None):
+        # Reparenting a category would drag its products' taxonomy into another
+        # tenant. Locked once the row exists.
+        base = super().get_readonly_fields(request, obj)
+        return (*base, 'company') if obj else base
 
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'price', 'inventory', 'category', 'image_url')
+    """Platform-operator view of the catalogue, across tenants."""
+
+    list_display = ('id', 'name', 'company', 'price', 'inventory', 'category', 'is_active')
     prepopulated_fields = {'slug': ('name',)}
-    list_filter = ('category',)
-    search_fields = ('name', 'description')
+    list_filter = ('company', 'is_active', 'category')
+    search_fields = ('name', 'slug', 'description', 'company__name')
+    list_select_related = ('company', 'category')
+    autocomplete_fields = ('company', 'category')
+
+    def get_readonly_fields(self, request, obj=None):
+        # A product carries history — orders, cart items, Kardex lines. Moving it
+        # to another company after the fact would silently reassign all of it.
+        base = super().get_readonly_fields(request, obj)
+        return (*base, 'company') if obj else base
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        """Offer only categories of the product's own company."""
+        if db_field.name == 'category':
+            obj_id = request.resolver_match.kwargs.get('object_id') if request.resolver_match else None
+            if obj_id:
+                product = Product.objects.filter(pk=obj_id).first()
+                if product is not None:
+                    kwargs['queryset'] = Category.objects.filter(company=product.company_id)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
 class OrderItemInline(admin.TabularInline):

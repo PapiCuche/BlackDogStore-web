@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 
 from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon, UserProfile
 from .inventory_services import record_sale_stock_movements
+from .tenancy import resolve_storefront_company, storefront_categories, storefront_products
 from .permissions import get_user_role
 from .email_services import send_order_emails_after_payment
 from .serializers import (
@@ -34,8 +35,19 @@ from .throttles import (
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Category.objects.all()
+    """
+    Public categories of THIS storefront's tenant.
+
+    Phase 2B: the queryset is born scoped. Nothing filters a global result set
+    afterwards — a serializer that hides rows is a bug waiting to be routed
+    around, and an unscoped queryset leaks through count(), pagination and
+    ordering long before it reaches a serializer.
+    """
+
     serializer_class = CategorySerializer
+
+    def get_queryset(self):
+        return storefront_categories(self.request).order_by('name')
 
 
 _PRODUCT_ORDERING_WHITELIST = {
@@ -50,11 +62,13 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ProductSerializer
 
     def get_queryset(self):
+        # Born scoped: tenant first, every other filter afterwards. A slug or a
+        # category slug that belongs to another tenant therefore matches nothing
+        # instead of matching and then being hidden.
         queryset = (
-            Product.objects
-            .select_related('category')
+            storefront_products(self.request)
+            .select_related('category', 'company')
             .prefetch_related('reviews')
-            .filter(is_active=True)
         )
         slug = self.request.query_params.get('slug')
         category = self.request.query_params.get('category')
@@ -81,10 +95,18 @@ class ReviewViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.Gen
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get_queryset(self):
+        """
+        Reviews reach their tenant through Product — Review has no company of its
+        own, and adding a redundant one would be a second source of truth to keep
+        in sync. Scoping by the storefront's products is enough and cannot drift.
+        """
         product_id = self.request.query_params.get('product')
-        if product_id:
-            return Review.objects.filter(product_id=product_id)
-        return Review.objects.none()
+        if not product_id:
+            return Review.objects.none()
+        return Review.objects.filter(
+            product_id=product_id,
+            product__in=storefront_products(self.request),
+        )
 
     def get_throttles(self):
         if self.action == 'create':
@@ -522,8 +544,15 @@ class CartViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # CART BOUNDARY (Phase 2B).
+        # Cart itself is not tenantised yet — that is Phase 2C. But Product now
+        # belongs to a company, which opens a brand-new cross-tenant vector: a
+        # storefront could otherwise add another tenant's product id to a cart
+        # and carry it all the way into checkout. Scoping the lookup to this
+        # storefront's products closes it now, without touching the Cart model.
+        # A foreign product answers exactly like a non-existent one.
         try:
-            product = Product.objects.get(pk=product_id, is_active=True)
+            product = storefront_products(request).get(pk=product_id)
         except (Product.DoesNotExist, TypeError, ValueError):
             return Response(
                 {'detail': 'Producto no encontrado o no disponible.'},

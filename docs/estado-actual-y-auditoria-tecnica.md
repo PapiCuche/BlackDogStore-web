@@ -949,6 +949,8 @@ Cambios estructurales posteriores a esta auditoría:
 | SaaS 2A.1 cierre | Provisioning de empresas, corrección de superficies, mapa del Control Interno | IMPLEMENTADO |
 | Demo users | `seed_demo_users` — cuentas de prueba de roles | IMPLEMENTADO / **TEMPORAL, eliminar antes de producción** |
 | SaaS 2A.2 | Control Interno v1: shell sidebar+topbar, dashboard empresarial, endpoint agregado | IMPLEMENTADO |
+| SaaS 2B | Catálogo tenant-aware: `Category.company`, `Product.company`, storefront por host, aislamiento público | IMPLEMENTADO |
+| SaaS 2B.1 | Dashboard visual: gráficos tenant-safe, series de catálogo y organización, SVG propio | IMPLEMENTADO |
 
 **Modelos de base de datos actuales**, además de los listados en la sección 7:
 `UserProfile`, `AdminAuditLog`, `AccountToken`, `StockMovement`, `SalesNote`,
@@ -961,7 +963,18 @@ Control interno — shell v1               IMPLEMENTADO
 Dashboard empresarial v1                 IMPLEMENTADO
 Sidebar capability-aware                 IMPLEMENTADO
 Selector de empresa                      IMPLEMENTADO
-KPIs comerciales tenant-aware            PENDIENTE
+Category tenant-aware                    IMPLEMENTADO
+Product tenant-aware                     IMPLEMENTADO
+Public catalog isolation                 IMPLEMENTADO
+Dashboard catalog KPIs                   IMPLEMENTADO
+Dashboard visual / analytics UI          IMPLEMENTADO
+Gráficos tenant-safe                     IMPLEMENTADO
+KPIs comerciales reales                  PENDIENTE
+Cart tenant-aware                        PARCIAL (límite cerrado, 2C)
+Order tenant-aware                       PENDIENTE 2C
+Inventory company isolation              PARCIAL
+Inventory branch isolation               PENDIENTE 2D
+Dashboard sales KPIs                     PENDIENTE
 Control interno — módulos completos      PENDIENTE
 Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO
