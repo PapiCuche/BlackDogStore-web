@@ -2236,6 +2236,146 @@ existiera, y hay tests de regresión que lo demuestran.
 
 ---
 
+## 8-duodevicies. Hardening del POS y del pronóstico (Fase C1.1)
+
+Sin migraciones. Siete correcciones sobre C1, todas de la misma familia: un
+valor que se daba por bueno sin comprobarlo.
+
+### La clave de idempotencia era opcional
+
+Y opcional significaba que el camino sin protección seguía abierto. Ahora es
+obligatoria, y sobre todo **no se trunca**:
+
+```python
+str(value)[:64]        # dos claves de 80 caracteres → una sola
+```
+
+Ese recorte parece defensivo y es lo contrario: dos claves distintas que
+comparten sus primeros 64 caracteres se convierten en la misma, y la segunda
+venta recibe el pedido de la primera con un «listo». Una clave demasiado larga
+se rechaza.
+
+### La recuperación de la colisión no podía ejecutarse
+
+```python
+with transaction.atomic():       # ← toda la venta
+    try:
+        order.save()             # ← IntegrityError aquí
+    except IntegrityError:
+        existing = ...query...   # ← TransactionManagementError
+```
+
+Un `IntegrityError` marca la transacción entera para rollback: la conexión
+rechaza cualquier consulta posterior hasta que el bloque se deshace. El código
+de recuperación era inalcanzable — habría lanzado una excepción distinta y más
+confusa que la que intentaba manejar.
+
+El INSERT va ahora en su propio `atomic` anidado, que es un savepoint: el fallo
+retrocede hasta él, la transacción externa sigue viva, y la lectura posterior es
+una lectura de verdad.
+
+Y sólo la colisión de **esta** clave se trata como reintento. Si el
+`IntegrityError` vino de otro constraint se re-lanza: tragárselo convertiría un
+defecto real en una venta que no ocurre sin que nada lo explique.
+
+### El pronóstico borraba días cero reales
+
+El error más caro de los siete, porque producía números confiados y equivocados.
+
+```
+BranchStock creado hace 30 días
+primera venta hace 3 días
+2 unidades vendidas
+```
+
+`_history_start` empezaba la ventana en la primera venta, así que leía **3 días
+de historia** con 2 unidades — 0,67/día — cuando la verdad son **30 días** con 27
+en cero: 0,067/día. Diez veces la demanda real, y todo lo que cuelga de ella se
+iba detrás: la cobertura se dividía por diez, el punto de reposición se
+multiplicaba, y el sistema mandaba comprar stock que nadie iba a vender.
+
+La regla ahora distingue las dos equivocaciones opuestas:
+
+| | |
+|---|---|
+| Empezar antes de que el artículo existiera | inventa ceros |
+| Empezar en la primera venta | **borra ceros reales** |
+
+`tracked_since` —cuándo la sucursal empezó a llevarlo— manda siempre que se
+conozca. `first_observed` queda sólo como respaldo, y ahí es la respuesta
+honesta: sin fecha de alta, el primer movimiento es lo más temprano que se sabe.
+
+El mismo defecto entraba por otra puerta en «más vendidos», donde la cobertura
+agregada llamaba al pronóstico sin `tracked_since`. Ahora deriva la fecha del
+`BranchStock` más antiguo visible.
+
+### La sucursal fuente no se protegía a sí misma
+
+```
+Fuente: stock 20 · target 10 · mínimo 5 · safety 2 · punto de reposición 18
+```
+
+El excedente reservaba `max(target, mínimo, safety)` = 10, así que ofrecía **10
+unidades** para transferir. Pero esa tienda está 2 por encima de su propio punto
+de reposición: ceder diez la deja muy por debajo del nivel al que debería estar
+reponiéndose ella. La transferencia resolvía una escasez abriendo otra en una
+sucursal que nadie estaba mirando.
+
+Ahora la fuente se mide con la misma aritmética que el destino —su demanda, su
+lead time, su punto de reposición— y en ese ejemplo ofrece **2**. Sin pronóstico
+válido o sin lead time configurado, la reserva cae a sus umbrales configurados;
+**nunca a un punto de reposición de cero**. Falta de información es motivo para
+guardar stock, no para regalarlo.
+
+### El día del tenant no era el día del servidor
+
+`paid_at__date__gte` y `TruncDate('paid_at')` se resuelven en la zona horaria de
+la **conexión**. Para una empresa a catorce horas del servidor eso significa que
+la tarde de ventas se archiva en el día siguiente: «hoy» en el panel es un día
+que aún no ha empezado, y cada promedio diario del pronóstico se desplaza una
+jornada entera de demanda.
+
+Las métricas de C1 construyen ahora los límites en la zona de la empresa y
+comparan timestamps crudos:
+
+```python
+start = datetime.combine(day, time.min, tzinfo=tenant_tz)
+qs.filter(paid_at__gte=start, paid_at__lt=end)
+```
+
+Más correcto y además más rápido: un rango sobre una columna indexada, en lugar
+de una conversión de fecha por fila que el índice no puede servir.
+
+Una empresa sin zona configurada hereda la de la plataforma. Una zona
+**almacenada** que dejó de resolver —un cambio de tzdata— tampoco tumba el
+panel: se usa la de plataforma y los números siguen calculándose.
+
+### El POS afirmaba un consentimiento que nadie dio
+
+```python
+accepted_terms=True             # automático, en toda venta
+accepted_warranty_policy=True
+```
+
+El razonamiento era que entregar el artículo implica aceptación. No lo implica:
+nadie le había dicho nada al cliente, y el pedido quedaba con un registro
+diciendo que había aceptado condiciones que nunca vio.
+
+Ahora la persona en el mostrador confirma explícitamente que informó las
+condiciones y la política de garantía, y sin esa confirmación el backend
+responde 400. Lo que queda grabado es una afirmación que alguien hizo de verdad,
+y la auditoría ya dice quién. Una firma falsa habría sido peor que no registrar
+nada.
+
+### Convivencia con el catálogo móvil
+
+`origin/master` incorporó `/api/v1/` mientras C1 estaba en revisión. Se fusionó
+en la rama con tres conflictos —`CHANGELOG.md`, `docs/saas-multiempresa.md` y
+`tests.py`—, todos resueltos **conservando ambos lados**. Ninguna de las dos
+líneas de trabajo perdió tests, funciones ni documentación.
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

@@ -649,9 +649,14 @@ restar lo que nadie había registrado*.
   `0123456789012` no se convierte en `123456789012`.
 - **Todo o nada.** Si un artículo de la cesta no está, la venta entera se
   rechaza: no se cobra, no se mueve stock y no queda pedido a medias.
-- **Un doble clic no cobra dos veces.** Cada cesta lleva su clave y su huella;
-  un reintento devuelve la misma venta, y la misma clave con otra cesta se
-  rechaza en vez de confundirlas.
+- **Un doble clic no cobra dos veces.** Cada cesta lleva su clave —obligatoria—
+  y su huella; un reintento devuelve la misma venta, y la misma clave con otra
+  cesta se rechaza en vez de confundirlas.
+- **Las condiciones las confirma quien vende**, marcándolo antes de cobrar. El
+  sistema no da por hecho que entregar el producto equivale a haberlas
+  explicado.
+- **Cada empresa cuenta sus días en su propia zona horaria**, así que la venta
+  de las diez de la noche cae en el día que le corresponde.
 - **El stock sale de la sucursal donde se vende**, nunca de otra. Si hay
   unidades en otra tienda el sistema lo dice — pero moverlas es una
   transferencia, y esa es una decisión con papeleo.

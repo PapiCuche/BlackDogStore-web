@@ -270,7 +270,11 @@ class AdminPosSaleView(APIView):
                 items=request.data.get('items'),
                 customer=request.data.get('customer'),
                 payment_method=request.data.get('payment_method', PaymentMethod.CASH),
-                idempotency_key=str(request.data.get('idempotency_key', ''))[:64],
+                # NOT truncated here. `[:64]` would fold two distinct long keys
+                # into one and answer the second sale with the first one's
+                # order; the service validates and rejects instead.
+                idempotency_key=request.data.get('idempotency_key'),
+                terms_confirmed=request.data.get('terms_confirmed') is True,
                 request=request,
             )
         except pos_services.PosIdempotencyConflict as exc:

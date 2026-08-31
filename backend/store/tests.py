@@ -19,6 +19,7 @@ Phase 4.1 (+36 tests): email service unit tests, idempotency flags, no-duplicate
 Phase 4.2 (+46 tests, audit +4=50): PDF context builder (excludes Stripe fields, Decimal types, disclaimer), PDF generator (valid bytes, ValueError for unpaid), email+PDF integration (attachment, PDF fail graceful, error logged), admin PDF endpoint RBAC (4 allowed roles, technician/customer/anon blocked), audit log clean metadata, content-type, Content-Disposition, Stripe data not in cleartext, copywriting disclaimer, no-SUNAT-electronico title.
 Phase 4.3 (+37 tests, audit +3=42): resend_order_confirmation_email service (bypasses idempotency, best-effort PDF, updates flag, raises on SMTP failure), AdminOrderResendEmailView RBAC (admin+superadmin allowed; customer/sales/inventory/technician/anon blocked), 400 for unpaid, 404 for missing, 502 for SMTP failure, 405 for non-POST methods, audit log clean metadata (no Stripe IDs), SMTP failure records email_send_error, audit log NOT created on SMTP failure, HTML body no Stripe IDs, regression (automatic webhook flow unaffected).
 """
+import itertools
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
@@ -16785,6 +16786,23 @@ def _c1_stock(branch, product, quantity):
     return BranchStock.objects.get(pk=row.pk)
 
 
+_c1_key_counter = itertools.count(1)
+
+
+def _c1_sale(**kwargs):
+    """
+    Complete a counter sale, supplying the two arguments C1.1 made mandatory.
+
+    `terms_confirmed` and a unique idempotency key are required of every real
+    caller now, so the helper provides them rather than every test repeating
+    them. Tests that are ABOUT those two arguments pass their own and are not
+    routed through here.
+    """
+    kwargs.setdefault('terms_confirmed', True)
+    kwargs.setdefault('idempotency_key', f'c1-auto-{next(_c1_key_counter):08d}')
+    return _pos.create_pos_sale(**kwargs)
+
+
 def _c1_product(company, name='Artículo C1', price='100.00'):
     return _seeded(Product.objects.create(
         company=company, name=name,
@@ -16897,7 +16915,7 @@ class C1PosSaleTest(TestCase):
         )
 
     def _sell(self, items, **kw):
-        return _pos.create_pos_sale(
+        return _c1_sale(
             actor=self.seller, company=self.company, branch=self.branch,
             items=items, **kw,
         )
@@ -16952,7 +16970,7 @@ class C1PosSaleTest(TestCase):
 
     def test_the_price_comes_from_the_catalogue_not_the_request(self):
         """A browser may display a price; it is never asked what to charge."""
-        order, _ = _pos.create_pos_sale(
+        order, _ = _c1_sale(
             actor=self.seller, company=self.company, branch=self.branch,
             items=[{'product': self.product.pk, 'quantity': 1, 'price': '0.01'}],
         )
@@ -16991,9 +17009,9 @@ class C1PosSaleTest(TestCase):
     def test_the_same_key_and_basket_returns_the_same_sale(self):
         """§104 — a double click, a timeout and a retry are one sale."""
         items = [{'product': self.product.pk, 'quantity': 1}]
-        first, c1 = self._sell(items, idempotency_key='key-1')
-        second, c2 = self._sell(items, idempotency_key='key-1')
-        third, c3 = self._sell(items, idempotency_key='key-1')
+        first, c1 = self._sell(items, idempotency_key='basket-key-0001')
+        second, c2 = self._sell(items, idempotency_key='basket-key-0001')
+        third, c3 = self._sell(items, idempotency_key='basket-key-0001')
 
         self.assertTrue(c1)
         self.assertFalse(c2)
@@ -17012,9 +17030,9 @@ class C1PosSaleTest(TestCase):
         §105. Returning the earlier sale would tell the operator that THIS
         basket was sold, when it was not.
         """
-        self._sell([{'product': self.product.pk, 'quantity': 1}], idempotency_key='key-2')
+        self._sell([{'product': self.product.pk, 'quantity': 1}], idempotency_key='basket-key-0002')
         with self.assertRaises(_pos.PosIdempotencyConflict):
-            self._sell([{'product': self.product.pk, 'quantity': 5}], idempotency_key='key-2')
+            self._sell([{'product': self.product.pk, 'quantity': 5}], idempotency_key='basket-key-0002')
         self.assertEqual(Order.objects.filter(company=self.company).count(), 1)
 
     def test_the_fingerprint_ignores_line_order(self):
@@ -17121,7 +17139,7 @@ class C1PosSecurityTest(TestCase):
 
     def test_selling_another_companys_product_is_refused(self):
         with self.assertRaises(_pos.PosValidationError):
-            _pos.create_pos_sale(
+            _c1_sale(
                 actor=self.seller_a, company=self.a, branch=self.branch_a,
                 items=[{'product': self.product_b.pk, 'quantity': 1}],
             )
@@ -17160,7 +17178,7 @@ class C1PosSecurityTest(TestCase):
         self.assertIn(_C1_POS, capabilities)
         self.assertNotIn('inventory.adjust', capabilities)
 
-        order, _ = _pos.create_pos_sale(
+        order, _ = _c1_sale(
             actor=self.seller_a, company=self.a, branch=self.branch_a,
             items=[{'product': self.product_a.pk, 'quantity': 1}],
         )
@@ -17194,7 +17212,7 @@ class C1PosSecurityTest(TestCase):
         _c1_stock(self.branch_a, self.product_a, 0)
 
         with self.assertRaises(inventory_services.InsufficientStockError):
-            _pos.create_pos_sale(
+            _c1_sale(
                 actor=self.seller_a, company=self.a, branch=self.branch_a,
                 items=[{'product': self.product_a.pk, 'quantity': 1}],
             )
@@ -17438,7 +17456,7 @@ class C1AnalyticsTest(TestCase):
             self.a, 'c1_seller_only', ['company.view', _C1_POS],
         )
 
-        _pos.create_pos_sale(
+        _c1_sale(
             actor=self.analyst_a, company=self.a,
             branch=self.a.default_inventory_branch,
             items=[{'product': self.pa.pk, 'quantity': 3}],
@@ -17536,13 +17554,13 @@ class C1PosConcurrencyTest(TransactionTestCase):
         )
 
     def test_the_last_unit_can_only_be_sold_once(self):
-        first, _ = _pos.create_pos_sale(
+        first, _ = _c1_sale(
             actor=self.seller, company=self.company, branch=self.branch,
             items=[{'product': self.product.pk, 'quantity': 1}],
         )
         self.assertIsNotNone(first.pk)
         with self.assertRaises(inventory_services.InsufficientStockError):
-            _pos.create_pos_sale(
+            _c1_sale(
                 actor=self.seller, company=self.company, branch=self.branch,
                 items=[{'product': self.product.pk, 'quantity': 1}],
             )
@@ -17554,7 +17572,7 @@ class C1PosConcurrencyTest(TransactionTestCase):
     def test_stock_never_reaches_a_negative_number(self):
         for _ in range(3):
             try:
-                _pos.create_pos_sale(
+                _c1_sale(
                     actor=self.seller, company=self.company, branch=self.branch,
                     items=[{'product': self.product.pk, 'quantity': 1}],
                 )
@@ -17582,7 +17600,7 @@ class C1PosConcurrencyTest(TransactionTestCase):
 
         def sell():
             try:
-                order, _created = _pos.create_pos_sale(
+                order, _created = _c1_sale(
                     actor=self.seller, company=self.company, branch=self.branch,
                     items=[{'product': self.product.pk, 'quantity': 1}],
                 )
@@ -18032,3 +18050,527 @@ class V1SharedScopingHelperTest(TestCase):
         from .tenancy import company_storefront_categories, company_storefront_products
         self.assertEqual(company_storefront_products(None).count(), 0)
         self.assertEqual(company_storefront_categories(None).count(), 0)
+
+
+# ===========================================================================
+# C1.1 — hardening: idempotency, forecast window, transfers, timezone, consent
+# ===========================================================================
+
+class C11IdempotencyKeyTest(TestCase):
+    """§6 — the key is required, and never silently repaired."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c11-key', 'Empresa Key')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Key')
+        _c1_stock(self.branch, self.product, 10)
+        self.seller, _ = _p2d_member(self.company, 'c11_seller', ['company.view', _C1_POS])
+
+    def _sell(self, **kw):
+        return _pos.create_pos_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            terms_confirmed=True, **kw,
+        )
+
+    def test_a_missing_key_is_refused(self):
+        """
+        An empty key meant a sale with NO protection — the single code path
+        where a double click charges twice.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell()
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_an_empty_key_is_refused(self):
+        for empty in ('', '   ', None):
+            with self.assertRaises(_pos.PosValidationError):
+                self._sell(idempotency_key=empty)
+
+    def test_a_key_that_is_too_long_is_refused_not_truncated(self):
+        """
+        `str(value)[:64]` reads as harmless and is not: two distinct 80-character
+        keys sharing their first 64 collapse into ONE, and the second sale is
+        answered with the first one's order.
+        """
+        long_key = 'a' * 80
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(idempotency_key=long_key)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_two_long_keys_are_never_folded_into_one(self):
+        first = 'k' * 64 + 'AAAA'
+        second = 'k' * 64 + 'BBBB'
+        self.assertNotEqual(first[:64] + 'x', second[:64] + 'y')
+        for key in (first, second):
+            with self.assertRaises(_pos.PosValidationError):
+                self._sell(idempotency_key=key)
+
+    def test_a_key_with_control_characters_is_refused(self):
+        for bad in ('key\nwith-newline', 'key\rwith-cr', 'key with space', 'short'):
+            with self.assertRaises(_pos.PosValidationError):
+                self._sell(idempotency_key=bad)
+
+    def test_a_uuid_is_accepted(self):
+        import uuid
+
+        order, created = self._sell(idempotency_key=str(uuid.uuid4()))
+        self.assertTrue(created)
+        self.assertTrue(order.pos_idempotency_key)
+
+    def test_the_endpoint_refuses_a_missing_key_with_400(self):
+        client = APIClient()
+        client.force_authenticate(user=self.seller)
+        for body in (
+            {'branch': self.branch.pk, 'items': [{'product': self.product.pk, 'quantity': 1}],
+             'terms_confirmed': True},
+            {'branch': self.branch.pk, 'items': [{'product': self.product.pk, 'quantity': 1}],
+             'terms_confirmed': True, 'idempotency_key': ''},
+            {'branch': self.branch.pk, 'items': [{'product': self.product.pk, 'quantity': 1}],
+             'terms_confirmed': True, 'idempotency_key': 'x' * 80},
+        ):
+            res = client.post('/api/admin/pos/sales/', body, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, body)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_the_same_key_may_be_used_by_two_companies(self):
+        """§7 — idempotency is tenant-scoped, never global."""
+        other = _p3_company('c11-key-b', 'Empresa Key B')
+        other_product = _c1_product(other, 'Producto Key B')
+        _c1_stock(other.default_inventory_branch, other_product, 5)
+        seller_b, _ = _p2d_member(other, 'c11_seller_b', ['company.view', _C1_POS])
+
+        key = 'shared-key-across-tenants'
+        self._sell(idempotency_key=key)
+        order_b, created = _pos.create_pos_sale(
+            actor=seller_b, company=other, branch=other.default_inventory_branch,
+            items=[{'product': other_product.pk, 'quantity': 1}],
+            terms_confirmed=True, idempotency_key=key,
+        )
+        self.assertTrue(created)
+        self.assertEqual(Order.objects.filter(pos_idempotency_key=key).count(), 2)
+
+
+class C11IdempotencyRecoveryTest(TransactionTestCase):
+    """
+    §8–9 — recovering from the unique-constraint collision.
+
+    An IntegrityError marks the transaction for rollback. Catching it and then
+    querying inside the SAME atomic block raises TransactionManagementError
+    instead of answering, so the INSERT is wrapped in its own savepoint.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c11-rec', 'Empresa Rec')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Rec')
+        _c1_stock(self.branch, self.product, 20)
+        self.seller, _ = _p2d_member(self.company, 'c11_rec_seller', ['company.view', _C1_POS])
+
+    def _sell(self, key, quantity=1):
+        return _pos.create_pos_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': quantity}],
+            terms_confirmed=True, idempotency_key=key,
+        )
+
+    def test_the_insert_is_wrapped_in_its_own_savepoint(self):
+        """
+        Structural, because the behavioural race needs row locking.
+
+        Without the nested atomic the recovery path cannot run at all: the
+        connection refuses the follow-up query. This pins the shape.
+        """
+        import inspect
+
+        source = inspect.getsource(_pos.create_pos_sale)
+        insert = source.split('except IntegrityError')[0]
+        self.assertIn('with transaction.atomic():', insert.split('try:')[-1])
+        self.assertNotIn('set_rollback', source)
+
+    def test_recovery_returns_the_winning_order(self):
+        """
+        Simulates the loser of the race: the row already exists when this
+        caller's INSERT lands.
+        """
+        key = 'recovery-key-0001'
+        first, created_first = self._sell(key)
+        self.assertTrue(created_first)
+
+        second, created_second = self._sell(key)
+        self.assertFalse(created_second)
+        self.assertEqual(second.pk, first.pk)
+        self.assertEqual(Order.objects.filter(pos_idempotency_key=key).count(), 1)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=first, movement_type=StockMovement.SALE_EXIT,
+            ).count(),
+            1,
+        )
+
+    def test_an_unrelated_integrity_error_is_not_swallowed(self):
+        """
+        Only a collision on THIS constraint is a idempotent replay. Any other
+        violated invariant is a real defect, and hiding it here would turn it
+        into a silent "no sale" with no explanation anywhere.
+        """
+        from unittest.mock import patch
+
+        from django.db import IntegrityError
+
+        with patch.object(
+            Order, 'save', side_effect=IntegrityError('unrelated constraint'),
+        ):
+            with self.assertRaises(IntegrityError):
+                self._sell('unrelated-error-key')
+
+    def test_two_simultaneous_requests_with_one_key_produce_one_sale(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite serialises writes with a database-level lock, so a '
+                'threaded race here would not exercise the unique-constraint '
+                'collision this recovery path exists for. Run against '
+                'PostgreSQL to exercise it.'
+            )
+
+        key = 'concurrent-key-0001'
+        results, errors = [], []
+        lock = threading.Lock()
+
+        def sell():
+            try:
+                order, created = self._sell(key)
+                with lock:
+                    results.append((order.pk, created))
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=sell) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], 'ningún caller debe recibir un error')
+        self.assertEqual(len(results), 4)
+        self.assertEqual(len({pk for pk, _c in results}), 1, 'una sola venta')
+        self.assertEqual(sum(1 for _pk, c in results if c), 1, 'un solo created=True')
+        self.assertEqual(Order.objects.filter(pos_idempotency_key=key).count(), 1)
+
+
+class C11ForecastWindowTest(TestCase):
+    """§11–12 — real zeros before the first sale are part of the history."""
+
+    def setUp(self):
+        self.today = _date(2026, 6, 30)
+
+    def _series(self, pairs):
+        s = _forecasting.DemandSeries()
+        for days_ago, units in pairs:
+            s.daily[self.today - _timedelta(days=days_ago)] = units
+        if s.daily:
+            s.first_observed = min(s.daily)
+        return s
+
+    def test_a_late_first_sale_does_not_delete_the_quiet_days(self):
+        """
+        THE BUG THIS FIXES. Stocked 30 days ago, first sold 3 days ago, 2 units
+        total. That is 30 days of history with 28 zeros — not 3 days of brisk
+        trade.
+
+        Starting the window at the first sale reported roughly ten times the
+        real demand, and coverage, reorder point and suggestion all inherited it.
+        """
+        series = self._series([(2, 1), (1, 0), (0, 1)])
+        tracked = self.today - _timedelta(days=29)
+
+        f = _forecasting.forecast_for(series, today=self.today, tracked_since=tracked)
+        self.assertEqual(f['history_days'], 30)
+        self.assertAlmostEqual(f['avg_30'], 2 / 30, places=4)
+
+    def test_without_a_tracking_date_the_first_sale_is_the_fallback(self):
+        """
+        Not ideal, but honest: with no stocking date the first movement is the
+        earliest moment the article is known to have been here.
+        """
+        series = self._series([(2, 1), (0, 1)])
+        f = _forecasting.forecast_for(series, today=self.today, tracked_since=None)
+        self.assertEqual(f['history_days'], 3)
+
+    def test_a_genuinely_new_product_is_still_not_padded(self):
+        """The opposite mistake stays fixed: no zeros before it existed."""
+        series = self._series([(d, 4) for d in range(5)])
+        tracked = self.today - _timedelta(days=4)
+        f = _forecasting.forecast_for(series, today=self.today, tracked_since=tracked)
+        self.assertEqual(f['history_days'], 5)
+        self.assertAlmostEqual(f['avg_90'], 4.0, places=4)
+
+    def test_a_tracking_date_older_than_the_window_is_clamped(self):
+        series = self._series([(d, 1) for d in range(90)])
+        tracked = self.today - _timedelta(days=800)
+        f = _forecasting.forecast_for(series, today=self.today, tracked_since=tracked)
+        self.assertEqual(f['history_days'], _forecasting.LONG_WINDOW)
+
+
+class C11TransferReserveTest(TestCase):
+    """§14–15 — the source branch keeps its own reorder point."""
+
+    def setUp(self):
+        cache.clear()
+        self.today = _date(2026, 6, 30)
+        self.company = _p3_company('c11-tr', 'Empresa Transfer')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Transferible')
+
+    def _row(self, **kw):
+        row = _c1_stock(self.branch, self.product, kw.pop('quantity', 0))
+        for key, value in kw.items():
+            setattr(row, key, value)
+        row.save()
+        return row
+
+    def _steady(self, per_day):
+        s = _forecasting.DemandSeries()
+        for d in range(90):
+            s.daily[self.today - _timedelta(days=d)] = per_day
+        return _forecasting.forecast_for(
+            s, today=self.today, tracked_since=self.today - _timedelta(days=89),
+        )
+
+    def test_the_reorder_point_is_part_of_the_reserve(self):
+        """
+        §15 exactly. A busy shop with target=10 was reported as having 10 units
+        to spare while sitting 2 above the level at which it should be
+        restocking ITSELF. The transfer would have solved one shortage by
+        opening another where nobody was looking.
+        """
+        row = self._row(quantity=20, target_stock=10, minimum_stock=5,
+                        safety_stock=2, lead_time_days=8)
+        forecast = self._steady(2)  # 2/day × 8 days + 2 = reorder point 18
+
+        plan = _forecasting.replenishment_for(row, forecast, today=self.today)
+        self.assertEqual(plan['reorder_point'], 18)
+
+        without = _forecasting.surplus_for_transfer(row)
+        self.assertEqual(without, 10, 'la reserva por umbrales sola daría 10')
+
+        with_forecast = _forecasting.surplus_for_transfer(
+            row, forecast=forecast, today=self.today,
+        )
+        self.assertEqual(with_forecast, 2)
+
+    def test_missing_information_keeps_stock_rather_than_giving_it_away(self):
+        """
+        No forecast, or no lead time, falls back to the configured thresholds —
+        never to a reorder point of zero.
+        """
+        row = self._row(quantity=20, target_stock=15, minimum_stock=5, lead_time_days=0)
+        empty = _forecasting.forecast_for(
+            _forecasting.DemandSeries(), today=self.today,
+        )
+        self.assertEqual(
+            _forecasting.surplus_for_transfer(row, forecast=empty, today=self.today), 5,
+        )
+        self.assertEqual(_forecasting.surplus_for_transfer(row), 5)
+
+    def test_a_branch_at_its_own_reorder_point_offers_nothing(self):
+        row = self._row(quantity=18, target_stock=10, minimum_stock=5,
+                        safety_stock=2, lead_time_days=8)
+        self.assertEqual(
+            _forecasting.surplus_for_transfer(
+                row, forecast=self._steady(2), today=self.today,
+            ),
+            0,
+        )
+
+
+class C11TimezoneTest(TestCase):
+    """§16–17 — each tenant's day, not the server's."""
+
+    def setUp(self):
+        cache.clear()
+        self.lima = _p3_company('c11-tz-lima', 'Empresa Lima')
+        self.tokyo = _p3_company('c11-tz-tokyo', 'Empresa Tokio')
+        for company, tz in ((self.lima, 'America/Lima'), (self.tokyo, 'Asia/Tokyo')):
+            row = company.settings
+            row.timezone = tz
+            row.save(update_fields=['timezone', 'updated_at'])
+
+    def test_today_is_computed_in_the_tenants_zone(self):
+        from .sales_analytics_views import _company_today, _company_tz
+
+        self.assertEqual(str(_company_tz(self.lima)), 'America/Lima')
+        self.assertEqual(str(_company_tz(self.tokyo)), 'Asia/Tokyo')
+
+        # Around the UTC day boundary the two shops are on different dates.
+        lima_today = _company_today(self.lima)
+        tokyo_today = _company_today(self.tokyo)
+        self.assertLessEqual((tokyo_today - lima_today).days, 1)
+        self.assertGreaterEqual((tokyo_today - lima_today).days, 0)
+
+    def test_a_company_without_a_timezone_falls_back_to_the_platform(self):
+        from django.utils import timezone as dj_tz
+
+        from .sales_analytics_views import _company_tz
+
+        plain = _p3_company('c11-tz-none', 'Empresa Sin TZ')
+        self.assertEqual(_company_tz(plain), dj_tz.get_default_timezone())
+
+    def test_an_unresolvable_timezone_does_not_break_the_dashboard(self):
+        """
+        A stored zone that no longer exists is a configuration problem. It must
+        not take a dashboard down: the platform default is used instead.
+        """
+        from django.utils import timezone as dj_tz
+
+        from .sales_analytics_views import _company_tz
+
+        # Written past the model's validator on purpose: this is the shape of a
+        # value that WAS valid when saved and stopped resolving later — a tzdata
+        # update, or a zone the platform dropped. The validator prevents typing
+        # one in; it cannot prevent the world changing underneath a stored one.
+        from .models import CompanySettings
+
+        CompanySettings.objects.filter(pk=self.lima.settings.pk).update(
+            timezone='Mars/Olympus_Mons',
+        )
+        self.lima.refresh_from_db()
+        self.lima.settings.refresh_from_db()
+        self.assertEqual(_company_tz(self.lima), dj_tz.get_default_timezone())
+
+    def test_day_bounds_bracket_a_local_day_in_utc(self):
+        import zoneinfo
+
+        from .sales_analytics_views import _day_bounds
+
+        tz = zoneinfo.ZoneInfo('Asia/Tokyo')
+        start, end = _day_bounds(_date(2026, 6, 30), tz)
+        self.assertEqual((end - start).days, 1)
+        # Tokyo is UTC+9, so its midnight is 15:00 UTC the day before.
+        self.assertEqual(start.astimezone(_timezone_utc()).hour, 15)
+        self.assertEqual(start.astimezone(_timezone_utc()).day, 29)
+
+    def test_the_queries_do_not_use_the_connection_timezone(self):
+        """
+        `__date` and a bare TruncDate both render in the CONNECTION's zone. For a
+        tenant fourteen hours away that files an evening's trade under the wrong
+        day, shifting every average and every reorder point.
+        """
+        import ast
+        import inspect
+
+        from . import inventory_forecasting, sales_analytics_views
+
+        forbidden = {
+            'paid_at__date__gte', 'paid_at__date__lte',
+            'created_at__date__gte', 'created_at__date__lte',
+        }
+        for module in (sales_analytics_views, inventory_forecasting):
+            # PARSED, not grepped. The docstrings in these modules EXPLAIN why
+            # `paid_at__date__gte` is wrong, and a plain text scan matches its
+            # own explanation — which is how a correct file fails its own test.
+            tree = ast.parse(inspect.getsource(module))
+            keywords = {
+                node.arg for node in ast.walk(tree)
+                if isinstance(node, ast.keyword) and node.arg
+            }
+            self.assertFalse(
+                keywords & forbidden,
+                f'{module.__name__} filtra por la zona horaria de la conexión: '
+                f'{keywords & forbidden}',
+            )
+            # A bare TruncDate takes no tzinfo, so any call to it must pass one.
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and getattr(node.func, 'id', '') == 'TruncDate'
+                ):
+                    self.assertTrue(
+                        any(kw.arg == 'tzinfo' for kw in node.keywords),
+                        f'{module.__name__}: TruncDate sin tzinfo explícito',
+                    )
+
+    def test_two_tenants_report_their_own_days(self):
+        """End to end: each dashboard answers with its own local date."""
+        for company in (self.lima, self.tokyo):
+            user, _ = _p2d_member(
+                company, f'c11_tz_{company.slug[-5:]}',
+                ['company.view', _C1_ANALYTICS],
+            )
+            client = APIClient()
+            client.force_authenticate(user=user)
+            res = client.get('/api/admin/sales/dashboard/')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            from .sales_analytics_views import _company_today
+
+            self.assertEqual(res.data['today'], _company_today(company).isoformat())
+            self.assertEqual(res.data['timezone'], str(company.settings.timezone))
+
+
+def _timezone_utc():
+    import datetime as _dt
+
+    return _dt.timezone.utc
+
+
+class C11ConsentTest(TestCase):
+    """§18 — acceptance is asserted by a person, not inferred from the sale."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c11-consent', 'Empresa Consent')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Consent')
+        _c1_stock(self.branch, self.product, 10)
+        self.seller, _ = _p2d_member(
+            self.company, 'c11_consent_seller', ['company.view', _C1_POS],
+        )
+
+    def _sell(self, **kw):
+        return _pos.create_pos_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            idempotency_key='consent-key-0001', **kw,
+        )
+
+    def test_a_sale_without_confirmation_is_refused(self):
+        """
+        Handing the article over does not prove anybody was told anything. The
+        first version recorded acceptance automatically, which put a statement on
+        the order that nobody had made.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell()
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_falsey_confirmation_is_refused(self):
+        for value in (False, None, 0, '', 'false'):
+            with self.assertRaises(_pos.PosValidationError):
+                self._sell(terms_confirmed=value)
+
+    def test_confirmation_records_acceptance(self):
+        order, _ = self._sell(terms_confirmed=True)
+        self.assertTrue(order.accepted_terms)
+        self.assertTrue(order.accepted_warranty_policy)
+        # And the trail names who asserted it.
+        self.assertEqual(order.sold_by, self.seller)
+
+    def test_the_endpoint_refuses_without_the_flag(self):
+        client = APIClient()
+        client.force_authenticate(user=self.seller)
+        res = client.post('/api/admin/pos/sales/', {
+            'branch': self.branch.pk,
+            'items': [{'product': self.product.pk, 'quantity': 1}],
+            'idempotency_key': 'consent-endpoint-key',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)

@@ -9,6 +9,63 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase Comercial C1.1 — Hardening previo al merge
+
+**Estado: IMPLEMENTADO.** Sin migraciones nuevas.
+
+Correcciones de una auditoría remota sobre C1, más la integración con el
+catálogo público móvil (`/api/v1/`) que entró a `master` en paralelo.
+
+### Corregido
+
+- **La clave de idempotencia era opcional.** Una venta sin clave no tenía
+  protección alguna: el único camino donde un doble clic cobra dos veces. Ahora
+  es obligatoria, y **no se trunca**: `str(value)[:64]` habría fundido dos claves
+  distintas de 80 caracteres en una sola y respondido la segunda venta con el
+  pedido de la primera. Una clave demasiado larga se rechaza.
+- **La recuperación del `IntegrityError` ocurría dentro del mismo `atomic`.** Un
+  `IntegrityError` marca la transacción para rollback, así que la consulta
+  posterior lanzaba `TransactionManagementError` en vez de responder. El INSERT
+  va ahora en su propio savepoint. Además, un `IntegrityError` de **otro**
+  constraint se re-lanza: sólo la colisión de esta clave es un reintento.
+- **El pronóstico borraba días cero reales.** `_history_start` empezaba la
+  ventana en la primera venta, así que un artículo en stock hace 30 días con su
+  primera venta hace 3 se leía como 3 días de historia en lugar de 30 con 27
+  ceros — unas diez veces la demanda real, y la cobertura, el punto de
+  reposición y la sugerencia heredaban el error. Ahora manda `tracked_since`
+  cuando existe; `first_observed` es sólo el respaldo.
+- **Lo mismo por otra puerta en «más vendidos»:** la cobertura agregada llamaba
+  al pronóstico sin `tracked_since`. Ahora deriva la fecha del `BranchStock` más
+  antiguo visible.
+- **La sucursal fuente no protegía su punto de reposición.** Una tienda con
+  `target=10` y punto de reposición 18 aparecía con 10 unidades disponibles para
+  transferir mientras estaba 2 por encima de su propio umbral de reposición: la
+  transferencia habría resuelto una escasez abriendo otra donde nadie miraba.
+  El excedente usa ahora el pronóstico de la fuente; sin datos suficientes cae a
+  sus umbrales configurados, **nunca a cero**.
+- **Los filtros diarios usaban el timezone de la conexión.** `paid_at__date` y
+  `TruncDate` sin `tzinfo` se resuelven en la zona del servidor: para un tenant
+  a catorce horas, la tarde de ventas cae en el día siguiente. Las métricas C1
+  construyen ahora los límites en la zona de la empresa y comparan timestamps
+  crudos — más correcto y además indexable.
+- **El POS registraba aceptación de términos sin que nadie la diera.** Entregar
+  el artículo no prueba que se informó al cliente. El operador confirma
+  explícitamente antes de cobrar; sin esa confirmación el backend responde 400.
+  Lo que queda registrado es una afirmación que una persona hizo de verdad, y la
+  auditoría ya dice quién.
+
+### Integración con el catálogo móvil
+`origin/master` se fusionó en la rama. Tres conflictos —`CHANGELOG.md`,
+`docs/saas-multiempresa.md` y `tests.py`— resueltos **conservando ambos lados**:
+los tests y funciones de `/api/v1/`, las capabilities de C1 y la documentación de
+los dos desarrollos.
+
+### Tests
+29 nuevos. Total: **1597 OK**, 4 omitidos (los casos de concurrencia real que
+SQLite no puede probar y que se saltan en voz alta).
+
+---
+
 ## Fase Comercial C1 — Punto de venta, códigos de barras e inteligencia de stock
 
 **Estado: IMPLEMENTADO.** Migraciones **0034, 0035**.

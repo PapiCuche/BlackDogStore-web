@@ -21,7 +21,7 @@ No margin, no profit, no ROI. The platform does not record what anything cost,
 so any such number would be invented. Turnover is reported; earnings are not.
 """
 
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from django.db.models import Avg, Count, DecimalField, F, Q, Sum
@@ -64,28 +64,59 @@ def _selected_branches(request, company):
     return list(allowed.filter(pk=branch_id))
 
 
-def _company_today(company):
+def _company_tz(company):
     """
-    Today, in the shop's own timezone.
+    The shop's own timezone, or the platform's when it has not set one.
 
-    A business in Lima closing at 22:00 has its takings land on the wrong day if
-    "today" is computed in UTC — the last two hours of trade would be counted as
-    tomorrow morning.
+    A company that never configured a timezone is not an error: it inherits the
+    installation's, which for a single-country deployment is the right answer.
+    A STORED timezone that no longer resolves is a configuration problem, and it
+    also is not a reason to fail a dashboard — the platform default is used and
+    the numbers stay computable.
     """
     tz_name = getattr(getattr(company, 'settings', None), 'timezone', '') or ''
     if tz_name:
         try:
             import zoneinfo
 
-            return timezone.localdate(timezone.now(), zoneinfo.ZoneInfo(tz_name))
+            return zoneinfo.ZoneInfo(tz_name)
         except Exception:
-            # A stored timezone that no longer resolves is a configuration
-            # problem, not a reason to fail a dashboard. Fall through.
             pass
-    return timezone.localdate()
+    return timezone.get_default_timezone()
 
 
-def _paid_orders(company, branches, since=None):
+def _company_today(company):
+    """Today, as the shop reckons it."""
+    return timezone.localdate(timezone.now(), _company_tz(company))
+
+
+def _day_bounds(day: date, tz):
+    """
+    The UTC instants that bracket one LOCAL calendar day.
+
+    WHY NOT `paid_at__date__gte=`
+    -----------------------------
+    Django renders `__date` using the CONNECTION's timezone — the platform's,
+    or the database's. For a tenant in Tokyo asking a server configured for
+    Lima, that is a fourteen-hour error: the morning's takings land on
+    yesterday, and "today" on the dashboard is a day that has not started.
+
+    Comparing raw timestamps against boundaries built IN THE TENANT'S ZONE has
+    no such dependency. It is also faster — a plain range over an indexed
+    column, rather than a per-row date conversion the index cannot serve.
+    """
+    start_local = datetime.combine(day, time.min, tzinfo=tz)
+    end_local = start_local + timedelta(days=1)
+    return start_local, end_local
+
+
+def _paid_orders(company, branches, since=None, *, tz=None, until=None):
+    """
+    Paid orders of this company, optionally bracketed by LOCAL calendar days.
+
+    The window is expressed as UTC instants derived from the tenant's own
+    timezone — never as `paid_at__date`, which silently uses the connection's.
+    """
     qs = Order.objects.filter(company=company, status=Order.Status.PAID)
     ids = [b.pk for b in branches]
     if ids:
@@ -93,7 +124,12 @@ def _paid_orders(company, branches, since=None):
     else:
         return qs.none()
     if since is not None:
-        qs = qs.filter(paid_at__date__gte=since)
+        tz = tz or timezone.get_default_timezone()
+        start, _ = _day_bounds(since, tz)
+        qs = qs.filter(paid_at__gte=start)
+        if until is not None:
+            _, end = _day_bounds(until, tz)
+            qs = qs.filter(paid_at__lt=end)
     return qs
 
 
@@ -115,35 +151,37 @@ class AdminSalesDashboardView(APIView):
             return error
 
         branches = _selected_branches(request, company)
+        tz = _company_tz(company)
         today = _company_today(company)
 
         return Response({
             'company': {'id': company.pk, 'name': company.name},
             'branches': [{'id': b.pk, 'name': b.name} for b in branches],
             'today': today.isoformat(),
-            'kpis': self._kpis(company, branches, today),
-            'channels': self._channels(company, branches, today),
-            'trend': self._trend(company, branches, today),
-            'top_products': self._top_products(company, branches, today),
+            'timezone': str(tz),
+            'kpis': self._kpis(company, branches, today, tz),
+            'channels': self._channels(company, branches, today, tz),
+            'trend': self._trend(company, branches, today, tz),
+            'top_products': self._top_products(company, branches, today, tz),
             'stock_alerts': self._stock_alerts(request, company, branches),
         })
 
     # -- money ------------------------------------------------------------
 
-    def _kpis(self, company, branches, today):
+    def _kpis(self, company, branches, today, tz):
         """
         Turnover and volume. PAID only — an abandoned checkout is not a sale.
         """
         out = {}
         for window in (1, *_WINDOWS):
             since = today - timedelta(days=window - 1)
-            agg = _paid_orders(company, branches, since).aggregate(
+            agg = _paid_orders(company, branches, since, tz=tz, until=today).aggregate(
                 revenue=Coalesce(Sum('total', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
                 orders=Count('pk'),
                 ticket=Coalesce(Avg('total', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
             )
             units = OrderItem.objects.filter(
-                order__in=_paid_orders(company, branches, since)
+                order__in=_paid_orders(company, branches, since, tz=tz, until=today)
             ).aggregate(u=Coalesce(Sum('quantity'), 0))['u']
             key = 'today' if window == 1 else f'last_{window}d'
             out[key] = {
@@ -154,7 +192,7 @@ class AdminSalesDashboardView(APIView):
             }
         return out
 
-    def _channels(self, company, branches, today, window=30):
+    def _channels(self, company, branches, today, tz, window=30):
         """
         POS versus online, reported separately for each metric.
 
@@ -164,7 +202,7 @@ class AdminSalesDashboardView(APIView):
         actually wants.
         """
         since = today - timedelta(days=window - 1)
-        base = _paid_orders(company, branches, since)
+        base = _paid_orders(company, branches, since, tz=tz, until=today)
         rows = (
             base.values('sales_channel')
             .annotate(
@@ -192,12 +230,15 @@ class AdminSalesDashboardView(APIView):
             }
         return {'window_days': window, 'by_channel': by_channel}
 
-    def _trend(self, company, branches, today, window=30):
+    def _trend(self, company, branches, today, tz, window=30):
         """Daily revenue, with days of no trade present as zero."""
         since = today - timedelta(days=window - 1)
         rows = (
-            _paid_orders(company, branches, since)
-            .annotate(day=TruncDate('paid_at'))
+            _paid_orders(company, branches, since, tz=tz, until=today)
+            # TruncDate in the TENANT's zone. Without the tzinfo argument this
+            # buckets by the connection's timezone, so a shop in Tokyo would see
+            # its evening trade attributed to the following day.
+            .annotate(day=TruncDate('paid_at', tzinfo=tz))
             .values('day')
             .annotate(
                 revenue=Coalesce(Sum('total', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
@@ -224,7 +265,7 @@ class AdminSalesDashboardView(APIView):
 
     # -- units ------------------------------------------------------------
 
-    def _top_products(self, company, branches, today, window=30, limit=10):
+    def _top_products(self, company, branches, today, tz, window=30, limit=10):
         """
         Best sellers, ranked by units that PHYSICALLY left the shelf.
 
@@ -237,12 +278,15 @@ class AdminSalesDashboardView(APIView):
         if not branch_ids:
             return {'window_days': window, 'results': []}
 
+        window_start, _ = _day_bounds(since, tz)
+        _, window_end = _day_bounds(today, tz)
         units_rows = (
             StockMovement.objects
             .filter(
                 branch_id__in=branch_ids,
                 movement_type=StockMovement.SALE_EXIT,
-                created_at__date__gte=since,
+                created_at__gte=window_start,
+                created_at__lt=window_end,
             )
             .values('product_id', 'product__name')
             .annotate(units=Coalesce(Sum('quantity'), 0))
@@ -257,7 +301,10 @@ class AdminSalesDashboardView(APIView):
         revenue = {
             r['product_id']: r['revenue']
             for r in OrderItem.objects
-            .filter(order__in=_paid_orders(company, branches, since), product_id__in=product_ids)
+            .filter(
+                order__in=_paid_orders(company, branches, since, tz=tz, until=today),
+                product_id__in=product_ids,
+            )
             .values('product_id')
             .annotate(revenue=Coalesce(
                 Sum(F('quantity') * F('price'), output_field=_MONEY),
@@ -273,7 +320,26 @@ class AdminSalesDashboardView(APIView):
         ):
             stock[row.product_id] = stock.get(row.product_id, 0) + row.quantity
 
-        demand = forecasting.collect_demand(branch_ids, today=today)
+        demand = forecasting.collect_demand(branch_ids, today=today, tz=tz)
+
+        # WHEN EACH ARTICLE STARTED BEING STOCKED, per product, across the
+        # branches in view. Without this the aggregate coverage would start at
+        # the product's FIRST SALE and delete every genuine zero before it —
+        # the same defect `_history_start` was carrying, arriving by a different
+        # door. The earliest BranchStock row is when this company began tracking
+        # the article, which is the honest lower bound.
+        tracked = {}
+        for row in (
+            inventory_services.branch_stock_queryset(branches)
+            .filter(product_id__in=product_ids)
+        ):
+            if row.created_at is None:
+                continue
+            day = row.created_at.date()
+            current = tracked.get(row.product_id)
+            if current is None or day < current:
+                tracked[row.product_id] = day
+
         coverage = {}
         for pid in product_ids:
             merged = forecasting.DemandSeries()
@@ -286,7 +352,9 @@ class AdminSalesDashboardView(APIView):
                     series.first_observed and series.first_observed < merged.first_observed
                 ):
                     merged.first_observed = series.first_observed
-            f = forecasting.forecast_for(merged, today=today)
+            f = forecasting.forecast_for(
+                merged, today=today, tracked_since=tracked.get(pid),
+            )
             on_hand = stock.get(pid, 0)
             coverage[pid] = (
                 round(on_hand / f['daily'], 1)
@@ -353,8 +421,9 @@ class AdminSalesReplenishmentView(APIView):
             )
 
         branches = _selected_branches(request, company)
+        tz = _company_tz(company)
         today = _company_today(company)
-        rows = forecasting.build_replenishment_report(branches, today=today)
+        rows = forecasting.build_replenishment_report(branches, today=today, tz=tz)
 
         risk = request.query_params.get('risk')
         if risk:
@@ -363,10 +432,14 @@ class AdminSalesReplenishmentView(APIView):
         # Transfer opportunities, computed only for rows that need units and
         # only across branches this caller may see.
         needing = [r for r in rows if r['suggested_quantity'] > 0][:40]
-        for row in needing:
-            row['transfer_options'] = self._transfer_options(
-                branches, row['product_id'], row['branch_id'],
-            )
+        if needing:
+            # Collected once for every source branch, rather than per row.
+            source_demand = forecasting.collect_demand(branches, today=today, tz=tz)
+            for row in needing:
+                row['transfer_options'] = self._transfer_options(
+                    branches, row['product_id'], row['branch_id'],
+                    demand=source_demand, today=today,
+                )
 
         return Response({
             'today': today.isoformat(),
@@ -382,13 +455,15 @@ class AdminSalesReplenishmentView(APIView):
             'results': rows,
         })
 
-    def _transfer_options(self, branches, product_id, exclude_branch_id):
+    def _transfer_options(self, branches, product_id, exclude_branch_id, *,
+                          demand=None, today=None):
         """
         Branches that could spare units — a suggestion, never an action.
 
-        Nothing is reserved and no transfer is opened. Emptying one shop to fill
-        another is the same shortage in a different postcode, so the surplus is
-        computed conservatively (see `surplus_for_transfer`).
+        The SOURCE branch is measured with the same arithmetic as the
+        destination: its own demand, its own lead time, its own reorder point.
+        Anything less would solve one shortage by opening another in a shop
+        nobody was looking at.
         """
         options = []
         rows = (
@@ -398,7 +473,18 @@ class AdminSalesReplenishmentView(APIView):
             .select_related('branch')
         )
         for row in rows:
-            surplus = forecasting.surplus_for_transfer(row)
+            source_forecast = None
+            if demand is not None and today is not None:
+                series = demand.get(
+                    (row.branch_id, row.product_id), forecasting.DemandSeries(),
+                )
+                source_forecast = forecasting.forecast_for(
+                    series, today=today,
+                    tracked_since=row.created_at.date() if row.created_at else None,
+                )
+            surplus = forecasting.surplus_for_transfer(
+                row, forecast=source_forecast, today=today,
+            )
             if surplus > 0:
                 options.append({
                     'branch_id': row.branch_id,

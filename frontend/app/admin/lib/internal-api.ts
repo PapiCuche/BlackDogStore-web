@@ -808,6 +808,8 @@ export async function posSale(
     customer?: number | null;
     payment_method: string;
     idempotency_key: string;
+    /** The operator asserting they explained the terms. The backend requires it. */
+    terms_confirmed: boolean;
   },
 ): Promise<PosSaleResult> {
   const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";

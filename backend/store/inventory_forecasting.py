@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
@@ -111,7 +111,7 @@ class DemandSeries:
         )
 
 
-def collect_demand(branches, *, today: date, days: int = LONG_WINDOW):
+def collect_demand(branches, *, today: date, days: int = LONG_WINDOW, tz=None):
     """
     Daily sale-exit units per (branch, product) over the window, in ONE query.
 
@@ -128,15 +128,28 @@ def collect_demand(branches, *, today: date, days: int = LONG_WINDOW):
 
     since = today - timedelta(days=days - 1)
 
+    # BUCKETED IN THE TENANT'S ZONE, not the connection's.
+    #
+    # `created_at__date` and a bare `TruncDate` both use the database
+    # connection's timezone. For a shop whose day ends fourteen hours away from
+    # the server's, that silently files an evening's sales under the next day —
+    # which shifts every average, every coverage figure and every reorder point
+    # by one day's worth of demand.
+    from django.utils import timezone as _tz
+
+    tz = tz or _tz.get_default_timezone()
+    start = datetime.combine(since, time.min, tzinfo=tz)
+    end = datetime.combine(today, time.min, tzinfo=tz) + timedelta(days=1)
+
     rows = (
         StockMovement.objects
         .filter(
             branch_id__in=branch_ids,
             movement_type=StockMovement.SALE_EXIT,
-            created_at__date__gte=since,
-            created_at__date__lte=today,
+            created_at__gte=start,
+            created_at__lt=end,
         )
-        .annotate(day=TruncDate('created_at'))
+        .annotate(day=TruncDate('created_at', tzinfo=tz))
         .values('branch_id', 'product_id', 'day')
         .annotate(units=Sum('quantity'))
         .order_by()
@@ -159,17 +172,33 @@ def _history_start(series: DemandSeries, *, today: date, tracked_since: date | N
     """
     The first day this article could plausibly have sold here.
 
-    A product stocked three days ago has three days of history, not ninety.
-    Padding the earlier eighty-seven with zeros would divide its real sales by
-    thirty and report a brand-new bestseller as barely moving.
+    TWO OPPOSITE MISTAKES, and the rule threads between them.
+
+    Reaching back before the article was stocked invents zeros: a product added
+    five days ago is not a slow seller because it failed to sell during the
+    eighty-five days it did not exist.
+
+    Starting at the FIRST SALE deletes real zeros, and that is the error this
+    function shipped with. A product tracked for thirty days whose first sale was
+    three days ago has THIRTY days of demand history — twenty-seven of them
+    genuinely zero. Beginning at the first sale reported it as selling every day
+    since it arrived, inflating the forecast roughly tenfold, and every number
+    downstream inherited that: coverage collapsed, the reorder point ballooned,
+    and the shop was told to buy stock it did not need.
+
+    So `tracked_since` — when the branch actually began stocking it — is the
+    lower bound whenever it is known. `first_observed` is only a fallback for
+    the case where nothing better exists, and even then it is the honest answer:
+    without a stocking date, the first movement is the earliest moment this
+    article is known to have been here.
     """
     window_start = today - timedelta(days=LONG_WINDOW - 1)
-    candidates = [window_start]
+
     if tracked_since is not None:
-        candidates.append(max(tracked_since, window_start))
+        return max(tracked_since, window_start)
     if series.first_observed is not None:
-        candidates.append(max(series.first_observed, window_start))
-    return max(candidates)
+        return max(series.first_observed, window_start)
+    return window_start
 
 
 def _window_average(series: DemandSeries, *, today: date, window: int, start: date):
@@ -320,19 +349,37 @@ def replenishment_for(row: BranchStock, forecast: dict, *, today: date):
     }
 
 
-def surplus_for_transfer(row: BranchStock) -> int:
+def surplus_for_transfer(row: BranchStock, *, forecast: dict | None = None,
+                        today: date | None = None) -> int:
     """
     How much this branch could give up without creating a problem of its own.
 
-    Conservative on purpose: a branch keeps whichever of its own thresholds is
-    highest. Emptying one shop to fill another is not a solution, it is the same
-    shortage in a different postcode.
+    THE SOURCE BRANCH GETS THE SAME ARITHMETIC AS THE DESTINATION.
+
+    The first version reserved `max(target, minimum, safety)` and ignored the
+    source's own reorder point, which is the one number that accounts for how
+    fast IT sells and how long ITS resupply takes. A busy shop with
+    `target=10` and a reorder point of 18 was reported as having ten units to
+    spare while sitting two above the level at which it should be restocking
+    itself. The transfer would have solved one shortage by creating another, in
+    a branch nobody was looking at.
+
+    When the source has no usable forecast, or no lead time configured, the
+    reserve falls back to its configured thresholds — never to zero. Missing
+    information is a reason to keep stock, not to give it away.
     """
     reserve = max(row.target_stock, row.minimum_stock, row.safety_stock)
+
+    if forecast is not None and today is not None:
+        plan = replenishment_for(row, forecast, today=today)
+        if plan['reorder_point'] is not None:
+            reserve = max(reserve, plan['reorder_point'])
+
     return max(row.quantity - reserve, 0)
 
 
-def build_replenishment_report(branches, *, today: date | None = None, limit: int = 200):
+def build_replenishment_report(branches, *, today: date | None = None, limit: int = 200,
+                               tz=None):
     """
     The replenishment table: one row per (branch, product) worth acting on.
 
@@ -345,7 +392,7 @@ def build_replenishment_report(branches, *, today: date | None = None, limit: in
     if not branch_ids:
         return []
 
-    demand = collect_demand(branch_ids, today=today)
+    demand = collect_demand(branch_ids, today=today, tz=tz)
 
     rows = (
         BranchStock.objects

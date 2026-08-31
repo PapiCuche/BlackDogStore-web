@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
@@ -66,6 +67,43 @@ class PosIdempotencyConflict(PosError):
 
 MAX_LINES = 100
 MAX_QUANTITY_PER_LINE = 1000
+MAX_IDEMPOTENCY_KEY = 64
+
+_KEY_ALLOWED = re.compile(r'^[\x21-\x7E]{8,64}$')
+
+
+def validate_idempotency_key(value) -> str:
+    """
+    The key is REQUIRED, and it is never silently repaired.
+
+    Two decisions worth stating, because both are ways this could have been
+    written wrong:
+
+      IT IS NOT OPTIONAL. An empty key meant a sale with no protection at all —
+      the one code path where a double click charges twice. The browser already
+      mints one per basket; the server now refuses to sell without it rather
+      than trusting every client to remember.
+
+      IT IS NOT TRUNCATED. `str(value)[:64]` looks harmless and is not: two
+      distinct 80-character keys that share their first 64 become ONE key, and
+      the second sale is silently answered with the first one's order. A key
+      that is too long is rejected.
+    """
+    if value is None:
+        raise PosValidationError('Falta la clave de idempotencia de la venta.')
+    key = str(value).strip()
+    if not key:
+        raise PosValidationError('Falta la clave de idempotencia de la venta.')
+    if len(key) > MAX_IDEMPOTENCY_KEY:
+        raise PosValidationError(
+            f'La clave de idempotencia supera {MAX_IDEMPOTENCY_KEY} caracteres.'
+        )
+    if not _KEY_ALLOWED.fullmatch(key):
+        raise PosValidationError(
+            'La clave de idempotencia debe tener entre 8 y 64 caracteres '
+            'imprimibles, sin espacios ni saltos de línea.'
+        )
+    return key
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +293,7 @@ def create_pos_sale(
     customer=None,
     payment_method: str = PaymentMethod.CASH,
     idempotency_key: str = '',
+    terms_confirmed: bool = False,
     request=None,
 ):
     """
@@ -281,6 +320,24 @@ def create_pos_sale(
     if payment_method not in PaymentMethod.values:
         raise PosValidationError('Método de pago inválido.')
 
+    # CONSENT IS ASSERTED BY THE OPERATOR, NOT INFERRED FROM THE SALE.
+    #
+    # The first version set `accepted_terms=True` automatically, reasoning that
+    # handing the article over implies acceptance. It does not. Nobody had told
+    # the customer anything, and the order carried a record saying they had
+    # agreed to terms they were never shown.
+    #
+    # What is recorded now is what actually happened: the person at the till
+    # confirmed they explained the conditions and the warranty policy, and the
+    # audit trail already names who that was. That is a true statement about a
+    # real human action. A signature would not be.
+    if terms_confirmed is not True:
+        raise PosValidationError(
+            'Confirma que informaste al cliente las condiciones de venta y la '
+            'política de garantía antes de cobrar.'
+        )
+
+    idempotency_key = validate_idempotency_key(idempotency_key)
     items = normalize_items(items)
     products = resolve_pos_products(company, items)
     customer = resolve_pos_customer(company, customer)
@@ -295,12 +352,11 @@ def create_pos_sale(
     # Same key + same sale  → hand back what was already created.
     # Same key + other sale → refuse. Returning the earlier order would tell the
     #                         caller their new basket was sold when it was not.
-    if idempotency_key:
-        existing = _existing_for_key(company, idempotency_key)
-        if existing is not None:
-            if existing.pos_request_fingerprint == fingerprint:
-                return existing, False
-            raise PosIdempotencyConflict(existing)
+    existing = _existing_for_key(company, idempotency_key)
+    if existing is not None:
+        if existing.pos_request_fingerprint == fingerprint:
+            return existing, False
+        raise PosIdempotencyConflict(existing)
 
     subtotal = Decimal('0.00')
     lines = []
@@ -325,8 +381,8 @@ def create_pos_sale(
         sales_channel=SalesChannel.POS,
         payment_method=payment_method,
         sold_by=actor if getattr(actor, 'is_authenticated', False) else None,
-        pos_idempotency_key=idempotency_key or '',
-        pos_request_fingerprint=fingerprint if idempotency_key else '',
+        pos_idempotency_key=idempotency_key,
+        pos_request_fingerprint=fingerprint,
         total=total,
         discount_amount=Decimal('0.00'),
         status=Order.Status.PAID,
@@ -344,18 +400,30 @@ def create_pos_sale(
     _customer_snapshot(order, customer)
 
     try:
-        order.save()
+        # NESTED ATOMIC = SAVEPOINT, and it is what makes the recovery below
+        # legal at all.
+        #
+        # An IntegrityError marks the whole transaction for rollback. Catching
+        # it and then querying inside the SAME atomic block raises
+        # TransactionManagementError instead of answering — the connection
+        # refuses further work until the block unwinds. Wrapping just this
+        # INSERT means the failure rolls back to the savepoint, the outer
+        # transaction stays usable, and the read afterwards is a real read.
+        with transaction.atomic():
+            order.save()
     except IntegrityError:
         # Two tills, one key, at the same instant: the unique constraint picks a
         # winner. Re-read rather than fail — the winner's order is the one this
         # request was asking for.
-        if idempotency_key:
-            existing = _existing_for_key(company, idempotency_key)
-            if existing is not None:
-                if existing.pos_request_fingerprint == fingerprint:
-                    return existing, False
-                raise PosIdempotencyConflict(existing)
-        raise
+        existing = _existing_for_key(company, idempotency_key)
+        if existing is None:
+            # The collision was NOT this constraint. Some other invariant was
+            # violated and swallowing it here would turn a real defect into a
+            # confusing "sale not created" with no explanation anywhere.
+            raise
+        if existing.pos_request_fingerprint != fingerprint:
+            raise PosIdempotencyConflict(existing)
+        return existing, False
 
     OrderItem.objects.bulk_create([
         OrderItem(order=order, product=product, quantity=quantity, price=unit_price)

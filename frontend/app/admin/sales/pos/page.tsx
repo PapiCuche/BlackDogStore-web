@@ -22,6 +22,13 @@
  *   THE BROWSER NEVER DECIDES A PRICE. It shows one so the operator can read a
  *   total aloud; the server charges from its own catalogue.
  *
+ *   THE TERMS BOX IS TICKED BY A PERSON, EVERY TIME. The order records that
+ *   the conditions and the warranty policy were explained and accepted, and
+ *   the first version asserted that automatically on the grounds that handing
+ *   the article over implies it. It does not — nobody had said anything to the
+ *   customer. What is recorded now is a statement the operator actually made,
+ *   and the audit trail already names them.
+ *
  *   ONE IDEMPOTENCY KEY PER BASKET. Minted when the basket becomes non-empty,
  *   retired only after a confirmed sale. A double click, a timeout, or a
  *   retried request therefore carries the SAME key, and the backend answers
@@ -86,6 +93,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [charging, setCharging] = useState(false);
   const [done, setDone] = useState<PosSaleResult | null>(null);
+  // Unticked on every new basket. The record this produces says a person
+  // confirmed they explained the terms, so it has to be a person's act.
+  const [terms, setTerms] = useState(false);
 
   const [scan, setScan] = useState("");
   const [term, setTerm] = useState("");
@@ -208,7 +218,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   }
 
   async function charge() {
-    if (charging || !lines.length || branch === null) return;
+    if (charging || !lines.length || branch === null || !terms) return;
     setCharging(true);
     setFeedback(null);
     try {
@@ -217,9 +227,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         items: lines.map((l) => ({ product: l.product, quantity: l.quantity })),
         payment_method: payment,
         idempotency_key: keyRef.current,
+        terms_confirmed: terms,
       });
       setDone(result);
       setLines([]);
+      setTerms(false);
       // A new basket gets a new key. Retiring it only HERE is what makes a
       // retry of the request above idempotent rather than a second sale.
       keyRef.current = newKey();
@@ -531,9 +543,23 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               <span className="font-display text-2xl text-white">{money(total)}</span>
             </div>
 
+            <label className="flex items-start gap-2 border-t border-white/[0.06] pt-3 text-xs text-zinc-400">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={terms}
+                disabled={charging}
+                onChange={(e) => setTerms(e.target.checked)}
+              />
+              <span>
+                Confirmo que informé al cliente las condiciones de venta y la
+                política de garantía, y que fueron aceptadas.
+              </span>
+            </label>
+
             <button
               type="button"
-              disabled={charging || lines.length === 0 || branch === null}
+              disabled={charging || lines.length === 0 || branch === null || !terms}
               onClick={() => void charge()}
               className="w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:border-emerald-500/50 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-transparent disabled:text-zinc-600"
             >
