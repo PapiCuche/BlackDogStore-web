@@ -21,6 +21,8 @@ import {
 
 type Props = {
   access: ModuleAccessContext;
+  /** The company being operated. Phase 3: the sidebar names IT, not a constant. */
+  companyName?: string | null;
   /** Mobile drawer only: closes the panel after navigating. */
   onNavigate?: () => void;
   onClose?: () => void;
@@ -31,7 +33,12 @@ function isActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export function InternalSidebarContent({ access, onNavigate, onClose }: Props) {
+export function InternalSidebarContent({
+  access,
+  companyName,
+  onNavigate,
+  onClose,
+}: Props) {
   const pathname = usePathname();
   const groups = navigableGroups(access);
 
@@ -49,7 +56,9 @@ export function InternalSidebarContent({ access, onNavigate, onClose }: Props) {
           <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-zinc-500">
             Control interno
           </p>
-          <p className="mt-0.5 text-sm font-semibold text-white">Black Dog Store</p>
+          {companyName ? (
+            <p className="mt-0.5 text-sm font-semibold text-white">{companyName}</p>
+          ) : null}
         </div>
         {onClose && (
           <button
@@ -120,11 +129,17 @@ export function InternalSidebarContent({ access, onNavigate, onClose }: Props) {
 }
 
 /** Desktop: sticky rail. Hidden below lg, where the drawer takes over. */
-export function InternalSidebar({ access }: { access: ModuleAccessContext }) {
+export function InternalSidebar({
+  access,
+  companyName,
+}: {
+  access: ModuleAccessContext;
+  companyName?: string | null;
+}) {
   return (
     <aside className="hidden w-[260px] shrink-0 border-r border-white/[0.06] bg-[#080808] lg:block">
       <div className="sticky top-0 h-screen">
-        <InternalSidebarContent access={access} />
+        <InternalSidebarContent access={access} companyName={companyName} />
       </div>
     </aside>
   );
@@ -133,10 +148,12 @@ export function InternalSidebar({ access }: { access: ModuleAccessContext }) {
 /** Mobile: drawer over a dimmed backdrop. */
 export function MobileSidebar({
   access,
+  companyName,
   open,
   onClose,
 }: {
   access: ModuleAccessContext;
+  companyName?: string | null;
   open: boolean;
   onClose: () => void;
 }) {
@@ -150,7 +167,12 @@ export function MobileSidebar({
         className="absolute inset-0 h-full w-full bg-black/70"
       />
       <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-white/10 bg-[#080808]">
-        <InternalSidebarContent access={access} onNavigate={onClose} onClose={onClose} />
+        <InternalSidebarContent
+          access={access}
+          companyName={companyName}
+          onNavigate={onClose}
+          onClose={onClose}
+        />
       </div>
     </div>
   );

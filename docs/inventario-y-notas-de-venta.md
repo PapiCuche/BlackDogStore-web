@@ -167,8 +167,13 @@ Reglas:
 - Solo para órdenes con `status = paid`. `pending_payment`, `failed`, `expired`
   y `cancelled` reciben `400`.
 - Una nota por orden (`OneToOneField`). Emitirla dos veces devuelve la misma
-  (`201` la primera vez, `200` después).
-- El correlativo es **interno**, asignado bajo la transacción que bloquea la orden.
+  (`201` la primera vez, `200` después) y **no consume un segundo número**.
+- El correlativo es **interno** y sale de la serie de la empresa
+  (`InternalSequence`, Fase 2E), asignado bajo la misma transacción que bloquea
+  la orden. El prefijo y el ancho son configurables por tenant, así que
+  `NV-000001` es el valor por defecto y no una constante del producto.
+- **Cada empresa numera desde su propio 1.** Dos empresas pueden tener cada una
+  su `NV-000001`; ninguna ve la actividad de la otra en sus números.
 - Emitir o descargar una nota **no modifica el pago ni el inventario**.
 
 ### Lo que la nota NO es
@@ -228,6 +233,41 @@ No afectan al webhook, al checkout, al carrito, a la autenticación ni a los ema
 
 ---
 
+## 10-bis. Actualización — Fase 2D (inventario multisucursal)
+
+Lo descrito arriba sigue siendo cierto, con **una excepción estructural**: el
+stock ya no es un entero por producto.
+
+```
+ANTES (6.0)                        AHORA (2D)
+Product.inventory  ← la verdad     BranchStock(branch, product).quantity ← la verdad
+                                   Product.inventory  ← agregado de compatibilidad
+```
+
+Consecuencias sobre lo que este documento describe:
+
+| Sección | Cambio |
+|---|---|
+| 1. Sistema de inventario | Toda escritura necesita una **sucursal**. `create_stock_movement(branch=…, …)`. |
+| 2. Tipos de movimiento | Se añaden `transfer_out` y `transfer_in`. Ninguno de los dos puede registrarse a mano. |
+| 3. Kardex | `stock_before` / `stock_after` son el saldo **de esa sucursal**, no de la empresa. |
+| 4. Idempotencia de ventas | La clave sigue siendo `(order, product)`: un pedido tiene exactamente una sucursal de despacho. La salida se descuenta de `Order.fulfillment_branch`. |
+| 5. Roles y permisos | Las capabilities `inventory.*` gobiernan de verdad, **y** hace falta acceso a la sucursal. Son dos preguntas distintas. |
+| 6. Endpoints | Todos aceptan `?branch=` (o `?branch=all` en lectura) y devuelven `scope` con las sucursales que cubre la respuesta. |
+| 7. Reportes | «Bajo stock» significa «al o por debajo del mínimo de ESA sucursal»; el umbral global queda como fallback. |
+| 8. Notas de venta | Sin cambios. No están scopeadas por sucursal a propósito: son un documento comercial, no una operación de stock. |
+
+**Almacenes múltiples y transferencias**, listados abajo como pendientes,
+**están implementados** — como sucursales, que es la unidad que el negocio ya
+tenía. Lo que sigue pendiente de ese bloque es la recepción parcial y las
+reservas de stock.
+
+Detalle arquitectónico completo, incluidas las decisiones que se negaron a
+adivinar: [saas-multiempresa.md](saas-multiempresa.md), sección
+«8-duodecies. Inventario multisucursal».
+
+---
+
 ## 11. Lo que esta fase todavía NO hace
 
 - Integración real con **SUNAT**.
@@ -237,7 +277,7 @@ No afectan al webhook, al checkout, al carrito, a la autenticación ni a los ema
 - Compras y proveedores.
 - Costeo promedio ponderado / Kardex valorizado.
 - Lote, número de serie o IMEI.
-- Múltiples almacenes.
+- ~~Múltiples almacenes.~~ → **implementado en la Fase 2D** como sucursales.
 
 ---
 
@@ -258,10 +298,12 @@ No afectan al webhook, al checkout, al carrito, a la autenticación ni a los ema
 10. Garantía individual por equipo.
 
 **Almacenes y reservas**
-11. Transferencias entre almacenes.
-12. Almacenes múltiples: tienda · depósito · técnico.
-13. Reservas de stock.
-14. Stock comprometido en órdenes pendientes.
+11. ~~Transferencias entre almacenes.~~ → **implementado en 2D**. Falta la
+    recepción parcial y anular una transferencia ya despachada.
+12. ~~Almacenes múltiples.~~ → **implementado en 2D** como sucursales.
+13. Reservas de stock. **PENDIENTE.**
+14. Stock comprometido en órdenes pendientes. **PENDIENTE** — hoy el stock se
+    descuenta al confirmar el pago, no al iniciar el checkout.
 
 **Reportes y finanzas**
 15. Reporte de rotación.

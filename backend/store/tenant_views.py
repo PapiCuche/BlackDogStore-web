@@ -29,7 +29,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .company_provisioning import ProvisioningError, provision_company_access_defaults
-from .models import AdminAuditLog, Branch, Company, Membership
+from .models import AdminAuditLog, Branch, Company, Membership, MembershipBranchAccess
 from .permissions import HasCompanyMembership, IsPlatformAdmin
 from .serializers import (
     BranchSerializer,
@@ -67,6 +67,74 @@ _ROLE_NOT_GRANTABLE = (
     'No tienes autoridad para asignar ese rol. El rol "superadmin" es un valor '
     'heredado y solo un administrador de plataforma puede asignarlo.'
 )
+
+
+# ---------------------------------------------------------------------------
+# Branch access administration — Phase 2D
+# ---------------------------------------------------------------------------
+#
+# CAPABILITY DELEGATION AND BRANCH ACCESS ARE KEPT APART.
+#
+# `memberships.manage` lets an administrator say WHAT someone may do. This
+# section lets them say WHERE. Conflating them would mean that granting
+# somebody the inventory role also handed them every shop, which is precisely
+# the decision a chain needs to make separately.
+#
+# A company administrator may only grant branches OF THEIR OWN COMPANY: the
+# queryset below never leaves `membership.company`, so a branch id from another
+# tenant is not rejected by a check that could be forgotten — it is simply not
+# in the set being searched.
+
+def _apply_branch_access(membership, branch_ids, actor):
+    """
+    Replace a membership's branch grants with `branch_ids`.
+
+    Returns `(applied_ids, error_response)`. An id outside the membership's own
+    company answers as not-found, exactly like one that does not exist.
+
+    Grants are DEACTIVATED rather than deleted, and reactivated when re-granted.
+    Deleting would lose who granted what and when, which is the first thing
+    anyone asks after an access incident.
+    """
+    branches = list(Branch.objects.filter(
+        company=membership.company, pk__in=branch_ids,
+    ))
+    found = {b.pk for b in branches}
+    missing = [i for i in branch_ids if i not in found]
+    if missing:
+        return None, Response(
+            {'detail': 'Sucursal no encontrada o sin acceso.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    with transaction.atomic():
+        membership.branch_access.exclude(branch_id__in=found).update(is_active=False)
+        for branch in branches:
+            access, created = MembershipBranchAccess.objects.get_or_create(
+                membership=membership, branch=branch,
+                defaults={'is_active': True, 'granted_by': actor},
+            )
+            if not created and not access.is_active:
+                access.is_active = True
+                access.granted_by = actor
+                access.save(update_fields=['is_active', 'granted_by', 'updated_at'])
+
+    return sorted(found), None
+
+
+def _validate_default_branch(membership):
+    """
+    Clear a default branch the member can no longer reach.
+
+    A stale pointer is not a security hole — every read filters through
+    visible_branches() — but leaving it would make the UI open on a branch that
+    then answers 404, which reads as a bug rather than as a revoked grant.
+    """
+    from .tenancy import has_branch_access
+
+    if membership.branch_id and not has_branch_access(membership.user, membership.branch):
+        membership.branch = None
+        membership.save(update_fields=['branch', 'updated_at'])
 
 
 class AdminCompanyListView(APIView):
@@ -163,6 +231,10 @@ class AdminCompanyDetailView(APIView):
         if not company:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
+        # Phase 2D: `default_inventory_branch` decides which shelf the online
+        # store sells from, so it is validated against THIS company's branches
+        # by CompanySerializer — a branch id from another tenant is rejected as
+        # an invalid choice, not silently stored.
         ser = CompanySerializer(company, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         updated = ser.save()
@@ -177,6 +249,80 @@ class AdminCompanyDetailView(APIView):
             company=updated,
         )
         return Response(CompanySerializer(updated).data)
+
+
+class AdminCompanyFulfillmentBranchView(APIView):
+    """
+    PATCH /api/admin/companies/{pk}/fulfillment-branch/
+    Body: {"branch": <id|null>}
+
+    WHY THIS IS ITS OWN ENDPOINT.
+    `PATCH /api/admin/companies/{pk}/` is platform-administrator only, and stays
+    that way: it can flip `is_active`, rename a tenant and change its slug, which
+    are platform decisions. But WHICH BRANCH THE ONLINE STORE SHIPS FROM is an
+    operational decision that belongs to the business, not to the platform
+    operator — a company that opens a second shop must be able to say where its
+    web orders come from without filing a ticket.
+
+    So the one operational field Phase 2D added gets its own door, gated by
+    `company.manage` inside that company. Everything else on Company keeps the
+    authority it had.
+
+    `null` clears it, and that is a legitimate choice with a visible
+    consequence: with more than one active branch and no default, checkout
+    refuses and says so. It never falls back to "some branch".
+    """
+
+    permission_classes = [permissions.IsAuthenticated, HasCompanyMembership]
+    throttle_classes = [AdminUsersThrottle]
+
+    def patch(self, request, pk):
+        company = visible_companies(request.user).filter(pk=pk).first()
+        if not company:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        if not can_manage_company(request.user, company):
+            return Response(
+                {'detail': 'Se requiere rol de administrador de la empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        raw = request.data.get('branch', None)
+        branch = None
+        if raw not in (None, ''):
+            # Untrusted id: it may only SELECT among this company's own branches.
+            # Searching inside `company.branches` means a foreign id is not
+            # rejected by a check that could be forgotten — it is simply not in
+            # the set being searched.
+            branch = Branch.objects.filter(company=company, pk=raw).first()
+            if branch is None:
+                return Response(
+                    {'branch': ['Sucursal no encontrada en esta empresa.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not branch.is_active:
+                return Response(
+                    {'branch': ['La sucursal de despacho debe estar activa.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        previous = company.default_inventory_branch_id
+        company.default_inventory_branch = branch
+        company.save(update_fields=['default_inventory_branch', 'updated_at'])
+
+        AdminAuditLog.log(
+            actor=request.user,
+            action='company_fulfillment_branch_changed',
+            target_type='company',
+            target_id=company.pk,
+            metadata={
+                'company_id': company.pk,
+                'old_branch_id': previous,
+                'new_branch_id': company.default_inventory_branch_id,
+            },
+            request=request,
+            company=company,
+        )
+        return Response(CompanySerializer(company).data)
 
 
 class AdminBranchListView(APIView):
@@ -226,6 +372,89 @@ class AdminBranchListView(APIView):
             company=company,
         )
         return Response(BranchSerializer(branch).data, status=status.HTTP_201_CREATED)
+
+
+class AdminBranchDetailView(APIView):
+    """
+    GET   /api/admin/branches/{pk}/
+    PATCH /api/admin/branches/{pk}/ — name, address, phone, email, is_active.
+
+    Closes the Phase 2D debt: branches could be created and listed but never
+    edited, so a shop that moved had no way to correct its own address — the one
+    that then prints on every pickup receipt.
+
+    `company` is absent from the writable set. A branch cannot be moved to
+    another tenant, and it is not prevented by a check that could be forgotten:
+    the field is simply never read from the payload.
+
+    STOCK IS NOT MANAGED HERE. Deactivating a branch does not move, release or
+    delete its stock; those units stay on that shelf and stop being sellable,
+    which is what "this shop is closed" means. Moving them is a transfer.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, HasCompanyMembership]
+    throttle_classes = [AdminUsersThrottle]
+
+    _WRITABLE = ('name', 'address', 'phone', 'email', 'is_active')
+
+    def _scoped(self, request, pk):
+        return scope_queryset(
+            Branch.objects.select_related('company'), request.user,
+        ).filter(pk=pk).first()
+
+    def get(self, request, pk):
+        branch = self._scoped(request, pk)
+        if not branch:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        return Response(BranchSerializer(branch).data)
+
+    def patch(self, request, pk):
+        branch = self._scoped(request, pk)
+        if not branch:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        if not can_manage_company(request.user, branch.company):
+            return Response(
+                {'detail': 'Se requiere rol de administrador de la empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        ser = BranchSerializer(
+            branch,
+            data={k: v for k, v in payload.items() if k in self._WRITABLE},
+            partial=True,
+        )
+        ser.is_valid(raise_exception=True)
+        before = {f: getattr(branch, f) for f in self._WRITABLE}
+        updated = ser.save()
+
+        changed = [f for f in self._WRITABLE if before[f] != getattr(updated, f)]
+
+        # Deactivating the branch the storefront ships from would leave checkout
+        # refusing every order with no explanation on this screen. Clear the
+        # pointer and say so, rather than leaving a dangling one.
+        cleared_fulfillment = False
+        if not updated.is_active and updated.company.default_inventory_branch_id == updated.pk:
+            updated.company.default_inventory_branch = None
+            updated.company.save(update_fields=['default_inventory_branch', 'updated_at'])
+            cleared_fulfillment = True
+
+        if changed:
+            AdminAuditLog.log(
+                actor=request.user,
+                action='branch_updated',
+                target_type='branch',
+                target_id=updated.pk,
+                metadata={
+                    'branch_id': updated.pk,
+                    'company_id': updated.company_id,
+                    'changed_fields': changed,
+                    'cleared_fulfillment_branch': cleared_fulfillment,
+                },
+                request=request,
+                company=updated.company,
+            )
+        return Response(BranchSerializer(updated).data)
 
 
 class AdminMembershipListView(APIView):
@@ -300,13 +529,29 @@ class AdminMembershipListView(APIView):
                 {'detail': _TARGET_USER_UNAVAILABLE}, status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Phase 2D. Default ALL, matching what a membership meant before this
+        # phase: nothing restricted these people by branch, and creating them
+        # restricted by surprise would be a silent narrowing.
+        access_mode = data.get('branch_access_mode', Membership.ACCESS_MODE_ALL)
+
         membership = Membership.objects.create(
             user=target_user,
             company=company,
             role=data['role'],
             branch=branch,
+            branch_access_mode=access_mode,
             is_active=data.get('is_active', True),
         )
+
+        granted = None
+        if 'branch_access' in data:
+            granted, access_error = _apply_branch_access(
+                membership, data['branch_access'], request.user,
+            )
+            if access_error:
+                # The membership is not left half-configured.
+                membership.delete()
+                return access_error
 
         AdminAuditLog.log(
             actor=request.user,
@@ -318,6 +563,8 @@ class AdminMembershipListView(APIView):
                 'company_id': company.pk,
                 'user_id': target_user.pk,
                 'role': membership.role,
+                'branch_access_mode': membership.branch_access_mode,
+                'branch_access': granted,
             },
             request=request,
             company=company,
@@ -400,8 +647,22 @@ class AdminMembershipDetailView(APIView):
             membership.role = data['role']
         if 'is_active' in data:
             membership.is_active = data['is_active']
+        if 'branch_access_mode' in data:
+            membership.branch_access_mode = data['branch_access_mode']
 
         membership.save()
+
+        # Grants are applied AFTER the mode, so a single request can switch
+        # somebody to SELECTED and name their branches at the same time.
+        granted = None
+        if 'branch_access' in data:
+            granted, access_error = _apply_branch_access(
+                membership, data['branch_access'], request.user,
+            )
+            if access_error:
+                return access_error
+
+        _validate_default_branch(membership)
 
         AdminAuditLog.log(
             actor=request.user,
@@ -413,10 +674,13 @@ class AdminMembershipDetailView(APIView):
                 'company_id': membership.company_id,
                 'role': membership.role,
                 'is_active': membership.is_active,
+                'branch_access_mode': membership.branch_access_mode,
+                'branch_access': granted,
             },
             request=request,
             company=membership.company,
         )
+        membership.refresh_from_db()
         return Response(MembershipSerializer(membership).data)
 
 

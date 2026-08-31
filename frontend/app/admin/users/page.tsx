@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AdminGuard } from "../components/AdminGuard";
 import { AdminShell } from "../components/AdminShell";
 import { UsersTable } from "../components/UsersTable";
+import { BranchAccessPanel } from "../components/BranchAccessPanel";
 import {
   fetchAdminUsers,
   changeUserRole,
@@ -95,7 +96,7 @@ function UsersPageContent({ user }: { user: AuthUser }) {
         <div>
           <h1 className="text-xl font-semibold text-white">Usuarios</h1>
           <p className="mt-1 text-sm text-zinc-500">
-            Gestión de cuentas y roles.
+            Gestión de cuentas, roles y acceso por sucursal.
           </p>
         </div>
 
@@ -155,6 +156,12 @@ function UsersPageContent({ user }: { user: AuthUser }) {
             />
           </>
         )}
+
+        {/* Phase 2D — WHERE each person may work.
+            Deliberately a separate section from the role table above: that one
+            edits the legacy global role, this one edits branch scope on the
+            membership. Merging them would suggest the two are one decision. */}
+        <BranchAccessPanel companyId={null} canManage />
       </div>
     </AdminShell>
   );

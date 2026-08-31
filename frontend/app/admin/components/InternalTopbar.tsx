@@ -6,6 +6,11 @@
  * Shows the tenant context the operator is acting in: company, branch scope,
  * their own roles, and the MASTER badge when it applies.
  *
+ * Phase 2D: the branch line is the operator's real SCOPE — their default branch,
+ * or how many they can reach. Choosing which one to act on happens on the
+ * screens that act on one, not here: a global selector would look like authority
+ * and would have to be re-validated on every request anyway.
+ *
  * The MASTER badge comes from `access.is_platform_admin`, which the backend
  * derives from `User.is_superuser` alone — never from a role string called
  * "superadmin", which is a company-scoped legacy value.
@@ -34,6 +39,20 @@ export function InternalTopbar({
   const isMaster = Boolean(access?.is_platform_admin);
   const branch = dashboard?.membership?.branch ?? null;
   const hasCompany = Boolean(dashboard?.company);
+  // Phase 2D: the topbar states the BRANCH SCOPE, which is now a real rule
+  // rather than a placeholder. `Membership.branch` is the default branch — where
+  // the internal control opens — and `inventory.branches` is what the person can
+  // actually reach. There is no branch SELECTOR here on purpose: the choice
+  // belongs to the screens that act on one, and a global selector would imply an
+  // authority the topbar does not have.
+  const reachable = dashboard?.inventory?.branches ?? [];
+  const scopeLabel = branch
+    ? branch.name
+    : reachable.length === 0
+      ? "Sin sucursal"
+      : reachable.length === 1
+        ? reachable[0].name
+        : `${reachable.length} sucursales`;
 
   return (
     <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#0a0a0a]/95 backdrop-blur">
@@ -58,16 +77,17 @@ export function InternalTopbar({
                   <p className="truncate text-sm font-medium text-zinc-200">
                     {dashboard?.company?.name}
                   </p>
-                  {branch ? (
-                    <span className="hidden items-center gap-1 text-xs text-zinc-500 sm:flex">
-                      <IconBranch className="h-3.5 w-3.5" />
-                      {branch.name}
-                    </span>
-                  ) : (
-                    <span className="hidden text-xs text-zinc-600 sm:inline">
-                      Alcance: empresa
-                    </span>
-                  )}
+                  <span
+                    className="hidden items-center gap-1 text-xs text-zinc-500 sm:flex"
+                    title={
+                      reachable.length > 0
+                        ? reachable.map((b) => b.name).join(" · ")
+                        : undefined
+                    }
+                  >
+                    <IconBranch className="h-3.5 w-3.5" />
+                    {scopeLabel}
+                  </span>
                 </div>
               </>
             ) : (

@@ -15,11 +15,16 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     const data = await res.json();
     const product = data[0];
     if (!product) return { title: "Producto no encontrado" };
+    // Phase 3: the shop's name is NOT repeated here. The root layout's title
+    // template (`%s | <tenant>`) appends it, and it knows which tenant owns this
+    // host; hardcoding one here would have branded every storefront's product
+    // pages as the same business.
     return {
       title: product.name,
-      description: product.description || `Compra ${product.name} en Black Dog Store Perú. Repuestos y equipos Apple originales con garantía.`,
+      description:
+        product.description || `Compra ${product.name} en nuestra tienda.`,
       openGraph: {
-        title: `${product.name} | Black Dog Store`,
+        title: product.name,
         description: product.description,
         ...(product.image_url ? { images: [{ url: product.image_url }] } : {}),
       },

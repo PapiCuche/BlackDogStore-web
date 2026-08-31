@@ -1,5 +1,5 @@
 """
-PDF receipt service for Black Dog Store (Phase 4.2).
+PDF receipt service (Phase 4.2), tenant-aware from Phase 3.
 
 Generates an internal purchase document (constancia de compra) for paid orders.
 This is NOT an electronic receipt (comprobante electrónico SUNAT).
@@ -11,6 +11,17 @@ Security rules (hard):
 - Raises ValueError if order is not paid.
 
 PDF is generated in memory (bytes) — no file is written to disk.
+
+PHASE 3 — WHOSE NAME IS ON THE DOCUMENT
+---------------------------------------
+The seller's identity comes from the ORDER, through
+`company_settings.order_identity()`, which prefers the snapshot frozen when the
+sale happened. A receipt reprinted a year later therefore says what it said the
+day it was issued, even if the business has since been renamed or moved.
+
+There are no store constants in this module. A test scans the file to keep it
+that way: re-introducing one would put one company's legal identity on every
+tenant's paperwork.
 """
 
 from __future__ import annotations
@@ -18,12 +29,7 @@ from __future__ import annotations
 import io
 from decimal import Decimal
 
-_STORE_NAME = "Black Dog Store"
-_STORE_LEGAL_NAME = "CMAU CORP E.I.R.L."
-_STORE_RUC = "20610159886"
-_STORE_ADDRESS = "Octavio Muñoz Najar 238, Tienda 104"
-_STORE_CITY = "Arequipa, Perú"
-_STORE_PHONE = "+51 936 449 536"
+from . import company_settings as _company_settings
 
 # This disclaimer must appear visibly on every PDF.
 DISCLAIMER = (
@@ -31,9 +37,11 @@ DISCLAIMER = (
     "No válido como comprobante electrónico SUNAT."
 )
 
-_WARRANTY_NOTE = (
-    "La garantía se aplicará según la condición del producto "
-    "y los términos informados al momento de la compra."
+# NEUTRAL FALLBACK for a tenant that has written no warranty policy. It states
+# that terms exist without inventing them — the previous literal was one
+# business's actual policy, shown to every other business's customers as theirs.
+_GENERIC_WARRANTY_NOTE = (
+    "Consulta las condiciones de garantía con la tienda antes de la entrega."
 )
 
 _DELIVERY_LABELS = {
@@ -105,11 +113,14 @@ def build_order_pdf_context(order) -> dict:
     paid_at_str = order.paid_at.strftime("%d/%m/%Y %H:%M") if order.paid_at else "—"
     created_at_str = order.created_at.strftime("%d/%m/%Y %H:%M") if order.created_at else "—"
 
+    identity = _company_settings.order_identity(order)
+    pickup = _company_settings.order_pickup_location(order)
+
     return {
         # Document metadata
         "title": title,
         "disclaimer": DISCLAIMER,
-        "warranty_note": _WARRANTY_NOTE,
+        "warranty_note": identity.warranty_policy_text or _GENERIC_WARRANTY_NOTE,
         # Order
         "order_id": order.id,
         "created_at": created_at_str,
@@ -135,13 +146,19 @@ def build_order_pdf_context(order) -> dict:
         "coupon_code": order.coupon_code or "",
         # Receipt
         "receipt_label": receipt_label,
-        # Store constants
-        "store_name": _STORE_NAME,
-        "store_legal_name": _STORE_LEGAL_NAME,
-        "store_ruc": _STORE_RUC,
-        "store_address": _STORE_ADDRESS,
-        "store_city": _STORE_CITY,
-        "store_phone": _STORE_PHONE,
+        # Seller identity — from the order's own company, frozen at sale time.
+        "store_name": identity.name,
+        "store_legal_name": identity.legal_name,
+        "store_ruc": identity.tax_id,
+        "store_address": identity.legal_address,
+        "store_city": identity.city,
+        "store_phone": identity.phone,
+        "store_email": identity.contact_email,
+        # The collection point, kept apart from the legal address: one is who
+        # invoices, the other is which door the customer knocks on.
+        "pickup_name": pickup.get("name", ""),
+        "pickup_address": pickup.get("address", ""),
+        "pickup_is_branch": pickup.get("source") == "branch",
     }
 
 
@@ -150,8 +167,28 @@ def build_order_pdf_context(order) -> dict:
 # ---------------------------------------------------------------------------
 
 def get_order_receipt_filename(order) -> str:
-    """Returns a safe ASCII filename for the PDF attachment or download."""
-    return f"blackdog-pedido-{order.id}.pdf"
+    """
+    A safe ASCII filename for the attachment or download.
+
+    Built from the company SLUG, which is already constrained to a URL-safe
+    charset by SlugField, and then filtered again here. The company NAME is
+    deliberately not used: it is free text a tenant types, and it would reach a
+    Content-Disposition header and a filesystem — the two places where a stray
+    slash or quote stops being cosmetic.
+
+    Falls back to `pedido-{id}.pdf` when there is no usable slug.
+    """
+    slug = _safe_slug(getattr(getattr(order, "company", None), "slug", ""))
+    return f"{slug}-pedido-{order.id}.pdf" if slug else f"pedido-{order.id}.pdf"
+
+
+def _safe_slug(value: str, max_length: int = 40) -> str:
+    """Lowercase ASCII letters, digits and hyphens. Everything else is dropped."""
+    cleaned = "".join(
+        ch for ch in str(value or "").lower()
+        if ch.isascii() and (ch.isalnum() or ch == "-")
+    )
+    return cleaned.strip("-")[:max_length]
 
 
 # ---------------------------------------------------------------------------
@@ -194,8 +231,13 @@ def generate_order_receipt_pdf(order) -> bytes:
         leftMargin=2 * cm,
         topMargin=2 * cm,
         bottomMargin=2 * cm,
-        title=f"Pedido #{order.id} — {_STORE_NAME}",
-        author=_STORE_NAME,
+        # PDF metadata carries the tenant's name too — it is what a reader sees
+        # in their viewer's title bar and in the document properties.
+        title=(
+            f"Pedido #{order.id} — {ctx['store_name']}"
+            if ctx["store_name"] else f"Pedido #{order.id}"
+        ),
+        author=ctx["store_name"] or "",
     )
 
     base = getSampleStyleSheet()

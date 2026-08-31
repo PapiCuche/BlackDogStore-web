@@ -646,6 +646,8 @@ class InternalDashboardView(APIView):
                 'organization': None,
                 'catalog': None,
                 'sales': None,
+                'inventory': None,
+                'configuration': None,
                 'available_companies': switcher,
                 'requires_company_selection': True,
                 'alerts': [],
@@ -719,6 +721,25 @@ class InternalDashboardView(APIView):
         if 'sales.orders.view' in capabilities:
             sales = self._sales_snapshot(company)
 
+        # Inventory KPIs — real from Phase 2D, and BRANCH-SCOPED.
+        #
+        # Every figure is computed over the branches this caller may operate, so
+        # a person granted two of five shops sees the totals of two shops. That
+        # is not a filtered version of the company's number; for them it IS the
+        # number, and `scope` in the payload says which branches it covers so no
+        # heading claims more than it counted.
+        inventory = None
+        if 'inventory.view' in capabilities or 'inventory.reports' in capabilities:
+            inventory = self._inventory_snapshot(user, company)
+
+        # Phase 3: what this company still has to configure. Advisory only —
+        # nothing here blocks an operation — and gated by the same capability as
+        # the rest of the company's own information.
+        configuration = None
+        if 'company.view' in capabilities:
+            from .company_settings import company_configuration_status
+            configuration = company_configuration_status(company)
+
         return {
             'company': {
                 'id': company.pk,
@@ -753,6 +774,8 @@ class InternalDashboardView(APIView):
             'organization': organization,
             'catalog': catalog,
             'sales': sales,
+            'inventory': inventory,
+            'configuration': configuration,
             'available_companies': switcher,
             'requires_company_selection': False,
             'alerts': self._alerts(company, membership, assignments, capabilities,
@@ -909,6 +932,65 @@ class InternalDashboardView(APIView):
             for value, _label in Order.Status.choices
         ]
 
+    # -- inventory KPIs (Phase 2D) -------------------------------------------
+    #
+    # WHAT IS NOT HERE, ON PURPOSE
+    # Profit, margin and "capital invertido". The platform has no purchase cost,
+    # so all three would be a subtraction from a number nobody supplied. The one
+    # money figure shown is stock × SALE price, and it is labelled as such both
+    # here (`value_basis`) and in the UI. A dashboard that guesses is worse than
+    # one that stays quiet.
+
+    def _inventory_snapshot(self, user, company):
+        from .inventory_services import (
+            DEFAULT_LOW_STOCK_THRESHOLD,
+            get_inventory_summary,
+            get_low_stock_by_branch,
+            get_pending_counts_count,
+            get_stock_by_branch,
+            get_transfers_in_transit_count,
+        )
+        from .tenancy import visible_branches
+
+        branches = visible_branches(user, company)
+        if not branches.exists():
+            # A real state, not an error: SELECTED mode with no grants yet. The
+            # dashboard says "no branches" rather than showing zeros that read
+            # like an empty warehouse.
+            return {
+                'has_branch_access': False,
+                'branches': [],
+                'total_units': 0,
+                'out_of_stock_count': 0,
+                'low_stock_count': 0,
+                'stocked_count': 0,
+                'inventory_value': '0.00',
+                'value_basis': 'sale_price',
+                'transfers_in_transit': 0,
+                'pending_counts': 0,
+                'stock_by_branch': [],
+                'low_stock_by_branch': [],
+            }
+
+        summary = get_inventory_summary(
+            company=company, branches=branches,
+            low_stock_threshold=DEFAULT_LOW_STOCK_THRESHOLD,
+        )
+        return {
+            'has_branch_access': True,
+            'branches': [{'id': b.pk, 'name': b.name} for b in branches],
+            'total_units': summary['total_units'],
+            'out_of_stock_count': summary['out_of_stock_count'],
+            'low_stock_count': summary['low_stock_count'],
+            'stocked_count': summary['stocked_count'],
+            'inventory_value': summary['inventory_value'],
+            'value_basis': 'sale_price',
+            'transfers_in_transit': get_transfers_in_transit_count(branches),
+            'pending_counts': get_pending_counts_count(branches),
+            'stock_by_branch': get_stock_by_branch(branches),
+            'low_stock_by_branch': get_low_stock_by_branch(branches),
+        }
+
     def _assignments_per_area(self, company):
         from django.db.models import Count, Q
 
@@ -971,13 +1053,27 @@ class InternalDashboardView(APIView):
                           'sin pertenecer a ella.',
             })
 
-        if membership is not None and membership.branch_id is None:
-            alerts.append({
-                'level': 'info', 'code': 'no_branch_assigned',
-                'title': 'Sin sucursal asignada',
-                'detail': 'Tu alcance es toda la empresa. El acceso multisucursal '
-                          'granular está pendiente.',
-            })
+        # Phase 2D: branch scope is explicit now, so the alert states the real
+        # rule instead of the old "pending" placeholder.
+        if membership is not None:
+            from .models import Membership
+            from .tenancy import visible_branches
+
+            if membership.branch_access_mode == Membership.ACCESS_MODE_ALL:
+                alerts.append({
+                    'level': 'info', 'code': 'branch_scope_all',
+                    'title': 'Alcance: todas las sucursales',
+                    'detail': 'Tu acceso incluye automáticamente las sucursales '
+                              'que se abran en el futuro.',
+                })
+            elif not visible_branches(membership.user, company).exists():
+                alerts.append({
+                    'level': 'warning', 'code': 'no_branch_access',
+                    'title': 'Sin sucursales asignadas',
+                    'detail': 'Tu alcance está limitado a sucursales seleccionadas '
+                              'y todavía no tienes ninguna. No puedes operar '
+                              'inventario hasta que un administrador te asigne una.',
+                })
 
         if membership is not None and not assignments and not capabilities:
             alerts.append({
@@ -986,6 +1082,30 @@ class InternalDashboardView(APIView):
                 'detail': 'Tu membresía no tiene capacidades. Pide a un administrador '
                           'de la empresa que te asigne un rol.',
             })
+
+        # Phase 3 — configuration gaps that actually change behaviour.
+        #
+        # Only the CONSEQUENTIAL ones raise an alert: no notification email means
+        # this company's sales go unannounced, and no fulfillment branch means it
+        # cannot check out at all. A missing logo is a gap, not an alarm, and
+        # putting it here would train people to ignore the panel.
+        if 'company.view' in capabilities:
+            from .company_settings import company_configuration_status
+
+            status_info = company_configuration_status(company)
+            if status_info['consequential']:
+                labels = {
+                    m['field']: m['label'] for m in status_info['missing']
+                }
+                missing = ', '.join(
+                    labels[f] for f in status_info['consequential'] if f in labels
+                )
+                alerts.append({
+                    'level': 'warning', 'code': 'configuration_incomplete',
+                    'title': 'Configuración empresarial incompleta',
+                    'detail': f'Falta configurar: {missing}. Ve a Administración → '
+                              f'Configuración.',
+                })
 
         for assignment in assignments:
             if not assignment.role.capability_set:

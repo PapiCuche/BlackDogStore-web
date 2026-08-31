@@ -10,7 +10,7 @@
  * shapes — horizontal bars, a donut and a stacked bar — none of which need
  * scales, axes, transitions or hit-testing beyond a title tooltip.
  *
- * The palette decides it too. Black Dog Store is strictly monochrome
+ * The palette decides it too. The internal control is strictly monochrome
  * (#080808 / #111111 / #1a1a1a, zinc text), so most of what a chart library
  * gives you — categorical colour scales, themes, legends in twelve hues — is
  * exactly what must NOT appear here. Fighting a library's defaults back to

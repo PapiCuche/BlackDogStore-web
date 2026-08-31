@@ -952,10 +952,15 @@ Cambios estructurales posteriores a esta auditoría:
 | SaaS 2B | Catálogo tenant-aware: `Category.company`, `Product.company`, storefront por host, aislamiento público | IMPLEMENTADO |
 | SaaS 2B.1 | Dashboard visual: gráficos tenant-safe, series de catálogo y organización, SVG propio | IMPLEMENTADO |
 | SaaS 2C | Comercio tenant-aware: `Order.company`, `Coupon.company`, carrito lógico, checkout, webhook, KPIs de ventas | IMPLEMENTADO |
+| SaaS 2D | Inventario multisucursal: `BranchStock`, `MembershipBranchAccess`, `StockMovement.company/branch`, transferencias, recuentos, reposición, sucursal de despacho | IMPLEMENTADO |
+| SaaS 3 | Configuración y branding por empresa: `CompanySettings`, `Order.company_snapshot`, emails y PDFs tenant-aware, storefront config pública, pantallas de Configuración y Sucursales | IMPLEMENTADO |
 
 **Modelos de base de datos actuales**, además de los listados en la sección 7:
 `UserProfile`, `AdminAuditLog`, `AccountToken`, `StockMovement`, `SalesNote`,
-`Company`, `Branch`, `Membership`, `CompanyArea`, `CompanyRole`, `MembershipRoleAssignment`.
+`Company`, `Branch`, `Membership`, `CompanyArea`, `CompanyRole`,
+`MembershipRoleAssignment`, `MembershipBranchAccess`, `BranchStock`,
+`StockTransfer`, `StockTransferItem`, `InventoryCount`, `InventoryCountItem`,
+`CompanySettings`.
 
 ```
 Autenticación única                      IMPLEMENTADO
@@ -970,7 +975,7 @@ Public catalog isolation                 IMPLEMENTADO
 Dashboard catalog KPIs                   IMPLEMENTADO
 Dashboard visual / analytics UI          IMPLEMENTADO
 Gráficos tenant-safe                     IMPLEMENTADO
-KPIs comerciales reales                  PENDIENTE
+KPIs comerciales reales                  IMPLEMENTADO
 Coupon tenant-aware                      IMPLEMENTADO
 Cart tenant-aware                        IMPLEMENTADO
 Order tenant-aware                       IMPLEMENTADO
@@ -981,13 +986,57 @@ Admin order isolation                    IMPLEMENTADO
 Sales capabilities                       IMPLEMENTADO
 Dashboard sales KPIs                     IMPLEMENTADO
 Dashboard sales charts                   IMPLEMENTADO
-StockMovement explicit tenancy           PENDIENTE 2D
+Dashboard inventory KPIs                 IMPLEMENTADO
+StockMovement explicit tenancy           IMPLEMENTADO
 Profitability                            PENDIENTE (sin modelo de costos)
-Inventory company isolation              PARCIAL
-Inventory branch isolation               PENDIENTE 2D
-Dashboard sales KPIs                     PENDIENTE
+Inventory company isolation              IMPLEMENTADO
+Inventory branch isolation               IMPLEMENTADO
+Branch access model                      IMPLEMENTADO
+Membership multisucursal                 IMPLEMENTADO
+BranchStock                              IMPLEMENTADO
+Kardex por sucursal                      IMPLEMENTADO
+Entradas / salidas manuales              IMPLEMENTADO
+Salidas por venta por sucursal           IMPLEMENTADO
+Transferencias entre sucursales          IMPLEMENTADO
+Recuentos físicos                        IMPLEMENTADO
+Reposición sugerida                      IMPLEMENTADO
+Dashboard de inventario                  IMPLEMENTADO
+Selector de sucursal                     IMPLEMENTADO
+UI de acceso por sucursal                IMPLEMENTADO
+CompanySettings                          IMPLEMENTADO
+Identidad comercial por empresa          IMPLEMENTADO
+Branding del storefront                  IMPLEMENTADO
+Emails y PDFs por empresa                IMPLEMENTADO
+Notificación interna por empresa         IMPLEMENTADO
+Snapshot histórico de identidad          IMPLEMENTADO
+Pantalla de Configuración                IMPLEMENTADO
+Pantalla de Sucursales                   IMPLEMENTADO
+Timezone por empresa                     PARCIAL
+Currency por empresa                     PARCIAL
+Runtime Admin / Control Interno          FUNCIONAL
+Dashboard company admin                  FUNCIONAL
+Dashboard MASTER                         FUNCIONAL
+Catálogo storefront                      FUNCIONAL
+Carrito storefront                       FUNCIONAL
+Esquema local alineado con el código     SÍ (0033)
+Migraciones pendientes                   0
+500 en peticiones válidas                0
+Series / correlativos internos           IMPLEMENTADO
+Clientes tenant-aware (CRM)              IMPLEMENTADO
+Customer ↔ User (vínculo opcional)       IMPLEMENTADO
+Historial comercial del cliente          IMPLEMENTADO
+Backfill de pedidos históricos           PARCIAL (los ambiguos quedan sin vincular)
+Detección de duplicados                  IMPLEMENTADO
+Merge de clientes                        PENDIENTE
+Direcciones múltiples por cliente        PENDIENTE
+Devices / equipos                        PENDIENTE Fase 5
+Órdenes de servicio                      PENDIENTE Fase 6
+Portal de seguimiento del cliente        PENDIENTE
+Numeración fiscal SUNAT                  FUERA DE ALCANCE
+Product.inventory                        OBSOLETO (agregado de compatibilidad)
+Recepción parcial de transferencias      PENDIENTE
+Reservas multi-almacén                   PENDIENTE
 Control interno — módulos completos      PENDIENTE
-Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO
 Membership                               IMPLEMENTADO
 Áreas personalizadas                     IMPLEMENTADO
@@ -998,21 +1047,22 @@ Demo users de desarrollo                 IMPLEMENTADO / TEMPORAL
 Platform MASTER — UI                     PENDIENTE
 Legacy RBAC fallback                     IMPLEMENTADO / TRANSICIÓN
 Tenant resolution                        PARCIAL
-Branch access multisucursal              PENDIENTE
-Product tenant-aware                     PENDIENTE
-Order/Cart/Checkout tenant-aware         PENDIENTE
-Inventory tenant-aware                   PENDIENTE
 Servicio técnico                         PENDIENTE
 Dashboard interno avanzado               PENDIENTE
 Membership Invitation Flow               PENDIENTE
-Branding                                 PENDIENTE
 IMEI/Serial                              PENDIENTE
 ```
 
-**Nota sobre multiempresa:** los modelos SaaS existen pero el e-commerce
-**todavía no está tenantizado**. Catálogo, carrito, checkout, inventario y notas
-de venta operan igual que antes, sobre una única empresa implícita. La empresa
-piloto (Black Dog Store) se crea por migración de datos, no por una constante en
-el código.
+**Nota sobre multiempresa:** el e-commerce **está tenantizado** hasta la Fase
+2D. Catálogo (2B), pedidos/carrito/checkout (2C) e inventario multisucursal (2D)
+resuelven su empresa sin tomarla nunca del cliente, y el inventario resuelve
+además la sucursal. La Fase 3 sacó del runtime la identidad del tenant piloto: emails, PDFs y
+storefront leen `CompanySettings`. La Fase 2E cerró la última pieza estructural:
+el correlativo de las notas de venta dejó de ser global y pasa por
+`InternalSequence`, una serie por empresa —o por sucursal— con su propio
+contador. La Fase 4 añadió el primer dominio de Servicio Técnico: `Customer`,
+el cliente comercial de UNA empresa, con vínculo opcional a un `User` global e
+historial de pedidos. La empresa piloto (Black Dog Store) se crea por migración
+de datos, no por una constante en el código.
 
 Detalle: [saas-multiempresa.md](saas-multiempresa.md) · [inventario-y-notas-de-venta.md](inventario-y-notas-de-venta.md)

@@ -1,9 +1,11 @@
 "use client";
 
-// Shared presentational pieces for the Phase 6.0 inventory screens.
+// Shared presentational pieces for the inventory screens.
+// Phase 6.0, extended in 2D for per-branch stock.
 // Monochrome to match the rest of the admin panel — no accent hues.
 
-import type { MovementType, StockMovement } from "../../lib/inventory";
+import Link from "next/link";
+import type { BranchStockRow, MovementType, StockMovement } from "../../lib/inventory";
 
 export function StatCard({
   label,
@@ -196,3 +198,70 @@ export function movementReference(movement: StockMovement): string {
 }
 
 export type { MovementType };
+
+// --- Phase 2D: stock rows are per branch ------------------------------------
+
+/**
+ * A table of BranchStock rows.
+ *
+ * The branch column appears only when the rows actually span more than one —
+ * repeating the same shop name down a single-branch table is noise, and its
+ * absence is not ambiguity because the selector above says which branch it is.
+ */
+export function BranchStockTable({
+  rows,
+  emptyMessage,
+  showSuggested = false,
+}: {
+  rows: BranchStockRow[];
+  emptyMessage: string;
+  showSuggested?: boolean;
+}) {
+  if (rows.length === 0) return <EmptyBox message={emptyMessage} />;
+  const multiBranch = new Set(rows.map((r) => r.branch)).size > 1;
+
+  return (
+    <TableWrap>
+      <thead>
+        <tr className="border-b border-white/[0.06]">
+          <Th>Producto</Th>
+          {multiBranch ? <Th>Sucursal</Th> : null}
+          <Th right>Precio</Th>
+          <Th right>Stock</Th>
+          <Th right>Mínimo</Th>
+          {showSuggested ? <Th right>Sugerido</Th> : null}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.id} className="border-b border-white/[0.03]">
+            <Td>
+              <Link
+                href={`/admin/products/${row.product}/stock-card`}
+                className="transition hover:text-white"
+              >
+                {row.product_name}
+              </Link>
+            </Td>
+            {multiBranch ? <Td muted>{row.branch_name}</Td> : null}
+            <Td right muted>{formatSoles(row.product_price)}</Td>
+            <Td right>
+              <StockBadge
+                value={row.quantity}
+                threshold={row.minimum_stock > 0 ? row.minimum_stock : 5}
+              />
+            </Td>
+            <Td right muted>{row.minimum_stock || "—"}</Td>
+            {showSuggested ? (
+              <Td right>
+                <span className="tabular-nums text-zinc-300">
+                  {row.suggested_quantity || "—"}
+                </span>
+              </Td>
+            ) : null}
+          </tr>
+        ))}
+      </tbody>
+    </TableWrap>
+  );
+}

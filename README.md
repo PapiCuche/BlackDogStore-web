@@ -504,10 +504,9 @@ Detalle completo — modelos, endpoints, permisos, auditoría y pendientes:
 Base estructural para que la plataforma deje de asumir una sola empresa.
 `Company` → `Branch` → `Membership`, más un módulo de resolución de tenant.
 
-> **Estado: PARCIAL.** Los modelos existen y los endpoints de administración
-> aíslan por empresa, pero el e-commerce **todavía no está tenantizado**:
-> catálogo, carrito, checkout, inventario y notas de venta operan exactamente
-> igual que antes.
+> **Estado: IMPLEMENTADO hasta la Fase 2D.** Catálogo (2B), pedidos, carrito y
+> checkout (2C) e inventario multisucursal (2D) están tenantizados. Queda el
+> branding por empresa y el correlativo de notas de venta.
 
 - **El tenant nunca se toma del cliente.** Un `company_id` en el body es dato a
   validar contra las membresías del propio llamante, nunca la respuesta a "¿de
@@ -517,9 +516,10 @@ Base estructural para que la plataforma deje de asumir una sola empresa.
 - **Tres niveles de autoridad separados**: `User.is_superuser` (plataforma),
   `Membership.role` (empresa) y `UserProfile.role` (legacy global). Ninguno
   implica otro — un `Membership.role="superadmin"` no da autoridad de plataforma.
-- **El dominio comercial sigue en RBAC legacy** (`UserProfile.role`) porque
-  `Product`, `Order`, `StockMovement` y `SalesNote` todavía no tienen `company`.
-  Cambiar sus permisos antes que sus datos daría una falsa sensación de aislamiento.
+- **El dominio comercial ya NO está en RBAC legacy.** `Product` (2B), `Order` y
+  `Coupon` (2C), `StockMovement` (2D) e `InternalSequence` (2E) tienen `company`,
+  y sus capabilities gobiernan de verdad. Queda el bridge para operadores
+  pre-SaaS sin Membership.
 
 ```
 Autenticación única                      IMPLEMENTADO
@@ -534,7 +534,7 @@ Public catalog isolation                 IMPLEMENTADO
 Dashboard catalog KPIs                   IMPLEMENTADO
 Dashboard visual / analytics UI          IMPLEMENTADO
 Gráficos tenant-safe                     IMPLEMENTADO
-KPIs comerciales reales                  PENDIENTE
+KPIs comerciales reales                  IMPLEMENTADO
 Coupon tenant-aware                      IMPLEMENTADO
 Cart tenant-aware                        IMPLEMENTADO
 Order tenant-aware                       IMPLEMENTADO
@@ -545,13 +545,46 @@ Admin order isolation                    IMPLEMENTADO
 Sales capabilities                       IMPLEMENTADO
 Dashboard sales KPIs                     IMPLEMENTADO
 Dashboard sales charts                   IMPLEMENTADO
-StockMovement explicit tenancy           PENDIENTE 2D
+Dashboard inventory KPIs                 IMPLEMENTADO
+StockMovement explicit tenancy           IMPLEMENTADO
 Profitability                            PENDIENTE (sin modelo de costos)
-Inventory company isolation              PARCIAL
-Inventory branch isolation               PENDIENTE 2D
-Dashboard sales KPIs                     PENDIENTE
+Inventory company isolation              IMPLEMENTADO
+Inventory branch isolation               IMPLEMENTADO
+Branch access model                      IMPLEMENTADO
+Membership multisucursal                 IMPLEMENTADO
+BranchStock                              IMPLEMENTADO
+Kardex por sucursal                      IMPLEMENTADO
+Entradas / salidas manuales              IMPLEMENTADO
+Salidas por venta por sucursal           IMPLEMENTADO
+Transferencias entre sucursales          IMPLEMENTADO
+Recuentos físicos                        IMPLEMENTADO
+Reposición sugerida                      IMPLEMENTADO
+Dashboard de inventario                  IMPLEMENTADO
+Selector de sucursal                     IMPLEMENTADO
+UI de acceso por sucursal                IMPLEMENTADO
+CompanySettings                          IMPLEMENTADO
+Identidad comercial por empresa          IMPLEMENTADO
+Branding del storefront                  IMPLEMENTADO
+Branding del control interno             IMPLEMENTADO
+Emails de pedido por empresa             IMPLEMENTADO
+PDFs por empresa                         IMPLEMENTADO
+Notificación interna por empresa         IMPLEMENTADO
+Snapshot histórico de identidad          IMPLEMENTADO
+Política de garantía por empresa         IMPLEMENTADO
+Datos de negocio por sucursal            IMPLEMENTADO
+Pantalla de Configuración                IMPLEMENTADO
+Pantalla de Sucursales                   IMPLEMENTADO
+Timezone por empresa                     PARCIAL (almacenado y validado)
+Currency por empresa                     PARCIAL (solo lectura: Stripe en PEN)
+Favicon por empresa                      PENDIENTE
+Contenido de landing por empresa         PENDIENTE
+Subida de logos                          PENDIENTE (hoy es una URL)
+SMTP por tenant                          PENDIENTE (no se guardan secretos)
+Series / correlativos                    PENDIENTE 2E
+Product.inventory                        OBSOLETO (agregado de compatibilidad)
+Recepción parcial de transferencias      PENDIENTE
+Reservas multi-almacén                   PENDIENTE
 Control interno — módulos completos      PENDIENTE
-Selector multisucursal                   PENDIENTE
 Platform MASTER                          IMPLEMENTADO
 Membership                               IMPLEMENTADO
 Áreas personalizadas                     IMPLEMENTADO
@@ -562,16 +595,201 @@ Demo users de desarrollo                 IMPLEMENTADO / TEMPORAL
 Platform MASTER — UI                     PENDIENTE
 Legacy RBAC fallback                     IMPLEMENTADO / TRANSICIÓN
 Tenant resolution                        PARCIAL
-Branch access multisucursal              PENDIENTE
-Product tenant-aware                     PENDIENTE
-Order/Cart/Checkout tenant-aware         PENDIENTE
-Inventory tenant-aware                   PENDIENTE
 Servicio técnico                         PENDIENTE
 Dashboard interno avanzado               PENDIENTE
 Membership Invitation Flow               PENDIENTE
-Branding                                 PENDIENTE
 IMEI/Serial                              PENDIENTE
 ```
+
+### Actualizar una instalación existente
+
+El código y la base de datos tienen que ir a la par. Si la base se queda por
+detrás, rutas perfectamente válidas responden **500** con `no such column` — no
+es un bug del código, es el esquema sin actualizar.
+
+```bash
+cd backend
+python manage.py migrate --plan     # qué falta
+python manage.py migrate            # aplicarlo
+```
+
+Desde el incidente P0, `manage.py check` y `runserver` **avisan al arrancar** si
+faltan migraciones y dicen cuáles. El aviso no las aplica: aplicarlas es una
+decisión de despliegue, y algunas cambian datos.
+
+> **Haz copia de seguridad antes de migrar una base con datos reales.** La
+> migración 0025 reparte entre sucursales el stock que antes era una sola cifra
+> por producto. Con una sucursal activa lo resuelve sola; con varias **se
+> detiene** y pide `INVENTORY_MIGRATION_BRANCHES` (ver `.env.example`). Que se
+> detenga es correcto: prefiere no repartir unidades a una tienda que nunca las
+> tuvo.
+
+### Clientes por empresa — CRM interno (Fase 4)
+
+Primer dominio del núcleo de Servicio Técnico. La plataforma pasa a saber *quién
+es este cliente para esta empresa*, que es lo que un equipo en reparación
+necesitará tener detrás.
+
+```
+User        un login de plataforma
+Membership  esta persona TRABAJA en esta empresa
+Customer    esta persona COMPRA a esta empresa
+Order.customer_*  quién compró ESE DÍA, congelado
+```
+
+- **Un cliente existe sin cuenta, y es el caso normal.** La mayoría llega al
+  mostrador, llama o escribe por WhatsApp y nunca tendrá login.
+- **Un mismo login puede ser cliente de varias empresas, con fichas
+  independientes.** Comparten la cuenta y nada más: ni notas, ni dirección, ni
+  historial. Dos negocios que atienden a la misma persona no se leen la ficha.
+- **Nadie se fusiona por parecido.** Email, teléfono y nombre **no** son
+  identidad: las familias comparten bandeja y las oficinas comparten central. Se
+  empareja sólo por cuenta o por documento, exacto.
+- **Los duplicados posibles se sugieren; los documentos repetidos se rechazan**
+  con la ficha existente adjunta, para poder abrirla en lugar de chocar contra un
+  error.
+- **El historial no se reescribe.** `Order.customer` es quién es hoy; los campos
+  `customer_*` del pedido son quién era entonces. Cambiar de teléfono no cambia
+  lo que dice un pedido del año pasado.
+- **Un problema de CRM nunca cuesta una venta.** Si el emparejamiento falla, el
+  pedido se guarda sin cliente y conserva todo lo necesario para vincularlo a
+  mano.
+- **Un cliente no pertenece a una sucursal.** Compra en una, deja un equipo en
+  otra y lo recoge en una tercera.
+- **Se archiva, no se borra.** Un cliente con compras es indeleble, y lo dice la
+  base de datos.
+
+Pantallas: `/admin/customers` (listado, búsqueda, alta) y `/admin/customers/{id}`
+(resumen, historial comercial y notas internas).
+
+> **Los datos del cliente no salen a internet.** No existe ningún endpoint
+> público de clientes, y esa ausencia es la garantía. El listado interno tampoco
+> devuelve las notas: se leen en la ficha, no de reojo en un mostrador.
+
+### Numeración interna por empresa (Fase 2E)
+
+Cada empresa lleva su propio correlativo, y la actividad de una deja de ser
+visible en los números de otra.
+
+```
+InternalSequence   el contador como fila: prefijo, padding, próximo número
+  └── SalesNote    guarda a qué serie pertenece y qué ordinal ocupa
+```
+
+- **El número se reparte, no se calcula.** Antes era `MAX(number) + 1` sobre toda
+  la tabla: la empresa B emitía `NV-000002` porque la A había emitido
+  `NV-000001`. Ahora cada serie es una fila que se bloquea, se lee y se
+  incrementa dentro de la misma transacción que escribe el documento.
+- **Dos empresas pueden tener cada una su `NV-000001`.** El `unique` global de
+  `SalesNote.number` desapareció; la unicidad es *un ordinal por serie*, que es
+  lo que se quería desde el principio.
+- **El número se guarda, no se deriva.** Cambiar el prefijo hoy no reescribe lo
+  que dice un documento que un cliente ya tiene en la mano.
+- **Los huecos son historia.** Una nota anulada deja su ordinal consumido.
+  Renumerar para cerrarlo reasignaría un identificador ya emitido.
+- **Una numeración por empresa o una por sucursal**, configurable — y congelada
+  tras el primer documento, para que un mismo negocio no muestre el mismo número
+  en dos documentos.
+- **El próximo número es editable sólo antes de emitir**, para quien migra desde
+  otro sistema y quiere seguir en 5001.
+
+Pantalla: `/admin/settings` → «Numeración interna», con vista previa que **no**
+consume un número.
+
+> **Esto es numeración interna, no fiscal.** No es una serie SUNAT, ni un CPE, ni
+> una boleta o factura electrónica. No hay XML, UBL, firma digital ni OSE. La API
+> y los PDFs lo repiten, porque `NV-000001` junto a un logo y un total se parece
+> mucho a un comprobante.
+
+### Configuración y branding por empresa (Fase 3)
+
+Cada empresa deja de ser descrita por constantes en el código y pasa a
+describirse a sí misma.
+
+```
+Company            quién es este tenant para la plataforma
+  └── CompanySettings   cómo se presenta y cómo habla con sus clientes
+```
+
+- **Ya no hay identidad compilada.** Tres servicios comerciales llevaban seis
+  constantes con el nombre, la razón social, el RUC, la dirección y el teléfono
+  de una empresa concreta. Los clientes de un segundo tenant habrían recibido su
+  email y su PDF con la identidad legal de otra empresa. Un test estructural
+  vigila que no vuelvan.
+- **El fallback es a vacío, nunca a otra empresa.** Un tenant incompleto muestra
+  blancos, y la pantalla de configuración dice cuáles. Un blanco se corrige; una
+  identidad equivocada en un documento no.
+- **Los documentos se congelan al vender.** `Order.company_snapshot` guarda la
+  identidad del momento, así que un recibo reimpreso un año después dice lo mismo
+  que el día que se emitió — aunque el negocio se haya renombrado o mudado.
+- **La notificación de venta va a la empresa del pedido**, y sin dirección
+  configurada no se envía. No hay fallback de plataforma: esa variable guardaba
+  una sola dirección.
+- **El storefront toma su branding del host**: logo, nombre, paleta, footer,
+  contacto, metadata y OpenGraph.
+- **Emails de cuenta ≠ emails de pedido.** Verificación y reseteo de contraseña
+  son de la PLATAFORMA (un `User` es global); los de compra son del tenant.
+
+Pantallas: `/admin/settings` (identidad, branding, contacto, políticas,
+notificaciones) y `/admin/branches` (ubicaciones y sucursal de despacho).
+
+> **Colores sólo `#RRGGBB`.** No es estética: estos valores entran en una custom
+> property y en un atributo `style`, y cualquier cosa que pueda expresar
+> `url(...)` o un esquema es una inyección CSS con un selector de color delante.
+> Se validan en el modelo, en el serializer y otra vez antes de renderizar.
+
+**Cambio de build:** el storefront pasó de estático a dinámico. Su contenido
+depende del host, así que un prerender único habría servido el título de una
+empresa en todos los dominios.
+
+### Inventario multisucursal (Fase 2D)
+
+El stock deja de ser un entero por producto y pasa a vivir en sucursales.
+
+```
+Company
+ ├── Branch                          ubicación real de stock
+ ├── Product
+ └── BranchStock(branch, product)    ← la fuente de verdad
+```
+
+- **Dos ejes de autoridad, y ambos deben pasar.** La *capability*
+  (`inventory.view` / `adjust` / `reports`) dice **qué** puedes hacer; el acceso a
+  sucursal dice **dónde**. Tener `inventory.adjust` no es permiso para ajustar
+  todas las sucursales, y llegar a una sucursal no es permiso para mover su stock.
+- **Alcance de sucursales explícito.** `todas` (incluye las que se abran mañana) o
+  `seleccionadas` (y sólo ésas — una sucursal nueva **no** se concede sola). Cero
+  sucursales seleccionadas significa ninguna, y deniega. Se rechazó el diseño
+  «sin filas = todas» porque falla abierta.
+- **`Product.inventory` es ahora un agregado de compatibilidad**, mantenido en la
+  misma transacción que cada movimiento. Es derivado: ninguna decisión sobre si
+  una venta puede cumplirse sale de él.
+- **La tienda online vende desde una sucursal de despacho declarada.** El catálogo
+  público muestra el stock de **esa** sucursal, no el total de la empresa —
+  mostrar 20 cuando el checkout sólo puede entregar 2 es prometer una venta que
+  falla en el último paso. Con varias sucursales y ninguna declarada, el checkout
+  se niega y lo dice.
+- **Transferencias entre sucursales**: el stock sale al despachar y entra al
+  recibir. Nunca las dos cosas a la vez: acreditar el destino al despachar
+  mostraría stock en una tienda que lo tiene en una furgoneta.
+- **Recuentos físicos** que releen el stock **al aprobar**, bajo lock. La
+  corrección es `físico − teórico al aprobar`; usar la foto del inicio descontaría
+  en silencio todo lo vendido durante el conteo.
+- **Reposición sugerida** por mínimo y objetivo de cada sucursal. Sugiere: no
+  genera compras ni transferencias.
+
+> **Ninguna cifra de costo, utilidad ni margen.** El sistema no registra precio de
+> compra. El único importe del inventario es **stock × precio de venta**, y está
+> etiquetado como tal en la API y en la UI.
+
+Panel: `/admin/inventory`, `/admin/inventory/movements`,
+`/admin/inventory/transfers`, `/admin/inventory/counts`,
+`/admin/inventory/replenishment`, `/admin/inventory/reports`.
+
+**Migración:** con una sola sucursal activa por empresa se resuelve sola. Con
+varias y ninguna indicada, la migración **falla ruidosamente** y pide
+`INVENTORY_MIGRATION_BRANCHES` en settings — repartir las unidades escribiría una
+cifra que parece autoritativa y es ficción.
 
 ### Comercio multiempresa (Fase 2C)
 

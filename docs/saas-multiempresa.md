@@ -639,13 +639,14 @@ MembershipBranchAccess
 **No se implementa en esta fase.**
 
 ```
-PENDIENTE — Branch access model
+RESUELTO en la Fase 2D — ver «8-duodecies. Inventario multisucursal»
 ```
 
-**Debe resolverse antes o durante la fase de inventario multisucursal.**
-Tenantizar `StockMovement` por sucursal sin un modelo de acceso a múltiples
-branches obligaría a elegir entre dar a cada usuario una sola sucursal o darle
-todas — y migrar después sería mucho más caro que decidirlo ahora.
+Se resolvió exactamente como anticipaba esta sección, con una corrección
+importante: **`MembershipBranchAccess` por sí solo no basta.** Una tabla de
+concesiones donde «cero filas = todas las sucursales» falla abierta — revocar la
+última sucursal de alguien lo ascendería en silencio a todas — así que hizo falta
+además un modo explícito, `Membership.branch_access_mode`.
 
 ---
 
@@ -1095,16 +1096,806 @@ sigue siendo Fase 2D.
 
 ---
 
+## 8-duodecies. Inventario multisucursal (Fase 2D)
+
+La fase que convierte «cuánto tenemos» en una pregunta que no se puede hacer sin
+preguntar también «¿dónde?».
+
+### El grafo, antes y después
+
+```
+ANTES                              DESPUÉS
+Company                            Company
+ ├── Branch      (decorativa)       ├── Branch            ← ubicación real de stock
+ ├── Product                        ├── Product
+ │    └── inventory  ← la verdad    │    └── inventory    ← agregado de compatibilidad
+ └── StockMovement                  ├── BranchStock(branch, product) ← LA VERDAD
+      └── product                   ├── StockMovement
+                                    │    ├── company + branch
+                                    │    ├── transfer (FK)
+                                    │    └── inventory_count (FK)
+                                    ├── StockTransfer + items
+                                    └── InventoryCount + items
+```
+
+### Dos ejes de autoridad, y ambos deben pasar
+
+```
+capability   QUÉ puedes hacer      inventory.view / adjust / reports
+branch       DÓNDE puedes hacerlo  Membership.branch_access_mode + MembershipBranchAccess
+```
+
+Ninguno implica al otro. `inventory.adjust` **no** es permiso para ajustar todas
+las sucursales, y llegar a una sucursal **no** es permiso para mover su stock.
+Confundirlos es el error que esta separación existe para impedir, y hay un test
+para cada dirección.
+
+### Modo de acceso — por qué no basta una tabla de concesiones
+
+```
+ALL       todas las sucursales ACTIVAS de la empresa, incluidas las que se abran
+          mañana. Para dueños y negocios pequeños, donde restringir sería fricción.
+SELECTED  exactamente las concesiones activas, y ninguna más. Una sucursal nueva
+          NO se concede automáticamente — ése es justamente el punto del modo.
+```
+
+`SELECTED` con cero concesiones significa **ninguna sucursal**. Es un estado real
+(alguien a quien todavía no han ubicado) y **deniega**.
+
+El diseño obvio era una tabla de concesiones donde «sin filas = todas». Se
+descartó porque falla abierta: revocar la última sucursal de una persona la
+ascendería a todas, y un bug que borrase concesiones ampliaría el acceso en vez
+de reducirlo.
+
+`Membership.branch` sobrevive como **sucursal predeterminada** — por cuál abre el
+Control Interno — y **ya no decide nada**. Está marcado LEGACY/DEPRECATED en el
+modelo; eliminarlo en la misma fase que cambia su significado habría hecho la
+migración irrevisable.
+
+### `Product.inventory` — estrategia de compatibilidad
+
+Se eligió la opción **B: agregado mantenido transaccionalmente**.
+
+```
+BranchStock.quantity   FUENTE DE VERDAD, por sucursal
+Product.inventory      SUM(BranchStock.quantity) de la empresa, mantenido en la
+                       MISMA transacción por inventory_services
+```
+
+Por qué no las otras dos:
+
+- *Eliminarlo* rompería el catálogo público, la lista de productos del admin y
+  varios reportes que llevan exponiendo ese nombre desde la Fase 0, a cambio de
+  nada.
+- *Dejarlo desincronizado* crearía una segunda fuente de verdad, que es peor que
+  no tener el campo.
+
+Es **derivado**: nada fuera de `inventory_services` lo escribe, y **ninguna**
+decisión sobre si una venta puede cumplirse sale de él — esa pregunta es siempre
+«cuánto hay en ESTA sucursal», y sólo `BranchStock` la responde.
+`product_inventory_drift()` demuestra la invariante; hay tests que la ejercen
+para transferencias, recuentos y cada tipo de movimiento.
+
+Rutas de escritura directa **eliminadas** en esta fase:
+
+| Ruta | Antes | Ahora |
+|---|---|---|
+| `POST /admin/products/{pk}/inventory-adjust/` | `update(inventory=F(...))`, sin Kardex, sin tenant | movimiento manual por el service layer, con sucursal |
+| `POST /admin/products/` con `inventory` | se escribía en la fila | movimiento `initial_stock` en la sucursal del operador |
+| `PATCH /admin/products/` con `inventory` | se escribía en la fila | **400** — el stock se mueve, no se edita |
+
+### Sucursal de despacho — de dónde vende la tienda online
+
+El e-commerce no tiene selector de sucursal: el cliente compra y paga sin nombrar
+un sitio. Alguien tiene que decidir de qué sucursal salió la venta, y «la que
+devuelva primero la query» no es una decisión, es un bug que sólo aparece cuando
+la empresa abre su segunda sucursal.
+
+```
+Company.default_inventory_branch   la empresa lo declara, una vez
+Order.fulfillment_branch           se estampa en el checkout, y no se vuelve a decidir
+```
+
+`company_fulfillment_branch()` resuelve en este orden y no hay un tercero:
+
+1. `default_inventory_branch`, si está y sigue activa.
+2. La **única** sucursal activa — inequívoco por construcción, no «la primera de
+   varias» sino «la única que hay». Sin esta regla, toda instalación de una sola
+   tienda dejaría de vender hasta configurar un campo.
+
+Con dos o más sucursales activas y sin default: `None`, y el checkout **se niega
+y lo dice**. Elegir una en silencio sería despachar desde una tienda que no sabe
+que vendió.
+
+El catálogo público expone en `inventory` el stock de **esa** sucursal, no el
+agregado: mostrar 20 cuando el checkout sólo puede entregar 2 es prometer una
+venta que va a fallar en el último paso.
+
+### Kardex — `stock_before` / `stock_after` cambiaron de significado
+
+Son el saldo **de esa sucursal**, no un total de empresa. Es la única lectura que
+hace auditable un Kardex: el saldo de una sucursal tiene que poder reconstruirse
+desde sus propias líneas. Los movimientos migrados pertenecen a la sucursal que
+eligió la migración 0025, y sus snapshots son los totales previos a 2D —
+correctos, porque en ese momento la empresa tenía una sola ubicación de stock.
+
+### Transferencias — el stock se mueve en los BORDES
+
+```
+BORRADOR ──despachar──▶ EN TRÁNSITO ──recibir──▶ RECIBIDA
+    │                   (origen −q)              (destino +q)
+    └──anular──▶ ANULADA
+```
+
+No existe una escritura que haga las dos cosas. Acreditar el destino al despachar
+mostraría stock en una tienda que físicamente no lo tiene, y todo recuento allí
+quedaría equivocado por el contenido de una furgoneta.
+
+Ambos bordes son **idempotentes comprobando el estado bajo un row lock**, no
+confiando en que nadie haga doble clic.
+
+**Una transferencia despachada no se anula.** Es una negativa deliberada, no una
+función que falte: sus unidades ya salieron del origen, y devolver el estado
+atrás las repondría en la base de datos mientras viajan en una furgoneta.
+Revertir un despacho exige movimientos compensatorios, que V1 no implementa.
+
+### Recuentos físicos — la relectura es todo el punto
+
+Contar no es instantáneo: alguien recorre las estanterías una hora mientras la
+tienda sigue vendiendo. Por eso cada línea guarda **tres** números:
+
+```
+theoretical_at_start      lo que decía el sistema al empezar   ← evidencia
+physical_quantity         lo que la persona encontró
+theoretical_at_approval   lo que dice el sistema AL APROBAR, releído bajo lock
+```
+
+La corrección aplicada es `physical − theoretical_at_approval`. Usar la foto
+inicial descontaría en silencio todo lo vendido durante el conteo, destruyendo
+stock e ingresos reales de una sola vez.
+
+Un producto sin cantidad física registrada se **omite**. «Nadie contó esto» no es
+«no hay ninguno de éstos».
+
+### Reposición — sugiere, no ejecuta
+
+```
+suggested = max(target_stock − quantity, 0)   cuando quantity <= minimum_stock
+```
+
+No abre compras ni transferencias. `surplus_branches` muestra dónde puede haber
+unidades dentro de la empresa; moverlas es una transferencia que el operador abre
+a propósito y que se verifica cuando la abre.
+
+### Valorización — qué NO se muestra
+
+El único número monetario es **stock × precio de VENTA**, etiquetado así en la
+API (`inventory_value_basis: "sale_price"`) y en la UI («A precio de venta — no
+es costo»). No hay utilidad, margen ni «capital invertido»: el sistema no
+registra precio de compra, así que las tres serían una resta a un número que
+nadie proporcionó.
+
+### Concurrencia y orden de bloqueo
+
+Toda operación que toca más de una fila de stock las bloquea en orden ascendente
+`(branch_id, product_id)`, vía `_locked_branch_stocks()`. Dos operaciones
+concurrentes sobre conjuntos solapados piden sus locks en la misma secuencia y
+hacen cola en vez de bloquearse mutuamente.
+
+El lock es sobre `BranchStock`, **nunca** sobre `Product`: bloquear el producto
+serializaría todas las sucursales de una cadena entre sí para el mismo artículo,
+convirtiendo tiendas sin relación en la cola una de la otra.
+
+**Limitación de SQLite:** `select_for_update()` es un no-op — el motor serializa
+escrituras con un lock global. El test de carrera real sólo corre en un backend
+con locking por fila; en SQLite se **salta explícitamente** en vez de fingir que
+pasa. Lo que sí se verifica en cualquier backend: el invariante secuencial (el
+stock nunca baja de cero) y, por introspección, que el lock está sobre
+`BranchStock` con el orden documentado.
+
+### Idempotencia de `sale_exit`
+
+La clave sigue siendo `(order, product)`, y eso sigue siendo correcto porque un
+pedido tiene **exactamente una** `fulfillment_branch`. Añadir la sucursal a la
+clave la ampliaría y debilitaría la garantía, no al revés. Si en el futuro un
+pedido puede salir de varias sucursales, esta clave debe cambiar con ese diseño.
+
+Ante stock insuficiente tras el pago: se registra el faltante en
+`order.payment_error` con producto, sucursal y pedido, y **nunca** se cubre desde
+otra sucursal — eso crearía una segunda discrepancia invisible donde nadie mira.
+
+### Migración 0025 — se niega antes que adivinar
+
+Regla, en orden:
+
+1. `settings.INVENTORY_MIGRATION_BRANCHES` nombra la sucursal explícitamente.
+2. La empresa tiene **exactamente una** sucursal activa.
+3. Cualquier otra cosa → **RuntimeError** con los ids afectados y qué configurar.
+
+Con dos sucursales y un entero no existe ningún dato que diga dónde están las
+unidades. Repartirlas, o tomar el id más bajo, escribiría una cifra que *parece*
+autoritativa y es ficción; todo recuento, reporte y decisión de reposición
+posterior la heredaría, y nadie se enteraría nunca, porque una cifra de stock
+equivocada se ve exactamente igual que una correcta.
+
+Negarse es ruidoso, ocurre una vez, en el deploy, delante de quien puede
+responder. Ése es todo el intercambio: cinco minutos de interrupción en lugar de
+corrupción silenciosa.
+
+---
+
+## 8-terdecies. Configuración y branding por empresa (Fase 3)
+
+La fase que saca del runtime la identidad de una empresa concreta.
+
+### Qué había, exactamente
+
+Tres servicios comerciales llevaban cada uno su copia de seis constantes de
+módulo — `_STORE_NAME`, `_STORE_LEGAL_NAME`, `_STORE_RUC`, `_STORE_ADDRESS`,
+`_STORE_PHONE`, `_STORE_WHATSAPP_LINK` — con los valores literales del tenant
+piloto. No eran valores por defecto: eran la identidad legal de un negocio
+concreto compilada en el código. Un segundo tenant habría enviado a **sus**
+clientes un email y un PDF con el nombre y el RUC de **otra** empresa.
+
+### `Company` vs `CompanySettings`
+
+```
+Company            ESTRUCTURAL — quién es este tenant para la plataforma
+  name / legal_name / tax_id     identidad, editable por el negocio
+  slug                           routing            ← decisión de plataforma
+  is_active                      puede operar       ← decisión de plataforma
+
+CompanySettings    OPERATIVO — cómo se presenta y cómo habla con sus clientes
+  contacto · branding · políticas · timezone · currency · notificaciones
+```
+
+Separarlos significa que el endpoint que usa un administrador de empresa **no
+puede alcanzar** `slug` ni `is_active` — no porque un serializer se acuerde de
+excluirlos, sino porque no están en la tabla que escribe.
+
+**No se duplican** `name`, `legal_name` ni `tax_id`. Un `public_name` junto a
+`Company.name` crearía dos respuestas a «cómo se llama este negocio» sin una
+regla que diga cuál gana.
+
+### La regla del fallback
+
+```
+CompanySettings.<campo>  →  Company.<equivalente>  →  VACÍO
+```
+
+Y se detiene ahí. **Nunca cae en los valores del piloto.** Una empresa que no ha
+puesto su dirección no muestra dirección; no muestra la de otra. Vacío es un
+estado visible y corregible. Equivocado no lo es.
+
+El piloto conserva su identidad porque la migración 0028 la **escribió en su
+propia fila de `CompanySettings`** —como dato, que es donde va— no porque quede
+código que sepa de qué empresa se trata. Un test escanea los tres servicios
+comerciales y falla si alguno de esos literales reaparece.
+
+### Snapshot histórico
+
+Cada documento de un pedido lleva la identidad legal del vendedor. Generarla
+desde la configuración ACTUAL significa que un negocio que se muda, se renombra o
+se vuelve a registrar reescribe en silencio lo que dice un recibo de hace seis
+meses — y un cliente con la copia impresa encontraría que ya no coincide con la
+que el sistema reimprime.
+
+```
+Order.company_snapshot   se congela al crear el pedido
+   → documentos históricos (email, PDF, nota de venta)
+
+CompanySettings actual
+   → storefront y todo lo demás
+```
+
+Los pedidos anteriores a la Fase 3 recibieron su snapshot en la migración, con la
+identidad vigente en ese momento. **Limitación documentada:** para un tenant no
+piloto, ese snapshot es la identidad de hoy, no la del día de la venta — la
+plataforma nunca registró la anterior, e inventarla sería peor que registrar la
+verdad disponible.
+
+### Dirección legal vs punto de retiro
+
+Responden preguntas distintas: una es quién factura, la otra es a qué puerta
+llama el cliente. `order_pickup_location()` prefiere la sucursal congelada en el
+pedido, luego la sucursal de despacho viva, y sólo como último recurso la
+dirección legal — devolviendo `source` para que el documento pueda etiquetarlo
+con honestidad en lugar de imprimir una oficina bajo el título «punto de retiro».
+
+### Notificación interna — el cambio de ruteo
+
+`settings.ORDER_NOTIFICATION_EMAIL` guardaba **una** dirección. En una
+instalación multiempresa eso es una fuga con sello de aprobación: las ventas de
+un segundo tenant —nombre del cliente, teléfono, dirección, qué compró— se
+habrían anunciado en la bandeja del piloto.
+
+Ahora el destinatario sale de `CompanySettings.order_notification_email` de la
+empresa del pedido, y **no hay fallback de plataforma**. Una empresa sin
+dirección configurada no recibe aviso, y ése es el fallo correcto: el silencio se
+nota y se corrige; un aviso ya entregado a la empresa equivocada no se recupera.
+
+### Plataforma vs tenant
+
+```
+PLATAFORMA   verificación de email · reseteo de contraseña
+             Un User es GLOBAL — una identidad en todas las tiendas donde compra
+             o trabaja — así que un correo sobre esa cuenta es de la plataforma.
+             settings.PLATFORM_NAME, vacío por defecto.
+
+TENANT       storefront · emails de pedido · PDFs · notas de venta ·
+             control interno de esa empresa
+```
+
+Mezclarlas significaría que un cliente de tres tiendas recibe el reseteo de su
+contraseña de un negocio por el que no preguntó.
+
+### Colores — por qué sólo `#RRGGBB`
+
+No es una restricción estética. Estos valores acaban dentro de una custom
+property de CSS y de un atributo `style`. Cualquier cosa más rica que seis
+dígitos hexadecimales —`url(...)`, `var(...)`, un esquema `javascript:`, una
+llave que cierre la regla— es una inyección CSS con un selector de color delante.
+Seis dígitos hex no pueden expresar ninguna de esas.
+
+Validado tres veces: en el modelo (`clean()`, así que también cubre migraciones y
+comandos), en el serializer, y otra vez en `brandingStyle()` antes de tocar el
+atributo. El fallback es **por campo**: fijar sólo el fondo no pierde el resto de
+la paleta.
+
+### WhatsApp
+
+Se guarda como **dígitos**, y el enlace se construye. Un `URLField` es un sitio
+donde cabe cualquier URL, y ésta se renderiza como `<a href>` en el correo de un
+cliente. Dígitos entran, un esquema conocido sale.
+
+### El storefront dejó de ser estático
+
+`generateMetadata` y el layout raíz consultan `/api/storefront/config/`, así que
+todas las rutas pasaron de `○ (Static)` a `ƒ (Dynamic)` en el build.
+
+**No es una regresión.** Una página cuyo contenido depende del host de la
+petición no se puede prerenderizar una sola vez; el prerender era el bug — el
+título de una empresa servido en todos los dominios.
+
+### Lo que la API pública NO devuelve
+
+`order_notification_email`. Es a dónde van los avisos de venta de un tenant, y
+publicarlo entregaría a cualquier visitante una bandeja de operaciones a la que
+apuntar. El serializer público está escrito a mano por eso: un `ModelSerializer`
+con `exclude` filtraría cada campo añadido después de que alguien olvidara
+actualizarlo.
+
+### Currency — almacenado, no editable
+
+El checkout cobra por Stripe en una moneda configurada a nivel de plataforma. El
+campo existe para que el modelo esté listo, pero es de solo lectura en la UI: un
+desplegable que dejara elegir USD mientras Stripe cobra PEN sería una mentira con
+interfaz. Clasificación honesta: **PARCIAL**.
+
+---
+
+## 8-quaterdecies. Series y correlativos internos (Fase 2E)
+
+Migraciones **0029** (esquema) y **0030** (backfill). Cierra la última pieza
+estructural de aislamiento entre tenants.
+
+### Qué había, exactamente
+
+```python
+# sales_note_services.py, antes
+def _next_note_number():
+    last = SalesNote.objects.aggregate(Max('number'))['number__max']
+    ...
+```
+
+`MAX(number) + 1` sobre **toda la tabla**, y `SalesNote.number` con `unique=True`
+**global**. Tres defectos distintos, no uno:
+
+1. **Fuga entre tenants.** La empresa B emitía `NV-000002` porque la empresa A
+   había emitido `NV-000001`. Su primer documento revelaba actividad ajena.
+2. **Imposibilidad legítima.** Dos empresas no podían tener cada una su
+   `NV-000001`, que es lo mínimo que un negocio espera de su numeración.
+3. **Carrera.** Dos ventas simultáneas leen el mismo máximo y calculan el mismo
+   número. La ventana es pequeña; el resultado es un duplicado.
+
+### El contador como fila, no como cálculo
+
+`InternalSequence(company, branch?, document_type, prefix, padding, next_value,
+is_active)`. El número deja de deducirse de los documentos existentes y pasa a
+ser estado propio, que es lo que permite bloquearlo.
+
+`document_type` existe desde el día uno con un solo valor (`sales_note`). No es
+especulación: la alternativa era una tabla `SalesNoteSequence` y una migración
+completa el día que aparezca el segundo documento interno.
+
+### Unicidad — dónde vive ahora
+
+| Constraint | Qué garantiza |
+|---|---|
+| `unique_company_sequence_per_document` (`WHERE branch IS NULL`) | Una serie de empresa por tipo de documento |
+| `unique_branch_sequence_per_document` (`WHERE branch IS NOT NULL`) | Una serie por sucursal y tipo |
+| `unique_value_per_sequence` (`WHERE ambos NOT NULL`) | **Un ordinal por serie** |
+
+Los tres son **condicionales**, y no por elegancia: en SQL `NULL != NULL`, así
+que un unique plano sobre `(company, branch, document_type)` dejaría acumular
+infinitas filas de empresa — exactamente la que debe ser única.
+
+`unique_value_per_sequence` es el constraint que se quería desde el principio.
+La unicidad no era «este string no se repite en la instalación» sino «este
+ordinal no se repite en esta serie».
+
+### `allocate()` — el único lugar que reparte números
+
+```python
+locked = InternalSequence.objects.select_for_update().get(pk=sequence.pk)
+value = locked.next_value
+formatted = locked.format(value)
+locked.next_value = value + 1
+locked.save(update_fields=['next_value', 'updated_at'])
+```
+
+Bloquea **una fila**: la serie. No `CompanySettings`, que es el atajo tentador
+porque el alcance vive ahí — bloquearlo serializaría todas las sucursales de una
+empresa entre sí y dejaría su configuración entera retenida durante el tiempo de
+un número.
+
+`allocate()` **exige estar dentro de una transacción** y lo comprueba. Fuera de
+ella, un `select_for_update()` no bloquea nada y un número podría escapar de una
+escritura que después falla: el documento se pierde, el ordinal no.
+
+### Orden de bloqueo: pedido primero, serie después
+
+Fijo en todo el código. Dos rutas con el orden invertido son un deadlock, y el
+orden no es arbitrario: bloquear el pedido primero hace que un segundo intento
+sobre el mismo pedido encuentre la nota ya escrita y **devuelva sin gastar un
+número**. Asignar antes de comprobar quemaría un ordinal en una nota que nunca
+se escribe — un hueco sin documento que lo explique.
+
+### El número se guarda, no se deriva
+
+`SalesNote.number` es un `CharField` almacenado. La tentación es hacerlo una
+propiedad calculada desde `sequence` + `sequence_value`, y sería un error: un
+PDF se regenera meses después, cuando el cliente pide su copia. Si el prefijo
+cambió en el intermedio, el papel que tiene en la mano y el sistema dejarían de
+coincidir.
+
+`sequence_value` guarda el ordinal para el constraint y para ordenar; `number`
+guarda lo que el documento **dice**.
+
+### Alcance: empresa o sucursal
+
+`CompanySettings.sales_note_sequence_scope`. La sucursal se deriva de
+`Order.fulfillment_branch` — el mismo campo que la Fase 2D estampa una sola vez
+al vender —, nunca de un parámetro del cliente.
+
+**Se congela tras el primer documento.** No es una limitación técnica: cada
+ordinal seguiría siendo único dentro de su serie. Es de legibilidad. Una empresa
+que emitió `NV-000001..000050` por empresa y cambiara a por sucursal vería su
+siguiente nota numerada `NV-000001` otra vez, y un mismo negocio mostrando el
+mismo identificador en dos documentos es justo lo que un correlativo impide.
+Hacerlo bien exige decidir qué pasa con los números ya emitidos, que es una
+respuesta de negocio que esta fase no tiene. Queda como PENDIENTE explícito.
+
+### El contador se congela tras el primer documento
+
+Antes del primer documento es genuinamente útil: un negocio que migra desde otro
+sistema empieza en 5001 en lugar de en 1. Después, bajarlo reemite identificadores
+que ya están en papel y subirlo abre un hueco que alguien tendrá que explicar.
+
+Se rechaza con un 400 y un mensaje, no ignorando el campo: un formulario que
+parece guardar y no guarda es peor que uno que dice que no.
+
+### Los huecos son historia, no un error
+
+Una nota anulada deja su ordinal consumido. Reescribir `NV-000004` como
+`NV-000003` para cerrar el hueco reasignaría un identificador ya emitido. El
+hueco es aceptable; la reasignación no.
+
+### Prefijo — por qué `/` está prohibido
+
+El validador acepta `[A-Za-z0-9_-]{1,12}`. `NV/2026/` es una convención
+plausible y aun así se rechaza: es un separador de rutas, el prefijo llega al
+constructor del nombre de archivo del PDF, y permitirlo deja `../` a un error de
+tecleo de distancia. El constructor de nombres además vuelve a filtrar; ninguna
+de las dos defensas es el único punto de fallo.
+
+### Migración 0029 — irreversible, y lo dice
+
+Revertirla restauraría el unique global de `number`. En cuanto dos empresas
+tengan cada una su `NV-000001` —el propósito entero de la fase— ese constraint
+no puede satisfacerse sin renumerar documentos ya emitidos de alguien.
+
+Renumerar historia para satisfacer un esquema no es un rollback, es pérdida de
+datos con una migración delante. El guard es la **última** operación de la lista
+para ser la **primera** en ejecutarse al revertir, y lanza un `RuntimeError` que
+explica y remite a restaurar una copia de seguridad.
+
+### Migración 0030 — infiere del historial de cada empresa, y nunca escribe `number`
+
+Crea una serie de empresa por empresa, deduce prefijo y padding del historial
+**de esa empresa** —no de una constante global— y coloca `next_value` por encima
+del ordinal más alto encontrado.
+
+Una nota con un número no interpretable (`MANUAL-ABC`, tecleado a mano) conserva
+su string con `sequence_value` NULL. Inventarle un ordinal la metería en la serie
+y arriesgaría chocar con un número real; el constraint es condicional
+precisamente para que estas convivan en lugar de bloquear la migración.
+
+La columna `number` no se escribe nunca.
+
+### Verificación de la actualización
+
+Contra una base poblada en 0028 y migrada hacia adelante: los números salieron
+**byte a byte idénticos** (`NV-000001, NV-000002, NV-000003, NV-000004,
+NV-000015, MANUAL-ABC`), los huecos se conservaron, `MANUAL-ABC` quedó con
+ordinal NULL, y los contadores quedaron en 16 y en 5 respectivamente. Cero
+pérdida de datos.
+
+### Lo que esto NO es
+
+Numeración **interna**. No es una serie fiscal, ni un CPE, ni una boleta o
+factura electrónica. No hay XML, ni UBL, ni firma digital, ni OSE, ni llamadas a
+SUNAT. Cada respuesta de la API y cada PDF lo repiten, porque `NV-000001` junto a
+un logo, un RUC y un total se parece mucho a un comprobante.
+
+---
+
+## 8-quindecies. Clientes tenant-aware / CRM interno (Fase 4)
+
+Migraciones **0031** (esquema), **0032** (backfill) y **0033** (capacidades).
+Primer dominio del núcleo de Servicio Técnico.
+
+### Cuatro conceptos que no deben mezclarse
+
+| Concepto | Alcance | Qué significa |
+|---|---|---|
+| `User` | Plataforma | Un login. Global, único, transversal a empresas. |
+| `Membership` | Empresa | Esta persona es **personal interno** de esta empresa. |
+| `Customer` | Empresa | Esta persona o negocio **compra** a esta empresa. |
+| `Order.customer_*` | Un pedido | Quién compró **ese día**, congelado. |
+
+Ninguno implica otro. El mismo humano puede tener cuenta, trabajar en la empresa
+A y ser cliente de la B, y las tres cosas son independientes.
+
+### Customer existe sin User, y ese es el caso normal
+
+La mayoría de los clientes de un servicio técnico llegan al mostrador, llaman o
+escriben por WhatsApp. Nunca van a tener login. `Customer.user` es nullable y un
+nulo ahí **no es un dato que falta**: es un cliente que no tiene cuenta y no la
+necesita.
+
+Al revés tampoco: registrarse en la plataforma no convierte a nadie en cliente de
+ninguna empresa.
+
+### Un login, varias empresas, varios registros
+
+```
+User X
+ ├── Customer(company=A, user=X)   notas de A, dirección de A, historial de A
+ └── Customer(company=B, user=X)   notas de B, dirección de B, historial de B
+```
+
+Dos negocios que atienden a la misma persona **no pueden leerse la ficha** el uno
+al otro. `UNIQUE(company, user) WHERE user IS NOT NULL` — condicional, porque en
+SQL los NULL son distintos entre sí, que es justo lo que se quiere: cualquier
+número de clientes puede no tener cuenta.
+
+### Unicidad del documento — por empresa, nunca global
+
+`UNIQUE(company, document_type, document_number) WHERE document_number != ''`
+
+La empresa A y la empresa B pueden tener cada una una ficha del DNI 12345678. Son
+dos fichas de la misma persona, y ninguna ve la otra. Dentro de **una** empresa,
+en cambio, dos fichas con el mismo documento no son dos clientes: son uno
+introducido dos veces, con la mitad del historial en cada una.
+
+### La regla que gobierna todo el módulo: nadie se fusiona por parecido
+
+Decidir que «Juan Pérez, juan@gmail.com» y «Juan Perez, juanp@gmail.com» son la
+misma persona es tirar una moneda. Perderla significa que un cliente lee la
+dirección, el historial y las **notas internas** de otro desde dentro de su
+propia ficha. Es una fuga de privacidad producida por una función de comodidad.
+
+Por eso:
+
+**EMPAREJAMIENTO — determinista, exacto, dos claves y ninguna más**
+
+1. `(company, user)` — la cuenta con la que la persona se autenticó.
+2. `(company, document_type, document_number)` — el documento que el cliente
+   tiene en la mano.
+
+**DETECCIÓN DE DUPLICADOS — orientativa, nunca automática**
+
+Email y teléfono compartidos devuelven `possible_duplicates` para que un humano
+mire. No fusionan nada y no bloquean el alta: las familias comparten bandeja, las
+oficinas comparten central, y el móvil de una recepcionista acaba en veinte
+fichas. Eso no son clientes repetidos.
+
+**DOCUMENTO REPETIDO EN LA MISMA EMPRESA — 409, con la ficha existente adjunta**
+
+Este sí bloquea, y responde con el registro que ya existe para que la interfaz
+ofrezca abrirlo en lugar de dejar al usuario en un callejón sin salida.
+
+### `Order.customer` y el snapshot conviven, y no son redundantes
+
+`Order.customer` es **quién es hoy**. `Order.customer_name`, `customer_phone`,
+`document_number`, `address_line`… son **quién era entonces**.
+
+Un cliente cambia de teléfono. El pedido del año pasado tiene que seguir diciendo
+lo que decía: el paquete fue a esa dirección y lo recibió esa persona. Un
+historial que se reescribiera solo sería inútil para la única pregunta que se le
+hace a un historial — qué pasó realmente.
+
+`PROTECT`, además: un cliente con compras no se borra. Se archiva.
+
+### Vinculación en checkout — política explícita
+
+| Comprador | Qué se hace |
+|---|---|
+| Autenticado | Resolver o crear `Customer(company, user)`. La cuenta es prueba. |
+| Anónimo | Emparejar por documento —que el checkout **siempre** valida— y crear si no hay. |
+| Falla algo | `Order.customer = NULL`, la venta continúa. |
+
+La tercera fila es la importante. `link_order_to_customer()` se traga sus propios
+errores y devuelve `None`; el pedido conserva todos los campos necesarios para
+vincularlo a mano después. **Un problema de CRM no cuesta una venta.**
+
+Se crea ficha también para un pedido no pagado, y es deliberado: quien entregó un
+documento validado, un teléfono y una dirección es un cliente de ese negocio. Lo
+que el producto no hace es llamar «venta» a eso — el resumen separa pagado de no
+pagado en todas partes.
+
+### Migración 0032 — conservadora por diseño
+
+Dos claves concluyentes (cuenta, documento) y una tercera opción honesta: dejar
+`Order.customer` en NULL y contarlo. Un pedido sin vincular es visiblemente
+incompleto y se arregla a mano; uno mal vinculado parece correcto para siempre.
+
+**Regla del primero, no del más reciente.** La versión inicial refrescaba la
+ficha con el pedido más nuevo, que suena obviamente correcto y no lo es: un
+comprador que pagó una vez con su DNI y otra con el RUC de su empresa salía
+convertido en empresa con su propio nombre, y soltaba su DNI — que el siguiente
+pedido anónimo con ese mismo DNI usaba para crear una segunda ficha de la misma
+persona. La regla ordenada fabricaba el duplicado que la migración existe para
+evitar. Ahora la primera compra establece la ficha, las siguientes sólo rellenan
+huecos, y **nunca** cruzan la frontera persona/empresa.
+
+Verificado contra una base poblada en 0030 con doce pedidos que cubren: cuenta en
+dos empresas, mismo DNI anónimo y autenticado, documento en conflicto, email
+compartido, teléfono compartido, mismo DNI en dos empresas y un pedido sin
+identidad. Resultado: ocho fichas, once pedidos vinculados, uno sin vincular,
+cero fusiones incorrectas, snapshots intactos.
+
+### Migración 0033 — capacidades sin ampliar autoridad
+
+`service.customers.view/manage` pasan a ACTIVE, así que el preset `Administrador`
+de toda empresa **nueva** las incluye automáticamente: ese preset se define como
+«todas las capacidades asignables» y se evalúa al cargar el código.
+
+Las empresas **existentes** tienen sus roles congelados en la base de datos. La
+migración las concede **sólo** a un rol cuyo conjunto de capacidades sea
+EXACTAMENTE el que el preset `Administrador` otorgaba antes de esta fase —
+igualdad en ambos sentidos. Una capacidad añadida o quitada y el rol es del
+inquilino, no de la plataforma, y se deja intacto.
+
+Ese discriminador es lo que lo hace seguro. `Administrador` es un caso especial
+precisamente porque su definición es «todo»: ampliarlo no cambia lo que el rol
+significa. Ampliar un rol cuya definición es una lista concreta sí. Por eso el
+preset `Servicio Técnico` **no** se toca en empresas existentes.
+
+`service.manage` **no** es un paraguas sobre estas capacidades. Dejar que
+absorbiera todo lo que el módulo de servicio añada en el futuro lo convertiría en
+el súper-permiso implícito que el catálogo de capacidades existe para eliminar.
+
+### Customer es Company-level, no Branch-level
+
+Un cliente compra en una tienda, deja un equipo en otra y lo recoge en una
+tercera. Restringir el maestro de clientes por sucursal partiría a una persona en
+tres fichas y rompería el historial que este módulo existe para conservar.
+
+El segundo eje de autoridad de la Fase 2D sigue gobernando stock, y gobernará las
+órdenes de servicio — que son **operaciones sobre** un cliente, no el cliente.
+
+### Privacidad
+
+- **No hay endpoint público de clientes**, y esa ausencia es la garantía real.
+- El listado **no** devuelve `notes`: se lee de un vistazo en un mostrador, a
+  veces con el cliente delante.
+- La auditoría guarda **nombres de campo**, nunca valores. Una tabla de auditoría
+  la leen más personas y no la purga nadie.
+- Los errores identifican `customer_id` y `company_id`, sin volcar PII.
+
+---
+
+## 8-sexdecies. Incidente P0 — deriva de esquema (estabilización)
+
+No es una fase de producto. Es el registro de una caída de runtime y de lo que se
+aprendió, porque el modo de fallo va a repetirse en cada despliegue de este SaaS.
+
+### Lo que se veía
+
+`/admin`, `/cart` y el catálogo respondían 500 en localhost, con las Fases
+2D + 3 + 2E + 4 en el árbol de trabajo.
+
+### Lo que era
+
+```
+OperationalError: no such column: store_company.default_inventory_branch_id
+    store/views.py → store/tenancy.py
+```
+
+La base de datos de desarrollo estaba en la **0023**. El código esperaba la
+**0033**. Diez migraciones de diferencia, y la primera de ellas —la 0024— añade
+precisamente la columna que `tenancy.py` consulta en cada resolución de tenant.
+
+Como la resolución de tenant es lo PRIMERO que hace cualquier ruta del
+storefront, las tres pantallas caían en el mismo punto.
+
+### La lección, que es sobre los tests
+
+Los 1429 tests pasaban, y habrían seguido pasando durante todo el incidente.
+
+Django crea una base **nueva** para cada ejecución y le aplica todas las
+migraciones. Una suite verde afirma *«este código es coherente con estas
+migraciones»*. No afirma nada sobre la base a la que está conectado el servidor.
+
+Son dos propiedades distintas, y sólo una de ellas estaba siendo verificada:
+
+| Propiedad | Quién la verifica |
+|---|---|
+| El código concuerda con sus migraciones | La suite de tests |
+| La BASE DE DATOS concuerda con el código | **Nadie, hasta ahora** |
+
+Por eso la corrección no fue añadir tests. Fue añadir `store/checks.py`: un check
+de despliegue que, al arrancar, dice cuántas migraciones faltan y cómo se llaman.
+El fallo pasa de «tres pantallas dan 500 y hay que leer un traceback» a «el
+servidor lo dice antes de servir la primera petición».
+
+### Lo que el check deliberadamente NO hace
+
+No migra. Un check que aplicara migraciones por su cuenta sería peor que el fallo
+que sustituye: aplicar migraciones es una decisión de despliegue, algunas llevan
+cambios de datos, y la 0025 de este proyecto está diseñada para **detenerse y
+preguntar** en lugar de adivinar dónde estaba el stock histórico.
+
+Tampoco silencia nada. Si una consulta falla más adelante por una columna
+ausente, sigue lanzando. El check sólo hace que la causa se vea primero.
+
+### Lo que tampoco se hizo
+
+No se reseteó la base. Resetear habría hecho que la interfaz cargara y habría
+dejado sin probar la actualización real —que es lo único que importa cuando haya
+datos de un cliente al otro lado.
+
+No se añadió ningún `except OperationalError: return []`. Eso convierte un
+despliegue roto en una pantalla que carga con datos que faltan, que es un fallo
+peor porque nadie lo denuncia.
+
+### Hallazgo colateral: `POST /api/cart/`
+
+Buscando la causa apareció otra ruta que respondía 500 con cualquier entrada:
+`CreateModelMixin` exponía el `create` genérico del carrito, y
+`CartItemSerializer.product` es de solo lectura, así que el INSERT llegaba a la
+base con producto nulo.
+
+Se cerró con 405 en vez de repararse. Repararlo habría significado una segunda
+forma de escribir un `CartItem` sin acotar el producto a este storefront, sin
+exigir `session_key` y sin validar stock — exactamente el vector cross-tenant que
+el comentario de `add` describe cerrando. Una ruta que sólo funcionaba a medias
+era, en realidad, un agujero que no llegó a abrirse porque fallaba antes.
+
+---
+
 ## 9. Deuda pendiente
 
-1. **Branding por empresa** — `_STORE_NAME`, `_STORE_RUC`, `_STORE_ADDRESS` y
-   compañía siguen siendo constantes de módulo en `email_services.py` y
-   `pdf_services.py`. Con dos tenants, el segundo recibiría emails y PDFs con los
-   datos de Black Dog Store. **Bloquea la venta real a un segundo cliente.**
+1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`
+   + `store/company_settings.py`. No quedan constantes de identidad en los
+   servicios comerciales, y un test estructural lo vigila.
 2. **Correlativo de `SalesNote` global** — `NV-` se intercalaría entre empresas.
 3. **`get_user_role()` sigue siendo global** — un `admin` lo es en todas partes.
    La membresía todavía no gobierna los permisos.
-4. **Catálogo público sin tenant** — devuelve todos los productos activos.
+4. ~~**Catálogo público sin tenant**~~ → resuelto en 2B; el branding del
+   storefront, en la Fase 3.
 5. **Sin `NOT NULL`** en ningún FK nuevo de negocio: no se añadió ninguno.
 6. **Sin UI administrativa** de empresas; Django Admin cubre esta fase.
 7. **Bootstrap no neutral** — la migración `0015` crea el tenant piloto Black Dog
@@ -1130,54 +1921,165 @@ sigue siendo Fase 2D.
    cualquier usuario existente de la plataforma sin su consentimiento, y así
    confirmar su username. La mitigación actual uniforma las respuestas de error;
    la solución real es onboarding por invitación con aceptación del destinatario.
-12. **PENDIENTE — Branch access model** — `Membership.branch` es single-valued;
-   no expresa «este supervisor cubre A y B». Bloquea el inventario multisucursal.
+12. ~~**PENDIENTE — Branch access model**~~ → **RESUELTO en 2D**:
+   `Membership.branch_access_mode` + `MembershipBranchAccess`. `Membership.branch`
+   sobrevive como sucursal predeterminada, marcado LEGACY, sin autoridad.
 13. **KPIs comerciales tenant-aware** — el dashboard tiene el marco visual
    (`MetricCard`) pero ninguna métrica comercial, porque sería global. Se llenan
    en 2B/2C.
-14. **Pantallas de Empresa / Sucursales / Áreas / Roles** — las APIs existen desde
-   2A.1, las pantallas no. Aparecen como `Parcial` en el mapa, sin enlace.
+14. **Pantallas de Áreas y Roles** — las APIs existen desde 2A.1, las pantallas
+   no. Empresa (`/admin/settings`) y Sucursales (`/admin/branches`) se
+   construyeron en la Fase 3.
 15. **Dashboard interno avanzado** — pospuesto a propósito hasta que el dominio
    comercial esté tenantizado.
-16. **`Product.inventory` sigue siendo un entero global por producto.** Ahora que
-   `Product` tiene dueño, el stock ya **no cruza empresas** — pero sigue sin ser
-   por sucursal. `Inventory company isolation: PARCIAL` ·
-   `Inventory branch isolation: PENDIENTE` (Fase 2D, bloqueada por
-   `Branch access model`).
-17. **`StockMovement` no está tenantizado.** Su `Product` ya lo está, y el Kardex
-   por producto se scopea por eso, pero los endpoints de inventario siguen
-   autorizando por rol legacy. Las capabilities `inventory.*` **no** gobiernan
-   todavía.
+16. ~~**`Product.inventory` es un entero global por producto**~~ → **RESUELTO en
+   2D**: `BranchStock` es la fuente de verdad y `Product.inventory` queda como
+   agregado de compatibilidad mantenido transaccionalmente.
+   `Inventory company isolation: IMPLEMENTADO` ·
+   `Inventory branch isolation: IMPLEMENTADO` · `Product.inventory: OBSOLETO
+   (compatibilidad)`.
+17. ~~**`StockMovement` no está tenantizado**~~ → **RESUELTO en 2D**: lleva
+   `company` y `branch` NOT NULL, más FKs a `StockTransfer` e `InventoryCount`.
+   Las capabilities `inventory.*` pasaron a `ACTIVE` y gobiernan sus endpoints.
 18. **Bridge legacy del catálogo** — desaparece cuando todo operador tenga
    Membership.
-19. **KPIs comerciales del dashboard** — el marco visual (`ChartCard`,
-   `SummaryStatCard`) está listo, pero no hay ninguna métrica de ventas, caja o
-   stock porque sus modelos siguen siendo globales. Se llenan en 2C/2D.
+19. ~~**KPIs comerciales del dashboard**~~ → ventas en 2C, inventario en 2D.
+   Queda **caja**, que no tiene modelo todavía.
 20. **`SalesNote.number` sigue siendo un correlativo global** (`NV-000001`). Con
    dos empresas emitiendo notas, la numeración se intercala entre tenants. La
    nota en sí ya está scopeada por su pedido; lo que falta es la serie por
    empresa. Deuda conocida, no escondida.
-21. **`StockMovement` no tiene columna `company`** — alcanza su tenant a través
-   del producto. Las capabilities `inventory.*` todavía no gobiernan sus
-   endpoints. Fase 2D.
-22. **Emails sin branding por empresa** — `Order.company` ya está disponible para
-   personalizarlos, pero las plantillas siguen usando las constantes del piloto.
+21. ~~**`StockMovement` no tiene columna `company`**~~ → **RESUELTO en 2D**
+   (duplicado del punto 17).
+22. ~~**Emails sin branding por empresa**~~ → **RESUELTO en la Fase 3**.
 23. **`frontend/db.sqlite3` está versionado** (0 bytes, de antes de que `.gitignore`
    cubriera `*.sqlite3`). Conviene sacarlo del índice en un commit aparte.
+
+### Deuda que deja la Fase 2D
+
+24. **PENDIENTE — recepción parcial de transferencias.** V1 recibe la
+   transferencia completa. Hacerlo bien exige una cantidad recibida por línea, un
+   flujo de discrepancias y una decisión sobre de quién son las unidades que
+   faltan; una versión a medias perdería stock en silencio.
+25. **PENDIENTE — anular una transferencia ya despachada.** Hoy se bloquea con un
+   mensaje que explica por qué. Soportarlo exige movimientos compensatorios
+   explícitos (en la práctica, una transferencia de vuelta), no un cambio de
+   estado.
+26. **PENDIENTE — transferencia con recepción separada.** Operar una transferencia
+   exige acceso a AMBAS sucursales. El flujo real (el origen despacha, el destino
+   confirma después) necesita notificaciones, una cola de «pendientes de recibir»
+   y una regla sobre quién persigue una transferencia sin recibir. La restricción
+   actual es la que no puede perder unidades mientras eso se diseña.
+27. **PENDIENTE — asignación automática de un pedido entre varias sucursales.** Un
+   pedido sale de UNA sucursal. Si esto cambia, la clave de idempotencia de
+   `sale_exit` — hoy `(order, product)` — debe cambiar con ese diseño.
+28. **PENDIENTE — reservas multi-almacén.** No hay reserva de stock entre el
+   checkout y el pago; el comportamiento ante faltante tras el pago sigue siendo
+   marcar el pedido, como antes de 2D.
+29. **PENDIENTE — costos, utilidad y margen.** Sin precio de compra no hay
+   valorización real. El único número monetario del inventario es stock × precio
+   de venta, etiquetado como tal.
+30. **PENDIENTE — serial / IMEI.** Trazabilidad por unidad, no por cantidad.
+31. **Pantalla de Sucursales.** La API existe (incluida la sucursal de despacho,
+   `PATCH /api/admin/companies/{pk}/fulfillment-branch/`); la pantalla no.
+32. **Pantalla de Personal completa.** `/admin/users` ya expone el **acceso por
+   sucursal** (modo, concesiones y sucursal predeterminada) sobre la API de
+   membresías. Lo que sigue pendiente de esa pantalla es el alta de membresías y
+   la edición de roles/áreas personalizados, que siguen siendo deuda de 2A.1.
+33. **Bridge legacy del inventario.** Un operador pre-SaaS sin Membership sigue
+   alcanzando el tenant piloto y **todas** sus sucursales, con su rol legacy como
+   autoridad. Desaparece cuando todo operador tenga Membership.
+
+### Deuda que deja la Fase 3
+
+34. ~~**Series y correlativos por empresa**~~ → **RESUELTO en la Fase 2E**:
+   `InternalSequence` + `store/sequences.py`. El unique global de
+   `SalesNote.number` desapareció; la unicidad es por serie.
+35. **PENDIENTE — favicon por empresa.** Requiere una ruta de icono dinámica o un
+   pipeline de subida; ninguno existe. El favicon sigue siendo de plataforma.
+36. **PENDIENTE — contenido de landing por empresa.** El copy de marketing de la
+   home y de `/services` sigue siendo del piloto (reparación Apple, baterías,
+   plazos de garantía). La IDENTIDAD sí es del tenant; el CONTENIDO necesitaría
+   un sistema de contenidos, que es otra fase.
+37. **PENDIENTE — subida de logos.** `logo_url` es una URL validada. No se
+   introdujo S3 ni ningún proveedor sólo para esta fase, y no se guardan blobs ni
+   base64 en la base de datos.
+38. **PENDIENTE — SMTP por tenant.** El transporte sigue siendo de plataforma, y
+   `CompanySettings` **no** guarda secretos. Lo que sí es por tenant es la
+   identidad DENTRO del mensaje.
+39. **PARCIAL — currency.** Almacenada, de solo lectura, hasta que el checkout
+   soporte varias monedas de verdad.
+40. **PARCIAL — timezone.** Almacenada y validada como zona IANA. Los reportes y
+   el dashboard siguen usando `settings.TIME_ZONE`; migrarlos es un cambio
+   transversal que no pertenece a esta fase.
+41. **PENDIENTE — estados de reparación configurables.** El módulo de servicio
+   técnico no existe; una abstracción de estados sin dominio sería huérfana.
+
+### Deuda que deja la Fase 2E
+
+42. **PENDIENTE — cambiar el alcance después de emitir.** Hoy se congela con el
+   primer documento. Reabrirlo exige decidir qué pasa con los números ya
+   emitidos: renumerar está prohibido, así que la respuesta pasa por una serie
+   nueva o por un prefijo distinto por sucursal. Es una decisión de negocio.
+43. **PENDIENTE — anulación de notas con motivo.** Hoy una nota anulada deja su
+   ordinal consumido y no hay campo donde escribir por qué. El hueco es correcto;
+   la explicación falta.
+44. **PENDIENTE — series para otros documentos internos.** `document_type` está
+   listo y tiene un solo valor. La segunda serie no necesitará migración de
+   esquema, sólo su servicio.
+45. **NO ES DEUDA — numeración fiscal SUNAT.** Fuera de alcance por decisión, no
+   por olvido. Esto es numeración interna y el producto lo dice en cada
+   superficie donde el número aparece.
+
+### Deuda que deja la Fase 4
+
+46. **PENDIENTE — merge de clientes.** Deliberado. Tiene que mover pedidos y, en
+   fases siguientes, equipos, órdenes de servicio y garantías. Un merge que mueva
+   unos y no otros es peor que ninguno.
+47. **PENDIENTE — vincular a mano un pedido histórico ambiguo.** La migración
+   deja en NULL lo que no puede atribuir con certeza; falta la herramienta para
+   que un humano lo resuelva.
+48. **PENDIENTE — múltiples direcciones por cliente.** Hoy hay una dirección de
+   contacto dentro de `Customer`. `CustomerAddress` se pospone hasta que exista
+   un caso real que la necesite.
+49. **PENDIENTE — `service.customers.view` para técnicos de empresas ya
+   provisionadas.** Por least privilege, la migración 0033 sólo amplía el preset
+   `Administrador` intacto. Los técnicos de empresas existentes reciben la
+   capacidad cuando su administrador la marca.
+50. **PENDIENTE — portal del cliente.** Sin login propio de Customer, sin token
+   de seguimiento, sin QR. El login sigue siendo `User`, global.
+51. **PENDIENTE — Devices (Fase 5).** La ficha no muestra sección de equipos
+   todavía: una tarjeta vacía prometiendo una función es una promesa que el
+   producto no puede cumplir.
+
+### Deuda que deja el incidente P0
+
+52. **El check avisa, no aplica.** Es intencional: aplicar migraciones es una
+   decisión de despliegue y la 0025 se detiene a propósito. Queda pendiente
+   decidir si el arranque en producción debe además NEGARSE a servir con el
+   esquema por detrás, en lugar de sólo avisar.
+53. **`INVENTORY_MIGRATION_BRANCHES` sigue siendo un dict en `settings.py`**, no
+   una variable de entorno. Documentado en `.env.example`, pero configurarlo
+   todavía es tocar código. No se cambió aquí porque no hizo falta y habría sido
+   ampliar el alcance de una fase de estabilización.
 
 ---
 
 ## 10. Próximas fases
 
-**A. RBAC tenant-aware y aislamiento completo** — mover los permisos de
-`UserProfile.role` a `Membership`, tenantizar `Product`/`Order`, activar la
-resolución por host.
+**A. RBAC tenant-aware y aislamiento completo** — hecho en 2A/2A.1/2B/2C/2D
+para catálogo, comercio e inventario. Queda `get_user_role()` global y el bridge
+legacy.
 
-**B. Configuración y branding por empresa** — `CompanySettings` con nombre,
-razón social, RUC, dirección, teléfono y logo; `email_services` y `pdf_services`
-leyendo de ahí.
+**B. Series y correlativos por empresa** — hecho en la Fase 2E.
 
-**C. Inventario serializado IMEI/serie** — trazabilidad por unidad.
+**C. Configuración y branding por empresa** — hecho en la Fase 3.
+
+**D. FASE 5 — Equipos / Devices tenant-aware.** Con el cliente ya aislado, el
+equipo es lo que le pertenece: tipo, marca, modelo, IMEI/serie e historial.
+`Customer` → `Device` → `RepairOrder`.
+
+**E. Inventario serializado IMEI/serie** — trazabilidad por unidad.
 
 ---
 

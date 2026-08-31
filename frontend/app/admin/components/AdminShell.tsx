@@ -83,9 +83,10 @@ export function AdminShell({ user, dashboard, onSelectCompany, children }: Props
   return (
     <div className="min-h-[calc(100vh-64px)] bg-zinc-950">
       <div className="flex">
-        <InternalSidebar access={access} />
+        <InternalSidebar access={access} companyName={effective?.company?.name} />
         <MobileSidebar
           access={access}
+          companyName={effective?.company?.name}
           open={menuOpen}
           onClose={() => setMenuOpen(false)}
         />

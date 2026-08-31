@@ -1,23 +1,30 @@
 "use client";
 
-// Phase 6.0 — operational stock and sales reports.
+// Phase 6.0 — operational stock and sales reports. Branch-scoped in Phase 2D.
+//
+// "Bajo stock" now means "at or below THIS branch's minimum for this product",
+// with the threshold field below acting only as the fallback for rows nobody has
+// configured. One company-wide number could never say that a charger running low
+// at 20 units downtown is perfectly stocked at 3 in a satellite shop.
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { StaffGuard } from "../../components/StaffGuard";
 import {
+  BranchStockTable,
   EmptyBox,
   ErrorBox,
   Panel,
   Spinner,
   StatCard,
-  StockBadge,
   TableWrap,
   Td,
   Th,
   formatSoles,
 } from "../../components/InventoryUi";
+import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
+import { useBranchScope } from "../../lib/use-branch-scope";
 import {
   fetchBestSelling,
   fetchHighStock,
@@ -25,59 +32,24 @@ import {
   fetchLowStock,
   fetchStaleStock,
   type BestSellingRow,
-  type InventoryProduct,
+  type BranchStockRow,
+  type InventoryScope,
   type InventorySummary,
 } from "../../../lib/inventory";
 import type { AuthUser } from "../../../lib/auth";
 
 type Report = {
   summary: InventorySummary;
-  low: InventoryProduct[];
-  high: InventoryProduct[];
-  outOfStock: InventoryProduct[];
+  scope: InventoryScope;
+  low: BranchStockRow[];
+  high: BranchStockRow[];
+  outOfStock: BranchStockRow[];
   best: BestSellingRow[];
-  stale: InventoryProduct[];
+  stale: BranchStockRow[];
 };
 
-function ProductTable({
-  rows,
-  threshold,
-  emptyMessage,
-}: {
-  rows: InventoryProduct[];
-  threshold: number;
-  emptyMessage: string;
-}) {
-  if (rows.length === 0) return <EmptyBox message={emptyMessage} />;
-  return (
-    <TableWrap>
-      <thead>
-        <tr className="border-b border-white/[0.06]">
-          <Th>Producto</Th>
-          <Th>Categoría</Th>
-          <Th right>Precio</Th>
-          <Th right>Stock</Th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((p) => (
-          <tr key={p.id} className="border-b border-white/[0.03]">
-            <Td>
-              <Link href={`/admin/products/${p.id}/stock-card`} className="transition hover:text-white">
-                {p.name}
-              </Link>
-            </Td>
-            <Td muted>{p.category_name ?? "—"}</Td>
-            <Td right muted>{formatSoles(p.price)}</Td>
-            <Td right><StockBadge value={p.inventory} threshold={threshold} /></Td>
-          </tr>
-        ))}
-      </tbody>
-    </TableWrap>
-  );
-}
-
 function ReportsContent({ user }: { user: AuthUser }) {
+  const scope = useBranchScope({ preferAggregate: true });
   const [threshold, setThreshold] = useState(5);
   const [staleDays, setStaleDays] = useState(60);
   const [data, setData] = useState<Report | null>(null);
@@ -85,25 +57,29 @@ function ReportsContent({ user }: { user: AuthUser }) {
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
+  const branch = scope.branch;
+
   const load = useCallback(async (): Promise<Report> => {
     const [summary, low, high, best, stale] = await Promise.all([
-      fetchInventorySummary(threshold),
-      fetchLowStock({ threshold, limit: 50 }),
-      fetchHighStock({ limit: 20 }),
-      fetchBestSelling({ limit: 20 }),
-      fetchStaleStock({ days: staleDays, limit: 50 }),
+      fetchInventorySummary(threshold, branch),
+      fetchLowStock({ threshold, limit: 50, branch }),
+      fetchHighStock({ limit: 20, branch }),
+      fetchBestSelling({ limit: 20, branch }),
+      fetchStaleStock({ days: staleDays, limit: 50, branch }),
     ]);
     return {
       summary,
-      low: low.results.filter((p) => p.inventory > 0),
-      outOfStock: low.results.filter((p) => p.inventory <= 0),
+      scope: summary.scope,
+      low: low.results.filter((r) => r.quantity > 0),
+      outOfStock: low.results.filter((r) => r.quantity <= 0),
       high: high.results,
       best: best.results,
       stale: stale.results,
     };
-  }, [threshold, staleDays]);
+  }, [threshold, staleDays, branch]);
 
   useEffect(() => {
+    if (!scope.ready) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -121,7 +97,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
     return () => {
       cancelled = true;
     };
-  }, [load, reloadKey]);
+  }, [load, reloadKey, scope.ready]);
 
   const fieldClass =
     "w-24 rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25";
@@ -136,18 +112,30 @@ function ReportsContent({ user }: { user: AuthUser }) {
               Stock crítico, rotación y ventas por producto.
             </p>
           </div>
-          <Link
-            href="/admin/inventory"
-            className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-          >
-            ← Inventario
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <BranchSelector
+              access={scope.access}
+              value={scope.branch}
+              onChange={(next) => {
+                setLoading(true);
+                scope.setBranch(next);
+              }}
+            />
+            <Link
+              href="/admin/inventory"
+              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            >
+              ← Inventario
+            </Link>
+          </div>
         </div>
+
+        <ScopeNote scope={data?.scope} />
 
         <div className="flex flex-wrap items-end gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
           <div>
             <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500" htmlFor="r-threshold">
-              Umbral bajo stock
+              Umbral por defecto
             </label>
             <input
               id="r-threshold"
@@ -183,13 +171,21 @@ function ReportsContent({ user }: { user: AuthUser }) {
           </button>
         </div>
 
-        {loading ? <Spinner label="Generando reportes…" /> : null}
+        {scope.error ? <ErrorBox message={scope.error} /> : null}
+        {!scope.loading && !scope.ready && !scope.error ? (
+          <EmptyBox message="No tienes sucursales asignadas." />
+        ) : null}
+        {loading && scope.ready ? <Spinner label="Generando reportes…" /> : null}
         {error ? <ErrorBox message={error} /> : null}
 
         {data ? (
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <StatCard label="Valor del inventario" value={formatSoles(data.summary.inventory_value)} />
+              <StatCard
+                label="Valor estimado"
+                value={formatSoles(data.summary.inventory_value)}
+                hint="A precio de venta — no es costo"
+              />
               <StatCard label="Unidades totales" value={data.summary.total_units} />
               <StatCard
                 label="Agotados"
@@ -205,27 +201,18 @@ function ReportsContent({ user }: { user: AuthUser }) {
             </div>
 
             <Panel title="Productos agotados" description="Stock en cero — sin disponibilidad">
-              <ProductTable
-                rows={data.outOfStock}
-                threshold={threshold}
-                emptyMessage="Ningún producto agotado."
-              />
+              <BranchStockTable rows={data.outOfStock} emptyMessage="Ningún producto agotado." />
             </Panel>
 
-            <Panel title="Productos con menos stock" description={`Al o por debajo de ${threshold} unidades`}>
-              <ProductTable
+            <Panel title="Productos con menos stock" description="Al o por debajo del mínimo de su sucursal">
+              <BranchStockTable
                 rows={data.low}
-                threshold={threshold}
-                emptyMessage="Ningún producto por debajo del umbral."
+                emptyMessage="Ningún producto por debajo del mínimo."
               />
             </Panel>
 
             <Panel title="Productos con más stock" description="Mayor cantidad inmovilizada">
-              <ProductTable
-                rows={data.high}
-                threshold={threshold}
-                emptyMessage="Sin productos activos."
-              />
+              <BranchStockTable rows={data.high} emptyMessage="Sin stock registrado." />
             </Panel>
 
             <Panel title="Productos más vendidos" description="Unidades e ingresos de órdenes pagadas">
@@ -257,9 +244,8 @@ function ReportsContent({ user }: { user: AuthUser }) {
               title="Productos sin movimiento"
               description={`Sin entradas ni salidas en los últimos ${staleDays} días`}
             >
-              <ProductTable
+              <BranchStockTable
                 rows={data.stale}
-                threshold={threshold}
                 emptyMessage="Todos los productos tuvieron movimiento en el período."
               />
             </Panel>

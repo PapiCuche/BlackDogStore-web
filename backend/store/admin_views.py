@@ -11,8 +11,17 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import AdminAuditLog, Category, Order, OrderItem, Product, UserProfile
-from .tenancy import CATALOG_SOURCE_LEGACY, has_capability, resolve_catalog_company
+from .inventory_services import (
+    InsufficientStockError, InventoryError,
+    apply_initial_stock, apply_manual_stock_movement,
+)
+from .models import (
+    AdminAuditLog, Category, Order, OrderItem, Product, StockMovement, UserProfile,
+)
+from .tenancy import (
+    BranchAccessError, CATALOG_SOURCE_LEGACY, NoBranchError,
+    has_capability, resolve_branch_for_user, resolve_catalog_company,
+)
 from .permissions import (
     CanManageInventory, CanManageOrderFulfillment, CanManageProducts,
     CanViewAdminOrders, CanViewAdminProducts,
@@ -55,6 +64,9 @@ CAP_PRODUCTS_MANAGE = 'products.manage'
 CAP_ORDERS_VIEW = 'sales.orders.view'
 CAP_ORDERS_MANAGE = 'sales.orders.manage'
 CAP_SALES_NOTES = 'sales.notes.manage'
+# Phase 2D: adjusting stock from the product screen is an inventory action,
+# not a catalogue one. It takes the inventory capability, not products.manage.
+CAP_INVENTORY_ADJUST = 'inventory.adjust'
 
 # Legacy role sets, mirroring the permission classes these views used before
 # Phase 2B. They now apply ONLY on the legacy-bridge path — a pre-SaaS operator
@@ -75,6 +87,11 @@ _LEGACY_VIEW_ORDERS_ROLES = frozenset([
 _LEGACY_MANAGE_ORDERS_ROLES = frozenset([
     UserProfile.ROLE_INVENTORY, UserProfile.ROLE_SALES,
     UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+])
+# Inventory adjustment through the product screen. Mirrors the Phase 3.2
+# `CanManageInventory` class exactly, so no historical operator changes hands.
+_LEGACY_ADJUST_INVENTORY_ROLES = frozenset([
+    UserProfile.ROLE_INVENTORY, UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
 ])
 _LEGACY_SALES_NOTES_ROLES = frozenset([
     UserProfile.ROLE_SALES, UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
@@ -382,8 +399,46 @@ class AdminProductListView(APIView):
             data=request.data, context={'company': company},
         )
         ser.is_valid(raise_exception=True)
-        # company comes from the resolved context, never from the payload.
-        product = ser.save(company=company)
+
+        # PHASE 2D — OPENING STOCK IS A MOVEMENT, NOT A COLUMN.
+        #
+        # `inventory` in the payload used to be written straight onto the row,
+        # which meant units appeared in a company with nothing in the Kardex
+        # explaining where they came from. Now it opens the balance of the
+        # branch this operator works in, with an `initial_stock` line.
+        #
+        # A company with no branch cannot hold stock, and this refuses rather
+        # than inventing a location: units have to be SOMEWHERE.
+        opening_stock = ser.validated_data.pop('inventory', 0) or 0
+        branch = None
+        if opening_stock > 0:
+            try:
+                branch = resolve_branch_for_user(request.user, company, None)
+            except (NoBranchError, BranchAccessError):
+                return Response(
+                    {
+                        'inventory': [
+                            'No hay una sucursal donde registrar el stock inicial. '
+                            'Cree una sucursal y asígnela antes de dar de alta '
+                            'productos con stock.',
+                        ],
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            with transaction.atomic():
+                # company comes from the resolved context, never from the payload.
+                product = ser.save(company=company, inventory=0)
+                if branch is not None:
+                    apply_initial_stock(
+                        branch=branch, product=product, quantity=opening_stock,
+                        actor=request.user, request=request,
+                    )
+        except InventoryError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        product.refresh_from_db()
         AdminAuditLog.log(
             actor=request.user,
             action='product_created',
@@ -394,10 +449,12 @@ class AdminProductListView(APIView):
                 'slug': product.slug,
                 'price': str(product.price),
                 'inventory': product.inventory,
+                'initial_stock_branch_id': branch.pk if branch else None,
                 'category_id': product.category_id,
                 'is_active': product.is_active,
             },
             request=request,
+            company=company,
         )
         return Response(AdminProductSerializer(product).data, status=status.HTTP_201_CREATED)
 
@@ -432,6 +489,25 @@ class AdminProductDetailView(APIView):
         product = get_object_or_404(
             Product.objects.select_related('category').filter(company=company), pk=pk,
         )
+
+        # PHASE 2D — STOCK IS NOT AN EDITABLE PRODUCT FIELD.
+        #
+        # `Product.inventory` is now a derived aggregate over BranchStock. Typing
+        # a new number into a product form would change stock with no branch, no
+        # Kardex line, no actor and no reason — the exact hole the whole
+        # inventory module exists to close. Refused loudly rather than ignored
+        # silently, so a client that still sends it finds out.
+        if 'inventory' in request.data:
+            return Response(
+                {
+                    'inventory': [
+                        'El stock no se edita desde el producto. Registre un '
+                        'movimiento de inventario en la sucursal correspondiente.',
+                    ],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         old = _product_snapshot(product)
 
         ser = AdminProductWriteSerializer(
@@ -473,41 +549,77 @@ class AdminProductDetailView(APIView):
 class AdminProductInventoryAdjustView(APIView):
     """
     POST /api/admin/products/{pk}/inventory-adjust/
-    Body: {delta: int (nonzero), reason: str}
-    Allowed roles: inventory, admin, superadmin.
+    Body: {delta: int (nonzero), reason: str, branch?: int}
+
+    THE SHORTCUT THIS ENDPOINT USED TO BE.
+    Until Phase 2D it wrote `Product.inventory` directly: no Kardex line, no
+    branch, no lock on anything but the product row, and no tenant scope — any
+    staff user could adjust any company's product by id. It is now a thin
+    wrapper over the same service layer as every other movement, and it is
+    tenant- and branch-scoped like everything else.
+
+    A `delta` becomes a manual entry or a manual exit. `correction_*` is
+    deliberately not used: a correction means "the shelf disagreed with the
+    system", which is what a physical count records, not what a free-form
+    adjustment asserts.
     """
-    permission_classes = [permissions.IsAuthenticated, CanManageInventory]
+    # Authority is decided by _company_context() + branch access below, which
+    # need the resolved company to answer at all.
+    permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminInventoryAdjustThrottle]
 
     def post(self, request, pk):
-        try:
-            return self._do_post(request, pk)
-        except Product.DoesNotExist:
-            return Response({'detail': 'Producto no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        company, error = _company_context(
+            request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES,
+        )
+        if error:
+            return error
 
-    def _do_post(self, request, pk):
         ser = AdminInventoryAdjustSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         delta = ser.validated_data['delta']
         reason = ser.validated_data['reason']
 
-        with transaction.atomic():
-            try:
-                product = Product.objects.select_for_update().get(pk=pk)
-            except Product.DoesNotExist:
-                raise
+        # A product of another tenant answers exactly like one that does not exist.
+        product = Product.objects.filter(company=company, pk=pk).first()
+        if product is None:
+            return Response(
+                {'detail': 'Producto no encontrado.'}, status=status.HTTP_404_NOT_FOUND,
+            )
 
-            new_inventory = product.inventory + delta
-            if new_inventory < 0:
-                return Response(
-                    {'detail': f'Stock insuficiente. Stock actual: {product.inventory}, delta: {delta}.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        try:
+            branch = resolve_branch_for_user(
+                request.user, company, request.data.get('branch'), allow_all=False,
+            )
+        except NoBranchError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except BranchAccessError:
+            return Response(
+                {'detail': 'Sucursal no encontrada o sin acceso.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-            old_inventory = product.inventory
-            Product.objects.filter(pk=pk).update(inventory=F('inventory') + delta)
-            product.refresh_from_db()
+        old_inventory = product.inventory
+        movement_type = (
+            StockMovement.MANUAL_ENTRY if delta > 0 else StockMovement.MANUAL_EXIT
+        )
 
+        try:
+            movement = apply_manual_stock_movement(
+                branch=branch,
+                product_id=product.pk,
+                movement_type=movement_type,
+                quantity=abs(delta),
+                reason=reason,
+                actor=request.user,
+                request=request,
+            )
+        except InsufficientStockError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except InventoryError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        product.refresh_from_db()
         AdminAuditLog.log(
             actor=request.user,
             action='product_inventory_adjusted',
@@ -516,12 +628,16 @@ class AdminProductInventoryAdjustView(APIView):
             metadata={
                 'product_name': product.name,
                 'product_id': product.pk,
+                'branch_id': branch.pk,
+                'branch_name': branch.name,
                 'old_inventory': old_inventory,
                 'delta': delta,
                 'new_inventory': product.inventory,
+                'stock_movement_id': movement.pk,
                 'reason': reason,
             },
             request=request,
+            company=company,
         )
         return Response(AdminProductSerializer(product).data)
 

@@ -48,6 +48,7 @@ import {
   IconAdministration,
   IconBranch,
   IconCash,
+  IconInventory,
   IconPeople,
   IconProducts,
   IconSales,
@@ -159,6 +160,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
   const organization = dashboard?.organization ?? null;
   const catalog = dashboard?.catalog ?? null;
   const sales = dashboard?.sales ?? null;
+  const inventory = dashboard?.inventory ?? null;
   const roles = dashboard?.access.roles ?? [];
   const areas = dashboard?.access.areas ?? [];
   const capabilities = dashboard?.access.capabilities ?? [];
@@ -243,6 +245,87 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
               />
             </ChartCard>
           </div>
+        </DashboardSection>
+      )}
+
+      {/* ── Inventory KPIs (Phase 2D) ──────────────────────────────────── */}
+      {inventory && (
+        <DashboardSection
+          title="Inventario"
+          description={
+            inventory.has_branch_access
+              ? `Existencias de ${inventory.branches.length === 1 ? "tu sucursal" : `tus ${inventory.branches.length} sucursales`}: ${inventory.branches.map((b) => b.name).join(" · ")}.`
+              : "Todavía no tienes ninguna sucursal asignada."
+          }
+        >
+          {inventory.has_branch_access ? (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                <SummaryStatCard
+                  label="Unidades en stock"
+                  value={inventory.total_units}
+                  hint="Solo productos activos"
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="Productos con stock"
+                  value={inventory.stocked_count}
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="Sin stock"
+                  value={inventory.out_of_stock_count}
+                  hint="Agotados en tus sucursales"
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="Bajo mínimo"
+                  value={inventory.low_stock_count}
+                  hint="Según el mínimo de cada sucursal"
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="En tránsito"
+                  value={inventory.transfers_in_transit}
+                  hint="Transferencias sin recibir"
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="Recuentos pendientes"
+                  value={inventory.pending_counts}
+                  hint="Sin aprobar ni anular"
+                  icon={IconInventory}
+                />
+              </div>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <ChartCard
+                  title="Stock por sucursal"
+                  description="Unidades disponibles en cada sucursal a la que tienes acceso."
+                  footnote={`Valor estimado a precio de venta: ${formatSoles(inventory.inventory_value)}. No es costo ni capital invertido: el sistema no registra precios de compra.`}
+                >
+                  <HorizontalBarChart
+                    series={inventory.stock_by_branch}
+                    unit="unidades"
+                    emptyMessage="Todavía no hay stock registrado."
+                  />
+                </ChartCard>
+
+                <ChartCard
+                  title="Productos bajo mínimo"
+                  description="Cuántos productos hay que reponer en cada sucursal."
+                >
+                  <HorizontalBarChart
+                    series={inventory.low_stock_by_branch}
+                    unit="productos"
+                    emptyMessage="Ningún producto por debajo de su mínimo."
+                  />
+                </ChartCard>
+              </div>
+            </>
+          ) : (
+            <EmptyState message="Tu alcance está limitado a sucursales seleccionadas y todavía no tienes ninguna. Pide a un administrador de la empresa que te asigne al menos una." />
+          )}
         </DashboardSection>
       )}
 

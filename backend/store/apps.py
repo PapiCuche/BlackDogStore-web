@@ -6,4 +6,5 @@ class StoreConfig(AppConfig):
     name = 'store'
 
     def ready(self):
+        import store.checks  # noqa: F401  — registers the deployment checks
         import store.signals  # noqa: F401

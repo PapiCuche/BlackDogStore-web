@@ -102,3 +102,13 @@ class AdminStockMovementsThrottle(UserRateThrottle):
 class AdminSalesNotesThrottle(UserRateThrottle):
     """Issuing / downloading internal sales notes."""
     scope = 'admin_sales_notes'
+
+
+class AdminCustomersThrottle(UserRateThrottle):
+    """Reading and searching the CRM."""
+    scope = 'admin_customers'
+
+
+class AdminCustomerWriteThrottle(UserRateThrottle):
+    """Creating, editing and archiving customers."""
+    scope = 'admin_customer_write'

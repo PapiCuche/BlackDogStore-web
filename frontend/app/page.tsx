@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useStoreName, useStorefront } from "./components/StorefrontProvider";
 import { ProductCard } from "./components/ProductCard";
 import Hero from "./components/Hero";
 import { fetcher, apiUrl } from "./lib/api";
@@ -91,6 +92,12 @@ const BRANDS_STRIP = [
 ];
 
 export default function Home() {
+  // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
+  const { whatsapp_link: whatsappLink, phone: storePhone } =
+    useStorefront().contact;
+  // Phase 3: the shop's own name. The claims around it are still the pilot's
+  // marketing copy — per-tenant landing content is a separate concern.
+  const storeName = useStoreName();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -220,12 +227,12 @@ export default function Home() {
                 ¿Tu iPhone<br />No Funciona?
               </h2>
               <p className="mt-5 max-w-md text-base leading-7 text-zinc-400">
-                En Black Dog Store ofrecemos servicio técnico especializado en productos Apple.
+                En {storeName} ofrecemos servicio técnico especializado en productos Apple.
                 Diagnóstico gratuito y reparaciones con garantía.
               </p>
               <div className="mt-8 flex flex-wrap gap-3">
                 <a
-                  href="https://wa.me/51936449536"
+                  href={whatsappLink || "#"}
                   className="inline-flex items-center gap-2.5 rounded-full bg-white px-7 py-3.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
                 >
                   <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
@@ -299,7 +306,7 @@ export default function Home() {
                 <p className="mt-1 text-sm text-zinc-700">Escríbenos por WhatsApp para consultar disponibilidad.</p>
               </div>
               <a
-                href="https://wa.me/51936449536"
+                href={whatsappLink || "#"}
                 className="rounded-full bg-white px-6 py-3 text-xs font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
               >
                 Consultar stock
@@ -329,7 +336,7 @@ export default function Home() {
                 Contacta ahora para asegurar tu pedido.
               </p>
               <a
-                href="https://wa.me/51936449536?text=Hola%2C%20quiero%20reservar%20el%20iPhone%2017%20Pro%20Max"
+                href={whatsappLink ? `${whatsappLink}?text=${encodeURIComponent("Hola, quiero más información")}` : "#"}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-white px-7 py-3.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
@@ -351,7 +358,9 @@ export default function Home() {
               <p className="mt-6 text-xs uppercase tracking-[0.3em] text-zinc-400">
                 Disponible · 256GB · 512GB · 1TB
               </p>
-              <p className="mt-2 text-xs text-zinc-400">936 449 536</p>
+              {storePhone ? (
+                <p className="mt-2 text-xs text-zinc-400">{storePhone}</p>
+              ) : null}
             </div>
           </div>
         </section>

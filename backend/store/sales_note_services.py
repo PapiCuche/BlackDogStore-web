@@ -9,7 +9,8 @@ Hard rules:
   - Only PAID orders get a note. pending_payment / failed / expired / cancelled
     are rejected.
   - One note per order (OneToOne) — get_or_create_sales_note is idempotent.
-  - The internal correlativo (NV-000001) is allocated atomically.
+  - The internal correlativo is allocated by store.sequences, from the series
+    that belongs to the order's own company (and branch, under branch scope).
   - The PDF never contains stripe_session_id, stripe_payment_intent_id,
     payment_error, tokens, cookies or secrets.
   - Issuing a note never touches payment state and never touches inventory.
@@ -21,20 +22,17 @@ import io
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Max
 from django.utils import timezone
 
+from . import company_settings as _company_settings
+from . import sequences as _sequences
 from .models import Order, SalesNote
 from .pdf_services import (
     _DELIVERY_LABELS,
     _DOCUMENT_LABELS,
+    _GENERIC_WARRANTY_NOTE,
     _RECEIPT_LABELS,
-    _STORE_ADDRESS,
-    _STORE_CITY,
-    _STORE_LEGAL_NAME,
-    _STORE_NAME,
-    _STORE_PHONE,
-    _STORE_RUC,
+    _safe_slug,
 )
 
 # Must appear visibly on every generated sales-note PDF.
@@ -48,39 +46,6 @@ _TITLE = "Nota de venta interna"
 
 class SalesNoteError(Exception):
     """Business-rule violation. Views map this to HTTP 400."""
-
-
-# ---------------------------------------------------------------------------
-# Internal correlativo
-# ---------------------------------------------------------------------------
-
-def _next_note_number() -> str:
-    """
-    Allocate the next internal correlativo, e.g. NV-000001.
-
-    Called inside the transaction opened by get_or_create_sales_note, which has
-    already locked the order row, so concurrent issuance for different orders is
-    serialised by the unique constraint on `number` (a clash raises IntegrityError
-    and the caller retries the whole transaction).
-
-    This is an INTERNAL number — not a SUNAT series.
-    """
-    prefix = SalesNote.NUMBER_PREFIX
-    padding = SalesNote.NUMBER_PADDING
-
-    last = (
-        SalesNote.objects.filter(number__startswith=prefix)
-        .aggregate(Max('number'))['number__max']
-    )
-    if not last:
-        nxt = 1
-    else:
-        try:
-            nxt = int(last[len(prefix):]) + 1
-        except (ValueError, TypeError):
-            nxt = SalesNote.objects.count() + 1
-
-    return f"{prefix}{str(nxt).zfill(padding)}"
 
 
 # ---------------------------------------------------------------------------
@@ -103,27 +68,52 @@ def get_or_create_sales_note(order: Order, actor=None) -> tuple[SalesNote, bool]
         return existing, False
 
     with transaction.atomic():
-        # Re-check under lock — two concurrent requests must not both create one.
+        # LOCK ORDER: order first, sequence second. Every issuing path uses this
+        # order and nothing uses the reverse — see store/sequences.py.
+        #
+        # The order lock is what makes issuance idempotent under concurrency:
+        # two simultaneous requests for the SAME order both arrive here, one
+        # waits, and the waiter finds the note already created and consumes NO
+        # number. Allocating before this check would burn an ordinal on a note
+        # that is never written.
         locked_order = Order.objects.select_for_update().get(pk=order.pk)
         existing = SalesNote.objects.filter(order=locked_order).first()
         if existing:
             return existing, False
 
+        sequence = _sequences.resolve_sequence_for_order(locked_order)
+        value, number = _sequences.allocate(sequence)
+
         note = SalesNote.objects.create(
             order=locked_order,
-            number=_next_note_number(),
+            sequence=sequence,
+            sequence_value=value,
+            number=number,
             status=SalesNote.STATUS_ISSUED,
             issued_at=timezone.now(),
             created_by=actor if getattr(actor, 'is_authenticated', False) else None,
-            metadata={'order_id': locked_order.pk},
+            metadata={
+                'order_id': locked_order.pk,
+                'sequence_id': sequence.pk,
+                'branch_id': sequence.branch_id,
+            },
         )
 
     return note, True
 
 
 def get_sales_note_filename(sales_note: SalesNote) -> str:
-    """Safe ASCII filename for the download."""
-    return f"blackdog-nota-venta-{sales_note.number}.pdf"
+    """
+    Safe ASCII filename for the download.
+
+    Built from the company slug, filtered again here — the same rule as the
+    order receipt. The tenant's free-text NAME never reaches a
+    Content-Disposition header.
+    """
+    company = getattr(sales_note.order, 'company', None)
+    slug = _safe_slug(getattr(company, 'slug', ''))
+    number = _safe_slug(sales_note.number) or 'nota'
+    return f'{slug}-nota-venta-{number}.pdf' if slug else f'nota-venta-{number}.pdf'
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +141,16 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
 
     address_parts = [p for p in (order.address_line, order.district, order.city) if p]
 
+    # The seller on this note is the ORDER's company, frozen at sale time
+    # (Phase 3), and `number` comes from that company's own series (Phase 2E).
+    # Neither WHO issued this note nor WHAT it is numbered is a module constant.
+    #
+    # The stored string is read back verbatim, never re-derived from the series:
+    # a prefix changed after issuance must not retroactively rewrite a document
+    # somebody is already holding.
+    identity = _company_settings.order_identity(order)
+    pickup = _company_settings.order_pickup_location(order)
+
     return {
         'title': _TITLE,
         'disclaimer': SALES_NOTE_DISCLAIMER,
@@ -171,12 +171,16 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'items': items,
         'discount_amount': Decimal(str(order.discount_amount)),
         'total': Decimal(str(order.total)),
-        'store_name': _STORE_NAME,
-        'store_legal_name': _STORE_LEGAL_NAME,
-        'store_ruc': _STORE_RUC,
-        'store_address': _STORE_ADDRESS,
-        'store_city': _STORE_CITY,
-        'store_phone': _STORE_PHONE,
+        'store_name': identity.name,
+        'store_legal_name': identity.legal_name,
+        'store_ruc': identity.tax_id,
+        'store_address': identity.legal_address,
+        'store_city': identity.city,
+        'store_phone': identity.phone,
+        'store_email': identity.contact_email,
+        'warranty_note': identity.warranty_policy_text or _GENERIC_WARRANTY_NOTE,
+        'pickup_name': pickup.get('name', ''),
+        'pickup_address': pickup.get('address', ''),
     }
 
 
@@ -208,8 +212,11 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
         pagesize=A4,
         rightMargin=2 * cm, leftMargin=2 * cm,
         topMargin=2 * cm, bottomMargin=2 * cm,
-        title=f"{ctx['number']} — {_STORE_NAME}",
-        author=_STORE_NAME,
+        title=(
+            f"{ctx['number']} — {ctx['store_name']}"
+            if ctx['store_name'] else ctx['number']
+        ),
+        author=ctx['store_name'] or '',
     )
 
     base = getSampleStyleSheet()

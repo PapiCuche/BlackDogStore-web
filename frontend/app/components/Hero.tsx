@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useStorefront } from "./StorefrontProvider";
 
 const REPAIR_HIGHLIGHTS = [
   { icon: "📱", label: "Cambio de Pantalla" },
@@ -10,6 +11,13 @@ const REPAIR_HIGHLIGHTS = [
 ];
 
 export default function Hero() {
+  // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
+  const whatsappLink = useStorefront().contact.whatsapp_link;
+  // Phase 3: location and logo belong to the tenant. The marketing copy below
+  // is still the pilot's — a content system for per-tenant landing pages is a
+  // separate concern, recorded in docs/saas-multiempresa.md.
+  const { company, branding, contact } = useStorefront();
+
   return (
     <section className="relative overflow-hidden bg-[#080808]">
       {/* Topographic texture */}
@@ -29,7 +37,7 @@ export default function Hero() {
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-4 py-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-white" />
               <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-400">
-                Apple Specialist · Arequipa
+                {[company.name, contact.city].filter(Boolean).join(" · ")}
               </span>
             </div>
 
@@ -59,7 +67,7 @@ export default function Hero() {
                 Ver catálogo
               </Link>
               <a
-                href="https://wa.me/51936449536"
+                href={whatsappLink || "#"}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.05] px-7 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:border-white/30 hover:bg-white/10"
@@ -71,13 +79,16 @@ export default function Hero() {
               </a>
             </div>
 
-            {/* Location */}
-            <p className="mt-6 flex items-center gap-2 text-xs text-zinc-600">
+            {/* Location — hidden entirely when this tenant published none. */}
+            <p
+              className="mt-6 flex items-center gap-2 text-xs text-zinc-600"
+              hidden={!contact.address && !contact.city}
+            >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
-              Octavio Muñoz Najar 238, Tienda 104, Arequipa
+              {[contact.address, contact.city].filter(Boolean).join(", ")}
             </p>
           </div>
 
@@ -89,11 +100,18 @@ export default function Hero() {
               <div className="absolute inset-20 rounded-full border border-white/[0.03]" />
 
               {/* Dog icon — white on dark */}
-              <img
-                src="/assets/branding/logo-icon.png"
-                alt="Black Dog Store mascot"
-                className="relative z-10 h-64 w-64 object-contain invert drop-shadow-[0_8px_48px_rgba(255,255,255,0.1)] sm:h-80 sm:w-80"
-              />
+              {branding.logo_url ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={branding.logo_url}
+                  alt={company.name}
+                  className="relative z-10 h-64 w-64 object-contain drop-shadow-[0_8px_48px_rgba(255,255,255,0.1)] sm:h-80 sm:w-80"
+                />
+              ) : (
+                <span className="relative z-10 font-display text-5xl font-black uppercase tracking-tight text-white/90">
+                  {company.name}
+                </span>
+              )}
 
               {/* Floating badge — top right */}
               <div className="absolute right-2 top-12 rounded-2xl border border-white/10 bg-[#111] px-4 py-3 shadow-2xl sm:right-0">
