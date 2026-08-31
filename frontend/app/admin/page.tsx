@@ -31,6 +31,7 @@ import {
   DonutChart,
   HorizontalBarChart,
   StackedBar,
+  VerticalBarChart,
 } from "./components/charts";
 import {
   AlertsPanel,
@@ -40,13 +41,17 @@ import {
   DashboardSection,
   EmptyState,
   SummaryStatCard,
+  formatSoles,
 } from "./components/dashboard-ui";
 import { ModuleCard } from "./components/internal-ui";
 import {
   IconAdministration,
   IconBranch,
+  IconCash,
+  IconInventory,
   IconPeople,
   IconProducts,
+  IconSales,
   IconShield,
   IconStore,
 } from "./components/icons";
@@ -154,6 +159,8 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
   const branch = dashboard?.membership?.branch ?? null;
   const organization = dashboard?.organization ?? null;
   const catalog = dashboard?.catalog ?? null;
+  const sales = dashboard?.sales ?? null;
+  const inventory = dashboard?.inventory ?? null;
   const roles = dashboard?.access.roles ?? [];
   const areas = dashboard?.access.areas ?? [];
   const capabilities = dashboard?.access.capabilities ?? [];
@@ -169,6 +176,158 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
         scope={company ? scope : "Sin empresa asignada"}
         isPlatformAdmin={Boolean(dashboard?.access.is_platform_admin)}
       />
+
+      {/* ── Commercial KPIs (Phase 2C) ─────────────────────────────────── */}
+      {sales && (
+        <DashboardSection
+          title="Ventas"
+          description="Pedidos pagados de esta empresa. No incluye pendientes ni cancelados."
+        >
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            <SummaryStatCard
+              label="Ventas hoy"
+              value={formatSoles(sales.today_revenue)}
+              hint={`${sales.today_orders} pedido${sales.today_orders === 1 ? "" : "s"}`}
+              icon={IconCash}
+            />
+            <SummaryStatCard
+              label="Ticket promedio"
+              value={formatSoles(sales.average_ticket)}
+              hint="Sobre pedidos pagados"
+              icon={IconSales}
+            />
+            <SummaryStatCard
+              label="Pedidos pagados"
+              value={sales.total_paid_orders}
+              icon={IconSales}
+            />
+            <SummaryStatCard
+              label="Ingresos totales"
+              value={formatSoles(sales.total_revenue)}
+              icon={IconCash}
+            />
+            <SummaryStatCard
+              label="Pendientes de pago"
+              value={sales.pending_payment}
+              hint="Checkout iniciado sin pagar"
+              icon={IconSales}
+            />
+            <SummaryStatCard
+              label="Por despachar"
+              value={sales.awaiting_fulfillment}
+              hint="Pagados, aún no enviados"
+              icon={IconSales}
+            />
+          </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <ChartCard
+              title="Ventas últimos 7 días"
+              description="Importe pagado por día, fechado por la fecha de pago."
+              footnote="No se muestra utilidad: el sistema no tiene un modelo de costos, así que cualquier margen sería una cifra inventada."
+            >
+              <VerticalBarChart
+                series={sales.revenue_trend}
+                unit="soles"
+                formatValue={formatSoles}
+                emptyMessage="Todavía no hay ventas pagadas en el período."
+              />
+            </ChartCard>
+
+            <ChartCard
+              title="Pedidos por estado"
+              description="Distribución de todos los pedidos de la empresa."
+            >
+              <HorizontalBarChart
+                series={sales.orders_by_status}
+                unit="pedidos"
+                emptyMessage="Todavía no hay pedidos."
+              />
+            </ChartCard>
+          </div>
+        </DashboardSection>
+      )}
+
+      {/* ── Inventory KPIs (Phase 2D) ──────────────────────────────────── */}
+      {inventory && (
+        <DashboardSection
+          title="Inventario"
+          description={
+            inventory.has_branch_access
+              ? `Existencias de ${inventory.branches.length === 1 ? "tu sucursal" : `tus ${inventory.branches.length} sucursales`}: ${inventory.branches.map((b) => b.name).join(" · ")}.`
+              : "Todavía no tienes ninguna sucursal asignada."
+          }
+        >
+          {inventory.has_branch_access ? (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                <SummaryStatCard
+                  label="Unidades en stock"
+                  value={inventory.total_units}
+                  hint="Solo productos activos"
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="Productos con stock"
+                  value={inventory.stocked_count}
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="Sin stock"
+                  value={inventory.out_of_stock_count}
+                  hint="Agotados en tus sucursales"
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="Bajo mínimo"
+                  value={inventory.low_stock_count}
+                  hint="Según el mínimo de cada sucursal"
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="En tránsito"
+                  value={inventory.transfers_in_transit}
+                  hint="Transferencias sin recibir"
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="Recuentos pendientes"
+                  value={inventory.pending_counts}
+                  hint="Sin aprobar ni anular"
+                  icon={IconInventory}
+                />
+              </div>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <ChartCard
+                  title="Stock por sucursal"
+                  description="Unidades disponibles en cada sucursal a la que tienes acceso."
+                  footnote={`Valor estimado a precio de venta: ${formatSoles(inventory.inventory_value)}. No es costo ni capital invertido: el sistema no registra precios de compra.`}
+                >
+                  <HorizontalBarChart
+                    series={inventory.stock_by_branch}
+                    unit="unidades"
+                    emptyMessage="Todavía no hay stock registrado."
+                  />
+                </ChartCard>
+
+                <ChartCard
+                  title="Productos bajo mínimo"
+                  description="Cuántos productos hay que reponer en cada sucursal."
+                >
+                  <HorizontalBarChart
+                    series={inventory.low_stock_by_branch}
+                    unit="productos"
+                    emptyMessage="Ningún producto por debajo de su mínimo."
+                  />
+                </ChartCard>
+              </div>
+            </>
+          ) : (
+            <EmptyState message="Tu alcance está limitado a sucursales seleccionadas y todavía no tienes ninguna. Pide a un administrador de la empresa que te asigne al menos una." />
+          )}
+        </DashboardSection>
+      )}
 
       {/* ── KPI row ────────────────────────────────────────────────────── */}
       {(organization || catalog) && (

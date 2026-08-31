@@ -563,6 +563,12 @@ class MyCompanyAccessView(APIView):
 _MAX_SWITCHER_COMPANIES = 100
 
 
+def _money(value):
+    """Normalise an aggregate that may be None into a 2-decimal amount."""
+    from decimal import Decimal
+    return (value or Decimal('0')).quantize(Decimal('0.01'))
+
+
 class InternalDashboardView(APIView):
     """
     GET /api/me/internal-dashboard/[?company=<id>]
@@ -639,6 +645,9 @@ class InternalDashboardView(APIView):
                 },
                 'organization': None,
                 'catalog': None,
+                'sales': None,
+                'inventory': None,
+                'configuration': None,
                 'available_companies': switcher,
                 'requires_company_selection': True,
                 'alerts': [],
@@ -705,6 +714,32 @@ class InternalDashboardView(APIView):
         if 'products.view' in capabilities:
             catalog = self._catalog_snapshot(company)
 
+        # Commercial KPIs — real from Phase 2C, because Order now belongs to a
+        # company. Gated by the sales capability: revenue is not something every
+        # member of a company should see.
+        sales = None
+        if 'sales.orders.view' in capabilities:
+            sales = self._sales_snapshot(company)
+
+        # Inventory KPIs — real from Phase 2D, and BRANCH-SCOPED.
+        #
+        # Every figure is computed over the branches this caller may operate, so
+        # a person granted two of five shops sees the totals of two shops. That
+        # is not a filtered version of the company's number; for them it IS the
+        # number, and `scope` in the payload says which branches it covers so no
+        # heading claims more than it counted.
+        inventory = None
+        if 'inventory.view' in capabilities or 'inventory.reports' in capabilities:
+            inventory = self._inventory_snapshot(user, company)
+
+        # Phase 3: what this company still has to configure. Advisory only —
+        # nothing here blocks an operation — and gated by the same capability as
+        # the rest of the company's own information.
+        configuration = None
+        if 'company.view' in capabilities:
+            from .company_settings import company_configuration_status
+            configuration = company_configuration_status(company)
+
         return {
             'company': {
                 'id': company.pk,
@@ -738,6 +773,9 @@ class InternalDashboardView(APIView):
             },
             'organization': organization,
             'catalog': catalog,
+            'sales': sales,
+            'inventory': inventory,
+            'configuration': configuration,
             'available_companies': switcher,
             'requires_company_selection': False,
             'alerts': self._alerts(company, membership, assignments, capabilities,
@@ -790,6 +828,167 @@ class InternalDashboardView(APIView):
             'inactive_products': total - active,
             'categories': Category.objects.filter(company=company).count(),
             'products_per_category': series,
+        }
+
+    # -- commercial KPIs (Phase 2C) ------------------------------------------
+    #
+    # WHAT COUNTS AS A SALE
+    # ---------------------
+    # A PAID order, and nothing else. `pending_payment`, `failed`, `cancelled`,
+    # `expired` and `refunded` are not revenue — counting them would inflate every
+    # figure on this dashboard and make it useless for decisions.
+    #
+    # Revenue is dated by `paid_at`, not `created_at`: an order created yesterday
+    # and paid today is today's money. Dates are computed in the project timezone
+    # (settings.TIME_ZONE), so "today" means the operator's today.
+    #
+    # NOT SHOWN, ON PURPOSE: profit or margin. There is no cost model in the
+    # system, so any "profit" figure would be revenue with a made-up subtraction.
+    # A dashboard that guesses is worse than one that stays silent.
+
+    SALES_TREND_DAYS = 7
+
+    def _sales_snapshot(self, company):
+        from django.db.models import Avg, Count, Sum
+        from django.utils import timezone as dj_timezone
+
+        from .models import Order
+
+        paid = Order.objects.filter(company=company, status=Order.Status.PAID, paid=True)
+        today = dj_timezone.localdate()
+
+        today_paid = paid.filter(paid_at__date=today)
+        today_agg = today_paid.aggregate(revenue=Sum('total'), orders=Count('id'))
+        all_agg = paid.aggregate(revenue=Sum('total'), orders=Count('id'), ticket=Avg('total'))
+
+        pipeline = Order.objects.filter(company=company)
+
+        return {
+            'today_revenue': str(_money(today_agg['revenue'])),
+            'today_orders': today_agg['orders'] or 0,
+            'total_revenue': str(_money(all_agg['revenue'])),
+            'total_paid_orders': all_agg['orders'] or 0,
+            # Average of nothing is 0, not a division error.
+            'average_ticket': str(_money(all_agg['ticket'])),
+            'pending_payment': pipeline.filter(
+                status=Order.Status.PENDING_PAYMENT).count(),
+            'awaiting_fulfillment': paid.filter(
+                fulfillment_status__in=[
+                    Order.FulfillmentStatus.PENDING,
+                    Order.FulfillmentStatus.CONFIRMED,
+                    Order.FulfillmentStatus.PREPARING,
+                ],
+            ).count(),
+            'revenue_trend': self._revenue_trend(company),
+            'orders_by_status': self._orders_by_status(company),
+        }
+
+    def _revenue_trend(self, company):
+        """Paid revenue per day for the last week, oldest first. Empty days show 0."""
+        from datetime import timedelta
+
+        from django.db.models import Sum
+        from django.utils import timezone as dj_timezone
+
+        from .models import Order
+
+        today = dj_timezone.localdate()
+        start = today - timedelta(days=self.SALES_TREND_DAYS - 1)
+
+        rows = (
+            Order.objects
+            .filter(company=company, status=Order.Status.PAID, paid=True,
+                    paid_at__date__gte=start, paid_at__date__lte=today)
+            .values('paid_at__date')
+            .annotate(revenue=Sum('total'))
+        )
+        by_day = {row['paid_at__date']: row['revenue'] for row in rows}
+
+        # Days with no sales are rendered as zero rather than skipped: a gap in a
+        # trend line reads as missing data, not as a quiet day.
+        series = []
+        for offset in range(self.SALES_TREND_DAYS):
+            day = start + timedelta(days=offset)
+            series.append({
+                'label': day.strftime('%d/%m'),
+                'value': float(_money(by_day.get(day))),
+            })
+        return series
+
+    def _orders_by_status(self, company):
+        from django.db.models import Count
+
+        from .models import Order
+
+        counts = dict(
+            Order.objects.filter(company=company)
+            .values_list('status')
+            .annotate(n=Count('id'))
+        )
+        labels = dict(Order.Status.choices)
+        # Fixed order so the chart does not reshuffle between refreshes.
+        return [
+            {'label': labels[value], 'value': counts.get(value, 0)}
+            for value, _label in Order.Status.choices
+        ]
+
+    # -- inventory KPIs (Phase 2D) -------------------------------------------
+    #
+    # WHAT IS NOT HERE, ON PURPOSE
+    # Profit, margin and "capital invertido". The platform has no purchase cost,
+    # so all three would be a subtraction from a number nobody supplied. The one
+    # money figure shown is stock × SALE price, and it is labelled as such both
+    # here (`value_basis`) and in the UI. A dashboard that guesses is worse than
+    # one that stays quiet.
+
+    def _inventory_snapshot(self, user, company):
+        from .inventory_services import (
+            DEFAULT_LOW_STOCK_THRESHOLD,
+            get_inventory_summary,
+            get_low_stock_by_branch,
+            get_pending_counts_count,
+            get_stock_by_branch,
+            get_transfers_in_transit_count,
+        )
+        from .tenancy import visible_branches
+
+        branches = visible_branches(user, company)
+        if not branches.exists():
+            # A real state, not an error: SELECTED mode with no grants yet. The
+            # dashboard says "no branches" rather than showing zeros that read
+            # like an empty warehouse.
+            return {
+                'has_branch_access': False,
+                'branches': [],
+                'total_units': 0,
+                'out_of_stock_count': 0,
+                'low_stock_count': 0,
+                'stocked_count': 0,
+                'inventory_value': '0.00',
+                'value_basis': 'sale_price',
+                'transfers_in_transit': 0,
+                'pending_counts': 0,
+                'stock_by_branch': [],
+                'low_stock_by_branch': [],
+            }
+
+        summary = get_inventory_summary(
+            company=company, branches=branches,
+            low_stock_threshold=DEFAULT_LOW_STOCK_THRESHOLD,
+        )
+        return {
+            'has_branch_access': True,
+            'branches': [{'id': b.pk, 'name': b.name} for b in branches],
+            'total_units': summary['total_units'],
+            'out_of_stock_count': summary['out_of_stock_count'],
+            'low_stock_count': summary['low_stock_count'],
+            'stocked_count': summary['stocked_count'],
+            'inventory_value': summary['inventory_value'],
+            'value_basis': 'sale_price',
+            'transfers_in_transit': get_transfers_in_transit_count(branches),
+            'pending_counts': get_pending_counts_count(branches),
+            'stock_by_branch': get_stock_by_branch(branches),
+            'low_stock_by_branch': get_low_stock_by_branch(branches),
         }
 
     def _assignments_per_area(self, company):
@@ -854,13 +1053,27 @@ class InternalDashboardView(APIView):
                           'sin pertenecer a ella.',
             })
 
-        if membership is not None and membership.branch_id is None:
-            alerts.append({
-                'level': 'info', 'code': 'no_branch_assigned',
-                'title': 'Sin sucursal asignada',
-                'detail': 'Tu alcance es toda la empresa. El acceso multisucursal '
-                          'granular está pendiente.',
-            })
+        # Phase 2D: branch scope is explicit now, so the alert states the real
+        # rule instead of the old "pending" placeholder.
+        if membership is not None:
+            from .models import Membership
+            from .tenancy import visible_branches
+
+            if membership.branch_access_mode == Membership.ACCESS_MODE_ALL:
+                alerts.append({
+                    'level': 'info', 'code': 'branch_scope_all',
+                    'title': 'Alcance: todas las sucursales',
+                    'detail': 'Tu acceso incluye automáticamente las sucursales '
+                              'que se abran en el futuro.',
+                })
+            elif not visible_branches(membership.user, company).exists():
+                alerts.append({
+                    'level': 'warning', 'code': 'no_branch_access',
+                    'title': 'Sin sucursales asignadas',
+                    'detail': 'Tu alcance está limitado a sucursales seleccionadas '
+                              'y todavía no tienes ninguna. No puedes operar '
+                              'inventario hasta que un administrador te asigne una.',
+                })
 
         if membership is not None and not assignments and not capabilities:
             alerts.append({
@@ -869,6 +1082,30 @@ class InternalDashboardView(APIView):
                 'detail': 'Tu membresía no tiene capacidades. Pide a un administrador '
                           'de la empresa que te asigne un rol.',
             })
+
+        # Phase 3 — configuration gaps that actually change behaviour.
+        #
+        # Only the CONSEQUENTIAL ones raise an alert: no notification email means
+        # this company's sales go unannounced, and no fulfillment branch means it
+        # cannot check out at all. A missing logo is a gap, not an alarm, and
+        # putting it here would train people to ignore the panel.
+        if 'company.view' in capabilities:
+            from .company_settings import company_configuration_status
+
+            status_info = company_configuration_status(company)
+            if status_info['consequential']:
+                labels = {
+                    m['field']: m['label'] for m in status_info['missing']
+                }
+                missing = ', '.join(
+                    labels[f] for f in status_info['consequential'] if f in labels
+                )
+                alerts.append({
+                    'level': 'warning', 'code': 'configuration_incomplete',
+                    'title': 'Configuración empresarial incompleta',
+                    'detail': f'Falta configurar: {missing}. Ve a Administración → '
+                              f'Configuración.',
+                })
 
         for assignment in assignments:
             if not assignment.role.capability_set:

@@ -1,4 +1,13 @@
 // Phase 6.0 — admin inventory (Kardex), stock reports and INTERNAL sales notes.
+// Phase 2D — every read and write is scoped to a BRANCH.
+//
+// The `branch` parameter throughout is a SELECTION, never authority. The
+// backend re-resolves it against the caller's own grants on every request; a
+// branch id this client invents answers 404, not somebody else's stock. Passing
+// "all" asks for the aggregate of the branches the caller can reach — which for
+// a restricted user is not the whole company, and the `scope` in every response
+// says which branches it actually covered.
+//
 // All requests use fetchWithAuth: session cookies + CSRF header. No Bearer, no localStorage.
 
 import { fetchWithAuth } from "./auth";
@@ -18,10 +27,27 @@ export type MovementType =
   | "sale_exit"
   | "correction_negative"
   | "damaged_exit"
-  | "service_exit";
+  | "service_exit"
+  | "transfer_in"
+  | "transfer_out";
+
+/** Which branches an answer covered. `is_aggregate` means "everything I can see". */
+export type InventoryScope = {
+  branch: { id: number; name: string } | null;
+  branches: { id: number; name: string }[];
+  is_aggregate: boolean;
+};
+
+/** A branch selection for a request: an id, or "all" for the aggregate. */
+export type BranchParam = number | "all" | undefined;
 
 export type StockMovement = {
   id: number;
+  company: number;
+  branch: number;
+  branch_name: string;
+  transfer: number | null;
+  inventory_count: number | null;
   product: number;
   product_name: string;
   product_slug: string;
@@ -64,10 +90,153 @@ export type InventorySummary = {
   active_products: number;
   out_of_stock_count: number;
   low_stock_count: number;
+  stocked_count: number;
   total_units: number;
+  /** Stock x SALE price. Not cost, not capital invested — the platform has no cost model. */
   inventory_value: string;
+  inventory_value_basis: "sale_price";
   low_stock_threshold: number;
   best_selling_product: BestSellingRow | null;
+  scope: InventoryScope;
+};
+
+/** One product's stock in one branch, with its replenishment policy. */
+export type BranchStockRow = {
+  id: number;
+  branch: number;
+  branch_name: string;
+  product: number;
+  product_name: string;
+  product_slug: string;
+  product_price: string;
+  product_is_active: boolean;
+  category_name: string | null;
+  quantity: number;
+  minimum_stock: number;
+  target_stock: number;
+  needs_replenishment: boolean;
+  suggested_quantity: number;
+  updated_at: string;
+};
+
+export type ReplenishmentRow = {
+  branch_id: number;
+  branch_name: string;
+  product_id: number;
+  product_name: string;
+  current: number;
+  minimum: number;
+  target: number;
+  suggested_quantity: number;
+  surplus_branches?: {
+    branch_id: number;
+    branch_name: string;
+    quantity: number;
+    minimum: number;
+    surplus: number;
+  }[];
+};
+
+export type TransferStatus = "draft" | "in_transit" | "received" | "cancelled";
+
+export type StockTransferItem = {
+  id: number;
+  product: number;
+  product_name: string;
+  product_slug: string;
+  quantity: number;
+};
+
+export type StockTransfer = {
+  id: number;
+  company: number;
+  source_branch: number;
+  source_branch_name: string;
+  destination_branch: number;
+  destination_branch_name: string;
+  status: TransferStatus;
+  status_label: string;
+  reason: string;
+  reference: string;
+  items: StockTransferItem[];
+  total_units: number;
+  created_by: number | null;
+  created_by_username: string | null;
+  created_at: string;
+  dispatched_at: string | null;
+  received_at: string | null;
+  cancelled_at: string | null;
+  updated_at: string;
+};
+
+export type CountStatus = "draft" | "counting" | "review" | "approved" | "cancelled";
+
+export type InventoryCountItem = {
+  id: number;
+  product: number;
+  product_name: string;
+  product_slug: string;
+  theoretical_at_start: number;
+  physical_quantity: number | null;
+  theoretical_at_approval: number | null;
+  difference: number | null;
+  is_counted: boolean;
+  note: string;
+  updated_at: string;
+};
+
+export type InventoryCount = {
+  id: number;
+  company: number;
+  branch: number;
+  branch_name: string;
+  status: CountStatus;
+  status_label: string;
+  reason: string;
+  items: InventoryCountItem[];
+  counted_items: number;
+  created_by: number | null;
+  created_by_username: string | null;
+  created_at: string;
+  approved_at: string | null;
+  cancelled_at: string | null;
+  updated_at: string;
+};
+
+export type InventoryBranch = {
+  id: number;
+  company: number;
+  company_name: string;
+  name: string;
+  address: string;
+  phone: string;
+  email: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BranchAccessInfo = {
+  company: { id: number; name: string };
+  results: InventoryBranch[];
+  count: number;
+  default_branch: { id: number; name: string } | null;
+  access_mode: "all" | "selected" | null;
+  allows_aggregate: boolean;
+};
+
+export type InventoryDashboard = {
+  scope: InventoryScope;
+  summary: InventorySummary;
+  transfers_in_transit: number;
+  pending_counts: number;
+  charts: {
+    stock_by_branch: { label: string; value: number }[];
+    low_stock_by_branch: { label: string; value: number }[];
+    entries_trend: { label: string; value: number }[];
+    exits_trend: { label: string; value: number }[];
+    movement_types: { label: string; value: number }[];
+  };
 };
 
 export type Paginated<T> = {
@@ -107,6 +276,8 @@ export const MANUAL_MOVEMENT_TYPES: { value: MovementType; label: string; isEntr
 
 export const MOVEMENT_TYPE_LABELS: Record<MovementType, string> = {
   initial_stock: "Stock inicial",
+  transfer_in: "Entrada por transferencia",
+  transfer_out: "Salida por transferencia",
   purchase_entry: "Entrada por compra",
   manual_entry: "Entrada manual",
   return_entry: "Entrada por devolución",
@@ -122,7 +293,9 @@ export const MOVEMENT_TYPE_LABELS: Record<MovementType, string> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildQuery(params?: Record<string, string | number | undefined | null>): string {
+function buildQuery(
+  params?: Record<string, string | number | undefined | null>,
+): string {
   if (!params) return "";
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -154,15 +327,55 @@ async function getJson<T>(path: string, forbiddenMsg: string, fallbackMsg: strin
 // Inventory reads
 // ---------------------------------------------------------------------------
 
-export function fetchInventorySummary(threshold?: number): Promise<InventorySummary> {
+export function fetchInventorySummary(
+  threshold?: number,
+  branch?: BranchParam,
+): Promise<InventorySummary> {
   return getJson(
-    `/admin/inventory/summary/${buildQuery({ threshold })}`,
+    `/admin/inventory/summary/${buildQuery({ threshold, branch })}`,
     "No tienes permisos para ver el inventario.",
     "No se pudo cargar el resumen de inventario.",
   );
 }
 
+/** Branches this operator may work in, plus their default. UX data, not authority. */
+export function fetchInventoryBranches(): Promise<BranchAccessInfo> {
+  return getJson(
+    "/admin/inventory/branches/",
+    "No tienes permisos para ver el inventario.",
+    "No se pudieron cargar las sucursales.",
+  );
+}
+
+export function fetchInventoryDashboard(params?: {
+  branch?: BranchParam;
+  threshold?: number;
+}): Promise<InventoryDashboard> {
+  return getJson(
+    `/admin/inventory/dashboard/${buildQuery(params)}`,
+    "No tienes permisos para ver el inventario.",
+    "No se pudo cargar el panel de inventario.",
+  );
+}
+
+export function fetchBranchStock(params?: {
+  branch?: BranchParam;
+  search?: string;
+  product?: number;
+  status?: "in_stock" | "low_stock" | "out_of_stock";
+  threshold?: number;
+  page?: number;
+  page_size?: number;
+}): Promise<Paginated<BranchStockRow> & { scope: InventoryScope }> {
+  return getJson(
+    `/admin/inventory/stock/${buildQuery(params)}`,
+    "No tienes permisos para ver el inventario.",
+    "No se pudo cargar el stock.",
+  );
+}
+
 export function fetchStockMovements(params?: {
+  branch?: BranchParam;
   product?: number;
   movement_type?: string;
   date_from?: string;
@@ -172,7 +385,7 @@ export function fetchStockMovements(params?: {
   search?: string;
   page?: number;
   page_size?: number;
-}): Promise<Paginated<StockMovement>> {
+}): Promise<Paginated<StockMovement> & { scope: InventoryScope }> {
   return getJson(
     `/admin/inventory/movements/${buildQuery(params)}`,
     "No tienes permisos para ver los movimientos de inventario.",
@@ -180,10 +393,15 @@ export function fetchStockMovements(params?: {
   );
 }
 
-export function fetchLowStock(params?: { threshold?: number; limit?: number }): Promise<{
+export function fetchLowStock(params?: {
+  threshold?: number;
+  limit?: number;
+  branch?: BranchParam;
+}): Promise<{
+  scope: InventoryScope;
   threshold: number;
   count: number;
-  results: InventoryProduct[];
+  results: BranchStockRow[];
 }> {
   return getJson(
     `/admin/inventory/low-stock/${buildQuery(params)}`,
@@ -192,9 +410,10 @@ export function fetchLowStock(params?: { threshold?: number; limit?: number }): 
   );
 }
 
-export function fetchHighStock(params?: { limit?: number }): Promise<{
+export function fetchHighStock(params?: { limit?: number; branch?: BranchParam }): Promise<{
+  scope: InventoryScope;
   count: number;
-  results: InventoryProduct[];
+  results: BranchStockRow[];
 }> {
   return getJson(
     `/admin/inventory/high-stock/${buildQuery(params)}`,
@@ -203,11 +422,24 @@ export function fetchHighStock(params?: { limit?: number }): Promise<{
   );
 }
 
+export function fetchReplenishment(params?: {
+  branch?: BranchParam;
+  limit?: number;
+  with_surplus?: "true";
+}): Promise<{ scope: InventoryScope; count: number; results: ReplenishmentRow[] }> {
+  return getJson(
+    `/admin/inventory/replenishment/${buildQuery(params)}`,
+    "No tienes permisos para ver reportes de stock.",
+    "No se pudo cargar la reposición sugerida.",
+  );
+}
+
 export function fetchBestSelling(params?: {
   date_from?: string;
   date_to?: string;
   limit?: number;
-}): Promise<{ count: number; results: BestSellingRow[] }> {
+  branch?: BranchParam;
+}): Promise<{ scope: InventoryScope; count: number; results: BestSellingRow[] }> {
   return getJson(
     `/admin/inventory/best-selling/${buildQuery(params)}`,
     "No tienes permisos para ver reportes de ventas.",
@@ -215,10 +447,15 @@ export function fetchBestSelling(params?: {
   );
 }
 
-export function fetchStaleStock(params?: { days?: number; limit?: number }): Promise<{
+export function fetchStaleStock(params?: {
+  days?: number;
+  limit?: number;
+  branch?: BranchParam;
+}): Promise<{
+  scope: InventoryScope;
   days: number;
   count: number;
-  results: InventoryProduct[];
+  results: BranchStockRow[];
 }> {
   return getJson(
     `/admin/inventory/no-movement/${buildQuery(params)}`,
@@ -229,10 +466,19 @@ export function fetchStaleStock(params?: { days?: number; limit?: number }): Pro
 
 export function fetchStockCard(
   productId: number,
-  params?: { limit?: number },
+  params?: { limit?: number; branch?: BranchParam },
 ): Promise<{
-  product: InventoryProduct;
+  scope: InventoryScope;
+  product: {
+    id: number;
+    name: string;
+    slug: string;
+    price: string;
+    is_active: boolean;
+    category_name: string | null;
+  };
   current_stock: number;
+  stock_by_branch: BranchStockRow[];
   movements: StockMovement[];
 }> {
   return getJson(
@@ -246,25 +492,182 @@ export function fetchStockCard(
 // Inventory writes
 // ---------------------------------------------------------------------------
 
-export async function createStockMovement(data: {
+async function writeJson<T>(
+  path: string,
+  init: RequestInit,
+  forbiddenMsg: string,
+  fallbackMsg: string,
+): Promise<T> {
+  const res = await fetchWithAuth(`${API_BASE}${path}`, init);
+  if (res.status === 403) throw new Error(await readError(res, forbiddenMsg));
+  if (res.status === 404) throw new Error(await readError(res, "No encontrado."));
+  // 400 covers insufficient stock, an invalid quantity, an empty reason and every
+  // lifecycle refusal — the backend message is the authoritative one, so it is
+  // surfaced verbatim rather than replaced with a guess.
+  if (!res.ok) throw new Error(await readError(res, fallbackMsg));
+  return res.json();
+}
+
+export function createStockMovement(data: {
   product_id: number;
+  branch?: number;
   movement_type: MovementType;
   quantity: number;
   reason: string;
 }): Promise<StockMovement> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/inventory/movements/`, {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-  if (res.status === 403) {
-    throw new Error("No tienes permisos para registrar movimientos de inventario.");
-  }
-  if (!res.ok) {
-    // 400 covers insufficient stock, quantity<=0 and empty reason — the backend
-    // message is the authoritative one, so surface it verbatim.
-    throw new Error(await readError(res, "No se pudo registrar el movimiento."));
-  }
-  return res.json();
+  return writeJson(
+    "/admin/inventory/movements/",
+    { method: "POST", body: JSON.stringify(data) },
+    "No tienes permisos para registrar movimientos de inventario.",
+    "No se pudo registrar el movimiento.",
+  );
+}
+
+/** Replenishment policy only. Quantity is never editable — that needs a movement. */
+export function updateStockPolicy(
+  stockId: number,
+  data: { minimum_stock?: number; target_stock?: number },
+): Promise<BranchStockRow> {
+  return writeJson(
+    `/admin/inventory/stock/${stockId}/policy/`,
+    { method: "PATCH", body: JSON.stringify(data) },
+    "No tienes permisos para configurar el inventario.",
+    "No se pudo guardar la política de reposición.",
+  );
+}
+
+// --- Transfers -------------------------------------------------------------
+
+export function fetchTransfers(params?: {
+  status?: TransferStatus;
+  branch?: BranchParam;
+  page?: number;
+  page_size?: number;
+}): Promise<Paginated<StockTransfer>> {
+  return getJson(
+    `/admin/inventory/transfers/${buildQuery(params)}`,
+    "No tienes permisos para ver transferencias.",
+    "No se pudieron cargar las transferencias.",
+  );
+}
+
+export function fetchTransfer(id: number): Promise<StockTransfer> {
+  return getJson(
+    `/admin/inventory/transfers/${id}/`,
+    "No tienes permisos para ver transferencias.",
+    "No se pudo cargar la transferencia.",
+  );
+}
+
+export function createTransfer(data: {
+  source_branch: number;
+  destination_branch: number;
+  reason?: string;
+  reference?: string;
+}): Promise<StockTransfer> {
+  return writeJson(
+    "/admin/inventory/transfers/",
+    { method: "POST", body: JSON.stringify(data) },
+    "No tienes permisos para crear transferencias.",
+    "No se pudo crear la transferencia.",
+  );
+}
+
+/** Whole-list replace: lines not sent are removed. Quantity 0 removes a line. */
+export function setTransferItems(
+  id: number,
+  items: { product: number; quantity: number }[],
+): Promise<StockTransfer> {
+  return writeJson(
+    `/admin/inventory/transfers/${id}/items/`,
+    { method: "PUT", body: JSON.stringify(items) },
+    "No tienes permisos para editar transferencias.",
+    "No se pudieron guardar las líneas.",
+  );
+}
+
+function transferAction(id: number, action: string, fallback: string) {
+  return writeJson<StockTransfer>(
+    `/admin/inventory/transfers/${id}/${action}/`,
+    { method: "POST" },
+    "No tienes permisos para operar transferencias.",
+    fallback,
+  );
+}
+
+export const dispatchTransfer = (id: number) =>
+  transferAction(id, "dispatch", "No se pudo despachar la transferencia.");
+export const receiveTransfer = (id: number) =>
+  transferAction(id, "receive", "No se pudo recibir la transferencia.");
+export const cancelTransfer = (id: number) =>
+  transferAction(id, "cancel", "No se pudo anular la transferencia.");
+
+// --- Physical counts -------------------------------------------------------
+
+export function fetchCounts(params?: {
+  status?: CountStatus;
+  branch?: BranchParam;
+  page?: number;
+  page_size?: number;
+}): Promise<Paginated<InventoryCount> & { scope: InventoryScope }> {
+  return getJson(
+    `/admin/inventory/counts/${buildQuery(params)}`,
+    "No tienes permisos para ver recuentos.",
+    "No se pudieron cargar los recuentos.",
+  );
+}
+
+export function fetchCount(id: number): Promise<InventoryCount> {
+  return getJson(
+    `/admin/inventory/counts/${id}/`,
+    "No tienes permisos para ver recuentos.",
+    "No se pudo cargar el recuento.",
+  );
+}
+
+export function createCount(data: { branch?: number; reason?: string }): Promise<InventoryCount> {
+  return writeJson(
+    "/admin/inventory/counts/",
+    { method: "POST", body: JSON.stringify(data) },
+    "No tienes permisos para crear recuentos.",
+    "No se pudo crear el recuento.",
+  );
+}
+
+/**
+ * Additive: sending a subset updates those products and leaves the rest alone.
+ * `physical_quantity: null` means NOT COUNTED, which is not the same as zero.
+ */
+export function setCountItems(
+  id: number,
+  items: { product: number; physical_quantity: number | null; note?: string }[],
+): Promise<InventoryCount> {
+  return writeJson(
+    `/admin/inventory/counts/${id}/items/`,
+    { method: "PUT", body: JSON.stringify(items) },
+    "No tienes permisos para editar recuentos.",
+    "No se pudieron guardar las cantidades.",
+  );
+}
+
+export function approveCount(
+  id: number,
+): Promise<InventoryCount & { movements: StockMovement[] }> {
+  return writeJson(
+    `/admin/inventory/counts/${id}/approve/`,
+    { method: "POST" },
+    "No tienes permisos para aprobar recuentos.",
+    "No se pudo aprobar el recuento.",
+  );
+}
+
+export function cancelCount(id: number): Promise<InventoryCount> {
+  return writeJson(
+    `/admin/inventory/counts/${id}/cancel/`,
+    { method: "POST" },
+    "No tienes permisos para anular recuentos.",
+    "No se pudo anular el recuento.",
+  );
 }
 
 // ---------------------------------------------------------------------------

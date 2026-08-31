@@ -1,6 +1,11 @@
 "use client";
 
 // Phase 6.0 — full Kardex with filters plus the manual entry/exit form.
+// Phase 2D — everything is scoped to a branch.
+//
+// The manual form writes to ONE branch, so it never offers "todas": units are
+// added to a place, not to a set. The history may aggregate, and then the branch
+// column says which shelf each line moved.
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
@@ -23,10 +28,13 @@ import {
 import {
   MOVEMENT_TYPE_LABELS,
   fetchStockMovements,
+  type InventoryScope,
   type MovementType,
   type StockMovement,
 } from "../../../lib/inventory";
 import { fetchAdminProducts, type AdminProduct } from "../../../lib/admin";
+import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
+import { useBranchScope } from "../../lib/use-branch-scope";
 import { canManageInventory, type AuthUser } from "../../../lib/auth";
 
 type Filters = {
@@ -46,6 +54,7 @@ const EMPTY_FILTERS: Filters = {
 };
 
 function MovementsContent({ user }: { user: AuthUser }) {
+  const scope = useBranchScope({ preferAggregate: true });
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS);
   const [page, setPage] = useState(1);
@@ -58,11 +67,14 @@ function MovementsContent({ user }: { user: AuthUser }) {
 
   const [products, setProducts] = useState<AdminProduct[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+  const [resultScope, setResultScope] = useState<InventoryScope | null>(null);
 
   const mayMoveStock = canManageInventory(user);
+  const branch = scope.branch;
 
   const loadMovements = useCallback(async () => {
     return fetchStockMovements({
+      branch,
       page,
       page_size: 25,
       product: applied.product ? Number(applied.product) : undefined,
@@ -71,9 +83,10 @@ function MovementsContent({ user }: { user: AuthUser }) {
       date_to: applied.date_to || undefined,
       search: applied.search || undefined,
     });
-  }, [applied, page]);
+  }, [applied, page, branch]);
 
   useEffect(() => {
+    if (!scope.ready) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -82,6 +95,7 @@ function MovementsContent({ user }: { user: AuthUser }) {
         setMovements(data.results);
         setTotal(data.count);
         setPageSize(data.page_size);
+        setResultScope(data.scope);
         setError(null);
       } catch (err) {
         if (!cancelled) {
@@ -94,7 +108,7 @@ function MovementsContent({ user }: { user: AuthUser }) {
     return () => {
       cancelled = true;
     };
-  }, [loadMovements, reloadKey]);
+  }, [loadMovements, reloadKey, scope.ready]);
 
   // Product list feeds both the filter dropdown and the manual movement form.
   useEffect(() => {
@@ -141,13 +155,26 @@ function MovementsContent({ user }: { user: AuthUser }) {
               Kardex completo. Cada línea registra el stock antes y después.
             </p>
           </div>
-          <Link
-            href="/admin/inventory"
-            className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-          >
-            ← Inventario
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <BranchSelector
+              access={scope.access}
+              value={scope.branch}
+              onChange={(next) => {
+                setLoading(true);
+                scope.setBranch(next);
+              }}
+            />
+            <Link
+              href="/admin/inventory"
+              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            >
+              ← Inventario
+            </Link>
+          </div>
         </div>
+
+        <ScopeNote scope={resultScope} />
+        {scope.error ? <ErrorBox message={scope.error} /> : null}
 
         {mayMoveStock ? (
           <Panel
@@ -160,6 +187,12 @@ function MovementsContent({ user }: { user: AuthUser }) {
                 name: p.name,
                 inventory: p.inventory,
               }))}
+              branches={scope.access?.results ?? []}
+              defaultBranch={
+                typeof scope.branch === "number"
+                  ? scope.branch
+                  : (scope.access?.default_branch?.id ?? null)
+              }
               onCreated={() => {
                 setLoading(true);
                 setPage(1);
@@ -271,6 +304,7 @@ function MovementsContent({ user }: { user: AuthUser }) {
                 <thead>
                   <tr className="border-b border-white/[0.06]">
                     <Th>Fecha</Th>
+                    <Th>Sucursal</Th>
                     <Th>Producto</Th>
                     <Th>Tipo</Th>
                     <Th right>Cant.</Th>
@@ -285,6 +319,7 @@ function MovementsContent({ user }: { user: AuthUser }) {
                   {movements.map((m) => (
                     <tr key={m.id} className="border-b border-white/[0.03]">
                       <Td muted>{formatDateTime(m.created_at)}</Td>
+                      <Td muted>{m.branch_name}</Td>
                       <Td>
                         <Link
                           href={`/admin/products/${m.product}/stock-card`}

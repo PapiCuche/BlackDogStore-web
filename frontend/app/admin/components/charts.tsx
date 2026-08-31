@@ -10,7 +10,7 @@
  * shapes — horizontal bars, a donut and a stacked bar — none of which need
  * scales, axes, transitions or hit-testing beyond a title tooltip.
  *
- * The palette decides it too. Black Dog Store is strictly monochrome
+ * The palette decides it too. The internal control is strictly monochrome
  * (#080808 / #111111 / #1a1a1a, zinc text), so most of what a chart library
  * gives you — categorical colour scales, themes, legends in twelve hues — is
  * exactly what must NOT appear here. Fighting a library's defaults back to
@@ -130,6 +130,71 @@ export function HorizontalBarChart({
         })}
       </ul>
       <DataTable caption={`Distribución por ${unit}`} series={series} unit={unit} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Vertical bars (time series)
+// ---------------------------------------------------------------------------
+
+export function VerticalBarChart({
+  series,
+  unit = "elementos",
+  formatValue,
+  emptyMessage = "Sin datos todavía.",
+}: {
+  series: Series;
+  unit?: string;
+  /** Optional formatter for the tooltip and the peak label (e.g. currency). */
+  formatValue?: (value: number) => string;
+  emptyMessage?: string;
+}) {
+  const total = series.reduce((sum, p) => sum + p.value, 0);
+  if (series.length === 0) return <ChartEmpty message={emptyMessage} />;
+
+  const max = Math.max(...series.map((p) => p.value));
+  const format = formatValue ?? ((v: number) => String(v));
+
+  return (
+    <div
+      role="img"
+      aria-label={`Gráfico de barras por día: ${series
+        .map((p) => `${p.label}, ${format(p.value)}`)
+        .join("; ")}`}
+    >
+      <div className="flex h-40 items-end gap-1.5 sm:gap-2">
+        {series.map((point, index) => {
+          // A zero day still renders a baseline sliver: an absent bar reads as
+          // missing data, a flat one reads as a quiet day.
+          const height = max > 0 ? Math.max((point.value / max) * 100, 2) : 2;
+          const isPeak = max > 0 && point.value === max;
+          return (
+            <div key={point.label + index} className="flex min-w-0 flex-1 flex-col items-center gap-2">
+              <div className="flex w-full flex-1 items-end">
+                <div
+                  className="w-full rounded-t-sm bg-white transition-[height] duration-500"
+                  style={{
+                    height: `${height}%`,
+                    opacity: isPeak ? 0.92 : 0.45,
+                  }}
+                  title={`${point.label}: ${format(point.value)}`}
+                />
+              </div>
+              <span className="w-full truncate text-center text-[10px] tabular-nums text-zinc-600">
+                {point.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {total > 0 ? (
+        <p className="mt-4 border-t border-white/[0.06] pt-3 text-xs text-zinc-500">
+          Total del período:{" "}
+          <span className="font-medium text-zinc-200">{format(total)}</span>
+        </p>
+      ) : null}
+      <DataTable caption={`Serie por día (${unit})`} series={series} unit={unit} />
     </div>
   );
 }

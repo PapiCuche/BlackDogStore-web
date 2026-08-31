@@ -1,7 +1,19 @@
-import Link from "next/link";
+"use client";
 
-const WA_NUMBER = "51936449536";
-const WA_LINK = `https://wa.me/${WA_NUMBER}`;
+/**
+ * Storefront footer — tenant-aware from Phase 3.
+ *
+ * Name, logo, address, phone, WhatsApp and social links now come from the
+ * company that owns this host, via `useStorefront()`. What is left hardcoded is
+ * genuinely generic (navigation labels, section headings); the identity is not.
+ *
+ * Every block DISAPPEARS when the tenant has not configured it. A company with
+ * no address shows no address line — it does not show somebody else's, and it
+ * does not show an empty icon with a blank next to it.
+ */
+
+import Link from "next/link";
+import { useStorefront } from "./StorefrontProvider";
 
 const WHATSAPP_SVG = (
   <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
@@ -10,32 +22,51 @@ const WHATSAPP_SVG = (
 );
 
 export function Footer() {
+  const { company, branding, contact } = useStorefront();
+  const storeName = company.name;
+  const logo = branding.logo_url;
+
   return (
     <footer className="relative border-t border-white/[0.06] bg-[#080808]">
       {/* Top CTA band */}
       <div className="relative overflow-hidden bg-white px-6 py-12 text-center topo-bg">
         <div className="relative z-10 mx-auto max-w-2xl">
-          {/* Logo completo en versión oscura sobre fondo blanco */}
-          <img
-            src="/assets/branding/logo.png"
-            alt="Black Dog Store"
-            className="mx-auto mb-6 h-28 w-auto object-contain"
-          />
+          {logo ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={logo}
+              alt={storeName}
+              className="mx-auto mb-6 h-28 w-auto object-contain"
+            />
+          ) : storeName ? (
+            <p className="mx-auto mb-6 font-display text-3xl font-black uppercase tracking-tight text-[#080808]">
+              {storeName}
+            </p>
+          ) : null}
           <p className="font-display text-4xl font-black uppercase tracking-tight text-[#080808] sm:text-5xl">
-            ¿Necesitas ayuda con tu iPhone?
+            ¿Necesitas ayuda?
           </p>
           <p className="mt-3 text-sm text-zinc-600">
-            Escríbenos y te respondemos en minutos. Diagnóstico gratuito.
+            Escríbenos y te respondemos lo antes posible.
           </p>
-          <a
-            href={WA_LINK}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-[#080808] px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:bg-zinc-800"
-          >
-            {WHATSAPP_SVG}
-            Escribir al WhatsApp
-          </a>
+          {contact.whatsapp_link ? (
+            <a
+              href={contact.whatsapp_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-[#080808] px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:bg-zinc-800"
+            >
+              {WHATSAPP_SVG}
+              Escribir al WhatsApp
+            </a>
+          ) : contact.email ? (
+            <a
+              href={`mailto:${contact.email}`}
+              className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-[#080808] px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:bg-zinc-800"
+            >
+              Escríbenos
+            </a>
+          ) : null}
         </div>
       </div>
 
@@ -46,48 +77,65 @@ export function Footer() {
           {/* Brand */}
           <div className="lg:col-span-2">
             <div className="flex items-center gap-4">
-              <img
-                src="/assets/branding/logo-icon.png"
-                alt="Black Dog Store"
-                className="h-11 w-11 object-contain invert"
-              />
-              <div>
+              {logo ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
                 <img
-                  src="/assets/branding/logo-text.png"
-                  alt="Black Dog Store"
-                  className="h-6 w-auto object-contain invert"
+                  src={logo}
+                  alt={storeName}
+                  className="h-11 w-auto object-contain"
                 />
-                <p className="mt-1 text-[10px] uppercase tracking-[0.25em] text-zinc-500">Apple Specialist · Arequipa, Perú</p>
+              ) : null}
+              <div>
+                <p className="font-display text-lg font-black uppercase tracking-tight text-white">
+                  {storeName}
+                </p>
+                {contact.city ? (
+                  <p className="mt-1 text-[10px] uppercase tracking-[0.25em] text-zinc-500">
+                    {contact.city}
+                  </p>
+                ) : null}
               </div>
             </div>
-            <p className="mt-5 max-w-xs text-sm leading-6 text-zinc-500">
-              Especialistas en equipos Apple y servicio técnico certificado. Baterías Nasan originales, reparaciones con 6 meses de garantía.
-            </p>
 
             {/* Contact info */}
             <div className="mt-6 space-y-3">
-              <a
-                href={WA_LINK}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2.5 text-sm text-zinc-400 transition hover:text-white"
-              >
-                {WHATSAPP_SVG}
-                936 449 536
-              </a>
-              <div className="flex items-start gap-2.5 text-sm text-zinc-500">
-                <svg className="mt-0.5 h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                <span>Octavio Muñoz Najar 238, Tienda 104, Arequipa</span>
-              </div>
+              {contact.whatsapp_link ? (
+                <a
+                  href={contact.whatsapp_link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2.5 text-sm text-zinc-400 transition hover:text-white"
+                >
+                  {WHATSAPP_SVG}
+                  {contact.phone || contact.whatsapp_number}
+                </a>
+              ) : contact.phone ? (
+                <p className="text-sm text-zinc-400">{contact.phone}</p>
+              ) : null}
+              {contact.address ? (
+                <div className="flex items-start gap-2.5 text-sm text-zinc-500">
+                  <svg className="mt-0.5 h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  <span>
+                    {contact.address}
+                    {contact.city ? `, ${contact.city}` : ""}
+                  </span>
+                </div>
+              ) : null}
+              {contact.email ? (
+                <p className="text-sm text-zinc-500">{contact.email}</p>
+              ) : null}
             </div>
 
-            {/* Social */}
+            {/* Social — each icon appears only if this tenant published that
+                link. Leaving them hardcoded would have pointed every company's
+                customers at one specific business's accounts. */}
             <div className="mt-6 flex gap-3">
+              {contact.facebook_url ? (
               <a
-                href="https://www.facebook.com/Blackdogstore.pe"
+                href={contact.facebook_url}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-zinc-400 transition hover:border-white/30 hover:text-white"
@@ -97,8 +145,10 @@ export function Footer() {
                   <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
                 </svg>
               </a>
+              ) : null}
+              {contact.instagram_url ? (
               <a
-                href="https://www.instagram.com/blackdogstore_pe"
+                href={contact.instagram_url}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-zinc-400 transition hover:border-white/30 hover:text-white"
@@ -108,6 +158,7 @@ export function Footer() {
                   <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
                 </svg>
               </a>
+              ) : null}
             </div>
           </div>
 
@@ -161,11 +212,19 @@ export function Footer() {
         {/* Bottom bar */}
         <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t border-white/[0.06] pt-8 sm:flex-row">
           <p className="text-xs text-zinc-600">
-            © {new Date().getFullYear()} Black Dog Store. Todos los derechos reservados.
+            © {new Date().getFullYear()}
+            {storeName ? ` ${storeName}.` : ""} Todos los derechos reservados.
           </p>
-          <p className="text-xs text-zinc-700">
-            Apple Specialist · Arequipa, Perú · @Blackdogstore_pe
-          </p>
+          {contact.website_url ? (
+            <a
+              href={contact.website_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-zinc-700 transition hover:text-zinc-400"
+            >
+              {contact.website_url.replace(/^https?:\/\//, "")}
+            </a>
+          ) : null}
         </div>
       </div>
     </footer>

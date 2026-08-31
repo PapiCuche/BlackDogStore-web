@@ -6,12 +6,11 @@ import { getSessionKey } from "../lib/cart";
 import { API_BASE } from "../lib/api";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import {
-  STORE_ADDRESS,
-  STORE_PHONE,
-  TERMS_TEXT,
-  WARRANTY_TEXT,
-  DELIVERY_DESCRIPTIONS,
+  deliveryDescriptions,
+  termsText,
+  warrantyText,
 } from "../lib/business";
+import { useStorefront } from "../components/StorefrontProvider";
 
 type Coupon = { code: string; discount_percent: number };
 type FieldErrors = Record<string, string>;
@@ -78,6 +77,13 @@ function FieldError({ msg }: { msg?: string }) {
 }
 
 export default function CheckoutPage() {
+  // Phase 3: the consent texts and the pickup point name THIS shop, resolved
+  // from the request host. A customer agreeing to share their data has to be
+  // told which company they are sharing it with.
+  const storefront = useStorefront();
+  const terms = termsText(storefront);
+  const warranty = warrantyText(storefront);
+  const deliveryCopy = deliveryDescriptions(storefront);
   const [form, dispatch] = useReducer(formReducer, initialForm);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -259,7 +265,7 @@ export default function CheckoutPage() {
                   value={form.customer_phone}
                   onChange={(e) => dispatch({ type: "set_str", field: "customer_phone", value: e.target.value })}
                   className={inputClass}
-                  placeholder="936 449 536"
+                  placeholder="999 999 999"
                   required
                   maxLength={30}
                 />
@@ -292,7 +298,7 @@ export default function CheckoutPage() {
                     form.document_type === "dni"
                       ? "12345678"
                       : form.document_type === "ruc"
-                      ? "20610159886"
+                      ? "20123456789"
                       : "ABC123456"
                   }
                   required
@@ -334,7 +340,7 @@ export default function CheckoutPage() {
                   <div>
                     <p className="text-sm font-medium text-white">{label}</p>
                     <p className="mt-0.5 text-xs text-zinc-500 leading-relaxed">
-                      {DELIVERY_DESCRIPTIONS[value]}
+                      {deliveryCopy[value]}
                     </p>
                   </div>
                 </label>
@@ -462,7 +468,7 @@ export default function CheckoutPage() {
                 className="mt-0.5 h-4 w-4 accent-white"
               />
               <span className="text-xs text-zinc-400 leading-relaxed">
-                {TERMS_TEXT}
+                {terms}
               </span>
             </label>
             <FieldError msg={fe.accepted_terms} />
@@ -477,7 +483,7 @@ export default function CheckoutPage() {
                 className="mt-0.5 h-4 w-4 accent-white"
               />
               <span className="text-xs text-zinc-400 leading-relaxed">
-                {WARRANTY_TEXT}
+                {warranty}
               </span>
             </label>
             <FieldError msg={fe.accepted_warranty_policy} />
@@ -487,8 +493,17 @@ export default function CheckoutPage() {
           {form.delivery_method === "pickup_store" && (
             <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 text-xs text-zinc-500 leading-relaxed">
               <p className="font-medium text-zinc-300 mb-1">Punto de retiro</p>
-              <p>{STORE_ADDRESS}</p>
-              <p className="mt-1">Tel: {STORE_PHONE}</p>
+              {storefront.contact.address ? (
+                <p>
+                  {storefront.contact.address}
+                  {storefront.contact.city ? `, ${storefront.contact.city}` : ""}
+                </p>
+              ) : (
+                <p>La tienda confirmará el punto de retiro al coordinar la entrega.</p>
+              )}
+              {storefront.contact.phone ? (
+                <p className="mt-1">Tel: {storefront.contact.phone}</p>
+              ) : null}
             </div>
           )}
 

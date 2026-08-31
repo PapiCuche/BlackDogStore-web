@@ -1,6 +1,12 @@
 "use client";
 
-// Phase 6.0 — Kardex (stock card) for a single product.
+// Phase 6.0 — Kardex (stock card) for a single product. Branch-scoped in 2D.
+//
+// `stock_before` / `stock_after` on each line are THIS BRANCH's running balance,
+// not a company total, which is why the card is read one branch at a time: a
+// balance interleaved from several shops does not add up in either direction.
+// Selecting "todas" still lists every line, and the branch column then says
+// which shelf each one moved.
 
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
@@ -21,26 +27,49 @@ import {
   formatSoles,
   movementReference,
 } from "../../../components/InventoryUi";
-import { fetchStockCard, type InventoryProduct, type StockMovement } from "../../../../lib/inventory";
+import {
+  fetchStockCard,
+  type BranchStockRow,
+  type InventoryScope,
+  type StockMovement,
+} from "../../../../lib/inventory";
+import { BranchSelector, ScopeNote } from "../../../components/BranchSelector";
+import { useBranchScope } from "../../../lib/use-branch-scope";
 import type { AuthUser } from "../../../../lib/auth";
 
 type CardData = {
-  product: InventoryProduct;
+  scope: InventoryScope;
+  product: {
+    id: number;
+    name: string;
+    slug: string;
+    price: string;
+    is_active: boolean;
+    category_name: string | null;
+  };
   current_stock: number;
+  stock_by_branch: BranchStockRow[];
   movements: StockMovement[];
 };
 
 function StockCardContent({ user, productId }: { user: AuthUser; productId: number }) {
+  const scope = useBranchScope({ preferAggregate: true });
   const [data, setData] = useState<CardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const branch = scope.branch;
+
   useEffect(() => {
+    if (!scope.ready) return;
     let cancelled = false;
     void (async () => {
       try {
-        const result = await fetchStockCard(productId);
-        if (!cancelled) setData(result);
+        const result = await fetchStockCard(productId, { branch });
+        if (!cancelled) {
+          setData(result);
+          setError(null);
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "No se pudo cargar el Kardex.");
@@ -52,7 +81,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
     return () => {
       cancelled = true;
     };
-  }, [productId]);
+  }, [productId, branch, scope.ready]);
 
   const entries = data?.movements.filter((m) => m.is_entry) ?? [];
   const exits = data?.movements.filter((m) => !m.is_entry) ?? [];
@@ -71,7 +100,15 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
               Historial completo de entradas y salidas del producto.
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <BranchSelector
+              access={scope.access}
+              value={scope.branch}
+              onChange={(next) => {
+                setLoading(true);
+                scope.setBranch(next);
+              }}
+            />
             <Link
               href={`/admin/products/${productId}`}
               className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
@@ -87,13 +124,25 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
           </div>
         </div>
 
-        {loading ? <Spinner label="Cargando Kardex…" /> : null}
+        <ScopeNote scope={data?.scope} />
+
+        {scope.error ? <ErrorBox message={scope.error} /> : null}
+        {loading && scope.ready ? <Spinner label="Cargando Kardex…" /> : null}
         {error ? <ErrorBox message={error} /> : null}
 
         {data ? (
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <StatCard label="Stock actual" value={`${data.current_stock} u.`} emphasis />
+              <StatCard
+                label="Stock actual"
+                value={`${data.current_stock} u.`}
+                emphasis
+                hint={
+                  data.scope.is_aggregate
+                    ? `Suma de ${data.stock_by_branch.length} sucursal(es)`
+                    : (data.scope.branch?.name ?? undefined)
+                }
+              />
               <StatCard label="Precio" value={formatSoles(data.product.price)} />
               <StatCard
                 label="Entradas registradas"
@@ -107,6 +156,31 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
               />
             </div>
 
+            {data.stock_by_branch.length > 1 ? (
+              <Panel title="Stock por sucursal" description="Dónde están las unidades">
+                <TableWrap>
+                  <thead>
+                    <tr className="border-b border-white/[0.06]">
+                      <Th>Sucursal</Th>
+                      <Th right>Stock</Th>
+                      <Th right>Mínimo</Th>
+                      <Th right>Objetivo</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.stock_by_branch.map((row) => (
+                      <tr key={row.id} className="border-b border-white/[0.03]">
+                        <Td>{row.branch_name}</Td>
+                        <Td right>{row.quantity}</Td>
+                        <Td right muted>{row.minimum_stock || "—"}</Td>
+                        <Td right muted>{row.target_stock || "—"}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </TableWrap>
+              </Panel>
+            ) : null}
+
             <Panel
               title="Movimientos"
               description={`${data.movements.length} línea(s) — más reciente primero`}
@@ -118,6 +192,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
                   <thead>
                     <tr className="border-b border-white/[0.06]">
                       <Th>Fecha</Th>
+                      <Th>Sucursal</Th>
                       <Th>Tipo</Th>
                       <Th right>Cant.</Th>
                       <Th right>Antes</Th>
@@ -131,6 +206,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
                     {data.movements.map((m) => (
                       <tr key={m.id} className="border-b border-white/[0.03]">
                         <Td muted>{formatDateTime(m.created_at)}</Td>
+                        <Td muted>{m.branch_name}</Td>
                         <Td><MovementBadge movement={m} /></Td>
                         <Td right><SignedQty movement={m} /></Td>
                         <Td right muted>{m.stock_before}</Td>

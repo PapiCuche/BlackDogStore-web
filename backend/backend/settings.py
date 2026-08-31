@@ -85,6 +85,8 @@ REST_FRAMEWORK = {
         'admin_inventory_reports': '120/min',
         'admin_stock_movements': '60/min',
         'admin_sales_notes': '60/min',
+        'admin_customers': '120/min',
+        'admin_customer_write': '60/min',
     },
 }
 
@@ -190,7 +192,11 @@ STRIPE_CURRENCY = env('STRIPE_CURRENCY', default='pen')
 
 # Email
 EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
-DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='Black Dog Store <no-reply@blackdogstoreperu.online>')
+# Transport-level sender. Platform configuration, not tenant configuration:
+# the SMTP credentials behind it belong to the operator, and a per-tenant
+# sender would need per-tenant SMTP — explicitly out of scope (no secrets in
+# CompanySettings). The DISPLAY identity inside each message is per tenant.
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='no-reply@localhost')
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
 REQUIRE_EMAIL_VERIFICATION = env.bool('REQUIRE_EMAIL_VERIFICATION', default=False)
 EMAIL_HOST = env('EMAIL_HOST', default='')
@@ -198,8 +204,30 @@ EMAIL_PORT = env.int('EMAIL_PORT', default=587)
 EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
-# Recipient for internal new-sale notifications (optional; leave empty to disable)
+# --- Internal new-sale notifications ---------------------------------------
+#
+# DEPRECATED AS A RECIPIENT since Phase 3. Each company now names its own address
+# in `CompanySettings.order_notification_email`, and there is deliberately NO
+# fallback to this value: it holds ONE address, so falling back would announce a
+# second tenant's sales — customer names and phone numbers included — in whoever
+# owns this address's inbox.
+#
+# It survives only so migration 0027 can copy it into the pilot company's
+# settings during the upgrade, keeping the existing installation's alerts
+# working. Nothing in the request path reads it.
 ORDER_NOTIFICATION_EMAIL = env('ORDER_NOTIFICATION_EMAIL', default='')
+
+# --- Platform identity ------------------------------------------------------
+#
+# The SaaS operator's own name, used only on account-security emails
+# (verification, password reset). Those are about a global User account, not
+# about a purchase from any one tenant, so branding them as a company would be
+# wrong — see store/emails.py.
+#
+# Empty means those emails carry no brand name at all. That is the honest
+# default: the platform has no more claim to a compiled-in name than a tenant
+# does, and shipping one would put this installation's brand on every fork.
+PLATFORM_NAME = env('PLATFORM_NAME', default='')
 
 if (
     not DEBUG
@@ -242,3 +270,23 @@ if not DEBUG:
 # Set it for any single-store deployment:
 #   DEFAULT_STOREFRONT_COMPANY_SLUG=mi-empresa
 DEFAULT_STOREFRONT_COMPANY_SLUG = env('DEFAULT_STOREFRONT_COMPANY_SLUG', default='')
+
+
+# --- Phase 2D: where historical stock lives ---------------------------------
+#
+# Read ONCE, by migration 0025, and only when it cannot work the answer out on
+# its own. Nothing in the application layer imports it.
+#
+# Before Phase 2D a product carried a single stock figure and a company was
+# implicitly one place. Splitting that figure across branches needs a fact the
+# database does not contain, so the migration asks in the only case where the
+# answer is not obvious: a company with SEVERAL active branches and stock,
+# movements or orders to place. With exactly one active branch it resolves by
+# itself and this stays empty — which is every installation that exists today.
+#
+# Map company slug to branch name:
+#   INVENTORY_MIGRATION_BRANCHES = {'mi-empresa': 'Tienda principal'}
+#
+# Leaving it unset is safe: the migration refuses and explains, rather than
+# distributing units to a shop that never had them.
+INVENTORY_MIGRATION_BRANCHES: dict[str, str] = {}

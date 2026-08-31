@@ -1,11 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useStorefront } from "../components/StorefrontProvider";
 import { useRouter } from "next/navigation";
 import { login, logout, getCurrentUser, register, AuthUser } from "../lib/auth";
 import { DevQuickLogin } from "./components/DevQuickLogin";
 
 export default function AuthPage() {
+  // The storefront this visitor arrived at. The ACCOUNT they log into is
+  // global — one identity across every shop — but this page is the shop's.
+  const { company, branding, contact } = useStorefront();
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -115,28 +119,34 @@ export default function AuthPage() {
           <div className="topo-bg absolute inset-0 pointer-events-none" />
           <div className="dot-grid absolute right-0 top-0 h-64 w-64 opacity-20 pointer-events-none" />
 
-          {/* Logo */}
+          {/* Logo — this storefront's, resolved from the host. The login page
+              belongs to the shop the customer came to, even though the ACCOUNT
+              behind it is global; see store/emails.py for the other half of
+              that distinction. */}
           <div className="relative flex items-center gap-3">
-            <img
-              src="/assets/branding/logo-icon.png"
-              alt="Black Dog Store"
-              className="h-10 w-10 object-contain invert"
-            />
-            <div>
+            {branding.logo_url ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
               <img
-                src="/assets/branding/logo-text.png"
-                alt="Black Dog Store"
-                className="h-5 w-auto object-contain invert opacity-90"
+                src={branding.logo_url}
+                alt={company.name}
+                className="h-10 w-auto object-contain"
               />
-              <span className="block text-[9px] font-semibold uppercase tracking-[0.3em] text-zinc-600">
-                Apple Specialist
+            ) : null}
+            <div>
+              <span className="block font-display text-lg font-black uppercase tracking-tight text-white">
+                {company.name}
               </span>
+              {contact.city ? (
+                <span className="block text-[9px] font-semibold uppercase tracking-[0.3em] text-zinc-600">
+                  {contact.city}
+                </span>
+              ) : null}
             </div>
           </div>
 
           {/* Main copy */}
           <div className="relative">
-            <span className="section-label">Arequipa, Perú</span>
+            <span className="section-label">{contact.city}</span>
             <h2 className="font-display mt-3 text-6xl font-black uppercase leading-none tracking-tight text-white">
               Equipos<br />Apple<br />Originales
             </h2>
@@ -159,16 +169,17 @@ export default function AuthPage() {
 
             {/* Mobile logo */}
             <div className="mb-8 flex items-center gap-3 lg:hidden">
-              <img
-                src="/assets/branding/logo-icon.png"
-                alt="Black Dog Store"
-                className="h-8 w-8 object-contain invert"
-              />
-              <img
-                src="/assets/branding/logo-text.png"
-                alt="Black Dog Store"
-                className="h-4 w-auto object-contain invert opacity-90"
-              />
+              {branding.logo_url ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={branding.logo_url}
+                  alt={company.name}
+                  className="h-8 w-auto object-contain"
+                />
+              ) : null}
+              <span className="font-display text-base font-black uppercase tracking-tight text-white">
+                {company.name}
+              </span>
             </div>
 
             <div className="mb-8">

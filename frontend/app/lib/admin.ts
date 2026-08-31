@@ -171,6 +171,14 @@ export async function createAdminProduct(data: {
   return res.json();
 }
 
+/**
+ * Edit a product. `inventory` is deliberately ABSENT from the shape.
+ *
+ * Phase 2D: stock is a derived aggregate over BranchStock, and the backend
+ * rejects `inventory` on PATCH. Changing stock is a movement — it needs a
+ * branch, an actor and a reason — so it goes through /admin/inventory/movements/
+ * or an approved physical count.
+ */
 export async function patchAdminProduct(
   productId: number,
   data: Partial<{
@@ -178,7 +186,6 @@ export async function patchAdminProduct(
     slug: string;
     description: string;
     price: string;
-    inventory: number;
     image_url: string;
     category: number | null;
     is_active: boolean;

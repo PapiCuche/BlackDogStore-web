@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { AdminProduct, AdminCategory, createAdminProduct, patchAdminProduct } from "../../lib/admin";
 
@@ -48,17 +49,23 @@ export function ProductForm({ product, categories, onSaved }: Props) {
       return;
     }
     const inventoryNum = parseInt(form.inventory, 10);
-    if (isNaN(inventoryNum) || inventoryNum < 0) {
-      setError("El inventario no puede ser negativo.");
+    if (!product && (isNaN(inventoryNum) || inventoryNum < 0)) {
+      setError("El stock inicial no puede ser negativo.");
       return;
     }
 
-    const payload = {
+    // PHASE 2D — `inventory` IS ONLY SENT ON CREATE.
+    //
+    // On create it is the opening stock, which the backend turns into an
+    // `initial_stock` movement in the operator's branch. On edit the backend
+    // REJECTS it: stock is a derived aggregate over BranchStock now, and typing
+    // a new number into a product form would change stock with no branch, no
+    // Kardex line, no actor and no reason. Editing stock is a movement.
+    const editable = {
       name: form.name.trim(),
       slug: form.slug.trim() || undefined,
       description: form.description.trim(),
       price: priceNum.toFixed(2),
-      inventory: inventoryNum,
       image_url: form.image_url.trim(),
       category: form.category ? parseInt(form.category, 10) : null,
       is_active: form.is_active,
@@ -67,8 +74,8 @@ export function ProductForm({ product, categories, onSaved }: Props) {
     setSaving(true);
     try {
       const saved = product
-        ? await patchAdminProduct(product.id, payload)
-        : await createAdminProduct(payload);
+        ? await patchAdminProduct(product.id, editable)
+        : await createAdminProduct({ ...editable, inventory: inventoryNum });
       onSaved(saved);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al guardar.");
@@ -124,15 +131,36 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           />
         </div>
         <div>
-          <label className="block text-xs text-zinc-400 mb-1.5">Inventario</label>
-          <input
-            type="number"
-            min="0"
-            value={form.inventory}
-            onChange={(e) => set("inventory", e.target.value)}
-            disabled={saving}
-            className={inputCls}
-          />
+          <label className="block text-xs text-zinc-400 mb-1.5">
+            {product ? "Stock" : "Stock inicial"}
+          </label>
+          {product ? (
+            <div className="flex items-center gap-3">
+              <span className="text-sm tabular-nums text-zinc-300">
+                {product.inventory} u.
+              </span>
+              <Link
+                href={`/admin/products/${product.id}/stock-card`}
+                className="text-xs text-zinc-500 underline underline-offset-4 transition hover:text-white"
+              >
+                Ver Kardex
+              </Link>
+            </div>
+          ) : (
+            <input
+              type="number"
+              min="0"
+              value={form.inventory}
+              onChange={(e) => set("inventory", e.target.value)}
+              disabled={saving}
+              className={inputCls}
+            />
+          )}
+          <p className="mt-1.5 text-[11px] text-zinc-600">
+            {product
+              ? "El stock se mueve desde Inventario, con sucursal y motivo."
+              : "Se registrará como stock inicial en tu sucursal, con su línea en el Kardex."}
+          </p>
         </div>
         <div>
           <label className="block text-xs text-zinc-400 mb-1.5">Categoría</label>

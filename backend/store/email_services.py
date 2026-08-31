@@ -1,7 +1,10 @@
 """
-Transactional email service for Black Dog Store.
+Transactional email service — order confirmation and internal new-sale alert.
 
 Phase 4.1: order confirmation to customer + internal new-sale notification.
+Phase 3: TENANT-AWARE. Every name, address, tax id and phone in a message comes
+from the ORDER's own company, through store.company_settings. There are no store
+constants in this module any more, and a test scans the file to keep it that way.
 
 Idempotency: confirmation_email_sent_at / internal_notification_sent_at flags
 prevent duplicate sends if the Stripe webhook fires more than once.
@@ -24,16 +27,20 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 
+from . import company_settings as _company_settings
 from . import pdf_services as _pdf_services  # module ref allows test patches
 
 logger = logging.getLogger(__name__)
 
-_STORE_NAME = "Black Dog Store"
-_STORE_ADDRESS = "Octavio Muñoz Najar 238, Tienda 104"
-_STORE_PHONE = "+51 936 449 536"
-_STORE_WHATSAPP_LINK = "https://wa.me/51936449536"
-_STORE_RUC = "20610159886"
-_STORE_LEGAL_NAME = "CMAU CORP E.I.R.L."
+# NEUTRAL FALLBACK for a company that has not written a warranty policy.
+#
+# It states that terms exist without inventing them. The rejected alternative
+# was the previous literal — "la garantía se aplicará según la condición del
+# producto" — which is one business's policy presented to every tenant's
+# customers as if it were theirs.
+_GENERIC_WARRANTY_NOTE = (
+    "Consulta las condiciones de garantía con la tienda antes de la entrega."
+)
 
 _DELIVERY_LABELS = {
     "pickup_store": "Recojo en tienda",
@@ -89,6 +96,14 @@ def build_order_confirmation_context(order) -> dict:
         address_parts.append(order.city)
     full_address = ", ".join(address_parts) if address_parts else ""
 
+    # PHASE 3 — the seller's identity comes from the ORDER, not from this module.
+    #
+    # `order_identity()` prefers the snapshot frozen when the sale happened, so a
+    # confirmation resent next year says what it said the day it was sent. See
+    # store/company_settings.py.
+    identity = _company_settings.order_identity(order)
+    pickup = _company_settings.order_pickup_location(order)
+
     return {
         "order_id": order.id,
         "customer_name": order.customer_name or "Cliente",
@@ -107,13 +122,23 @@ def build_order_confirmation_context(order) -> dict:
         "discount_amount": Decimal(str(order.discount_amount)),
         "coupon_code": order.coupon_code,
         "paid_at": order.paid_at,
-        # Store constants
-        "store_name": _STORE_NAME,
-        "store_address": _STORE_ADDRESS,
-        "store_phone": _STORE_PHONE,
-        "store_whatsapp_link": _STORE_WHATSAPP_LINK,
-        "store_ruc": _STORE_RUC,
-        "store_legal_name": _STORE_LEGAL_NAME,
+        # Seller identity — per tenant, never a module constant.
+        "store_name": identity.name,
+        "store_address": identity.legal_address,
+        "store_city": identity.city,
+        "store_phone": identity.phone,
+        "store_whatsapp_link": identity.whatsapp_link,
+        "store_whatsapp_number": identity.whatsapp_number,
+        "store_ruc": identity.tax_id,
+        "store_legal_name": identity.legal_name,
+        "store_email": identity.contact_email,
+        "warranty_note": identity.warranty_policy_text or _GENERIC_WARRANTY_NOTE,
+        "warranty_url": identity.warranty_policy_url,
+        # Where the customer collects. Distinct from the legal address: one is
+        # who invoices, the other is which door to knock on.
+        "pickup_name": pickup.get("name", ""),
+        "pickup_address": pickup.get("address", ""),
+        "pickup_is_branch": pickup.get("source") == "branch",
     }
 
 
@@ -125,7 +150,8 @@ def _build_customer_text(ctx: dict) -> str:
     lines = [
         f"Hola {ctx['customer_name']},",
         "",
-        "Tu pago ha sido confirmado. Gracias por tu compra en Black Dog Store.",
+        f"Tu pago ha sido confirmado. Gracias por tu compra en {ctx['store_name']}."
+        if ctx["store_name"] else "Tu pago ha sido confirmado. Gracias por tu compra.",
         "",
         f"Número de pedido: #{ctx['order_id']}",
         "",
@@ -151,32 +177,43 @@ def _build_customer_text(ctx: dict) -> str:
         lines.append(f"Dirección: {ctx['full_address']}")
         if ctx["reference"]:
             lines.append(f"Referencia: {ctx['reference']}")
-    else:
-        lines.append(f"Punto de retiro: {ctx['store_address']}")
+    elif ctx["pickup_address"] or ctx["pickup_name"]:
+        pickup = " — ".join(p for p in (ctx["pickup_name"], ctx["pickup_address"]) if p)
+        lines.append(f"Punto de retiro: {pickup}")
     lines.append("")
     if ctx["notes"]:
         lines.append(f"Tus notas: {ctx['notes']}")
         lines.append("")
-    lines.extend([
-        "Nuestro equipo se comunicará contigo para coordinar la entrega.",
-        f"WhatsApp: {ctx['store_phone']}",
-        "",
-        "La garantía se aplicará según la condición del producto y los términos "
-        "informados al momento de la compra.",
-        "",
-        "─────────────────────────────",
-        f"{ctx['store_name']}",
-        f"{ctx['store_legal_name']}",
-        f"RUC {ctx['store_ruc']}",
-        f"{ctx['store_address']}",
-        f"Tel: {ctx['store_phone']}",
-    ])
+    lines.append("Nuestro equipo se comunicará contigo para coordinar la entrega.")
+    if ctx["store_phone"]:
+        lines.append(f"WhatsApp: {ctx['store_phone']}")
+    lines.append("")
+    lines.append(ctx["warranty_note"])
+    if ctx["warranty_url"]:
+        lines.append(ctx["warranty_url"])
+    lines.append("")
+    lines.append("─────────────────────────────")
+    # Every line of the signature is omitted when the tenant has not configured
+    # it. A blank is a visible gap somebody can fix; a borrowed value is not.
+    for value, prefix in (
+        (ctx["store_name"], ""),
+        (ctx["store_legal_name"], ""),
+        (ctx["store_ruc"], "RUC "),
+        (ctx["store_address"], ""),
+        (ctx["store_phone"], "Tel: "),
+    ):
+        if value:
+            lines.append(f"{prefix}{value}")
     return "\n".join(lines)
 
 
 def _build_customer_html(ctx: dict) -> str:
-    # Escape all user-supplied fields before embedding in HTML.
-    # Our own store constants (_STORE_*) are static and safe without escaping.
+    # ESCAPE EVERYTHING. Before Phase 3 the store values were module constants
+    # and were interpolated raw; now they are TENANT INPUT, typed into a settings
+    # form by one company and rendered inside another person's email client. An
+    # unescaped company name is an HTML injection with a text field in front of
+    # it, so every value below goes through _h() — no exceptions, including the
+    # ones that "come from us".
     items_rows = ""
     for item in ctx["items"]:
         items_rows += (
@@ -200,14 +237,50 @@ def _build_customer_html(ctx: dict) -> str:
         address_html = f"<p style='margin:4px 0'><strong>Dirección:</strong> {_h(ctx['full_address'])}</p>"
         if ctx["reference"]:
             address_html += f"<p style='margin:4px 0'><strong>Referencia:</strong> {_h(ctx['reference'])}</p>"
-    else:
+    elif ctx["pickup_address"] or ctx["pickup_name"]:
+        pickup = " — ".join(p for p in (ctx["pickup_name"], ctx["pickup_address"]) if p)
         address_html = (
-            f"<p style='margin:4px 0'><strong>Punto de retiro:</strong> {ctx['store_address']}</p>"
+            f"<p style='margin:4px 0'><strong>Punto de retiro:</strong> {_h(pickup)}</p>"
         )
 
     notes_html = ""
     if ctx["notes"]:
         notes_html = f"<p style='margin:12px 0;padding:12px;background:#f9fafb;border-radius:6px'><strong>Tus notas:</strong> {_h(ctx['notes'])}</p>"
+
+    # The WhatsApp href is built by company_settings.build_whatsapp_link() from a
+    # digits-only field, so it can only ever be an https://wa.me/ URL. It is
+    # still escaped, and the whole block disappears when the tenant configured
+    # no number rather than rendering an empty link.
+    whatsapp_html = ""
+    if ctx["store_whatsapp_link"]:
+        whatsapp_html = (
+            f"<p style=\"margin:8px 0 0;color:#166534\">WhatsApp: "
+            f"<a href=\"{_h(ctx['store_whatsapp_link'])}\" style=\"color:#166534\">"
+            f"{_h(ctx['store_phone'] or ctx['store_whatsapp_number'])}</a></p>"
+        )
+    elif ctx["store_phone"]:
+        whatsapp_html = (
+            f"<p style=\"margin:8px 0 0;color:#166534\">Teléfono: "
+            f"{_h(ctx['store_phone'])}</p>"
+        )
+
+    # Each part is dropped when empty: an incomplete tenant shows a shorter
+    # signature, never another company's details.
+    signature_parts = [
+        _h(part) for part in (
+            ctx["store_name"], ctx["store_legal_name"],
+            f"RUC {ctx['store_ruc']}" if ctx["store_ruc"] else "",
+        ) if part
+    ]
+    contact_parts = [
+        _h(part) for part in (
+            ctx["store_address"],
+            f"Tel: {ctx['store_phone']}" if ctx["store_phone"] else "",
+        ) if part
+    ]
+    signature_html = " · ".join(signature_parts)
+    if contact_parts:
+        signature_html += "<br>" + " · ".join(contact_parts)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -215,7 +288,7 @@ def _build_customer_html(ctx: dict) -> str:
 <body style="font-family:Arial,sans-serif;color:#111827;max-width:600px;margin:0 auto;padding:24px">
 
 <div style="background:#111827;padding:20px 24px;border-radius:8px 8px 0 0">
-  <h1 style="color:#ffffff;margin:0;font-size:20px">{ctx['store_name']}</h1>
+  <h1 style="color:#ffffff;margin:0;font-size:20px">{_h(ctx['store_name'])}</h1>
 </div>
 
 <div style="border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 8px 8px">
@@ -258,18 +331,30 @@ def _build_customer_html(ctx: dict) -> str:
   <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:16px;margin-bottom:20px">
     <p style="margin:0 0 4px;font-weight:bold;color:#166534">¿Qué sigue?</p>
     <p style="margin:0;color:#166534">Nuestro equipo se comunicará contigo para coordinar la entrega.</p>
-    <p style="margin:8px 0 0;color:#166534">WhatsApp: <a href="{ctx['store_whatsapp_link']}" style="color:#166534">{ctx['store_phone']}</a></p>
+    {whatsapp_html}
   </div>
 
-  <p style="color:#6b7280;font-size:13px">La garantía se aplicará según la condición del producto y los términos informados al momento de la compra.</p>
+  <p style="color:#6b7280;font-size:13px">{_h(ctx['warranty_note'])}</p>
 
   <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
-  <p style="color:#9ca3af;font-size:12px;margin:0">{ctx['store_name']} · {ctx['store_legal_name']} · RUC {ctx['store_ruc']}<br>
-  {ctx['store_address']} · Tel: {ctx['store_phone']}</p>
+  <p style="color:#9ca3af;font-size:12px;margin:0">{signature_html}</p>
 </div>
 
 </body>
 </html>"""
+
+
+def _order_subject(prefix: str, order, ctx: dict) -> str:
+    """
+    "Confirmación de pedido #12 — Empresa A".
+
+    The company name is appended only when there is one: a subject ending in a
+    dangling em dash tells the recipient the system is broken, and inventing a
+    name would tell them something worse.
+    """
+    base = f"{prefix} #{order.id}"
+    name = (ctx.get("store_name") or "").strip()
+    return f"{base} — {name}" if name else base
 
 
 def _build_internal_text(ctx: dict, order_id: int, admin_url: str) -> str:
@@ -319,7 +404,7 @@ def send_order_confirmation_email(order) -> bool:
         return False  # idempotency guard
 
     ctx = build_order_confirmation_context(order)
-    subject = f"Confirmación de pedido #{order.id} — {_STORE_NAME}"
+    subject = _order_subject("Confirmación de pedido", order, ctx)
     text_body = _build_customer_text(ctx)
     html_body = _build_customer_html(ctx)
 
@@ -370,7 +455,7 @@ def resend_order_confirmation_email(order) -> dict:
         )
 
     ctx = build_order_confirmation_context(order)
-    subject = f"Confirmación de pedido #{order.id} — {_STORE_NAME}"
+    subject = _order_subject("Confirmación de pedido", order, ctx)
     text_body = _build_customer_text(ctx)
     html_body = _build_customer_html(ctx)
 
@@ -407,12 +492,36 @@ def resend_order_confirmation_email(order) -> dict:
 
 def send_internal_order_notification(order) -> bool:
     """
-    Sends new-sale notification to ORDER_NOTIFICATION_EMAIL.
+    Send the new-sale alert to THIS ORDER'S OWN COMPANY.
+
+    PHASE 3 — THE ROUTING CHANGED, AND IT IS A DELIBERATE BREAK.
+
+    This used to read one platform-wide `settings.ORDER_NOTIFICATION_EMAIL`. On a
+    multi-tenant install that is a data leak with a stamp of approval: a second
+    company's sales — customer name, phone, address, what they bought — would
+    have been announced in the pilot's inbox, because the pilot's address was the
+    only one there was.
+
+    The recipient now comes from `CompanySettings.order_notification_email` of
+    the order's company. There is NO platform fallback. A company that has not
+    configured an address gets no alert, and that is the correct failure: an
+    operator noticing silence can fix it, whereas an alert already delivered to
+    the wrong company cannot be recalled.
+
+    Migration 0027 copies the existing global value into the pilot's settings, so
+    this installation keeps receiving exactly what it received before.
+
     Returns True if sent, False if skipped or not configured.
     """
     from .models import Order  # local import to avoid circular
-    notification_email = getattr(settings, "ORDER_NOTIFICATION_EMAIL", "").strip()
+
+    notification_email = _company_settings.order_notification_recipient(order)
     if not notification_email:
+        logger.info(
+            "No internal notification for order %s: company %s has no "
+            "order_notification_email configured",
+            order.pk, getattr(order, "company_id", None),
+        )
         return False
     if not order.paid or order.status != Order.Status.PAID:
         return False
@@ -423,7 +532,7 @@ def send_internal_order_notification(order) -> bool:
     frontend_url = getattr(settings, "FRONTEND_URL", "").rstrip("/")
     admin_url = f"{frontend_url}/admin/orders/{order.id}" if frontend_url else ""
 
-    subject = f"Nueva venta pagada #{order.id} — {_STORE_NAME}"
+    subject = _order_subject("Nueva venta pagada", order, ctx)
     text_body = _build_internal_text(ctx, order.id, admin_url)
 
     msg = EmailMultiAlternatives(

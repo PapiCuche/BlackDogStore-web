@@ -1,12 +1,39 @@
 @import "tailwindcss";
 
+/*
+ * TENANT BRANDING — Phase 3.
+ *
+ * The `--brand-*` variables are written onto <html> by the root layout, from
+ * the company that owns the request host. The `--background` / `--surface` /
+ * ... tokens below — which every component and the Tailwind theme already read —
+ * now resolve THROUGH them, so a tenant's palette reaches the whole storefront
+ * without a single component changing.
+ *
+ * The literal after each `var(...)` is the NEUTRAL platform fallback, used when
+ * no config resolved. It belongs to no business on purpose: an unbranded page is
+ * a visible problem, one wearing the wrong company's colours is not.
+ *
+ * Only `#RRGGBB` values ever reach these variables — validated in the model, in
+ * the serializer, and once more in brandingStyle() before they touch the style
+ * attribute.
+ */
 :root {
-  --background: #080808;
-  --foreground: #ffffff;
-  --surface: #111111;
-  --surface-2: #1a1a1a;
-  --border: #272727;
-  --muted: #6b7280;
+  --brand-primary: #ffffff;
+  --brand-accent: #a1a1aa;
+  --brand-background: #0a0a0a;
+  --brand-surface: #141414;
+  --brand-text: #fafafa;
+  --brand-border: #262626;
+
+  --background: var(--brand-background, #0a0a0a);
+  --foreground: var(--brand-text, #fafafa);
+  --surface: var(--brand-surface, #141414);
+  /* Derived from the surface rather than configurable: a seventh colour picker
+     for "the slightly lighter panel" is a field nobody fills correctly. */
+  --surface-2: color-mix(in srgb, var(--surface) 88%, var(--foreground));
+  --border: var(--brand-border, #262626);
+  --muted: var(--brand-accent, #a1a1aa);
+  --primary: var(--brand-primary, #ffffff);
 }
 
 @theme inline {
@@ -16,6 +43,7 @@
   --color-surface-2: var(--surface-2);
   --color-bd-border: var(--border);
   --color-muted: var(--muted);
+  --color-primary: var(--primary);
   --font-sans: var(--font-body);
   --font-display: var(--font-display);
 }

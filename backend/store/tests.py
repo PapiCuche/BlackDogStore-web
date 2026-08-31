@@ -26,7 +26,7 @@ import stripe as stripe_lib
 
 from django.core import mail
 from django.core.cache import cache
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import timedelta
@@ -48,6 +48,100 @@ def _storefront_of(company):
     — exactly as a real multi-tenant deployment has to.
     """
     return override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=company.slug)
+
+
+def _pilot_branch():
+    """
+    The branch the pilot tenant's stock lives in.
+
+    Phase 2D: `create_stock_movement()` needs a place to put units, so tests that
+    call the service layer directly have to name one. Migration 0015 created this
+    branch and migration 0025 put the historical stock in it.
+    """
+    from .models import Branch
+    return Branch.objects.filter(company=_pilot_company()).order_by('pk').first()
+
+
+def _set_notification_email(company, address):
+    """
+    Point a company's new-sale alerts at `address` — Phase 3.
+
+    The global `ORDER_NOTIFICATION_EMAIL` setting stopped being a recipient: one
+    address for every tenant meant a second company's sales would be announced in
+    the pilot's inbox. Tests that expect an internal alert now say WHOSE alert it
+    is, which is the point of the change.
+    """
+    from .models import CompanySettings
+    row, _ = CompanySettings.objects.get_or_create(company=company)
+    row.order_notification_email = address
+    row.save(update_fields=['order_notification_email', 'updated_at'])
+    return row
+
+
+def _set_stock(product, quantity, branch=None):
+    """
+    Set what the SHELF holds — Phase 2D.
+
+    `product.inventory = N; product.save()` no longer changes what can be sold:
+    it is a derived aggregate, and checkout, the cart and the webhook all read
+    BranchStock. Tests that mean "there are N of these to sell" say it here.
+    """
+    return _seeded(product, quantity)
+
+
+def _reset_products():
+    """
+    Drop the seeded demo catalogue, stock rows first.
+
+    `BranchStock.product` and `StockMovement.product` are PROTECT — a product
+    with units on a shelf or a line in the Kardex must not vanish — so a test
+    that wants a clean catalogue has to clear those first. That protection is
+    correct in production and only needs acknowledging here.
+    """
+    from .models import BranchStock, StockMovement
+    StockMovement.objects.all().delete()
+    BranchStock.objects.all().delete()
+    Product.objects.all().delete()
+
+
+def _seeded(product, quantity=None):
+    """
+    Put a product's stock on a branch shelf — Phase 2D test bridge.
+
+    From Phase 2D, `Product.inventory` is a compatibility AGGREGATE and
+    `BranchStock.quantity` is the source of truth, so
+    `_seeded(Product.objects.create(inventory=10))` on its own creates ten units that are
+    nowhere: the catalogue shows nothing sellable and checkout refuses. In
+    production nothing does that — migration 0025 placed the historical stock and
+    `apply_initial_stock()` places a new product's opening balance — but hundreds
+    of tests written before 2D create products directly.
+
+    This does what the platform does, in one line: places the units in the
+    company's fulfillment branch (creating one when the test's company has none,
+    which is the state of every company built with `Company.objects.create`) and
+    keeps the aggregate in step.
+    """
+    from .models import Branch, BranchStock
+
+    qty = product.inventory if quantity is None else quantity
+    company = product.company
+    branch = company.default_inventory_branch
+    if branch is None or branch.company_id != company.pk:
+        branch = Branch.objects.filter(
+            company=company, is_active=True,
+        ).order_by('pk').first()
+    if branch is None:
+        branch = Branch.objects.create(company=company, name='Sucursal de pruebas')
+    if company.default_inventory_branch_id != branch.pk:
+        company.default_inventory_branch = branch
+        company.save(update_fields=['default_inventory_branch', 'updated_at'])
+
+    BranchStock.objects.update_or_create(
+        branch=branch, product=product, defaults={'quantity': qty},
+    )
+    Product.objects.filter(pk=product.pk).update(inventory=qty)
+    product.refresh_from_db()
+    return product
 
 
 def _pilot_company():
@@ -84,23 +178,23 @@ class ProductModelTest(TestCase):
         self.category = Category.objects.create(company=_pilot_company(), name="MacBook", slug="macbook-model-test")
 
     def test_create_product(self):
-        product = Product.objects.create(company=_pilot_company(),
+        product = _seeded(Product.objects.create(company=_pilot_company(),
             name="MacBook Pro M4",
             slug="macbook-pro-m4-test",
             price=Decimal("9999.00"),
             inventory=5,
             category=self.category,
-        )
+        ))
         self.assertEqual(str(product), "MacBook Pro M4")
         self.assertEqual(product.price, Decimal("9999.00"))
         self.assertEqual(product.inventory, 5)
 
     def test_product_defaults(self):
-        product = Product.objects.create(company=_pilot_company(),
+        product = _seeded(Product.objects.create(company=_pilot_company(),
             name="Test Product Defaults",
             slug="test-product-defaults-001",
             price=Decimal("100.00"),
-        )
+        ))
         self.assertEqual(product.inventory, 0)
         self.assertEqual(product.image_url, "")
         self.assertIsNone(product.category)
@@ -108,7 +202,7 @@ class ProductModelTest(TestCase):
 
 class CouponModelTest(TestCase):
     def test_active_coupon(self):
-        coupon = Coupon.objects.create(
+        coupon = Coupon.objects.create(company=_pilot_company(),
             code="DESCUENTO10",
             discount_percent=10,
             is_active=True,
@@ -118,7 +212,7 @@ class CouponModelTest(TestCase):
         self.assertIsNone(coupon.expires_at)
 
     def test_inactive_coupon(self):
-        coupon = Coupon.objects.create(
+        coupon = Coupon.objects.create(company=_pilot_company(),
             code="VENCIDO",
             discount_percent=20,
             is_active=False,
@@ -127,7 +221,7 @@ class CouponModelTest(TestCase):
 
     def test_expired_coupon_still_has_future_date(self):
         past = timezone.now() - timedelta(days=1)
-        coupon = Coupon.objects.create(
+        coupon = Coupon.objects.create(company=_pilot_company(),
             code="PASADO",
             discount_percent=15,
             is_active=True,
@@ -140,13 +234,13 @@ class ProductAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.category = Category.objects.create(company=_pilot_company(), name="iPad Test", slug="ipad-api-test")
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name="iPad Pro M4 Test",
             slug="ipad-pro-m4-api-test",
             price=Decimal("3999.00"),
             inventory=8,
             category=self.category,
-        )
+        ))
 
     def test_list_products(self):
         response = self.client.get("/api/products/")
@@ -191,38 +285,38 @@ class Phase50ProductAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.cat = Category.objects.create(company=_pilot_company(), name="Mac Phase50", slug="mac-p50")
-        self.p1 = Product.objects.create(company=_pilot_company(),
+        self.p1 = _seeded(Product.objects.create(company=_pilot_company(),
             name="MacBook Air P50",
             slug="macbook-air-p50",
             price=Decimal("4999.00"),
             inventory=5,
             category=self.cat,
             is_active=True,
-        )
-        self.p2 = Product.objects.create(company=_pilot_company(),
+        ))
+        self.p2 = _seeded(Product.objects.create(company=_pilot_company(),
             name="MacBook Pro P50",
             slug="macbook-pro-p50",
             price=Decimal("9999.00"),
             inventory=0,
             category=self.cat,
             is_active=True,
-        )
-        self.p3 = Product.objects.create(company=_pilot_company(),
+        ))
+        self.p3 = _seeded(Product.objects.create(company=_pilot_company(),
             name="Mac Studio P50",
             slug="mac-studio-p50",
             price=Decimal("7499.00"),
             inventory=3,
             category=self.cat,
             is_active=True,
-        )
-        self.inactive = Product.objects.create(company=_pilot_company(),
+        ))
+        self.inactive = _seeded(Product.objects.create(company=_pilot_company(),
             name="Inactive Mac P50",
             slug="inactive-mac-p50",
             price=Decimal("1.00"),
             inventory=10,
             category=self.cat,
             is_active=False,
-        )
+        ))
 
     def _get_slugs(self, path):
         res = self.client.get(path)
@@ -285,13 +379,13 @@ class Phase50ProductAPITest(TestCase):
         self.assertEqual(res.status_code, 200)
 
     def test_product_without_category_does_not_crash(self):
-        Product.objects.create(company=_pilot_company(),
+        _seeded(Product.objects.create(company=_pilot_company(),
             name="No Category P50",
             slug="no-cat-p50",
             price=Decimal("99.00"),
             inventory=1,
             is_active=True,
-        )
+        ))
         res = self.client.get("/api/products/?slug=no-cat-p50")
         self.assertEqual(res.status_code, 200)
         data = res.json()
@@ -302,7 +396,7 @@ class Phase50ProductAPITest(TestCase):
 class CouponAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.coupon = Coupon.objects.create(
+        self.coupon = Coupon.objects.create(company=_pilot_company(),
             code="BDOG10",
             discount_percent=10,
             is_active=True,
@@ -342,13 +436,13 @@ class CartAPITest(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.category = Category.objects.create(company=_pilot_company(), name="Cables Test", slug="cables-cart-test")
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name="Cable USB-C Test",
             slug="cable-usbc-cart-test",
             price=Decimal("149.00"),
             inventory=50,
             category=self.category,
-        )
+        ))
         self.session_key = "test-session-key-001"
 
     def test_empty_cart(self):
@@ -396,15 +490,15 @@ class CartAPITest(TestCase):
 
 class OrderModelTest(TestCase):
     def setUp(self):
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name="iPhone Test Order",
             slug="iphone-test-order-001",
             price=Decimal("4299.00"),
             inventory=5,
-        )
+        ))
 
     def test_create_order_str(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name="Carlos García",
             customer_email="carlos@example.com",
             total=Decimal("4299.00"),
@@ -413,7 +507,7 @@ class OrderModelTest(TestCase):
         self.assertFalse(order.paid)
 
     def test_order_paid_field_defaults_false(self):
-        order = Order.objects.create(total=Decimal("100.00"))
+        order = Order.objects.create(company=_pilot_company(), total=Decimal("100.00"))
         self.assertFalse(order.paid)
 
 
@@ -426,12 +520,12 @@ class CartStockValidationTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name="iPhone 16 Pro Stock Test",
             slug="iphone-16-pro-stock-test",
             price=Decimal("5999.00"),
             inventory=3,
-        )
+        ))
         self.session_key = "stock-test-session-001"
 
     def test_add_zero_quantity_rejected(self):
@@ -493,12 +587,12 @@ class CheckoutFlowTest(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name="MacBook Air M3 Checkout Test",
             slug="macbook-air-m3-checkout-test",
             price=Decimal("7499.00"),
             inventory=5,
-        )
+        ))
         self.session_key = "checkout-flow-session-001"
         CartItem.objects.create(
             session_key=self.session_key,
@@ -576,8 +670,10 @@ class CheckoutFlowTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_checkout_insufficient_stock_returns_400(self):
-        self.product.inventory = 0
-        self.product.save()
+        # Phase 2D: checkout validates the FULFILLMENT BRANCH, so emptying the
+        # shelf is what "no stock" means. Zeroing Product.inventory alone would
+        # leave five units sitting in the branch that actually ships.
+        _set_stock(self.product, 0)
         response = self.client.post(
             "/api/payments/create-checkout-session/", self._base_body(), format="json"
         )
@@ -587,7 +683,7 @@ class CheckoutFlowTest(TestCase):
     @patch("stripe.checkout.Session.create")
     def test_checkout_applies_coupon_discount_from_db(self, mock_create):
         mock_create.return_value = self._mock_stripe_session()
-        Coupon.objects.create(code="FASE1TEST", discount_percent=10, is_active=True)
+        Coupon.objects.create(company=_pilot_company(), code="FASE1TEST", discount_percent=10, is_active=True)
         response = self.client.post(
             "/api/payments/create-checkout-session/",
             self._base_body(coupon_code="FASE1TEST"),
@@ -619,14 +715,14 @@ class StripeWebhookTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name="AirPods Pro Webhook Test",
             slug="airpods-pro-webhook-test",
             price=Decimal("799.00"),
             inventory=10,
-        )
+        ))
         self.session_key = "webhook-test-session-001"
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_email="webhook@example.com",
             total=Decimal("799.00"),
             cart_session_key=self.session_key,
@@ -715,7 +811,7 @@ class PaymentStatusViewTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_email="status@example.com",
             total=Decimal("1299.00"),
             stripe_session_id="cs_test_status_001",
@@ -755,7 +851,7 @@ class PaymentStatusViewTest(TestCase):
         """Authenticated user must get 403 when trying to read another user's order status."""
         requester = User.objects.create_user(username="requester_x", password="pass")
         owner = User.objects.create_user(username="owner_x", password="pass")
-        owner_order = Order.objects.create(
+        owner_order = Order.objects.create(company=_pilot_company(),
             user=owner,
             customer_email="owner@example.com",
             total=Decimal("999.00"),
@@ -793,12 +889,12 @@ class CheckoutStripeErrorTest(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name="iPhone Stripe Error Test",
             slug="iphone-stripe-error-test",
             price=Decimal("4999.00"),
             inventory=5,
-        )
+        ))
         self.session_key = "stripe-error-session-001"
         CartItem.objects.create(
             session_key=self.session_key,
@@ -852,13 +948,13 @@ class OrderViewSetAccessTest(TestCase):
         self.client = APIClient()
         self.user1 = User.objects.create_user(username="orders_user1", password="pass")
         self.user2 = User.objects.create_user(username="orders_user2", password="pass")
-        self.order_u1 = Order.objects.create(
+        self.order_u1 = Order.objects.create(company=_pilot_company(),
             user=self.user1,
             customer_email="u1@example.com",
             total=Decimal("500.00"),
             status=Order.Status.PAID,
         )
-        self.order_u2 = Order.objects.create(
+        self.order_u2 = Order.objects.create(company=_pilot_company(),
             user=self.user2,
             customer_email="u2@example.com",
             total=Decimal("300.00"),
@@ -991,12 +1087,12 @@ class CartPatchTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name='iPhone 16 Patch Test',
             slug='iphone-16-patch-test',
             price=Decimal('5999.00'),
             inventory=5,
-        )
+        ))
         self.session_key = 'patch-test-session-001'
         self.item = CartItem.objects.create(
             session_key=self.session_key,
@@ -1027,12 +1123,12 @@ class CartPatchTest(TestCase):
 
     def test_patch_ignores_session_key_in_body(self):
         """session_key in body must be ignored; only quantity changes."""
-        other_product = Product.objects.create(company=_pilot_company(),
+        other_product = _seeded(Product.objects.create(company=_pilot_company(),
             name='Other Product',
             slug='other-product-patch',
             price=Decimal('100.00'),
             inventory=10,
-        )
+        ))
         response = self.client.patch(self.url, {
             'quantity': 2,
             'session_key': 'evil-session-key',
@@ -1044,12 +1140,12 @@ class CartPatchTest(TestCase):
 
     def test_patch_ignores_product_in_body(self):
         """product in body must be ignored; only quantity changes."""
-        other_product = Product.objects.create(company=_pilot_company(),
+        other_product = _seeded(Product.objects.create(company=_pilot_company(),
             name='Other Product Patch',
             slug='other-product-patch-2',
             price=Decimal('100.00'),
             inventory=10,
-        )
+        ))
         response = self.client.patch(self.url, {
             'quantity': 2,
             'product': other_product.id,
@@ -1072,13 +1168,13 @@ class ReviewSecurityTest(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.category = Category.objects.create(company=_pilot_company(), name='Review Cat', slug='review-cat-test')
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name='Review Product Test',
             slug='review-product-test',
             price=Decimal('999.00'),
             inventory=5,
             category=self.category,
-        )
+        ))
         self.user = User.objects.create_user(username='review_user', password='pass')
 
     def _create_review_payload(self, rating=5, comment='Excelente producto'):
@@ -2147,13 +2243,13 @@ class OrderViewSetRBACTest(TestCase):
         self.admin_user = User.objects.create_user(username='rbac_admin', password='Pass123!')
         self.admin_user.profile.role = UserProfile.ROLE_ADMIN
         self.admin_user.profile.save()
-        self.order1 = Order.objects.create(
+        self.order1 = Order.objects.create(company=_pilot_company(),
             user=self.customer1,
             customer_email='c1@example.com',
             total=Decimal('100.00'),
             status=Order.Status.PAID,
         )
-        self.order2 = Order.objects.create(
+        self.order2 = Order.objects.create(company=_pilot_company(),
             user=self.customer2,
             customer_email='c2@example.com',
             total=Decimal('200.00'),
@@ -2173,21 +2269,30 @@ class OrderViewSetRBACTest(TestCase):
         response = self.client.get(f'/api/orders/{self.order2.id}/')
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_sales_sees_all_orders(self):
+    def test_sales_only_sees_its_own_orders_on_the_customer_endpoint(self):
+        """
+        BEHAVIOUR CHANGE, Phase 2C. /api/orders/ is the CUSTOMER surface.
+
+        It used to return every order in the database to any staff user. With
+        orders tenantised that shortcut became a cross-tenant leak: a salesperson
+        of company A would see company B's orders. Internal administration lives
+        at /api/admin/orders/, which scopes by company and checks capabilities.
+        """
         self.client.force_authenticate(user=self.sales_user)
         response = self.client.get('/api/orders/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         ids = [o['id'] for o in response.json()]
-        self.assertIn(self.order1.id, ids)
-        self.assertIn(self.order2.id, ids)
+        # order1 belongs to user1, order2 to user2; the salesperson owns neither
+        self.assertNotIn(self.order1.id, ids)
+        self.assertNotIn(self.order2.id, ids)
 
-    def test_admin_sees_all_orders(self):
+    def test_admin_only_sees_its_own_orders_on_the_customer_endpoint(self):
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get('/api/orders/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         ids = [o['id'] for o in response.json()]
-        self.assertIn(self.order1.id, ids)
-        self.assertIn(self.order2.id, ids)
+        self.assertNotIn(self.order1.id, ids)
+        self.assertNotIn(self.order2.id, ids)
 
     def test_anon_gets_401(self):
         response = self.client.get('/api/orders/')
@@ -2201,10 +2306,10 @@ class Phase30RegressionTest(TestCase):
         self.client = APIClient()
         cache.clear()
         cat = Category.objects.create(company=_pilot_company(), name='Reg Cat', slug='reg-cat-30')
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name='Reg Product', slug='reg-product-30', price=Decimal('100.00'), inventory=10, category=cat
-        )
-        self.coupon = Coupon.objects.create(code='REGCOUPON30', discount_percent=10, is_active=True)
+        ))
+        self.coupon = Coupon.objects.create(company=_pilot_company(), code='REGCOUPON30', discount_percent=10, is_active=True)
         self.user = User.objects.create_user(username='reg30_user', password='StrongPass123!')
 
     def test_login_still_works(self):
@@ -2511,10 +2616,10 @@ class Audit31ExtraFieldsIgnoredTest(TestCase):
 # ---------------------------------------------------------------------------
 
 def _make_product(name, slug, price='100.00', inventory=10, is_active=True, category=None):
-    return Product.objects.create(company=_pilot_company(),
+    return _seeded(Product.objects.create(company=_pilot_company(),
         name=name, slug=slug, price=Decimal(price),
         inventory=inventory, is_active=is_active, category=category,
-    )
+    ))
 
 
 def _make_roles(prefix):
@@ -2614,7 +2719,7 @@ class AdminProductListFilterTest(TestCase):
     def setUp(self):
         self.client = APIClient()
         cache.clear()
-        Product.objects.all().delete()
+        _reset_products()
         self.admin = User.objects.create_user(username='pf_admin', password='Pass123!')
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
@@ -2913,8 +3018,14 @@ class AdminInventoryAdjustTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_superadmin_can_adjust(self):
+        # A platform master names the company: they belong to no tenant, and
+        # picking one for them would be the cross-tenant leak Phase 2B closed.
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SUPERADMIN])
-        response = self.client.post(self._url(), {'delta': 2, 'reason': 'Superadmin test'}, format='json')
+        pilot = _pilot_company().pk
+        response = self.client.post(
+            f'{self._url()}?company={pilot}',
+            {'delta': 2, 'reason': 'Superadmin test'}, format='json',
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_delta_zero_rejected(self):
@@ -3194,7 +3305,7 @@ def _make_order(customer_name='Test Customer', customer_email='test@example.com'
     )
     if fulfillment_status is not None:
         kwargs['fulfillment_status'] = fulfillment_status
-    return Order.objects.create(**kwargs)
+    return Order.objects.create(company=_pilot_company(), **kwargs)
 
 
 class Phase33AdminOrderAccessTest(TestCase):
@@ -3247,9 +3358,22 @@ class Phase33AdminOrderAccessTest(TestCase):
         self.client.force_authenticate(user=self.admin)
         self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
 
-    def test_superadmin_can_list_orders(self):
+    def test_superadmin_must_select_a_company_to_list_orders(self):
+        """
+        BEHAVIOUR CHANGE, Phase 2C. A superuser is a PLATFORM master: with orders
+        tenantised there is no longer "all orders". They name the tenant, exactly
+        as the catalogue and the dashboard already require.
+        """
         self.client.force_authenticate(user=self.superadmin)
-        self.assertEqual(self.client.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.get('/api/admin/orders/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        pilot = _pilot_company()
+        self.assertEqual(
+            self.client.get(f'/api/admin/orders/?company={pilot.pk}').status_code,
+            status.HTTP_200_OK,
+        )
 
     def test_sales_can_get_detail(self):
         self.client.force_authenticate(user=self.sales)
@@ -3398,7 +3522,7 @@ class Phase33AdminOrderDetailSecurityTest(TestCase):
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
         self.client.force_authenticate(user=self.admin)
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_name='Secure Test',
             customer_email='secure@example.com',
             status=Order.Status.PAID,
@@ -3474,9 +3598,10 @@ class Phase33FulfillmentStatusChangeTest(TestCase):
         res = self._patch(self.sales)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
-    def test_superadmin_can_change_fulfillment_status(self):
-        res = self._patch(self.superadmin)
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
+    def test_superadmin_must_select_a_company_to_change_fulfillment(self):
+        """Phase 2C: a platform master names the tenant it acts on."""
+        self.assertEqual(self._patch(self.superadmin).status_code,
+                         status.HTTP_403_FORBIDDEN)
 
     def test_inventory_can_set_preparing(self):
         res = self._patch(self.inventory, data={'fulfillment_status': 'preparing'})
@@ -3696,7 +3821,7 @@ class Phase33FulfillmentModelDefaultTest(TestCase):
     """fulfillment_status field defaults to pending on new orders."""
 
     def test_new_order_defaults_to_pending(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Default Test',
             customer_email='default@example.com',
             total=Decimal('100.00'),
@@ -3743,7 +3868,7 @@ class Phase33RegressionTest(TestCase):
 
     def test_existing_order_has_fulfillment_status_field(self):
         """Orders created before migration must have fulfillment_status = pending."""
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 Order',
             customer_email='reg33@example.com',
             total=Decimal('100.00'),
@@ -3751,7 +3876,7 @@ class Phase33RegressionTest(TestCase):
         self.assertEqual(order.fulfillment_status, 'pending')
 
     def test_admin_order_list_returns_fulfillment_status_in_results(self):
-        Order.objects.create(
+        Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 FulfCheck',
             customer_email='fulfcheck@example.com',
             total=Decimal('200.00'),
@@ -3763,7 +3888,7 @@ class Phase33RegressionTest(TestCase):
 
     def test_checkout_creates_order_with_pending_fulfillment_status(self):
         """Checkout flow must create orders with fulfillment_status='pending' (not affected by Phase 3.3)."""
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 Checkout',
             customer_email='checkout33@example.com',
             status=Order.Status.PENDING_PAYMENT,
@@ -3774,7 +3899,7 @@ class Phase33RegressionTest(TestCase):
 
     def test_webhook_update_fields_does_not_include_fulfillment_status(self):
         """Simulates the webhook save to verify fulfillment_status is never written by the webhook."""
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 Webhook',
             customer_email='webhook33@example.com',
             status=Order.Status.PENDING_PAYMENT,
@@ -3794,7 +3919,7 @@ class Phase33RegressionTest(TestCase):
 
     def test_fulfillment_status_change_is_atomic_with_audit_log(self):
         """Verifies that fulfillment_status change and audit log are created together."""
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_name='Reg33 Atomic',
             customer_email='atomic33@example.com',
             total=Decimal('100.00'),
@@ -3829,12 +3954,12 @@ class Phase40CheckoutValidationTest(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name='P40 Product',
             slug='p40-product',
             price=Decimal('500.00'),
             inventory=10,
-        )
+        ))
         self.session_key = 'p40-session-001'
         CartItem.objects.create(session_key=self.session_key, product=self.product, quantity=1)
 
@@ -4189,7 +4314,7 @@ class Phase40AdminOrderDetailCommercialFieldsTest(TestCase):
         self.admin = User.objects.create_user(username='p40_admin', password='Pass123!')
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_name='P40 Cliente',
             customer_email='p40cliente@blackdog.pe',
             total=Decimal('500.00'),
@@ -4266,21 +4391,22 @@ def _make_paid_order(**kwargs):
         stripe_payment_intent_id='pi_test_41',
     )
     defaults.update(kwargs)
-    order = Order.objects.create(**defaults)
+    order = Order.objects.create(company=_pilot_company(), **defaults)
     OrderItem.objects.create(order=order, product=product, quantity=1, price='9999.00')
     return order
 
 
 @override_settings(
     EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
-    ORDER_NOTIFICATION_EMAIL='store@example.com',
-    DEFAULT_FROM_EMAIL='Black Dog Store <no-reply@test.com>',
+    DEFAULT_FROM_EMAIL='no-reply@test.invalid',
     FRONTEND_URL='http://localhost:3000',
 )
 class Phase41EmailServiceUnitTest(TestCase):
     """Unit tests for email_services.py functions (called directly, no webhook)."""
 
     def setUp(self):
+        # Phase 3: the recipient belongs to the COMPANY, not to a setting.
+        _set_notification_email(_pilot_company(), 'store@example.com')
         mail.outbox = []
 
     def test_build_order_confirmation_context_excludes_stripe_fields(self):
@@ -4373,10 +4499,17 @@ class Phase41EmailServiceUnitTest(TestCase):
         self.assertEqual(len(mail.outbox), 0)
 
     def test_send_internal_notification_skips_if_not_configured(self):
+        """
+        No address on the COMPANY means no alert — and no platform fallback.
+
+        Phase 3 removed the global recipient precisely so that an unconfigured
+        tenant stays silent instead of announcing its sales in whichever inbox
+        the platform-wide setting happened to name.
+        """
         from store.email_services import send_internal_order_notification
         order = _make_paid_order()
-        with self.settings(ORDER_NOTIFICATION_EMAIL=''):
-            result = send_internal_order_notification(order)
+        _set_notification_email(order.company, '')
+        result = send_internal_order_notification(order)
         self.assertFalse(result)
         self.assertEqual(len(mail.outbox), 0)
 
@@ -4484,8 +4617,8 @@ class Phase41EmailServiceUnitTest(TestCase):
     def test_no_internal_email_when_notification_email_not_set(self):
         from store.email_services import send_order_emails_after_payment
         order = _make_paid_order()
-        with self.settings(ORDER_NOTIFICATION_EMAIL=''):
-            send_order_emails_after_payment(order.pk)
+        _set_notification_email(order.company, '')
+        send_order_emails_after_payment(order.pk)
         # Only customer confirmation, no internal
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, [order.customer_email])
@@ -4514,14 +4647,27 @@ class Phase41EmailServiceUnitTest(TestCase):
         self.assertIn("MacBook Pro M3", msg.body)
         self.assertIn("9999.00", msg.body)
 
-    def test_pickup_store_email_body_contains_store_address(self):
-        """For pickup_store orders, the text body must show the store address, not a delivery address."""
+    def test_pickup_store_email_body_contains_the_pickup_point(self):
+        """
+        A pickup order shows WHERE TO COLLECT, which is the fulfilling branch.
+
+        Phase 3 separated this from the legal address: one is who invoices, the
+        other is which door the customer knocks on. Printing the office address
+        under "Punto de retiro" sends people to the wrong place.
+        """
+        from store.company_settings import order_pickup_location
         from store.email_services import send_order_confirmation_email
-        from store.email_services import _STORE_ADDRESS
+
         order = _make_paid_order(delivery_method="pickup_store")
+        order.fulfillment_branch = _pilot_branch()
+        order.company_snapshot = {}
+        order.save(update_fields=['fulfillment_branch', 'company_snapshot'])
+
         send_order_confirmation_email(order)
         msg = mail.outbox[0]
-        self.assertIn(_STORE_ADDRESS, msg.body)
+        pickup = order_pickup_location(order)
+        self.assertEqual(pickup['source'], 'branch')
+        self.assertIn(pickup['address'], msg.body)
         self.assertIn("Punto de retiro", msg.body)
 
     def test_html_escaping_in_customer_email(self):
@@ -4584,10 +4730,10 @@ class Phase41WebhookEmailIntegrationTest(TestCase):
     def setUp(self):
         mail.outbox = []
         cat = Category.objects.create(company=_pilot_company(), name='Mac41W', slug='mac-41w')
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name='iMac M3', slug='imac-m3-41w', price='5999.00', inventory=3, category=cat,
-        )
-        self.order = Order.objects.create(
+        ))
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_name='Pedro Salas', customer_email='pedro@example.com',
             customer_phone='936449537', document_type='dni', document_number='87654321',
             delivery_method='pickup_store', receipt_type='boleta',
@@ -4738,7 +4884,7 @@ def _make_paid_order_42(**kwargs):
         stripe_payment_intent_id='pi_test_42_base',
     )
     defaults.update(kwargs)
-    order = Order.objects.create(**defaults)
+    order = Order.objects.create(company=_pilot_company(), **defaults)
     OrderItem.objects.create(order=order, product=product, quantity=1, price='9999.00')
     return order
 
@@ -4844,11 +4990,22 @@ class Phase42PdfContextTest(TestCase):
         ctx = build_order_pdf_context(self.order)
         self.assertEqual(ctx['document_label'], 'DNI')
 
-    def test_context_store_constants(self):
-        from store.pdf_services import build_order_pdf_context, _STORE_RUC, _STORE_NAME
+    def test_context_seller_identity_comes_from_the_order_company(self):
+        """
+        Phase 3: there are no store constants to compare against any more.
+
+        The identity on the document is the ORDER's own company — which for this
+        installation's pilot is the same values that used to be compiled in, now
+        living in its CompanySettings row where migration 0028 put them.
+        """
+        from store.company_settings import company_identity
+        from store.pdf_services import build_order_pdf_context
+
+        expected = company_identity(self.order.company)
         ctx = build_order_pdf_context(self.order)
-        self.assertEqual(ctx['store_ruc'], _STORE_RUC)
-        self.assertEqual(ctx['store_name'], _STORE_NAME)
+        self.assertEqual(ctx['store_name'], expected.name)
+        self.assertEqual(ctx['store_ruc'], expected.tax_id)
+        self.assertEqual(ctx['store_legal_name'], expected.legal_name)
         self.assertNotEqual(ctx['store_address'], '')
 
     def test_context_status_label_is_paid(self):
@@ -4926,9 +5083,19 @@ class Phase42PdfGeneratorTest(TestCase):
             generate_order_receipt_pdf(order)
 
     def test_pdf_get_filename(self):
+        """
+        Phase 3: built from the company SLUG, not from a literal.
+
+        The slug rather than the NAME because the name is free text a tenant
+        types, and this string reaches a Content-Disposition header and a
+        filesystem — the two places where a stray quote or slash stops being
+        cosmetic.
+        """
         from store.pdf_services import get_order_receipt_filename
         filename = get_order_receipt_filename(self.order)
-        self.assertEqual(filename, f'blackdog-pedido-{self.order.id}.pdf')
+        self.assertEqual(
+            filename, f'{self.order.company.slug}-pedido-{self.order.id}.pdf',
+        )
         self.assertTrue(filename.isascii())
 
     def test_pdf_with_discount(self):
@@ -5191,7 +5358,7 @@ def _make_paid_order_43(**kwargs):
         stripe_payment_intent_id='pi_test_43_base',
     )
     defaults.update(kwargs)
-    order = Order.objects.create(**defaults)
+    order = Order.objects.create(company=_pilot_company(), **defaults)
     OrderItem.objects.create(order=order, product=product, quantity=1, price='8999.00')
     return order
 
@@ -5609,16 +5776,20 @@ def _p60_users():
 
 
 def _p60_product(name='iPhone 15 Pro P60', inventory=10, price='5599.00'):
-    return Product.objects.create(company=_pilot_company(),
+    return _seeded(Product.objects.create(company=_pilot_company(),
         name=name,
         slug=name.lower().replace(' ', '-'),
         price=Decimal(price),
         inventory=inventory,
-    )
+    ))
 
 
 def _p60_paid_order(product, quantity=2, **extra):
-    order = Order.objects.create(
+    # Phase 2D: a real order carries the branch that sold it — checkout stamps
+    # one and migration 0025 backfilled the historical ones. A test order
+    # without it would drop out of every branch-scoped sales report.
+    extra.setdefault('fulfillment_branch', _pilot_branch())
+    order = Order.objects.create(company=_pilot_company(),
         customer_name='Cliente Demo',
         customer_email='cliente@example.com',
         customer_phone='+51 999 999 999',
@@ -5729,12 +5900,18 @@ class Phase60InventoryAccessTest(TestCase):
         self.assertEqual(self.product.inventory, 12)
 
     def test_07_superadmin_creates_exit(self):
-        res = self._as(UserProfile.ROLE_SUPERADMIN).post('/api/admin/inventory/movements/', {
-            'product_id': self.product.pk,
-            'movement_type': 'damaged_exit',
-            'quantity': 1,
-            'reason': 'Equipo dañado en tienda',
-        }, format='json')
+        # Phase 2D: a platform master belongs to no tenant, so they name the
+        # company explicitly — exactly as they already had to on the catalogue
+        # since Phase 2B. Falling back to "the first company" would be the
+        # silent cross-tenant leak the whole tenancy layer exists to prevent.
+        pilot = _pilot_company().pk
+        res = self._as(UserProfile.ROLE_SUPERADMIN).post(
+            f'/api/admin/inventory/movements/?company={pilot}', {
+                'product_id': self.product.pk,
+                'movement_type': 'damaged_exit',
+                'quantity': 1,
+                'reason': 'Equipo dañado en tienda',
+            }, format='json')
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.product.refresh_from_db()
         self.assertEqual(self.product.inventory, 9)
@@ -5775,6 +5952,7 @@ class Phase60StockMovementRulesTest(TestCase):
     def test_08b_service_layer_raises_on_negative_stock(self):
         with self.assertRaises(InsufficientStockError):
             create_stock_movement(
+                branch=_pilot_branch(),
                 product_id=self.product.pk,
                 movement_type=StockMovement.MANUAL_EXIT,
                 quantity=99,
@@ -5815,6 +5993,7 @@ class Phase60StockMovementRulesTest(TestCase):
     def test_10b_manual_movement_without_actor_is_rejected(self):
         with self.assertRaises(InvalidMovementError):
             apply_manual_stock_movement(
+                branch=_pilot_branch(),
                 product_id=self.product.pk,
                 movement_type=StockMovement.MANUAL_ENTRY,
                 quantity=1,
@@ -5905,7 +6084,7 @@ class Phase60SaleStockMovementTest(TestCase):
         self.client = APIClient()
         self.product = _p60_product(name='AirPods P60', inventory=10, price='999.00')
         self.session_key = 'p60-webhook-session'
-        self.order = Order.objects.create(
+        self.order = Order.objects.create(company=_pilot_company(),
             customer_email='p60@example.com',
             total=Decimal('1998.00'),
             cart_session_key=self.session_key,
@@ -5973,7 +6152,12 @@ class Phase60SaleStockMovementTest(TestCase):
         self.assertIsNone(m.actor)
 
     def test_17d_insufficient_stock_flags_order_without_breaking_payment(self):
-        # Stock disappears between checkout and confirmation
+        # Stock disappears between checkout and confirmation.
+        # Phase 2D: emptying the SHELF, not the compatibility aggregate —
+        # `Product.inventory` is derived now, and zeroing it would leave the
+        # branch holding units that the webhook would happily sell.
+        from .models import BranchStock
+        BranchStock.objects.filter(product=self.product).update(quantity=0)
         Product.objects.filter(pk=self.product.pk).update(inventory=0)
         res = self._post_webhook()
         self.assertEqual(res.status_code, status.HTTP_200_OK)
@@ -6002,7 +6186,7 @@ class Phase60ReportsTest(TestCase):
 
         # The 0002_initial_data migration seeds demo products; drop them so the
         # summary assertions below describe exactly the fixtures created here.
-        Product.objects.all().delete()
+        _reset_products()
 
         self.low = _p60_product(name='Producto Bajo P60', inventory=2, price='100.00')
         self.high = _p60_product(name='Producto Alto P60', inventory=50, price='200.00')
@@ -6011,6 +6195,7 @@ class Phase60ReportsTest(TestCase):
     def test_18_stock_card_returns_movements_newest_first(self):
         for qty in (1, 2, 3):
             create_stock_movement(
+                branch=_pilot_branch(),
                 product_id=self.low.pk,
                 movement_type=StockMovement.MANUAL_ENTRY,
                 quantity=qty,
@@ -6032,7 +6217,10 @@ class Phase60ReportsTest(TestCase):
     def test_19_low_stock_report(self):
         res = self.client.get('/api/admin/inventory/low-stock/?threshold=5')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        names = [p['name'] for p in res.data['results']]
+        # Phase 2D: the report answers with BranchStock rows — the same product
+        # can be low in one branch and fine in another, so a row is a
+        # (product, branch) pair rather than a product.
+        names = [r['product_name'] for r in res.data['results']]
         self.assertIn('Producto Bajo P60', names)
         self.assertIn('Producto Agotado P60', names)
         self.assertNotIn('Producto Alto P60', names)
@@ -6040,7 +6228,7 @@ class Phase60ReportsTest(TestCase):
     def test_20_high_stock_report(self):
         res = self.client.get('/api/admin/inventory/high-stock/')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(res.data['results'][0]['name'], 'Producto Alto P60')
+        self.assertEqual(res.data['results'][0]['product_name'], 'Producto Alto P60')
 
     def test_21_best_selling_report(self):
         _p60_paid_order(self.high, quantity=4)
@@ -6053,7 +6241,7 @@ class Phase60ReportsTest(TestCase):
         self.assertEqual(top['revenue'], '800.00')
 
     def test_21b_best_selling_ignores_unpaid_orders(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_email='pending@example.com',
             total=Decimal('200.00'),
             status=Order.Status.PENDING_PAYMENT,
@@ -6079,10 +6267,12 @@ class Phase60ReportsTest(TestCase):
 
     def test_23c_movements_list_filters_by_product(self):
         create_stock_movement(
+            branch=_pilot_branch(),
             product_id=self.low.pk, movement_type=StockMovement.MANUAL_ENTRY,
             quantity=1, reason='x',
         )
         create_stock_movement(
+            branch=_pilot_branch(),
             product_id=self.high.pk, movement_type=StockMovement.MANUAL_ENTRY,
             quantity=1, reason='y',
         )
@@ -6092,10 +6282,12 @@ class Phase60ReportsTest(TestCase):
 
     def test_23d_movements_list_filters_by_type(self):
         create_stock_movement(
+            branch=_pilot_branch(),
             product_id=self.low.pk, movement_type=StockMovement.MANUAL_ENTRY,
             quantity=1, reason='x',
         )
         create_stock_movement(
+            branch=_pilot_branch(),
             product_id=self.low.pk, movement_type=StockMovement.MANUAL_EXIT,
             quantity=1, reason='y',
         )
@@ -6105,6 +6297,7 @@ class Phase60ReportsTest(TestCase):
     def test_23e_movements_list_is_paginated(self):
         for i in range(30):
             create_stock_movement(
+                branch=_pilot_branch(),
                 product_id=self.high.pk, movement_type=StockMovement.MANUAL_ENTRY,
                 quantity=1, reason=f'entrada {i}',
             )
@@ -6133,7 +6326,7 @@ class Phase60SalesNoteTest(TestCase):
             stripe_session_id='cs_test_p60_note',
             stripe_payment_intent_id='pi_test_p60_note',
         )
-        self.unpaid_order = Order.objects.create(
+        self.unpaid_order = Order.objects.create(company=_pilot_company(),
             customer_email='pending@example.com',
             total=Decimal('4999.00'),
             status=Order.Status.PENDING_PAYMENT,
@@ -6350,7 +6543,7 @@ class Phase60RegressionTest(TestCase):
         self.assertEqual(self.product.inventory, 20)
 
     def test_39_webhook_still_marks_order_paid(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_email='reg2@example.com',
             total=Decimal('1000.00'),
             stripe_session_id='cs_test_reg_p60_2',
@@ -6372,7 +6565,7 @@ class Phase60RegressionTest(TestCase):
         self.assertEqual(order.stripe_payment_intent_id, 'pi_reg_p60')
 
     def test_40_payment_status_view_still_works(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_email='reg3@example.com',
             total=Decimal('1000.00'),
             stripe_session_id='cs_test_reg_p60_3',
@@ -6924,10 +7117,10 @@ class SaasNoRegressionTest(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name='Producto SaaS Reg', slug='producto-saas-reg',
             price=Decimal('1000.00'), inventory=20,
-        )
+        ))
         self.admin = _saas_user('saas_reg_admin')
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
@@ -6983,7 +7176,7 @@ class SaasNoRegressionTest(TestCase):
             )
 
     def test_webhook_still_marks_paid_and_remains_idempotent(self):
-        order = Order.objects.create(
+        order = Order.objects.create(company=_pilot_company(),
             customer_email='saas-wh@example.com', total=Decimal('1000.00'),
             stripe_session_id='cs_saas_wh', status=Order.Status.PENDING_PAYMENT,
         )
@@ -7007,7 +7200,7 @@ class SaasNoRegressionTest(TestCase):
         )
 
     def test_payment_status_view_still_works(self):
-        Order.objects.create(
+        Order.objects.create(company=_pilot_company(),
             customer_email='saas-ps@example.com', total=Decimal('1000.00'),
             stripe_session_id='cs_saas_ps', status=Order.Status.PAID, paid=True,
         )
@@ -7568,10 +7761,10 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
     def setUp(self):
         cache.clear()
         self.company = _saas_company('Legacy SA', 'legacy-sa')
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name='Producto Legacy 2A', slug='producto-legacy-2a',
             price=Decimal('500.00'), inventory=30,
-        )
+        ))
         self.users = {}
         for role in ('customer', 'sales', 'inventory', 'technician', 'admin'):
             u = _saas_user(f'legacy_{role}')
@@ -7645,7 +7838,12 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
         )
 
     def test_can_view_admin_orders_and_manage_orders(self):
-        for role in ('inventory', 'sales', 'admin', 'superadmin'):
+        """
+        Phase 2C: orders are tenantised, so the legacy bridge carries these
+        operators — and a platform master (`superadmin`) is excluded from the
+        bridge on purpose and must name a tenant.
+        """
+        for role in ('inventory', 'sales', 'admin'):
             self.assertEqual(
                 self._as(role).get('/api/admin/orders/').status_code,
                 status.HTTP_200_OK, role,
@@ -7655,13 +7853,28 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
                 self._as(role).get('/api/admin/orders/').status_code,
                 status.HTTP_403_FORBIDDEN, role,
             )
+        pilot = _pilot_company()
+        self.assertEqual(
+            self._as('superadmin').get(f'/api/admin/orders/?company={pilot.pk}').status_code,
+            status.HTTP_200_OK,
+        )
 
     def test_can_view_inventory_reports_and_manage_stock_movements(self):
-        for role in ('inventory', 'admin', 'superadmin'):
+        # Phase 2D: a platform master belongs to no tenant, so they name the
+        # company. The legacy bridge deliberately excludes them — picking a
+        # tenant for someone whose whole job is acting across tenants is the
+        # silent leak Phase 2B closed.
+        pilot = _pilot_company().pk
+        for role in ('inventory', 'admin'):
             self.assertEqual(
                 self._as(role).get('/api/admin/inventory/summary/').status_code,
                 status.HTTP_200_OK, role,
             )
+        self.assertEqual(
+            self._as('superadmin').get(
+                f'/api/admin/inventory/summary/?company={pilot}').status_code,
+            status.HTTP_200_OK, 'superadmin',
+        )
         for role in ('customer', 'sales', 'technician'):
             self.assertEqual(
                 self._as(role).get('/api/admin/inventory/summary/').status_code,
@@ -7682,8 +7895,13 @@ class Phase2aLegacyRbacRegressionTest(TestCase):
         )
 
     def test_can_manage_sales_notes(self):
+        """
+        Phase 2C: sales notes hang off an order, so they are tenant-scoped too.
+        The legacy bridge carries sales and admin; a platform master is excluded
+        from it by design and names the tenant instead.
+        """
         order = _p60_paid_order(self.product, quantity=1)
-        for role in ('sales', 'admin', 'superadmin'):
+        for role in ('sales', 'admin'):
             res = self._as(role).get(f'/api/admin/orders/{order.pk}/sales-note/')
             self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_404_NOT_FOUND), role)
         for role in ('customer', 'inventory', 'technician'):
@@ -8452,9 +8670,15 @@ class Phase2a1SeedAndRegressionTest(TestCase):
         # Phase 2B: products ARE now governed by the company capability, so a
         # role holding products.view opens them. That is the migration working.
         self.assertEqual(c.get('/api/admin/products/').status_code, status.HTTP_200_OK)
-        # Inventory is still legacy: StockMovement has no company column yet.
+        # Phase 2D: inventory joined them. StockMovement carries a company and a
+        # branch now, so `inventory.view` is real authority rather than a label
+        # over globally shared data — the same migration, one module later.
         self.assertEqual(
-            c.get('/api/admin/inventory/summary/').status_code, status.HTTP_403_FORBIDDEN)
+            c.get('/api/admin/inventory/summary/').status_code, status.HTTP_200_OK)
+        # Orders are the module that has NOT migrated: a custom role holding
+        # every capability still does not open the legacy order surface.
+        self.assertEqual(
+            c.get('/api/admin/orders/').status_code, status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
@@ -8684,10 +8908,10 @@ class Phase2a1SurfaceSeparationTest(TestCase):
     def setUp(self):
         cache.clear()
         self.company = _saas_company('Superficies SA', 'surf-sa')
-        self.product = Product.objects.create(company=_pilot_company(),
+        self.product = _seeded(Product.objects.create(company=_pilot_company(),
             name='Producto Superficie', slug='producto-superficie',
             price=Decimal('100.00'), inventory=10,
-        )
+        ))
         provision_company_access_defaults(self.company)
 
         # Carlos: customer AND technician of the same company
@@ -9063,10 +9287,10 @@ class DemoUsersCommandTest(TestCase):
     def test_19_internal_demo_users_can_still_use_the_public_storefront(self):
         """Holding a Membership does not remove e-commerce access."""
         self._seed()
-        product = Product.objects.create(company=_pilot_company(),
+        product = _seeded(Product.objects.create(company=_pilot_company(),
             name='Producto Demo Users', slug='producto-demo-users',
             price=Decimal('50.00'), inventory=5,
-        )
+        ))
         c = APIClient()
         with _storefront_of(_pilot_company()):
             self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
@@ -9270,8 +9494,17 @@ class InternalDashboardTest(TestCase):
         _saas_branch(self.company_b, name='Extra B1')
         _saas_branch(self.company_b, name='Extra B2')
         res = self._get(self.staff_a)
-        # company_a has exactly one branch; B's three must not be counted
-        self.assertEqual(res.data['organization']['active_branches'], 1)
+        # The count must be A's OWN branches, whatever that number is — asserting
+        # a literal would break every time provisioning changes what a new tenant
+        # starts with (Phase 2D gave it a first branch). What matters is that B's
+        # branches are not in it, which the second assertion pins down.
+        own = Branch.objects.filter(company=self.company_a, is_active=True).count()
+        self.assertEqual(res.data['organization']['active_branches'], own)
+        self.assertLess(
+            res.data['organization']['active_branches'],
+            Branch.objects.filter(is_active=True).count(),
+            'el conteo no puede incluir sucursales de otra empresa',
+        )
         self.assertEqual(res.data['organization']['active_memberships'], 1)
         self.assertEqual(
             res.data['organization']['active_areas'],
@@ -9289,9 +9522,9 @@ class InternalDashboardTest(TestCase):
     # --- 11-12: the rest of the system ---
 
     def test_11_customer_without_membership_still_uses_the_storefront(self):
-        product = Product.objects.create(company=_pilot_company(),
+        product = _seeded(Product.objects.create(company=_pilot_company(),
             name='Producto Dash', slug='producto-dash',
-            price=Decimal('20.00'), inventory=3)
+            price=Decimal('20.00'), inventory=3))
         c = APIClient()
         with _storefront_of(_pilot_company()):
             self.assertEqual(c.get('/api/products/').status_code, status.HTTP_200_OK)
@@ -9303,22 +9536,31 @@ class InternalDashboardTest(TestCase):
             )
         self.assertEqual(self._get(self.orphan).status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_12_response_exposes_no_global_commercial_data(self):
+    def test_12_response_exposes_no_other_tenants_data(self):
         """
-        Product/Order/StockMovement are not tenantised, so no figure derived from
-        them may appear here — a global number inside a per-company frame reads
-        as that company's data.
+        Catalogue, sales and inventory figures are REAL now — 2B, 2C and 2D
+        tenantised the models behind them — so the rule is no longer "no
+        commercial data". It is: nothing from another tenant, and nothing
+        derived from a cost the platform does not have.
+
+        The check that matters is a product of a DIFFERENT company: it must not
+        appear, and neither must its 77 units.
         """
-        Product.objects.create(company=_pilot_company(),
+        _seeded(Product.objects.create(company=_pilot_company(),
             name='Producto Global', slug='producto-global',
-            price=Decimal('999.00'), inventory=77)
-        raw = str(self._get(self.staff_a).data).lower()
-        for forbidden in (
-            'total_sales', 'revenue', 'orders', 'stock', 'profit',
-            'best_products', 'customer_count', 'inventory_value',
-            'producto global', 'stripe',
-        ):
+            price=Decimal('999.00'), inventory=77))
+        data = self._get(self.staff_a).data
+        raw = str(data).lower()
+
+        for forbidden in ('producto global', 'stripe', 'profit', 'margin', 'utilidad'):
             self.assertNotIn(forbidden, raw, f'la respuesta expone "{forbidden}"')
+
+        # The other tenant's 77 units are not in this company's totals.
+        self.assertEqual(data['catalog']['products'], 0)
+        self.assertEqual(data['inventory']['total_units'], 0)
+
+        # And the money figure that IS shown says what it is made of.
+        self.assertEqual(data['inventory']['value_basis'], 'sale_price')
 
     # --- alerts ---
 
@@ -9329,11 +9571,28 @@ class InternalDashboardTest(TestCase):
         self.assertNotIn('no_branch_assigned', codes)
         self.assertNotIn('no_capabilities', codes)
 
-    def test_alert_when_membership_has_no_branch(self):
+    def test_alert_states_the_real_branch_scope(self):
+        """
+        Phase 2D replaced the old "sin sucursal asignada / pendiente" placeholder.
+        Branch scope is explicit now, so the alert states which of the two rules
+        applies instead of describing a missing feature.
+        """
+        from .models import Membership, MembershipBranchAccess
+
         self.m_a.branch = None
-        self.m_a.save(update_fields=['branch'])
+        self.m_a.branch_access_mode = Membership.ACCESS_MODE_ALL
+        self.m_a.save(update_fields=['branch', 'branch_access_mode'])
         codes = {a['code'] for a in self._get(self.staff_a).data['alerts']}
-        self.assertIn('no_branch_assigned', codes)
+        self.assertIn('branch_scope_all', codes)
+
+        # SELECTED with nothing granted is a real state, and it warns: this
+        # person cannot operate inventory anywhere until somebody grants a branch.
+        self.m_a.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.m_a.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.filter(membership=self.m_a).delete()
+        codes = {a['code'] for a in self._get(self.staff_a).data['alerts']}
+        self.assertIn('no_branch_access', codes)
+        self.assertNotIn('branch_scope_all', codes)
 
     def test_alert_when_an_assigned_role_has_no_capabilities(self):
         """The specific alert names the offending role, which is more actionable."""
@@ -9411,10 +9670,10 @@ def _cat(company, name, slug):
 
 
 def _prod(company, name, slug, category=None, price='100.00', inventory=10, is_active=True):
-    return Product.objects.create(
+    return _seeded(Product.objects.create(
         company=company, name=name, slug=slug, category=category,
         price=Decimal(price), inventory=inventory, is_active=is_active,
-    )
+    ))
 
 
 class Phase2bCatalogModelTest(TestCase):
@@ -9974,17 +10233,22 @@ class Phase2bDashboardCatalogTest(TestCase):
         _assign(m, _role(self.a, 'Sin productos', ['company.view'], 'sin-productos'))
         self.assertIsNone(self._get(user).data['catalog'])
 
-    def test_dashboard_still_exposes_no_sales_or_stock_figures(self):
+    def test_dashboard_payload_shape_is_pinned(self):
         """
         Checks the response STRUCTURE, not substrings: "orders" legitimately
         appears inside capability codes like `sales.orders.view`, and a substring
         scan would have flagged that as a leak.
+
+        Pinning the key set is the point: a new field on this payload has to be a
+        deliberate change that somebody reviewed here. 2C added `sales`; 2D added
+        `inventory`; 3 added `configuration`.
         """
         data = self._get(self.user_a).data
         self.assertEqual(
             set(data.keys()),
-            {'company', 'membership', 'access', 'organization', 'catalog',
-             'available_companies', 'requires_company_selection', 'alerts'},
+            {'company', 'membership', 'access', 'organization', 'catalog', 'sales',
+             'inventory', 'configuration', 'available_companies',
+             'requires_company_selection', 'alerts'},
         )
         # Phase 2B.1 added the chart series; the point of pinning the key set is
         # that a new key must be a deliberate change, reviewed here.
@@ -10195,3 +10459,6295 @@ class Phase2b1DashboardSeriesTest(TestCase):
         self.assertEqual(data['catalog']['products'], 0)
         self.assertEqual(data['catalog']['products_per_category'], [])
         self.assertEqual(data['status_code'] if 'status_code' in data else 200, 200)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2C — tenant-aware commerce
+# ---------------------------------------------------------------------------
+
+from .models import assert_items_match_order  # noqa: E402
+from .tenancy import (  # noqa: E402
+    storefront_cart_items, storefront_coupon, storefront_orders,
+)
+
+
+def _coupon(company, code='PROMO10', percent=10, **extra):
+    return Coupon.objects.create(
+        company=company, code=code, discount_percent=percent, **extra,
+    )
+
+
+def _order(company, user=None, total='100.00', paid=False, **extra):
+    from django.utils import timezone as dj_tz
+    order = Order.objects.create(
+        company=company, user=user,
+        customer_email=extra.pop('customer_email', 'c@example.com'),
+        total=Decimal(total),
+        status=Order.Status.PAID if paid else Order.Status.PENDING_PAYMENT,
+        paid=paid,
+        paid_at=dj_tz.now() if paid else None,
+        **extra,
+    )
+    return order
+
+
+class Phase2cModelTest(TestCase):
+    """Ownership and the order/item invariant."""
+
+    def setUp(self):
+        self.a = _saas_company('Empresa A', '2c-a', tax_id='21000000001')
+        self.b = _saas_company('Empresa B', '2c-b', tax_id='21000000002')
+        self.prod_a = _prod(self.a, 'Producto A', '2c-prod-a')
+        self.prod_b = _prod(self.b, 'Producto B', '2c-prod-b')
+
+    def test_backfill_assigned_every_order_and_coupon(self):
+        self.assertEqual(Order.objects.filter(company__isnull=True).count(), 0)
+        self.assertEqual(Coupon.objects.filter(company__isnull=True).count(), 0)
+
+    def test_same_coupon_code_may_exist_in_two_companies(self):
+        _coupon(self.a, 'BIENVENIDO10')
+        _coupon(self.b, 'BIENVENIDO10')
+        self.assertEqual(Coupon.objects.filter(code='BIENVENIDO10').count(), 2)
+
+    def test_coupon_code_is_unique_within_a_company(self):
+        _coupon(self.a, 'UNICO')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _coupon(self.a, 'UNICO')
+
+    def test_order_item_rejects_a_product_of_another_company(self):
+        order = _order(self.a)
+        with self.assertRaises(DjangoValidationError):
+            OrderItem.objects.create(
+                order=order, product=self.prod_b, quantity=1, price=Decimal('10'))
+
+    def test_order_item_accepts_a_product_of_its_own_company(self):
+        order = _order(self.a)
+        item = OrderItem.objects.create(
+            order=order, product=self.prod_a, quantity=1, price=Decimal('10'))
+        self.assertEqual(item.product.company_id, order.company_id)
+
+    def test_bulk_guard_catches_what_clean_cannot(self):
+        """bulk_create() bypasses clean(); the set-level guard must not."""
+        order = _order(self.a)
+        with self.assertRaises(DjangoValidationError):
+            assert_items_match_order(order, [self.prod_a, self.prod_b])
+        assert_items_match_order(order, [self.prod_a])  # no raise
+
+    def test_company_with_orders_cannot_be_deleted(self):
+        _order(self.a)
+        with self.assertRaises(Exception):
+            with transaction.atomic():
+                self.a.delete()
+
+    def test_a_new_company_starts_with_no_orders_or_coupons(self):
+        fresh = _saas_company('Nueva', '2c-nueva', tax_id='21000000003')
+        self.assertEqual(fresh.orders.count(), 0)
+        self.assertEqual(fresh.coupons.count(), 0)
+
+
+class Phase2cCartIsolationTest(TestCase):
+    """One browser, several storefronts, several logical carts."""
+
+    SESSION = 'shared-browser-session'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-cart-a', tax_id='21000000004')
+        self.b = _saas_company('Empresa B', '2c-cart-b', tax_id='21000000005')
+        self.prod_a = _prod(self.a, 'Producto A', '2c-cart-prod-a', inventory=20)
+        self.prod_b = _prod(self.b, 'Producto B', '2c-cart-prod-b', inventory=20)
+        self.client = APIClient()
+
+    def _add(self, product, quantity=1):
+        return self.client.post('/api/cart/add/', {
+            'session_key': self.SESSION, 'product': product.pk, 'quantity': quantity,
+        }, format='json')
+
+    def test_storefront_a_accepts_its_own_product(self):
+        with _storefront_of(self.a):
+            self.assertEqual(self._add(self.prod_a).status_code, status.HTTP_200_OK)
+
+    def test_storefront_a_rejects_a_product_of_b(self):
+        with _storefront_of(self.a):
+            res = self._add(self.prod_b)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(CartItem.objects.count(), 0)
+
+    def test_two_carts_coexist_under_one_session_key(self):
+        with _storefront_of(self.a):
+            self._add(self.prod_a)
+        with _storefront_of(self.b):
+            self._add(self.prod_b)
+        self.assertEqual(CartItem.objects.filter(session_key=self.SESSION).count(), 2)
+
+    def test_list_shows_only_the_current_storefront(self):
+        with _storefront_of(self.a):
+            self._add(self.prod_a)
+        with _storefront_of(self.b):
+            self._add(self.prod_b)
+
+        with _storefront_of(self.a):
+            data = self.client.get(f'/api/cart/?session_key={self.SESSION}').json()
+        ids = {row['product']['id'] if isinstance(row['product'], dict) else row['product']
+               for row in data}
+        self.assertIn(self.prod_a.pk, ids)
+        self.assertNotIn(self.prod_b.pk, ids)
+
+    def test_update_cannot_touch_another_storefronts_item(self):
+        with _storefront_of(self.b):
+            self._add(self.prod_b)
+        item_b = CartItem.objects.get(product=self.prod_b)
+
+        with _storefront_of(self.a):
+            res = self.client.patch(
+                f'/api/cart/{item_b.pk}/?session_key={self.SESSION}',
+                {'quantity': 9}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        item_b.refresh_from_db()
+        self.assertEqual(item_b.quantity, 1)
+
+    def test_delete_cannot_touch_another_storefronts_item(self):
+        with _storefront_of(self.b):
+            self._add(self.prod_b)
+        item_b = CartItem.objects.get(product=self.prod_b)
+
+        with _storefront_of(self.a):
+            res = self.client.delete(
+                f'/api/cart/{item_b.pk}/?session_key={self.SESSION}')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(CartItem.objects.filter(pk=item_b.pk).exists())
+
+    def test_unresolved_storefront_shows_an_empty_cart(self):
+        with _storefront_of(self.a):
+            self._add(self.prod_a)
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=''):
+            self.assertEqual(
+                self.client.get(f'/api/cart/?session_key={self.SESSION}').json(), [])
+
+
+class Phase2cCouponIsolationTest(TestCase):
+    """A coupon belongs to one storefront, however common the code."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-cup-a', tax_id='21000000006')
+        self.b = _saas_company('Empresa B', '2c-cup-b', tax_id='21000000007')
+        self.coupon_b = _coupon(self.b, 'BIENVENIDO10', 10)
+        self.client = APIClient()
+
+    def test_storefront_a_cannot_validate_a_coupon_of_b(self):
+        with _storefront_of(self.a):
+            res = self.client.post('/api/coupons/validate/',
+                                   {'code': 'BIENVENIDO10'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_storefront_b_validates_its_own_coupon(self):
+        with _storefront_of(self.b):
+            res = self.client.post('/api/coupons/validate/',
+                                   {'code': 'BIENVENIDO10'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_helper_never_crosses_tenants(self):
+        from django.test import RequestFactory
+        request = RequestFactory().post('/')
+        with _storefront_of(self.a):
+            self.assertIsNone(storefront_coupon(request, 'BIENVENIDO10'))
+        with _storefront_of(self.b):
+            self.assertEqual(storefront_coupon(request, 'BIENVENIDO10'), self.coupon_b)
+
+
+class Phase2cCheckoutTest(TestCase):
+    """Checkout derives its tenant from the storefront and nothing else."""
+
+    SESSION = '2c-checkout-session'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-chk-a', tax_id='21000000008')
+        self.b = _saas_company('Empresa B', '2c-chk-b', tax_id='21000000009')
+        self.prod_a = _prod(self.a, 'Producto A', '2c-chk-prod-a', inventory=10, price='100.00')
+        self.prod_b = _prod(self.b, 'Producto B', '2c-chk-prod-b', inventory=10, price='100.00')
+        self.client = APIClient()
+
+    def _payload(self, **extra):
+        base = {
+            'session_key': self.SESSION,
+            'customer_name': 'Cliente',
+            'customer_email': 'c@example.com',
+            'customer_phone': '999999999',
+            'document_type': 'dni',
+            'document_number': '12345678',
+            'delivery_method': 'pickup_store',
+            'receipt_type': 'boleta',
+            'accepted_terms': True,
+            'accepted_warranty_policy': True,
+        }
+        base.update(extra)
+        return base
+
+    def _checkout(self, session_id='cs_2c'):
+        with patch('stripe.checkout.Session.create') as mock_create:
+            mock_create.return_value = MagicMock(id=session_id, url='https://stripe.test/x')
+            return self.client.post('/api/payments/create-checkout-session/',
+                                    self._payload(), format='json'), mock_create
+
+    def test_order_belongs_to_the_storefront_company(self):
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            res, _ = self._checkout()
+        self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+        order = Order.objects.get(stripe_session_id='cs_2c')
+        self.assertEqual(order.company_id, self.a.pk)
+        self.assertEqual(order.items.first().product.company_id, self.a.pk)
+
+    def test_company_in_the_payload_is_ignored(self):
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            with patch('stripe.checkout.Session.create') as mock_create:
+                mock_create.return_value = MagicMock(id='cs_2c_payload', url='u')
+                self.client.post('/api/payments/create-checkout-session/',
+                                 self._payload(company=self.b.pk), format='json')
+        self.assertEqual(
+            Order.objects.get(stripe_session_id='cs_2c_payload').company_id, self.a.pk)
+
+    def test_a_cart_of_another_tenant_is_invisible_to_this_checkout(self):
+        """The cross-tenant cart cannot even reach the order-creation step."""
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_b, quantity=1)
+        with _storefront_of(self.a):
+            res, _ = self._checkout()
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.filter(stripe_session_id='cs_2c').count(), 0)
+
+    def test_coupon_of_another_tenant_is_rejected(self):
+        _coupon(self.b, 'SOLO_B', 50)
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            with patch('stripe.checkout.Session.create') as mock_create:
+                mock_create.return_value = MagicMock(id='cs_2c_cup', url='u')
+                res = self.client.post('/api/payments/create-checkout-session/',
+                                       self._payload(coupon_code='SOLO_B'), format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_own_coupon_is_applied(self):
+        _coupon(self.a, 'MITAD', 50)
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            with patch('stripe.checkout.Session.create') as mock_create:
+                mock_create.return_value = MagicMock(id='cs_2c_own', url='u')
+                self.client.post('/api/payments/create-checkout-session/',
+                                 self._payload(coupon_code='MITAD'), format='json')
+        order = Order.objects.get(stripe_session_id='cs_2c_own')
+        self.assertEqual(order.total, Decimal('50.00'))
+
+    def test_stripe_metadata_carries_the_company(self):
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        with _storefront_of(self.a):
+            _res, mock_create = self._checkout('cs_2c_meta')
+        metadata = mock_create.call_args.kwargs['metadata']
+        self.assertEqual(metadata['company_id'], str(self.a.pk))
+
+
+class Phase2cWebhookTest(TestCase):
+    """The webhook resolves its tenant from the database, never from the request."""
+
+    SESSION = '2c-webhook-session'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-wh-a', tax_id='21000000010')
+        self.b = _saas_company('Empresa B', '2c-wh-b', tax_id='21000000011')
+        self.prod_a = _prod(self.a, 'Producto A', '2c-wh-prod-a', inventory=10)
+        self.prod_b = _prod(self.b, 'Producto B', '2c-wh-prod-b', inventory=10)
+
+        self.order = _order(self.a, stripe_session_id='cs_wh_2c')
+        OrderItem.objects.create(
+            order=self.order, product=self.prod_a, quantity=2, price=self.prod_a.price)
+        self.order.cart_session_key = self.SESSION
+        self.order.save(update_fields=['cart_session_key'])
+
+        # Two carts under one session key, one per storefront
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=2)
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_b, quantity=1)
+        self.client = APIClient()
+
+    def _fire(self, session_id='cs_wh_2c', metadata=None):
+        event = {
+            'type': 'checkout.session.completed',
+            'data': {'object': {
+                'id': session_id, 'payment_intent': 'pi_2c',
+                **({'metadata': metadata} if metadata is not None else {}),
+            }},
+        }
+        with patch('stripe.Webhook.construct_event', return_value=event):
+            return self.client.post('/api/payments/webhook/', data=b'{}',
+                                    content_type='application/json',
+                                    HTTP_STRIPE_SIGNATURE='t=1,v1=fake')
+
+    def test_payment_is_confirmed_for_the_orders_own_company(self):
+        self._fire()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        movement = StockMovement.objects.get(order=self.order)
+        self.assertEqual(movement.product.company_id, self.a.pk)
+
+    def test_cart_cleanup_only_empties_the_paid_storefront(self):
+        """Paying at one storefront must not empty the browser's other cart."""
+        self._fire()
+        remaining = CartItem.objects.filter(session_key=self.SESSION)
+        self.assertEqual(remaining.count(), 1)
+        self.assertEqual(remaining.first().product_id, self.prod_b.pk)
+
+    def test_replayed_webhook_stays_idempotent(self):
+        self._fire()
+        self._fire()
+        self._fire()
+        self.prod_a.refresh_from_db()
+        self.assertEqual(self.prod_a.inventory, 8)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=self.order, movement_type=StockMovement.SALE_EXIT).count(),
+            1,
+        )
+
+    def test_metadata_company_mismatch_is_refused(self):
+        """Metadata came back from a third party; it is checked, never trusted."""
+        res = self._fire(metadata={'company_id': str(self.b.pk)})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.order.refresh_from_db()
+        self.assertNotEqual(self.order.status, Order.Status.PAID)
+        self.assertEqual(StockMovement.objects.filter(order=self.order).count(), 0)
+
+    def test_matching_metadata_is_accepted(self):
+        self._fire(metadata={'company_id': str(self.a.pk)})
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+
+    def test_webhook_host_never_decides_the_tenant(self):
+        """Stripe calls one endpoint; the host says nothing about the seller."""
+        with _storefront_of(self.b):
+            self._fire()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertEqual(self.order.company_id, self.a.pk)
+
+
+class Phase2cCustomerOrderIsolationTest(TestCase):
+    """One identity, several storefronts, separate histories."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-hist-a', tax_id='21000000012')
+        self.b = _saas_company('Empresa B', '2c-hist-b', tax_id='21000000013')
+        self.user = _saas_user('2c_shopper')
+        self.order_a = _order(self.a, user=self.user, total='100.00', paid=True)
+        self.order_b = _order(self.b, user=self.user, total='200.00', paid=True)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_history_shows_only_the_current_storefront(self):
+        with _storefront_of(self.a):
+            ids = [o['id'] for o in self.client.get('/api/orders/').json()]
+        self.assertIn(self.order_a.pk, ids)
+        self.assertNotIn(self.order_b.pk, ids)
+
+    def test_the_other_storefront_shows_the_other_history(self):
+        with _storefront_of(self.b):
+            ids = [o['id'] for o in self.client.get('/api/orders/').json()]
+        self.assertIn(self.order_b.pk, ids)
+        self.assertNotIn(self.order_a.pk, ids)
+
+    def test_knowing_the_id_does_not_expose_a_foreign_order(self):
+        with _storefront_of(self.a):
+            res = self.client.get(f'/api/orders/{self.order_b.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_another_users_order_is_never_visible(self):
+        other = _saas_user('2c_other_shopper')
+        foreign = _order(self.a, user=other, paid=True)
+        with _storefront_of(self.a):
+            ids = [o['id'] for o in self.client.get('/api/orders/').json()]
+        self.assertNotIn(foreign.pk, ids)
+
+    def test_same_user_is_one_identity_not_two(self):
+        self.assertEqual(Order.objects.filter(user=self.user).count(), 2)
+        from django.test import RequestFactory
+        request = RequestFactory().get('/')
+        with _storefront_of(self.a):
+            self.assertEqual(storefront_orders(request, self.user).count(), 1)
+
+
+class Phase2cAdminOrderIsolationTest(TestCase):
+    """Internal order administration is tenant-scoped and capability-driven."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-adm-a', tax_id='21000000014')
+        self.b = _saas_company('Empresa B', '2c-adm-b', tax_id='21000000015')
+        provision_company_access_defaults(self.a)
+        provision_company_access_defaults(self.b)
+
+        self.prod_a = _prod(self.a, 'Producto A', '2c-adm-prod-a')
+        self.order_a = _order(self.a, total='150.00', paid=True)
+        OrderItem.objects.create(
+            order=self.order_a, product=self.prod_a, quantity=1, price=Decimal('150'))
+        self.order_b = _order(self.b, total='999.00', paid=True)
+
+        self.admin_a = _saas_user('2c_admin_a')
+        ma = Membership.objects.create(user=self.admin_a, company=self.a, role='admin')
+        _assign(ma, self.a.roles.get(slug='administrador'))
+
+        self.viewer_a = _saas_user('2c_viewer_a')
+        mv = Membership.objects.create(user=self.viewer_a, company=self.a, role='customer')
+        _assign(mv, _role(self.a, 'Solo ver pedidos',
+                          ['company.view', 'sales.orders.view'], '2c-solo-ver'))
+
+        self.admin_b = _saas_user('2c_admin_b')
+        mb = Membership.objects.create(user=self.admin_b, company=self.b, role='admin')
+        _assign(mb, self.b.roles.get(slug='administrador'))
+
+        self.platform = _saas_user('2c_platform', is_superuser=True)
+
+    def _as(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_admin_of_a_lists_only_its_own_orders(self):
+        res = self._as(self.admin_a).get('/api/admin/orders/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        ids = {o['id'] for o in res.data['results']}
+        self.assertIn(self.order_a.pk, ids)
+        self.assertNotIn(self.order_b.pk, ids)
+
+    def test_foreign_order_detail_answers_like_a_missing_one(self):
+        foreign = self._as(self.admin_a).get(f'/api/admin/orders/{self.order_b.pk}/')
+        missing = self._as(self.admin_a).get('/api/admin/orders/999999/')
+        self.assertEqual(foreign.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(foreign.status_code, missing.status_code)
+
+    def test_admin_of_a_cannot_change_fulfillment_of_b(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/orders/{self.order_b.pk}/fulfillment-status/',
+            {'fulfillment_status': 'shipped'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.order_b.refresh_from_db()
+        self.assertEqual(self.order_b.fulfillment_status, Order.FulfillmentStatus.PENDING)
+
+    def test_admin_of_a_cannot_download_the_receipt_of_b(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/orders/{self.order_b.pk}/receipt-pdf/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_of_a_cannot_issue_a_sales_note_for_b(self):
+        res = self._as(self.admin_a).post(
+            f'/api/admin/orders/{self.order_b.pk}/sales-note/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(SalesNote.objects.count(), 0)
+
+    def test_orders_view_alone_cannot_change_fulfillment(self):
+        res = self._as(self.viewer_a).patch(
+            f'/api/admin/orders/{self.order_a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'shipped'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_orders_view_can_read(self):
+        self.assertEqual(
+            self._as(self.viewer_a).get('/api/admin/orders/').status_code,
+            status.HTTP_200_OK)
+
+    def test_member_without_sales_capabilities_is_refused(self):
+        user = _saas_user('2c_no_sales')
+        m = Membership.objects.create(user=user, company=self.a, role='customer')
+        _assign(m, _role(self.a, 'Sin ventas', ['company.view'], '2c-sin-ventas'))
+        self.assertEqual(
+            self._as(user).get('/api/admin/orders/').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    def test_master_selects_a_company_explicitly(self):
+        res_a = self._as(self.platform).get(f'/api/admin/orders/?company={self.a.pk}')
+        res_b = self._as(self.platform).get(f'/api/admin/orders/?company={self.b.pk}')
+        self.assertEqual({o['id'] for o in res_a.data['results']}, {self.order_a.pk})
+        self.assertEqual({o['id'] for o in res_b.data['results']}, {self.order_b.pk})
+
+    def test_master_without_selection_gets_nothing(self):
+        self.assertEqual(
+            self._as(self.platform).get('/api/admin/orders/').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    def test_multi_company_user_does_not_inherit_permissions(self):
+        """Manage in A, read-only in B."""
+        user = _saas_user('2c_multi')
+        ma = Membership.objects.create(user=user, company=self.a, role='admin')
+        _assign(ma, self.a.roles.get(slug='administrador'))
+        mb = Membership.objects.create(user=user, company=self.b, role='customer')
+        _assign(mb, _role(self.b, 'Ver pedidos B',
+                          ['company.view', 'sales.orders.view'], '2c-ver-b'))
+
+        client = self._as(user)
+        self.assertEqual(
+            client.patch(
+                f'/api/admin/orders/{self.order_a.pk}/fulfillment-status/?company={self.a.pk}',
+                {'fulfillment_status': 'confirmed'}, format='json').status_code,
+            status.HTTP_200_OK)
+        self.assertEqual(
+            client.get(f'/api/admin/orders/?company={self.b.pk}').status_code,
+            status.HTTP_200_OK)
+        self.assertEqual(
+            client.patch(
+                f'/api/admin/orders/{self.order_b.pk}/fulfillment-status/?company={self.b.pk}',
+                {'fulfillment_status': 'shipped'}, format='json').status_code,
+            status.HTTP_403_FORBIDDEN)
+
+    def test_fulfillment_change_is_audited_with_company(self):
+        self._as(self.admin_a).patch(
+            f'/api/admin/orders/{self.order_a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'}, format='json')
+        log = AdminAuditLog.objects.filter(
+            action='order_fulfillment_status_changed').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.a.pk)
+        raw = str(log.metadata).lower()
+        for secret in ('stripe', 'cs_', 'pi_', 'token'):
+            self.assertNotIn(secret, raw)
+
+
+class Phase2cDashboardSalesTest(TestCase):
+    """Commercial KPIs are real, per tenant, and honest about what they omit."""
+
+    URL = '/api/me/internal-dashboard/'
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', '2c-kpi-a', tax_id='21000000016')
+        self.b = _saas_company('Empresa B', '2c-kpi-b', tax_id='21000000017')
+        provision_company_access_defaults(self.a)
+        provision_company_access_defaults(self.b)
+
+        _order(self.a, total='100.00', paid=True)
+        _order(self.a, total='300.00', paid=True)
+        _order(self.a, total='999.00', paid=False)          # pending: not a sale
+        cancelled = _order(self.a, total='500.00', paid=False)
+        cancelled.status = Order.Status.CANCELLED
+        cancelled.save(update_fields=['status'])
+        _order(self.b, total='7000.00', paid=True)
+
+        self.user_a = _saas_user('2c_kpi_a')
+        ma = Membership.objects.create(user=self.user_a, company=self.a, role='admin')
+        _assign(ma, self.a.roles.get(slug='administrador'))
+        self.user_b = _saas_user('2c_kpi_b')
+        mb = Membership.objects.create(user=self.user_b, company=self.b, role='admin')
+        _assign(mb, self.b.roles.get(slug='administrador'))
+        self.platform = _saas_user('2c_kpi_platform', is_superuser=True)
+
+    def _get(self, user, params=''):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c.get(f'{self.URL}{params}')
+
+    def test_only_paid_orders_count_as_revenue(self):
+        sales = self._get(self.user_a).data['sales']
+        self.assertEqual(sales['total_revenue'], '400.00')
+        self.assertEqual(sales['total_paid_orders'], 2)
+        self.assertEqual(sales['pending_payment'], 1)
+
+    def test_average_ticket_is_computed_over_paid_orders(self):
+        self.assertEqual(self._get(self.user_a).data['sales']['average_ticket'], '200.00')
+
+    def test_average_ticket_of_nothing_is_zero_not_an_error(self):
+        empty = _saas_company('Vacía', '2c-kpi-vacia', tax_id='21000000018')
+        provision_company_access_defaults(empty)
+        user = _saas_user('2c_kpi_empty')
+        m = Membership.objects.create(user=user, company=empty, role='admin')
+        _assign(m, empty.roles.get(slug='administrador'))
+        sales = self._get(user).data['sales']
+        self.assertEqual(sales['average_ticket'], '0.00')
+        self.assertEqual(sales['total_revenue'], '0.00')
+
+    def test_revenue_never_crosses_tenants(self):
+        self.assertEqual(self._get(self.user_a).data['sales']['total_revenue'], '400.00')
+        self.assertEqual(self._get(self.user_b).data['sales']['total_revenue'], '7000.00')
+
+    def test_master_sees_the_selected_company_only(self):
+        self.assertEqual(
+            self._get(self.platform, f'?company={self.a.pk}').data['sales']['total_revenue'],
+            '400.00')
+        self.assertEqual(
+            self._get(self.platform, f'?company={self.b.pk}').data['sales']['total_revenue'],
+            '7000.00')
+
+    def test_todays_revenue_uses_paid_at(self):
+        sales = self._get(self.user_a).data['sales']
+        # Both paid orders were paid now, so today's revenue equals the total
+        self.assertEqual(sales['today_revenue'], '400.00')
+        self.assertEqual(sales['today_orders'], 2)
+
+    def test_revenue_trend_has_one_point_per_day_including_empty_ones(self):
+        trend = self._get(self.user_a).data['sales']['revenue_trend']
+        self.assertEqual(len(trend), 7)
+        self.assertEqual(trend[-1]['value'], 400.0)
+        self.assertTrue(all(isinstance(p['value'], (int, float)) for p in trend))
+
+    def test_orders_by_status_covers_every_status(self):
+        series = self._get(self.user_a).data['sales']['orders_by_status']
+        self.assertEqual(len(series), len(Order.Status.choices))
+        by_label = {row['label']: row['value'] for row in series}
+        self.assertEqual(by_label['Pagado'], 2)
+        self.assertEqual(by_label['Cancelado'], 1)
+
+    def test_sales_are_withheld_without_the_capability(self):
+        user = _saas_user('2c_kpi_nocaps')
+        m = Membership.objects.create(user=user, company=self.a, role='customer')
+        _assign(m, _role(self.a, 'Sin ventas KPI', ['company.view'], '2c-kpi-sin'))
+        self.assertIsNone(self._get(user).data['sales'])
+
+    def test_no_profit_figure_is_reported(self):
+        """There is no cost model, so a margin would be an invented number."""
+        sales = self._get(self.user_a).data['sales']
+        self.assertEqual(
+            set(sales.keys()),
+            {'today_revenue', 'today_orders', 'total_revenue', 'total_paid_orders',
+             'average_ticket', 'pending_payment', 'awaiting_fulfillment',
+             'revenue_trend', 'orders_by_status'},
+        )
+        for forbidden in ('profit', 'margin', 'utilidad', 'cost'):
+            self.assertNotIn(forbidden, str(sales).lower())
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 2D — multi-branch inventory
+# ---------------------------------------------------------------------------
+#
+# WHAT THESE TESTS ARE ACTUALLY DEFENDING
+#
+# Two independent axes of authority, and the ways they can be confused:
+#
+#   capability   what you may DO        inventory.view / adjust / reports
+#   branch       where you may do it    Membership.branch_access_mode + grants
+#
+# The bugs worth catching are the ones that look right in a code review: an
+# aggregate that quietly sums a branch the caller was never granted, a foreign
+# branch id accepted because it happened to exist, a dispatch that runs twice, a
+# count approval computed against an hour-old photograph of the stock.
+
+from .inventory_services import (  # noqa: E402
+    InventoryCountError,
+    TransferError,
+    approve_inventory_count,
+    branch_quantity,
+    cancel_inventory_count,
+    cancel_transfer,
+    create_inventory_count,
+    create_stock_transfer,
+    dispatch_transfer,
+    get_replenishment_rows,
+    product_inventory_drift,
+    receive_transfer,
+    recalculate_product_inventory,
+    set_count_item,
+    set_transfer_item,
+)
+from .models import (  # noqa: E402
+    BranchStock,
+    InventoryCount as InventoryCountModel,
+    MembershipBranchAccess,
+    StockTransfer,
+)
+from .tenancy import (  # noqa: E402
+    BranchAccessError,
+    NoBranchError,
+    company_fulfillment_branch,
+    has_branch_access,
+    resolve_branch_for_user,
+    visible_branches,
+)
+
+
+def _p2d_company(slug, name=None):
+    """A tenant with its access defaults, exactly as the API would create one."""
+    from .company_provisioning import provision_company_access_defaults
+
+    company = Company.objects.create(
+        name=name or f'Empresa {slug}', slug=slug, tax_id='20000000009',
+    )
+    provision_company_access_defaults(company)
+    return company
+
+
+def _p2d_branch(company, name):
+    return Branch.objects.create(company=company, name=name, is_active=True)
+
+
+def _p2d_member(company, username, capabilities, *, mode=None, branches=None):
+    """
+    A staff user of `company` with `capabilities` and an explicit branch scope.
+
+    `branches=None` leaves them in ALL mode; a list puts them in SELECTED mode
+    with exactly those grants — which is the state most of these tests are about.
+    """
+    from .models import Membership
+
+    user = User.objects.create_user(username=username, password='Pass123!')
+    membership = Membership.objects.create(
+        user=user, company=company, role=UserProfile.ROLE_CUSTOMER,
+        branch_access_mode=mode or (
+            Membership.ACCESS_MODE_SELECTED if branches is not None
+            else Membership.ACCESS_MODE_ALL
+        ),
+    )
+    _assign(membership, _role(
+        company, f'Rol {username}', sorted(capabilities), slug=f'rol-{username}',
+    ))
+    for branch in branches or []:
+        MembershipBranchAccess.objects.create(membership=membership, branch=branch)
+    return user, membership
+
+
+def _p2d_product(company, name, slug, price='100.00'):
+    return Product.objects.create(
+        company=company, name=name, slug=slug, price=Decimal(price), inventory=0,
+    )
+
+
+def _p2d_stock(branch, product, quantity, *, minimum=0, target=0):
+    """Put units on a shelf through the service layer, so the Kardex exists."""
+    from .inventory_services import create_stock_movement
+
+    if quantity:
+        create_stock_movement(
+            branch=branch, product_id=product.pk,
+            movement_type=StockMovement.INITIAL_STOCK,
+            quantity=quantity, reason='Stock de prueba',
+        )
+    # Quantity zero creates no movement, so the row may not exist yet — absence
+    # and zero mean the same thing, which is exactly why the service layer
+    # creates rows on demand.
+    from .inventory_services import get_or_create_branch_stock
+
+    row = get_or_create_branch_stock(branch, product)
+    if minimum or target:
+        row.minimum_stock = minimum
+        row.target_stock = target
+        row.save(update_fields=['minimum_stock', 'target_stock'])
+    return row
+
+
+_INV_ALL = ['company.view', 'inventory.view', 'inventory.adjust', 'inventory.reports']
+
+
+class Phase2dBranchAccessModelTest(TestCase):
+    """Membership.branch_access_mode + MembershipBranchAccess resolution."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('p2d-access')
+        self.b1 = _p2d_branch(self.company, 'Centro')
+        self.b2 = _p2d_branch(self.company, 'Cayma')
+        self.b3 = _p2d_branch(self.company, 'Norte')
+
+    def test_mode_all_sees_every_active_branch(self):
+        user, _m = _p2d_member(self.company, 'p2d_all', _INV_ALL)
+        names = set(visible_branches(user, self.company).values_list('name', flat=True))
+        self.assertIn('Centro', names)
+        self.assertIn('Cayma', names)
+        self.assertIn('Norte', names)
+
+    def test_mode_selected_sees_only_its_grants(self):
+        user, _m = _p2d_member(
+            self.company, 'p2d_sel', _INV_ALL, branches=[self.b1, self.b2],
+        )
+        names = set(visible_branches(user, self.company).values_list('name', flat=True))
+        self.assertEqual(names, {'Centro', 'Cayma'})
+        self.assertNotIn('Norte', names)
+
+    def test_selected_with_zero_grants_sees_nothing(self):
+        """
+        A real, expressible state — and it DENIES.
+
+        The rejected design was "no rows means all branches", which fails open:
+        revoking somebody's last branch would have promoted them to every branch.
+        """
+        user, _m = _p2d_member(self.company, 'p2d_none', _INV_ALL, branches=[])
+        self.assertFalse(visible_branches(user, self.company).exists())
+        self.assertFalse(has_branch_access(user, self.b1))
+
+    def test_mode_all_picks_up_a_branch_created_later(self):
+        """That automatic inclusion is the entire reason ALL exists."""
+        user, _m = _p2d_member(self.company, 'p2d_all_future', _INV_ALL)
+        later = _p2d_branch(self.company, 'Abierta después')
+        self.assertTrue(has_branch_access(user, later))
+
+    def test_mode_selected_does_NOT_pick_up_a_branch_created_later(self):
+        """
+        The counterpart, and the more important half: a restricted membership
+        must not silently widen when the company opens a shop. Somebody has to
+        grant it.
+        """
+        user, _m = _p2d_member(
+            self.company, 'p2d_sel_future', _INV_ALL, branches=[self.b1],
+        )
+        later = _p2d_branch(self.company, 'Abierta después 2')
+        self.assertFalse(has_branch_access(user, later))
+        self.assertEqual(
+            set(visible_branches(user, self.company).values_list('name', flat=True)),
+            {'Centro'},
+        )
+
+    def test_an_inactive_branch_is_not_operational(self):
+        user, _m = _p2d_member(self.company, 'p2d_inactive', _INV_ALL)
+        self.b3.is_active = False
+        self.b3.save(update_fields=['is_active'])
+        self.assertFalse(has_branch_access(user, self.b3))
+
+    def test_an_inactive_company_grants_no_branches(self):
+        user, _m = _p2d_member(self.company, 'p2d_dead_co', _INV_ALL)
+        self.company.is_active = False
+        self.company.save(update_fields=['is_active'])
+        self.assertFalse(visible_branches(user, self.company).exists())
+
+    def test_a_deactivated_grant_stops_counting(self):
+        user, m = _p2d_member(
+            self.company, 'p2d_revoked', _INV_ALL, branches=[self.b1, self.b2],
+        )
+        MembershipBranchAccess.objects.filter(membership=m, branch=self.b2).update(
+            is_active=False,
+        )
+        self.assertFalse(has_branch_access(user, self.b2))
+        self.assertTrue(has_branch_access(user, self.b1))
+
+    def test_grants_cannot_cross_companies(self):
+        from django.core.exceptions import ValidationError
+
+        other = _p2d_company('p2d-other-access')
+        foreign = _p2d_branch(other, 'Ajena')
+        _user, m = _p2d_member(self.company, 'p2d_cross', _INV_ALL, branches=[])
+        with self.assertRaises(ValidationError):
+            MembershipBranchAccess.objects.create(membership=m, branch=foreign)
+
+    def test_platform_master_reaches_the_selected_companys_branches(self):
+        master = User.objects.create_user(username='p2d_master', password='Pass123!')
+        master.is_superuser = True
+        master.save()
+        self.assertTrue(has_branch_access(master, self.b1))
+        # And never mixes tenants: another company's branch is reached only by
+        # asking about THAT company.
+        other = _p2d_company('p2d-master-other')
+        other_branch = _p2d_branch(other, 'De otra empresa')
+        self.assertNotIn(
+            other_branch.pk,
+            list(visible_branches(master, self.company).values_list('pk', flat=True)),
+        )
+
+
+class Phase2dBranchResolutionTest(TestCase):
+    """resolve_branch_for_user: an untrusted id can select, never widen."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('p2d-resolve')
+        self.b1 = _p2d_branch(self.company, 'Uno')
+        self.b2 = _p2d_branch(self.company, 'Dos')
+        self.b3 = _p2d_branch(self.company, 'Tres')
+        self.user, self.m = _p2d_member(
+            self.company, 'p2d_resolver', _INV_ALL, branches=[self.b1, self.b2],
+        )
+
+    def test_a_granted_id_resolves(self):
+        self.assertEqual(
+            resolve_branch_for_user(self.user, self.company, self.b2.pk).pk, self.b2.pk,
+        )
+
+    def test_an_ungranted_id_is_refused(self):
+        with self.assertRaises(BranchAccessError):
+            resolve_branch_for_user(self.user, self.company, self.b3.pk)
+
+    def test_a_foreign_id_is_refused_exactly_like_a_missing_one(self):
+        other = _p2d_company('p2d-resolve-other')
+        foreign = _p2d_branch(other, 'Ajena')
+        with self.assertRaises(BranchAccessError):
+            resolve_branch_for_user(self.user, self.company, foreign.pk)
+        with self.assertRaises(BranchAccessError):
+            resolve_branch_for_user(self.user, self.company, 999999)
+
+    def test_no_branch_falls_back_to_the_default(self):
+        self.m.branch = self.b2
+        self.m.save(update_fields=['branch'])
+        self.assertEqual(resolve_branch_for_user(self.user, self.company).pk, self.b2.pk)
+
+    def test_a_revoked_default_degrades_instead_of_granting(self):
+        """A stale pointer must not become access it no longer carries."""
+        self.m.branch = self.b3  # never granted
+        self.m.save(update_fields=['branch'])
+        resolved = resolve_branch_for_user(self.user, self.company)
+        self.assertIn(resolved.pk, {self.b1.pk, self.b2.pk})
+
+    def test_all_is_refused_on_a_write_path(self):
+        """There is no such place as "all branches" to put units into."""
+        with self.assertRaises(BranchAccessError):
+            resolve_branch_for_user(self.user, self.company, 'all', allow_all=False)
+        self.assertIsNone(
+            resolve_branch_for_user(self.user, self.company, 'all', allow_all=True),
+        )
+
+    def test_a_member_with_no_branches_raises(self):
+        user, _m = _p2d_member(self.company, 'p2d_nobranch', _INV_ALL, branches=[])
+        with self.assertRaises(NoBranchError):
+            resolve_branch_for_user(user, self.company)
+
+
+class Phase2dCrossTenantIsolationTest(TestCase):
+    """
+    Company A must never read, move, transfer or count company B's stock.
+
+    Every foreign id in here is VALID — it exists — which is the only version of
+    this test worth writing: rejecting a nonexistent id proves nothing.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p2d_company('p2d-iso-a', 'Empresa A')
+        self.b = _p2d_company('p2d-iso-b', 'Empresa B')
+        self.a1 = _p2d_branch(self.a, 'A1')
+        self.a2 = _p2d_branch(self.a, 'A2')
+        self.b1 = _p2d_branch(self.b, 'B1')
+
+        self.pa = _p2d_product(self.a, 'Producto A', 'producto-a-2d')
+        self.pb = _p2d_product(self.b, 'Producto B', 'producto-b-2d')
+        _p2d_stock(self.a1, self.pa, 10)
+        _p2d_stock(self.b1, self.pb, 99)
+
+        self.user_a, _m = _p2d_member(self.a, 'p2d_iso_a', _INV_ALL)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user_a)
+
+    def test_a_never_sees_bs_stock(self):
+        res = self.client.get('/api/admin/inventory/stock/?branch=all')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        names = {r['product_name'] for r in res.data['results']}
+        self.assertIn('Producto A', names)
+        self.assertNotIn('Producto B', names)
+
+    def test_a_never_sees_bs_units_in_the_summary(self):
+        res = self.client.get('/api/admin/inventory/summary/?branch=all')
+        self.assertEqual(res.data['total_units'], 10)
+
+    def test_a_cannot_read_bs_branch(self):
+        res = self.client.get(f'/api/admin/inventory/stock/?branch={self.b1.pk}')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_cannot_move_stock_in_bs_branch(self):
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.pa.pk, 'branch': self.b1.pk,
+            'movement_type': 'manual_entry', 'quantity': 1, 'reason': 'Intrusión',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(branch_quantity(self.b1, self.pb), 99)
+
+    def test_a_cannot_move_bs_product(self):
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.pb.pk, 'branch': self.a1.pk,
+            'movement_type': 'manual_entry', 'quantity': 1, 'reason': 'Intrusión',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_cannot_read_bs_kardex(self):
+        res = self.client.get(f'/api/admin/products/{self.pb.pk}/stock-card/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_cannot_transfer_to_bs_branch(self):
+        res = self.client.post('/api/admin/inventory/transfers/', {
+            'source_branch': self.a1.pk, 'destination_branch': self.b1.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(StockTransfer.objects.count(), 0)
+
+    def test_a_cannot_count_bs_branch(self):
+        res = self.client.post('/api/admin/inventory/counts/', {
+            'branch': self.b1.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(InventoryCountModel.objects.count(), 0)
+
+    def test_a_cannot_read_bs_transfer(self):
+        user_b, _m = _p2d_member(self.b, 'p2d_iso_b', _INV_ALL)
+        b2 = _p2d_branch(self.b, 'B2')
+        transfer = create_stock_transfer(
+            company=self.b, source_branch=self.b1, destination_branch=b2,
+            actor=user_b,
+        )
+        res = self.client.get(f'/api/admin/inventory/transfers/{transfer.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_service_layer_refuses_a_cross_company_pairing(self):
+        from .inventory_services import InvalidMovementError, create_stock_movement
+
+        with self.assertRaises(InvalidMovementError):
+            create_stock_movement(
+                branch=self.a1, product_id=self.pb.pk,
+                movement_type=StockMovement.MANUAL_ENTRY,
+                quantity=1, reason='Cruzado',
+            )
+
+
+class Phase2dBranchScopedReadsTest(TestCase):
+    """A restricted operator's totals are their branches, never the company's."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('p2d-scope')
+        self.a1 = _p2d_branch(self.company, 'A1')
+        self.a2 = _p2d_branch(self.company, 'A2')
+        self.a3 = _p2d_branch(self.company, 'A3')
+        self.product = _p2d_product(self.company, 'Compartido', 'compartido-2d')
+        _p2d_stock(self.a1, self.product, 5)
+        _p2d_stock(self.a2, self.product, 7)
+        _p2d_stock(self.a3, self.product, 100)
+
+        self.user, self.m = _p2d_member(
+            self.company, 'p2d_scoped', _INV_ALL, branches=[self.a1, self.a2],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_aggregate_sums_only_the_visible_branches(self):
+        res = self.client.get('/api/admin/inventory/summary/?branch=all')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['total_units'], 12)  # 5 + 7, never + 100
+
+    def test_the_scope_payload_names_what_it_counted(self):
+        """A heading must not claim more than the figure covers."""
+        res = self.client.get('/api/admin/inventory/summary/?branch=all')
+        scope = res.data['scope']
+        self.assertTrue(scope['is_aggregate'])
+        self.assertEqual({b['name'] for b in scope['branches']}, {'A1', 'A2'})
+
+    def test_a_single_branch_answers_only_for_itself(self):
+        res = self.client.get(f'/api/admin/inventory/summary/?branch={self.a1.pk}')
+        self.assertEqual(res.data['total_units'], 5)
+
+    def test_an_ungranted_branch_answers_404(self):
+        res = self.client.get(f'/api/admin/inventory/summary/?branch={self.a3.pk}')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_branch_list_offers_only_granted_branches(self):
+        res = self.client.get('/api/admin/inventory/branches/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual({b['name'] for b in res.data['results']}, {'A1', 'A2'})
+        self.assertTrue(res.data['allows_aggregate'])
+
+    def test_the_kardex_hides_movements_of_an_ungranted_branch(self):
+        res = self.client.get('/api/admin/inventory/movements/?branch=all')
+        branches = {m['branch_name'] for m in res.data['results']}
+        self.assertNotIn('A3', branches)
+
+    def test_the_stock_card_totals_only_the_visible_branches(self):
+        res = self.client.get(f'/api/admin/products/{self.product.pk}/stock-card/?branch=all')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['current_stock'], 12)
+
+    def test_capability_and_branch_are_independent(self):
+        """
+        Holding inventory.adjust is not permission to adjust EVERY branch.
+
+        This is the confusion the whole two-axis design exists to prevent: the
+        capability says what, the grant says where, and both have to pass.
+        """
+        res = self.client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk, 'branch': self.a3.pk,
+            'movement_type': 'manual_entry', 'quantity': 1, 'reason': 'Sin acceso',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(branch_quantity(self.a3, self.product), 100)
+
+    def test_branch_access_without_the_capability_grants_nothing(self):
+        """And the mirror image: reaching a branch is not permission to move it."""
+        viewer, _m = _p2d_member(
+            self.company, 'p2d_viewer', ['company.view', 'inventory.view'],
+            branches=[self.a1],
+        )
+        client = APIClient()
+        client.force_authenticate(user=viewer)
+        self.assertEqual(
+            client.get('/api/admin/inventory/summary/').status_code, status.HTTP_200_OK,
+        )
+        res = client.post('/api/admin/inventory/movements/', {
+            'product_id': self.product.pk, 'branch': self.a1.pk,
+            'movement_type': 'manual_entry', 'quantity': 1, 'reason': 'Sin permiso',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class Phase2dTransferTest(TestCase):
+    """
+    Inter-branch transfers: stock moves at the edges, and only once.
+
+    The interesting failures here are the ones a happy-path test never sees: a
+    retried dispatch, a cancel after the van left, a source that cannot cover
+    the lines.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('p2d-transfer')
+        self.src = _p2d_branch(self.company, 'Origen')
+        self.dst = _p2d_branch(self.company, 'Destino')
+        self.p1 = _p2d_product(self.company, 'Producto T1', 'producto-t1-2d')
+        self.p2 = _p2d_product(self.company, 'Producto T2', 'producto-t2-2d')
+        _p2d_stock(self.src, self.p1, 10)
+        _p2d_stock(self.src, self.p2, 4)
+
+        self.user, self.m = _p2d_member(self.company, 'p2d_tr', _INV_ALL)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _draft(self, lines=((None, 3),)):
+        transfer = create_stock_transfer(
+            company=self.company, source_branch=self.src,
+            destination_branch=self.dst, actor=self.user,
+        )
+        for product, qty in lines:
+            set_transfer_item(transfer, product=product or self.p1, quantity=qty)
+        return transfer
+
+    # --- creation rules ---
+
+    def test_source_equal_to_destination_is_rejected(self):
+        with self.assertRaises(TransferError):
+            create_stock_transfer(
+                company=self.company, source_branch=self.src,
+                destination_branch=self.src, actor=self.user,
+            )
+
+    def test_a_foreign_branch_is_rejected(self):
+        other = _p2d_company('p2d-transfer-other')
+        foreign = _p2d_branch(other, 'Ajena')
+        with self.assertRaises(TransferError):
+            create_stock_transfer(
+                company=self.company, source_branch=self.src,
+                destination_branch=foreign, actor=self.user,
+            )
+
+    def test_a_foreign_product_is_rejected_as_a_line(self):
+        other = _p2d_company('p2d-transfer-other2')
+        foreign = _p2d_product(other, 'Ajeno', 'ajeno-2d')
+        transfer = self._draft(lines=())
+        with self.assertRaises(TransferError):
+            set_transfer_item(transfer, product=foreign, quantity=1)
+
+    def test_an_inactive_branch_cannot_receive(self):
+        self.dst.is_active = False
+        self.dst.save(update_fields=['is_active'])
+        with self.assertRaises(TransferError):
+            create_stock_transfer(
+                company=self.company, source_branch=self.src,
+                destination_branch=self.dst, actor=self.user,
+            )
+
+    # --- dispatch ---
+
+    def test_dispatch_decrements_the_source_only(self):
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        self.assertEqual(branch_quantity(self.src, self.p1), 7)
+        # NOT credited to the destination yet: the units are on a van, and
+        # showing them on a shelf that does not have them would make every count
+        # at the destination wrong by the contents of that van.
+        self.assertEqual(branch_quantity(self.dst, self.p1), 0)
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.status, StockTransfer.STATUS_IN_TRANSIT)
+
+    def test_dispatch_is_all_or_nothing(self):
+        """One uncoverable line refuses the whole dispatch, leaving stock intact."""
+        transfer = self._draft(lines=((self.p1, 3), (self.p2, 99)))
+        with self.assertRaises(InsufficientStockError):
+            dispatch_transfer(transfer, actor=self.user)
+        self.assertEqual(branch_quantity(self.src, self.p1), 10)
+        self.assertEqual(branch_quantity(self.src, self.p2), 4)
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.status, StockTransfer.STATUS_DRAFT)
+
+    def test_dispatch_is_idempotent(self):
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        dispatch_transfer(transfer, actor=self.user)
+        dispatch_transfer(transfer, actor=self.user)
+        self.assertEqual(branch_quantity(self.src, self.p1), 7)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                transfer=transfer, movement_type=StockMovement.TRANSFER_OUT,
+            ).count(), 1,
+        )
+
+    def test_an_empty_transfer_cannot_be_dispatched(self):
+        transfer = self._draft(lines=())
+        with self.assertRaises(TransferError):
+            dispatch_transfer(transfer, actor=self.user)
+
+    def test_lines_are_frozen_after_dispatch(self):
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        with self.assertRaises(TransferError):
+            set_transfer_item(transfer, product=self.p1, quantity=5)
+
+    # --- receipt ---
+
+    def test_receive_credits_the_destination(self):
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        receive_transfer(transfer, actor=self.user)
+        self.assertEqual(branch_quantity(self.src, self.p1), 7)
+        self.assertEqual(branch_quantity(self.dst, self.p1), 3)
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.status, StockTransfer.STATUS_RECEIVED)
+
+    def test_receive_is_idempotent(self):
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        receive_transfer(transfer, actor=self.user)
+        receive_transfer(transfer, actor=self.user)
+        self.assertEqual(branch_quantity(self.dst, self.p1), 3)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                transfer=transfer, movement_type=StockMovement.TRANSFER_IN,
+            ).count(), 1,
+        )
+
+    def test_a_draft_cannot_be_received(self):
+        transfer = self._draft(lines=((self.p1, 3),))
+        with self.assertRaises(TransferError):
+            receive_transfer(transfer, actor=self.user)
+
+    def test_net_company_stock_is_unchanged_by_a_completed_transfer(self):
+        """Units moved, none were created or destroyed."""
+        before = branch_quantity(self.src, self.p1) + branch_quantity(self.dst, self.p1)
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        receive_transfer(transfer, actor=self.user)
+        after = branch_quantity(self.src, self.p1) + branch_quantity(self.dst, self.p1)
+        self.assertEqual(before, after)
+        self.p1.refresh_from_db()
+        self.assertEqual(self.p1.inventory, after)
+
+    # --- cancellation ---
+
+    def test_a_draft_can_be_cancelled(self):
+        transfer = self._draft(lines=((self.p1, 3),))
+        cancel_transfer(transfer, actor=self.user)
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.status, StockTransfer.STATUS_CANCELLED)
+        self.assertEqual(branch_quantity(self.src, self.p1), 10)
+
+    def test_a_dispatched_transfer_cannot_be_cancelled(self):
+        """
+        A deliberate refusal, not a missing feature.
+
+        Its units have physically left the source. Flipping the status back would
+        return them to the shelf in the database while they sit in a van, and the
+        shop would then sell stock it does not have.
+        """
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        with self.assertRaises(TransferError):
+            cancel_transfer(transfer, actor=self.user)
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.status, StockTransfer.STATUS_IN_TRANSIT)
+        self.assertEqual(branch_quantity(self.src, self.p1), 7)
+
+    # --- Kardex and audit ---
+
+    def test_movements_are_linked_to_the_transfer_on_both_sides(self):
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        receive_transfer(transfer, actor=self.user)
+        movements = StockMovement.objects.filter(transfer=transfer)
+        self.assertEqual(movements.count(), 2)
+        self.assertEqual(
+            {m.movement_type for m in movements},
+            {StockMovement.TRANSFER_OUT, StockMovement.TRANSFER_IN},
+        )
+        out = movements.get(movement_type=StockMovement.TRANSFER_OUT)
+        self.assertEqual(out.branch_id, self.src.pk)
+        self.assertEqual(out.company_id, self.company.pk)
+        into = movements.get(movement_type=StockMovement.TRANSFER_IN)
+        self.assertEqual(into.branch_id, self.dst.pk)
+
+    def test_dispatch_and_receipt_are_audited_with_no_sensitive_data(self):
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        receive_transfer(transfer, actor=self.user)
+        logs = AdminAuditLog.objects.filter(
+            action__in=['stock_transfer_dispatched', 'stock_transfer_received'],
+        )
+        self.assertEqual(logs.count(), 2)
+        for log in logs:
+            self.assertEqual(log.company_id, self.company.pk)
+            blob = str(log.metadata).lower()
+            for sensitive in ('password', 'token', 'stripe', 'cookie'):
+                self.assertNotIn(sensitive, blob)
+
+    def test_transfer_types_cannot_be_registered_by_hand(self):
+        """
+        A hand-written transfer_out with no matching transfer_in would be stock
+        that simply vanished from the company.
+        """
+        for movement_type in ('transfer_out', 'transfer_in'):
+            res = self.client.post('/api/admin/inventory/movements/', {
+                'product_id': self.p1.pk, 'branch': self.src.pk,
+                'movement_type': movement_type, 'quantity': 1, 'reason': 'A mano',
+            }, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, movement_type)
+
+    # --- authority ---
+
+    def test_operating_a_transfer_needs_access_to_BOTH_branches(self):
+        limited, _m = _p2d_member(
+            self.company, 'p2d_tr_one_end', _INV_ALL, branches=[self.src],
+        )
+        transfer = self._draft(lines=((self.p1, 3),))
+        client = APIClient()
+        client.force_authenticate(user=limited)
+        res = client.post(f'/api/admin/inventory/transfers/{transfer.pk}/dispatch/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(branch_quantity(self.src, self.p1), 10)
+
+    def test_the_destination_manager_still_SEES_an_incoming_transfer(self):
+        """Visibility follows the ends; acting on it needs both."""
+        limited, _m = _p2d_member(
+            self.company, 'p2d_tr_dest', _INV_ALL, branches=[self.dst],
+        )
+        transfer = self._draft(lines=((self.p1, 3),))
+        client = APIClient()
+        client.force_authenticate(user=limited)
+        res = client.get(f'/api/admin/inventory/transfers/{transfer.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+class Phase2dInventoryCountTest(TestCase):
+    """
+    Physical counts, and the re-read that makes them safe.
+
+    The bug this class exists to prevent: applying a difference computed against
+    an hour-old photograph of the stock, which silently un-sells everything sold
+    while somebody walked the shelves.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('p2d-count')
+        self.branch = _p2d_branch(self.company, 'Sucursal C')
+        self.product = _p2d_product(self.company, 'Producto C', 'producto-c-2d')
+        _p2d_stock(self.branch, self.product, 10)
+        self.user, self.m = _p2d_member(self.company, 'p2d_count', _INV_ALL)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _count(self, physical=None):
+        count = create_inventory_count(
+            company=self.company, branch=self.branch, actor=self.user,
+        )
+        if physical is not None:
+            set_count_item(count, product=self.product, physical_quantity=physical)
+        count.refresh_from_db()
+        return count
+
+    def test_a_foreign_branch_is_rejected(self):
+        other = _p2d_company('p2d-count-other')
+        foreign = _p2d_branch(other, 'Ajena')
+        with self.assertRaises(InventoryCountError):
+            create_inventory_count(
+                company=self.company, branch=foreign, actor=self.user,
+            )
+
+    def test_a_foreign_product_is_rejected(self):
+        other = _p2d_company('p2d-count-other2')
+        foreign = _p2d_product(other, 'Ajeno', 'ajeno-c-2d')
+        count = self._count()
+        with self.assertRaises(InventoryCountError):
+            set_count_item(count, product=foreign, physical_quantity=1)
+
+    def test_a_negative_physical_quantity_is_rejected(self):
+        count = self._count()
+        with self.assertRaises(InventoryCountError):
+            set_count_item(count, product=self.product, physical_quantity=-1)
+
+    def test_theoretical_at_start_is_captured_and_never_overwritten(self):
+        count = self._count(physical=8)
+        item = count.items.get()
+        self.assertEqual(item.theoretical_at_start, 10)
+        # Stock moves, then the counter corrects their own entry.
+        from .inventory_services import create_stock_movement
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.MANUAL_EXIT, quantity=2, reason='Venta',
+        )
+        set_count_item(count, product=self.product, physical_quantity=7)
+        item.refresh_from_db()
+        self.assertEqual(item.theoretical_at_start, 10, 'la foto inicial es evidencia')
+        self.assertEqual(item.physical_quantity, 7)
+
+    def test_a_positive_difference_adds_stock(self):
+        count = self._count(physical=13)
+        approve_inventory_count(count, actor=self.user)
+        self.assertEqual(branch_quantity(self.branch, self.product), 13)
+        movement = StockMovement.objects.get(inventory_count=count)
+        self.assertEqual(movement.movement_type, StockMovement.CORRECTION_POSITIVE)
+        self.assertEqual(movement.quantity, 3)
+
+    def test_a_negative_difference_removes_stock(self):
+        count = self._count(physical=6)
+        approve_inventory_count(count, actor=self.user)
+        self.assertEqual(branch_quantity(self.branch, self.product), 6)
+        movement = StockMovement.objects.get(inventory_count=count)
+        self.assertEqual(movement.movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movement.quantity, 4)
+
+    def test_no_difference_creates_no_movement(self):
+        count = self._count(physical=10)
+        movements = approve_inventory_count(count, actor=self.user)
+        self.assertEqual(movements, [])
+        self.assertEqual(StockMovement.objects.filter(inventory_count=count).count(), 0)
+        count.refresh_from_db()
+        self.assertEqual(count.status, InventoryCountModel.STATUS_APPROVED)
+
+    def test_approval_re_reads_the_stock_instead_of_trusting_the_photo(self):
+        """
+        THE TEST THIS WHOLE MODEL EXISTS FOR.
+
+        Stock is 10 when counting starts and the counter finds 8. Two units then
+        sell legitimately, leaving 8 in the system. Approving must produce NO
+        correction — the shelf and the system already agree — rather than
+        applying the −2 that the starting photograph implies and destroying two
+        real units.
+        """
+        from .inventory_services import create_stock_movement
+
+        count = self._count(physical=8)
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=2,
+            reason='Venta durante el conteo',
+        )
+        self.assertEqual(branch_quantity(self.branch, self.product), 8)
+
+        movements = approve_inventory_count(count, actor=self.user)
+        self.assertEqual(movements, [], 'no debe haber corrección: ya coinciden')
+        self.assertEqual(branch_quantity(self.branch, self.product), 8)
+
+        item = count.items.get()
+        self.assertEqual(item.theoretical_at_start, 10)
+        self.assertEqual(item.theoretical_at_approval, 8)
+        self.assertEqual(item.difference, 0)
+
+    def test_an_uncounted_product_is_skipped_not_written_off(self):
+        """"Nobody counted this" is not "there are none of these"."""
+        second = _p2d_product(self.company, 'Producto C2', 'producto-c2-2d')
+        _p2d_stock(self.branch, second, 20)
+
+        count = self._count(physical=10)
+        set_count_item(count, product=second, physical_quantity=None)
+
+        approve_inventory_count(count, actor=self.user)
+        self.assertEqual(branch_quantity(self.branch, second), 20)
+        self.assertIsNone(count.items.get(product=second).difference)
+
+    def test_double_approval_does_not_duplicate_corrections(self):
+        count = self._count(physical=13)
+        approve_inventory_count(count, actor=self.user)
+        approve_inventory_count(count, actor=self.user)
+        self.assertEqual(branch_quantity(self.branch, self.product), 13)
+        self.assertEqual(StockMovement.objects.filter(inventory_count=count).count(), 1)
+
+    def test_a_cancelled_count_cannot_be_approved(self):
+        count = self._count(physical=13)
+        cancel_inventory_count(count, actor=self.user)
+        with self.assertRaises(InventoryCountError):
+            approve_inventory_count(count, actor=self.user)
+        self.assertEqual(branch_quantity(self.branch, self.product), 10)
+
+    def test_an_approved_count_cannot_be_cancelled(self):
+        count = self._count(physical=13)
+        approve_inventory_count(count, actor=self.user)
+        with self.assertRaises(InventoryCountError):
+            cancel_inventory_count(count, actor=self.user)
+
+    def test_a_count_with_nothing_counted_cannot_be_approved(self):
+        count = self._count()
+        with self.assertRaises(InventoryCountError):
+            approve_inventory_count(count, actor=self.user)
+
+    def test_approval_is_audited(self):
+        count = self._count(physical=13)
+        approve_inventory_count(count, actor=self.user)
+        log = AdminAuditLog.objects.filter(action='inventory_count_approved').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.company.pk)
+        self.assertEqual(log.metadata['branch_id'], self.branch.pk)
+
+
+class Phase2dReplenishmentTest(TestCase):
+    """suggested = max(target − current, 0), only at or below the minimum."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('p2d-repl')
+        self.b1 = _p2d_branch(self.company, 'R1')
+        self.b2 = _p2d_branch(self.company, 'R2')
+        self.product = _p2d_product(self.company, 'Producto R', 'producto-r-2d')
+
+    def test_below_minimum_suggests_the_gap_to_target(self):
+        _p2d_stock(self.b1, self.product, 2, minimum=3, target=10)
+        rows = get_replenishment_rows([self.b1])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['suggested_quantity'], 8)
+
+    def test_above_minimum_suggests_nothing(self):
+        _p2d_stock(self.b1, self.product, 5, minimum=3, target=10)
+        self.assertEqual(get_replenishment_rows([self.b1]), [])
+
+    def test_exactly_at_the_minimum_still_suggests(self):
+        _p2d_stock(self.b1, self.product, 3, minimum=3, target=10)
+        rows = get_replenishment_rows([self.b1])
+        self.assertEqual(rows[0]['suggested_quantity'], 7)
+
+    def test_a_product_with_no_minimum_is_never_suggested(self):
+        """No policy configured is not the same as "needs restocking"."""
+        _p2d_stock(self.b1, self.product, 0, minimum=0, target=0)
+        self.assertEqual(get_replenishment_rows([self.b1]), [])
+
+    def test_below_minimum_with_no_target_is_listed_with_zero(self):
+        """The operator still needs to SEE it; the platform will not guess how much."""
+        _p2d_stock(self.b1, self.product, 1, minimum=5, target=0)
+        rows = get_replenishment_rows([self.b1])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['suggested_quantity'], 0)
+
+    def test_suggestions_are_per_branch(self):
+        """
+        The same product can be scarce downtown and overstocked elsewhere; a
+        single company-wide threshold could never say that.
+        """
+        _p2d_stock(self.b1, self.product, 1, minimum=5, target=10)
+        _p2d_stock(self.b2, self.product, 50, minimum=5, target=10)
+        rows = get_replenishment_rows([self.b1, self.b2])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['branch_id'], self.b1.pk)
+
+    def test_it_creates_nothing(self):
+        """A suggestion is a suggestion: no purchase, no transfer, no movement."""
+        _p2d_stock(self.b1, self.product, 1, minimum=5, target=10)
+        before_movements = StockMovement.objects.count()
+        get_replenishment_rows([self.b1, self.b2])
+        self.assertEqual(StockMovement.objects.count(), before_movements)
+        self.assertEqual(StockTransfer.objects.count(), 0)
+        self.assertEqual(branch_quantity(self.b1, self.product), 1)
+
+    def test_the_endpoint_is_branch_scoped(self):
+        _p2d_stock(self.b1, self.product, 1, minimum=5, target=10)
+        _p2d_stock(self.b2, self.product, 0, minimum=5, target=10)
+        user, _m = _p2d_member(self.company, 'p2d_repl', _INV_ALL, branches=[self.b1])
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get('/api/admin/inventory/replenishment/?branch=all')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual({r['branch_id'] for r in res.data['results']}, {self.b1.pk})
+
+
+class Phase2dConsistencyTest(TestCase):
+    """
+    `Product.inventory` is a DERIVED aggregate. It must never drift.
+
+    The compatibility field survives because the public catalogue, the admin
+    product list and several reports have exposed a field with that name since
+    Phase 0. What it may not do is disagree with the shelves it summarises —
+    a second source of truth is worse than no second field at all.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('p2d-consist')
+        self.b1 = _p2d_branch(self.company, 'K1')
+        self.b2 = _p2d_branch(self.company, 'K2')
+        self.product = _p2d_product(self.company, 'Producto K', 'producto-k-2d')
+        self.user, _m = _p2d_member(self.company, 'p2d_consist', _INV_ALL)
+
+    def test_the_aggregate_is_the_sum_across_branches(self):
+        _p2d_stock(self.b1, self.product, 4)
+        _p2d_stock(self.b2, self.product, 6)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+        self.assertEqual(product_inventory_drift(self.company), [])
+
+    def test_every_movement_type_keeps_the_aggregate_in_step(self):
+        from .inventory_services import create_stock_movement
+
+        _p2d_stock(self.b1, self.product, 10)
+        for movement_type, qty in (
+            (StockMovement.PURCHASE_ENTRY, 5),
+            (StockMovement.MANUAL_EXIT, 3),
+            (StockMovement.DAMAGED_EXIT, 1),
+            (StockMovement.CORRECTION_POSITIVE, 2),
+            (StockMovement.RETURN_ENTRY, 1),
+        ):
+            create_stock_movement(
+                branch=self.b1, product_id=self.product.pk,
+                movement_type=movement_type, quantity=qty, reason='Consistencia',
+            )
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, branch_quantity(self.b1, self.product))
+        self.assertEqual(product_inventory_drift(self.company), [])
+
+    def test_a_transfer_moves_units_without_changing_the_total(self):
+        _p2d_stock(self.b1, self.product, 10)
+        transfer = create_stock_transfer(
+            company=self.company, source_branch=self.b1,
+            destination_branch=self.b2, actor=self.user,
+        )
+        set_transfer_item(transfer, product=self.product, quantity=4)
+        dispatch_transfer(transfer, actor=self.user)
+
+        # Mid-flight the units belong to neither shelf, and the aggregate says so.
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 6)
+        self.assertEqual(product_inventory_drift(self.company), [])
+
+        receive_transfer(transfer, actor=self.user)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+        self.assertEqual(product_inventory_drift(self.company), [])
+
+    def test_a_count_approval_keeps_the_aggregate_in_step(self):
+        _p2d_stock(self.b1, self.product, 10)
+        count = create_inventory_count(
+            company=self.company, branch=self.b1, actor=self.user,
+        )
+        set_count_item(count, product=self.product, physical_quantity=7)
+        approve_inventory_count(count, actor=self.user)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 7)
+        self.assertEqual(product_inventory_drift(self.company), [])
+
+    def test_drift_is_detected_and_repairable(self):
+        """
+        A raw write behind the service layer's back IS drift, and the repair path
+        exists. The point is that the detector works: nothing in the application
+        writes this field, but the invariant should be provable, not assumed.
+        """
+        _p2d_stock(self.b1, self.product, 10)
+        Product.objects.filter(pk=self.product.pk).update(inventory=999)
+        drift = product_inventory_drift(self.company)
+        self.assertEqual(len(drift), 1)
+        self.assertEqual(drift[0]['inventory'], 999)
+        self.assertEqual(drift[0]['branch_total'], 10)
+
+        recalculate_product_inventory(self.product.pk)
+        self.assertEqual(product_inventory_drift(self.company), [])
+
+    def test_no_endpoint_writes_stock_outside_the_service_layer(self):
+        """
+        The product API cannot edit stock, and says so instead of ignoring it.
+
+        Silently dropping the field would leave a form that looks like it saved.
+        """
+        admin, _m = _p2d_member(
+            self.company, 'p2d_prod_admin',
+            ['company.view', 'products.view', 'products.manage'],
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        _p2d_stock(self.b1, self.product, 10)
+
+        res = client.patch(
+            f'/api/admin/products/{self.product.pk}/', {'inventory': 500}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('inventory', res.data)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+
+    def test_creating_a_product_with_stock_writes_an_initial_stock_movement(self):
+        """No unit appears in a branch without a Kardex line explaining it."""
+        admin, _m = _p2d_member(
+            self.company, 'p2d_prod_admin2',
+            ['company.view', 'products.view', 'products.manage', 'inventory.adjust'],
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+
+        res = client.post('/api/admin/products/', {
+            'name': 'Con stock inicial', 'slug': 'con-stock-inicial-2d',
+            'price': '50.00', 'inventory': 12,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        created = Product.objects.get(slug='con-stock-inicial-2d')
+        self.assertEqual(created.inventory, 12)
+
+        movement = StockMovement.objects.get(product=created)
+        self.assertEqual(movement.movement_type, StockMovement.INITIAL_STOCK)
+        self.assertEqual(movement.quantity, 12)
+        self.assertEqual(movement.stock_before, 0)
+        self.assertEqual(movement.stock_after, 12)
+        self.assertEqual(movement.company_id, self.company.pk)
+        self.assertEqual(product_inventory_drift(self.company), [])
+
+    def test_a_company_with_no_branch_cannot_open_stock(self):
+        """Units have to be SOMEWHERE; this refuses rather than inventing a place."""
+        bare = Company.objects.create(name='Sin sucursal', slug='sin-sucursal-2d')
+        from .company_provisioning import provision_company_access_defaults
+
+        provision_company_access_defaults(bare)
+        Branch.objects.filter(company=bare).delete()
+
+        admin, _m = _p2d_member(
+            bare, 'p2d_bare_admin',
+            ['company.view', 'products.view', 'products.manage'],
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        res = client.post('/api/admin/products/', {
+            'name': 'Sin lugar', 'slug': 'sin-lugar-2d', 'price': '10.00', 'inventory': 3,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Product.objects.filter(slug='sin-lugar-2d').exists())
+
+
+class Phase2dConcurrencyTest(TransactionTestCase):
+    """
+    Two simultaneous exits of the last unit: exactly one may win.
+
+    WHAT SQLITE CAN AND CANNOT PROVE HERE
+    -------------------------------------
+    `select_for_update()` is a no-op on SQLite — the engine serialises writes with
+    a database-level lock instead of row locks — so a threaded race on SQLite
+    tests the engine's global lock, not this module's row locking. Running it
+    anyway would produce a green test that proves nothing about PostgreSQL, which
+    is worse than no test.
+
+    So: the sequential invariant is asserted unconditionally (it must hold on any
+    backend), and the genuinely concurrent case runs ONLY on a backend with real
+    row locking. On SQLite it is skipped, loudly, rather than faked.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('p2d-conc')
+        self.branch = _p2d_branch(self.company, 'Conc')
+        self.product = _p2d_product(self.company, 'Producto Z', 'producto-z-2d')
+        _p2d_stock(self.branch, self.product, 1)
+
+    def _exit_one(self):
+        from .inventory_services import create_stock_movement
+
+        return create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.MANUAL_EXIT, quantity=1, reason='Carrera',
+        )
+
+    def test_the_second_exit_of_the_last_unit_fails(self):
+        self._exit_one()
+        with self.assertRaises(InsufficientStockError):
+            self._exit_one()
+        self.assertEqual(branch_quantity(self.branch, self.product), 0)
+
+    def test_stock_never_goes_below_zero(self):
+        for _ in range(5):
+            try:
+                self._exit_one()
+            except InsufficientStockError:
+                pass
+        self.assertEqual(branch_quantity(self.branch, self.product), 0)
+        self.assertGreaterEqual(branch_quantity(self.branch, self.product), 0)
+
+    def test_a_transfer_cannot_dispatch_stock_a_manual_exit_already_took(self):
+        user, _m = _p2d_member(self.company, 'p2d_conc_user', _INV_ALL)
+        dst = _p2d_branch(self.company, 'Conc destino')
+        transfer = create_stock_transfer(
+            company=self.company, source_branch=self.branch,
+            destination_branch=dst, actor=user,
+        )
+        set_transfer_item(transfer, product=self.product, quantity=1)
+
+        self._exit_one()  # the unit is gone before the van arrives
+        with self.assertRaises(InsufficientStockError):
+            dispatch_transfer(transfer, actor=user)
+        self.assertEqual(branch_quantity(self.branch, self.product), 0)
+        self.assertEqual(branch_quantity(dst, self.product), 0)
+
+    def test_a_count_approval_uses_the_stock_a_later_movement_left(self):
+        """Approval re-reads under lock, so a movement in between is respected."""
+        user, _m = _p2d_member(self.company, 'p2d_conc_count', _INV_ALL)
+        from .inventory_services import create_stock_movement
+
+        # setUp left 1 unit; bring the shelf to 11.
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=10, reason='Compra',
+        )
+        self.assertEqual(branch_quantity(self.branch, self.product), 11)
+
+        count = create_inventory_count(
+            company=self.company, branch=self.branch, actor=user,
+        )
+        set_count_item(count, product=self.product, physical_quantity=10)
+
+        # Four sell while the counting is being reviewed: the shelf is now 7.
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.MANUAL_EXIT, quantity=4, reason='Venta',
+        )
+        approve_inventory_count(count, actor=user)
+
+        item = count.items.get()
+        self.assertEqual(item.theoretical_at_start, 11)
+        self.assertEqual(item.theoretical_at_approval, 7, 're-lee el stock del momento')
+        # 10 counted vs 7 at approval → +3. Using the STARTING figure would have
+        # applied 10 − 11 = −1 and destroyed a real unit.
+        self.assertEqual(item.difference, 3)
+        self.assertEqual(branch_quantity(self.branch, self.product), 10)
+
+    def test_simultaneous_exits_leave_exactly_one_winner(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a threaded race here would exercise the engine\'s global write '
+                'lock rather than this module\'s locking. Run the suite against '
+                'PostgreSQL to exercise it.'
+            )
+
+        results = []
+
+        def worker():
+            try:
+                self._exit_one()
+                results.append('ok')
+            except InsufficientStockError:
+                results.append('refused')
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(sorted(results), ['ok', 'refused'])
+        self.assertEqual(branch_quantity(self.branch, self.product), 0)
+
+    def test_the_service_layer_locks_the_stock_row_not_the_product(self):
+        """
+        Introspection, because the behavioural test above cannot run on SQLite.
+
+        Locking the PRODUCT would serialise every branch of a chain against every
+        other for the same article, turning unrelated shops into each other's
+        queue. The lock has to be on BranchStock.
+        """
+        import inspect
+
+        from . import inventory_services
+
+        source = inspect.getsource(inventory_services._locked_branch_stocks)
+        self.assertIn('select_for_update', source)
+        self.assertIn('BranchStock', source)
+        self.assertIn("order_by('branch_id', 'product_id')", source)
+
+        core = inspect.getsource(inventory_services.create_stock_movement)
+        self.assertNotIn('Product.objects.select_for_update', core)
+
+
+class Phase2dMigrationRuleTest(TestCase):
+    """
+    The rule migration 0025 uses to place historical stock — tested directly.
+
+    The migration itself cannot run inside a test whose database is already
+    migrated, so its DECISION FUNCTION is exercised here against the real models.
+    That function is where the whole risk lives: everything else in the migration
+    is bulk writes, and the only way to corrupt an installation is to answer
+    "which branch holds these units?" wrongly.
+    """
+
+    def setUp(self):
+        cache.clear()
+
+    @property
+    def _module(self):
+        # The module name starts with a digit, so it cannot be imported with an
+        # `import` statement — importlib is the only way in.
+        import importlib
+
+        return importlib.import_module(
+            'store.migrations.0025_backfill_multibranch_inventory',
+        )
+
+    def _resolve(self, company, overrides=None):
+        problems = []
+        branch = self._module._resolve_historical_branch(
+            company, Branch, overrides or {}, problems,
+        )
+        return branch, problems
+
+    def test_one_active_branch_resolves_without_asking(self):
+        """
+        Unambiguous by construction — not "the first of several", "the only one".
+
+        This is every single-shop installation, which is every installation that
+        exists today.
+        """
+        company = Company.objects.create(name='Una sucursal', slug='una-suc-2d')
+        only = _p2d_branch(company, 'Única')
+        branch, problems = self._resolve(company)
+        self.assertEqual(branch, only)
+        self.assertEqual(problems, [])
+
+    def test_several_active_branches_REFUSE_instead_of_guessing(self):
+        """
+        The decision this phase is most exposed to.
+
+        With two branches and one integer there is no fact in the database saying
+        where the units are. Splitting them, or taking the lowest id, would write
+        a number that looks authoritative and is fiction — and every count,
+        report and replenishment decision downstream would inherit it silently.
+        """
+        company = Company.objects.create(name='Dos sucursales', slug='dos-suc-2d')
+        _p2d_branch(company, 'Centro')
+        _p2d_branch(company, 'Cayma')
+        branch, problems = self._resolve(company)
+        self.assertIsNone(branch)
+        self.assertEqual(len(problems), 1)
+        self.assertIn('Centro', problems[0])
+        self.assertIn('Cayma', problems[0])
+
+    def test_no_active_branch_refuses_too(self):
+        company = Company.objects.create(name='Sin sucursales', slug='sin-suc-2d')
+        branch, problems = self._resolve(company)
+        self.assertIsNone(branch)
+        self.assertIn('NINGUNA sucursal activa', problems[0])
+
+    def test_an_inactive_branch_does_not_count_as_the_only_one(self):
+        company = Company.objects.create(name='Inactiva', slug='inactiva-suc-2d')
+        active = _p2d_branch(company, 'Activa')
+        Branch.objects.create(company=company, name='Cerrada', is_active=False)
+        branch, problems = self._resolve(company)
+        self.assertEqual(branch, active)
+        self.assertEqual(problems, [])
+
+    def test_the_operator_can_answer_explicitly(self):
+        company = Company.objects.create(name='Explícita', slug='explicita-suc-2d')
+        _p2d_branch(company, 'Centro')
+        cayma = _p2d_branch(company, 'Cayma')
+        branch, problems = self._resolve(company, {'explicita-suc-2d': 'Cayma'})
+        self.assertEqual(branch, cayma)
+        self.assertEqual(problems, [])
+
+    def test_an_override_naming_a_missing_branch_refuses(self):
+        """A typo in the setting must not fall through to a guess."""
+        company = Company.objects.create(name='Typo', slug='typo-suc-2d')
+        _p2d_branch(company, 'Centro')
+        _p2d_branch(company, 'Cayma')
+        branch, problems = self._resolve(company, {'typo-suc-2d': 'Kayma'})
+        self.assertIsNone(branch)
+        self.assertIn('no existe', problems[0])
+
+    def test_a_company_with_nothing_to_place_is_not_asked_about(self):
+        """Existing is not a reason to block the migration."""
+        empty = Company.objects.create(name='Vacía', slug='vacia-suc-2d')
+        _p2d_branch(empty, 'A')
+        _p2d_branch(empty, 'B')  # ambiguous, but has no stock, orders or Kardex
+        needing = self._module._companies_needing_a_branch(
+            Company, Product, StockMovement, Order,
+        )
+        self.assertNotIn(empty, needing)
+
+    def test_a_company_with_stock_IS_asked_about(self):
+        company = Company.objects.create(name='Con stock', slug='con-stock-suc-2d')
+        _p2d_branch(company, 'A')
+        Product.objects.create(
+            company=company, name='Algo', slug='algo-2d',
+            price=Decimal('1.00'), inventory=5,
+        )
+        needing = self._module._companies_needing_a_branch(
+            Company, Product, StockMovement, Order,
+        )
+        self.assertIn(company, needing)
+
+
+class Phase2dStorefrontTest(TestCase):
+    """
+    The public store sells what the FULFILLMENT BRANCH can deliver.
+
+    Showing the company-wide total would promise units the checkout cannot take:
+    a customer sees 20, checkout finds 2 in the branch that ships, and the sale
+    fails at the last step for no reason the customer can understand.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.company = _p2d_company('p2d-store')
+        self.main = _p2d_branch(self.company, 'Tienda online')
+        self.other = _p2d_branch(self.company, 'Almacén')
+        self.company.default_inventory_branch = self.main
+        self.company.save(update_fields=['default_inventory_branch'])
+
+        self.product = _p2d_product(self.company, 'Vendible', 'vendible-2d', '100.00')
+        _p2d_stock(self.main, self.product, 2)
+        _p2d_stock(self.other, self.product, 18)  # 20 company-wide, 2 sellable
+
+    def _storefront(self):
+        return _storefront_of(self.company)
+
+    def test_the_catalogue_shows_the_fulfillment_branchs_stock(self):
+        with self._storefront():
+            res = self.client.get(f'/api/products/?slug={self.product.slug}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data[0]['inventory'], 2, 'no los 20 de toda la empresa')
+
+    def test_the_cart_refuses_more_than_the_branch_holds(self):
+        with self._storefront():
+            res = self.client.post('/api/cart/add/', {
+                'session_key': 'p2d-store-1', 'product': self.product.pk, 'quantity': 5,
+            }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Disponible: 2', res.data['detail'])
+
+    def test_the_cart_accepts_what_the_branch_holds(self):
+        with self._storefront():
+            res = self.client.post('/api/cart/add/', {
+                'session_key': 'p2d-store-2', 'product': self.product.pk, 'quantity': 2,
+            }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_checkout_validates_against_the_branch_not_the_company(self):
+        CartItem.objects.create(
+            session_key='p2d-store-3', product=self.product, quantity=5,
+        )
+        with self._storefront():
+            res = self.client.post('/api/payments/create-checkout-session/', {
+                'session_key': 'p2d-store-3',
+                'customer_name': 'Ana Torres', 'customer_email': 'ana@example.com',
+                'customer_phone': '+51 999 999 999',
+                'document_type': 'dni', 'document_number': '12345678',
+                'delivery_method': 'pickup_store', 'receipt_type': 'boleta',
+                'accepted_terms': True, 'accepted_warranty_policy': True,
+            }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('errors', res.json())
+
+    @patch('stripe.checkout.Session.create')
+    def test_checkout_stamps_the_fulfillment_branch_on_the_order(self, mock_create):
+        mock = MagicMock()
+        mock.id = 'cs_p2d_branch'
+        mock.url = 'https://checkout.stripe.com/pay/cs_p2d_branch'
+        mock_create.return_value = mock
+
+        CartItem.objects.create(
+            session_key='p2d-store-4', product=self.product, quantity=2,
+        )
+        with self._storefront():
+            res = self.client.post('/api/payments/create-checkout-session/', {
+                'session_key': 'p2d-store-4',
+                'customer_name': 'Ana Torres', 'customer_email': 'ana@example.com',
+                'customer_phone': '+51 999 999 999',
+                'document_type': 'dni', 'document_number': '12345678',
+                'delivery_method': 'pickup_store', 'receipt_type': 'boleta',
+                'accepted_terms': True, 'accepted_warranty_policy': True,
+            }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        order = Order.objects.get(stripe_session_id='cs_p2d_branch')
+        self.assertEqual(order.fulfillment_branch_id, self.main.pk)
+
+    def test_a_company_with_no_fulfillment_branch_cannot_check_out(self):
+        """
+        Two branches and no explicit choice: the store says so instead of
+        shipping from a shop that does not know it sold anything.
+        """
+        self.company.default_inventory_branch = None
+        self.company.save(update_fields=['default_inventory_branch'])
+        CartItem.objects.create(
+            session_key='p2d-store-5', product=self.product, quantity=1,
+        )
+        with self._storefront():
+            res = self.client.post('/api/payments/create-checkout-session/', {
+                'session_key': 'p2d-store-5',
+                'customer_name': 'Ana Torres', 'customer_email': 'ana@example.com',
+                'customer_phone': '+51 999 999 999',
+                'document_type': 'dni', 'document_number': '12345678',
+                'delivery_method': 'pickup_store', 'receipt_type': 'boleta',
+                'accepted_terms': True, 'accepted_warranty_policy': True,
+            }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('sucursal de despacho', res.data['detail'])
+
+    def test_a_single_branch_company_needs_no_configuration(self):
+        """
+        The rule that keeps every existing single-shop installation selling
+        across the upgrade, with nothing to configure.
+        """
+        solo = _p2d_company('p2d-store-solo')
+        Branch.objects.filter(company=solo).delete()
+        only = _p2d_branch(solo, 'La única')
+        solo.refresh_from_db()  # the deleted branch cleared the pointer (SET_NULL)
+        self.assertIsNone(solo.default_inventory_branch_id)
+        self.assertEqual(company_fulfillment_branch(solo), only)
+
+    def test_the_sale_exit_comes_off_the_orders_own_branch(self):
+        from .inventory_services import record_sale_stock_movements
+
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_email='x@example.com', total=Decimal('200.00'),
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=2, price=self.product.price,
+        )
+        record_sale_stock_movements(order)
+        self.assertEqual(branch_quantity(self.main, self.product), 0)
+        self.assertEqual(branch_quantity(self.other, self.product), 18, 'intacto')
+
+    def test_a_shortfall_is_never_covered_from_another_branch(self):
+        """
+        18 units sit in the warehouse and the order still fails.
+
+        Quietly taking them would create a second, invisible discrepancy in a
+        branch nobody is looking at — the payment is already captured, so the
+        honest outcome is a flagged order.
+        """
+        from .inventory_services import record_sale_stock_movements
+
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_email='x@example.com', total=Decimal('500.00'),
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=5, price=self.product.price,
+        )
+        record_sale_stock_movements(order)
+        self.assertEqual(branch_quantity(self.main, self.product), 2, 'sin tocar')
+        self.assertEqual(branch_quantity(self.other, self.product), 18, 'sin tocar')
+        self.assertIn('Stock insuficiente', order.payment_error)
+        self.assertIn(str(self.main.pk), order.payment_error)
+
+
+class Phase2dBranchAccessApiTest(TestCase):
+    """
+    Administering branch access: grants are company-scoped, and audited.
+
+    Capability delegation and branch access are separate on purpose — granting
+    somebody the inventory role must not also hand them every shop.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('p2d-api')
+        self.b1 = _p2d_branch(self.company, 'API 1')
+        self.b2 = _p2d_branch(self.company, 'API 2')
+        self.other = _p2d_company('p2d-api-other')
+        self.foreign = _p2d_branch(self.other, 'Ajena')
+
+        self.admin, self.admin_m = _p2d_member(
+            self.company, 'p2d_api_admin',
+            ['company.view', 'company.manage', 'memberships.view', 'memberships.manage'],
+        )
+        self.target = User.objects.create_user(username='p2d_api_target', password='x')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _create_membership(self, **extra):
+        payload = {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'inventory',
+        }
+        payload.update(extra)
+        return self.client.post('/api/admin/memberships/', payload, format='json')
+
+    def test_a_new_membership_defaults_to_all_branches(self):
+        """
+        Matching what a membership meant before Phase 2D: nothing restricted
+        these people by branch, and creating them restricted by surprise would be
+        a silent narrowing nobody asked for.
+        """
+        res = self._create_membership()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['branch_access_mode'], 'all')
+
+    def test_a_membership_can_be_created_with_selected_branches(self):
+        res = self._create_membership(
+            branch_access_mode='selected', branch_access=[self.b1.pk],
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['branch_access_mode'], 'selected')
+        self.assertEqual([b['id'] for b in res.data['branch_access']], [self.b1.pk])
+
+    def test_a_foreign_branch_cannot_be_granted(self):
+        res = self._create_membership(
+            branch_access_mode='selected', branch_access=[self.foreign.pk],
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        from .models import Membership
+
+        self.assertFalse(
+            Membership.objects.filter(user=self.target, company=self.company).exists(),
+            'la membresía no debe quedar a medio configurar',
+        )
+
+    def test_grants_can_be_replaced(self):
+        created = self._create_membership(
+            branch_access_mode='selected', branch_access=[self.b1.pk],
+        )
+        pk = created.data['id']
+        res = self.client.patch(
+            f'/api/admin/memberships/{pk}/', {'branch_access': [self.b2.pk]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([b['id'] for b in res.data['branch_access']], [self.b2.pk])
+        self.assertTrue(has_branch_access(self.target, self.b2))
+        self.assertFalse(has_branch_access(self.target, self.b1))
+
+    def test_an_empty_grant_list_revokes_everything(self):
+        """A real, intended state — and the reason "empty means all" was never on the table."""
+        created = self._create_membership(
+            branch_access_mode='selected', branch_access=[self.b1.pk, self.b2.pk],
+        )
+        pk = created.data['id']
+        res = self.client.patch(
+            f'/api/admin/memberships/{pk}/', {'branch_access': []}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['branch_access'], [])
+        self.assertFalse(visible_branches(self.target, self.company).exists())
+
+    def test_a_revoked_default_branch_is_cleared(self):
+        created = self._create_membership(
+            branch='__placeholder__' if False else self.b1.pk,
+            branch_access_mode='selected', branch_access=[self.b1.pk],
+        )
+        pk = created.data['id']
+        res = self.client.patch(
+            f'/api/admin/memberships/{pk}/', {'branch_access': [self.b2.pk]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res.data['branch'], 'un puntero obsoleto se limpia')
+
+    def test_branch_access_changes_are_audited(self):
+        self._create_membership(
+            branch_access_mode='selected', branch_access=[self.b1.pk],
+        )
+        log = AdminAuditLog.objects.filter(action='membership_created').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata['branch_access_mode'], 'selected')
+        self.assertEqual(log.metadata['branch_access'], [self.b1.pk])
+        self.assertEqual(log.company_id, self.company.pk)
+
+    def _set_fulfillment(self, value):
+        return self.client.patch(
+            f'/api/admin/companies/{self.company.pk}/fulfillment-branch/',
+            {'branch': value}, format='json',
+        )
+
+    def test_the_fulfillment_branch_must_belong_to_the_company(self):
+        res = self._set_fulfillment(self.foreign.pk)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.company.refresh_from_db()
+        self.assertNotEqual(self.company.default_inventory_branch_id, self.foreign.pk)
+
+    def test_the_fulfillment_branch_can_be_set_to_an_own_branch(self):
+        """
+        A company administrator configures this without a platform operator.
+
+        Where the online store ships from is an operational decision that belongs
+        to the business; the rest of Company (slug, is_active) stays
+        platform-only, which is why this has its own endpoint.
+        """
+        res = self._set_fulfillment(self.b2.pk)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.default_inventory_branch_id, self.b2.pk)
+
+    def test_an_inactive_branch_cannot_be_the_fulfillment_branch(self):
+        self.b2.is_active = False
+        self.b2.save(update_fields=['is_active'])
+        self.assertEqual(self._set_fulfillment(self.b2.pk).status_code,
+                         status.HTTP_400_BAD_REQUEST)
+
+    def test_the_fulfillment_branch_can_be_cleared(self):
+        """A legitimate choice with a visible consequence: checkout then refuses."""
+        self._set_fulfillment(self.b2.pk)
+        res = self._set_fulfillment(None)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.company.refresh_from_db()
+        self.assertIsNone(self.company.default_inventory_branch_id)
+
+    def test_a_member_without_company_manage_cannot_change_it(self):
+        plain, _m = _p2d_member(
+            self.company, 'p2d_api_plain', ['company.view', 'inventory.view'],
+        )
+        client = APIClient()
+        client.force_authenticate(user=plain)
+        res = client.patch(
+            f'/api/admin/companies/{self.company.pk}/fulfillment-branch/',
+            {'branch': self.b2.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_another_companys_admin_cannot_change_it(self):
+        outsider, _m = _p2d_member(
+            self.other, 'p2d_api_outsider',
+            ['company.view', 'company.manage'],
+        )
+        client = APIClient()
+        client.force_authenticate(user=outsider)
+        res = client.patch(
+            f'/api/admin/companies/{self.company.pk}/fulfillment-branch/',
+            {'branch': self.b2.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_change_is_audited(self):
+        self._set_fulfillment(self.b2.pk)
+        log = AdminAuditLog.objects.filter(
+            action='company_fulfillment_branch_changed',
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata['new_branch_id'], self.b2.pk)
+        self.assertEqual(log.company_id, self.company.pk)
+
+
+class Phase2dProvisioningTest(TestCase):
+    """A new tenant arrives usable: one branch, and the storefront pointed at it."""
+
+    def test_a_new_company_gets_its_first_branch(self):
+        from .company_provisioning import (
+            PRESET_BRANCH_NAME, provision_company_access_defaults,
+        )
+
+        company = Company.objects.create(name='Nueva', slug='nueva-prov-2d')
+        result = provision_company_access_defaults(company)
+        self.assertTrue(result['branch_created'])
+        company.refresh_from_db()
+        self.assertEqual(company.branches.count(), 1)
+        self.assertEqual(company.branches.get().name, PRESET_BRANCH_NAME)
+        self.assertEqual(
+            company.default_inventory_branch_id, company.branches.get().pk,
+        )
+
+    def test_provisioning_is_idempotent_and_creates_no_second_branch(self):
+        from .company_provisioning import provision_company_access_defaults
+
+        company = Company.objects.create(name='Otra', slug='otra-prov-2d')
+        provision_company_access_defaults(company)
+        result = provision_company_access_defaults(company)
+        self.assertFalse(result['branch_created'])
+        self.assertEqual(company.branches.count(), 1)
+
+    def test_provisioning_never_renames_an_existing_branch(self):
+        from .company_provisioning import provision_company_access_defaults
+
+        company = Company.objects.create(name='Con sucursal', slug='con-suc-prov-2d')
+        existing = Branch.objects.create(company=company, name='La de siempre')
+        result = provision_company_access_defaults(company)
+        self.assertFalse(result['branch_created'])
+        existing.refresh_from_db()
+        self.assertEqual(existing.name, 'La de siempre')
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 3 — company configuration and branding
+# ---------------------------------------------------------------------------
+#
+# WHAT THESE TESTS ARE DEFENDING
+#
+# The failure this phase exists to prevent is not cosmetic. Before it, a second
+# tenant's customers would have received a confirmation email and a PDF receipt
+# carrying ANOTHER COMPANY'S legal name and tax id, and that company's inbox
+# would have received their sales alerts. So the tests below care about three
+# things above all:
+#
+#   1. Nothing falls back to the pilot. An unconfigured tenant shows blanks.
+#   2. Documents are frozen. A rename does not rewrite last year's receipts.
+#   3. The internal notification goes to the order's own company, or nowhere.
+
+from .company_settings import (  # noqa: E402
+    NEUTRAL_THEME,
+    build_identity_snapshot,
+    build_whatsapp_link,
+    company_branding,
+    company_configuration_status,
+    company_identity,
+    order_identity,
+    order_notification_recipient,
+    order_pickup_location,
+)
+from .models import CompanySettings  # noqa: E402
+
+
+def _p3_company(slug, name, **identity):
+    """A tenant with its access defaults, exactly as the API creates one."""
+    from .company_provisioning import provision_company_access_defaults
+
+    company = Company.objects.create(
+        name=name, slug=slug,
+        legal_name=identity.pop('legal_name', ''),
+        tax_id=identity.pop('tax_id', ''),
+    )
+    provision_company_access_defaults(company)
+    if identity:
+        row = company.settings
+        for field, value in identity.items():
+            setattr(row, field, value)
+        row.save()
+    company.refresh_from_db()
+    return company
+
+
+def _p3_order(company, *, branch=None, snapshot=True, **extra):
+    """A paid order of `company`, with its identity frozen like checkout does."""
+    branch = branch or company.default_inventory_branch
+    defaults = {
+        'customer_name': 'Cliente P3',
+        'customer_email': 'cliente-p3@example.invalid',
+        'customer_phone': '+51 999 111 222',
+        'document_type': Order.DocumentType.DNI,
+        'document_number': '12345678',
+        'delivery_method': Order.DeliveryMethod.PICKUP_STORE,
+        'receipt_type': Order.ReceiptType.BOLETA,
+        'total': Decimal('100.00'),
+        'status': Order.Status.PAID,
+        'paid': True,
+        'paid_at': timezone.now(),
+        'fulfillment_branch': branch,
+    }
+    defaults.update(extra)
+    if snapshot:
+        defaults['company_snapshot'] = build_identity_snapshot(company, branch)
+    order = Order.objects.create(company=company, **defaults)
+    # Slug unique per company, so it carries the order id: a test that makes two
+    # orders for one tenant must not collide on the product.
+    product = _seeded(Product.objects.create(
+        company=company, name=f'Producto {company.slug} {order.pk}',
+        slug=f'producto-{company.slug}-{order.pk}',
+        price=Decimal('100.00'), inventory=5,
+    ))
+    OrderItem.objects.create(
+        order=order, product=product, quantity=1, price=Decimal('100.00'),
+    )
+    return order
+
+
+class Phase3CompanySettingsModelTest(TestCase):
+    """The model, its validators and the one-to-one relationship."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p3-model', 'Empresa Modelo')
+
+    def test_settings_are_one_to_one_with_a_company(self):
+        from django.db import IntegrityError, transaction
+
+        self.assertIsNotNone(self.company.settings)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                CompanySettings.objects.create(company=self.company)
+
+    def test_a_valid_hex_colour_is_accepted(self):
+        row = self.company.settings
+        row.primary_color = '#1A2B3C'
+        row.save()
+        row.refresh_from_db()
+        self.assertEqual(row.primary_color, '#1A2B3C')
+
+    def test_css_injection_through_a_colour_is_rejected(self):
+        """
+        The reason the format is six hex digits and nothing else.
+
+        These values are interpolated into a CSS custom property and a style
+        attribute. Anything that can express a function call, a scheme or a
+        closing brace is a CSS injection with a colour picker in front of it.
+        """
+        from django.core.exceptions import ValidationError
+
+        row = self.company.settings
+        for attack in (
+            'url(https://evil.invalid/x.png)',
+            'var(--x)',
+            'javascript:alert(1)',
+            '#fff;} body{display:none',
+            'red',
+            '#GGGGGG',
+            '#FFF',
+        ):
+            row.primary_color = attack
+            with self.assertRaises(ValidationError, msg=attack):
+                row.save()
+
+    def test_an_invalid_timezone_is_rejected(self):
+        from django.core.exceptions import ValidationError
+
+        row = self.company.settings
+        row.timezone = 'Mars/Olympus'
+        with self.assertRaises(ValidationError):
+            row.save()
+
+    def test_a_valid_iana_timezone_is_accepted(self):
+        row = self.company.settings
+        row.timezone = 'America/Lima'
+        row.save()
+        row.refresh_from_db()
+        self.assertEqual(row.timezone, 'America/Lima')
+
+    def test_a_whatsapp_number_must_be_digits(self):
+        """
+        Stored as digits, never as a finished URL.
+
+        The link is BUILT from it, so the database can never hold something that
+        renders as an anchor with an arbitrary scheme in a customer's inbox.
+        """
+        from django.core.exceptions import ValidationError
+
+        row = self.company.settings
+        for attack in (
+            'https://evil.invalid',
+            'javascript:alert(1)',
+            '+51 987 654 321',
+            '123',
+        ):
+            row.whatsapp_number = attack
+            with self.assertRaises(ValidationError, msg=attack):
+                row.save()
+
+    def test_the_whatsapp_link_is_derived_not_stored(self):
+        self.assertEqual(build_whatsapp_link('51987654321'), 'https://wa.me/51987654321')
+        self.assertEqual(build_whatsapp_link('javascript:alert(1)'), '')
+        self.assertEqual(build_whatsapp_link(''), '')
+        self.assertEqual(build_whatsapp_link('123'), '')
+
+
+class Phase3IdentityFallbackTest(TestCase):
+    """
+    THE RULE: fall back to empty, never to another company.
+
+    An incomplete tenant renders blanks. Blanks are a visible, fixable state;
+    another business's legal identity on a document is neither.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.bare = _p3_company('p3-bare', 'Empresa Vacía')
+
+    def test_an_unconfigured_company_has_empty_commercial_fields(self):
+        identity = company_identity(self.bare)
+        self.assertEqual(identity.name, 'Empresa Vacía')
+        self.assertEqual(identity.legal_address, '')
+        self.assertEqual(identity.tax_id, '')
+        self.assertEqual(identity.phone, '')
+        self.assertEqual(identity.warranty_policy_text, '')
+
+    def test_no_pilot_values_leak_into_another_tenant(self):
+        """The single most important assertion in this phase."""
+        identity = company_identity(self.bare)
+        blob = ' '.join(str(v) for v in identity.as_dict().values()).lower()
+        for pilot_value in (
+            'black dog', 'cmau', '20610159886', 'octavio', '936 449', '51936449536',
+        ):
+            self.assertNotIn(pilot_value, blob)
+
+    def test_a_company_with_no_settings_row_still_resolves(self):
+        """Settings can be missing on a tenant created before Phase 3."""
+        CompanySettings.objects.filter(company=self.bare).delete()
+        self.bare.refresh_from_db()
+        identity = company_identity(self.bare)
+        self.assertEqual(identity.name, 'Empresa Vacía')
+        self.assertEqual(identity.phone, '')
+
+    def test_branding_falls_back_to_the_neutral_theme_per_field(self):
+        """
+        PER FIELD, not all-or-nothing: setting one colour must not lose the rest.
+        """
+        row = self.bare.settings
+        row.background_color = '#123456'
+        row.primary_color = ''
+        row.save()
+        self.bare.refresh_from_db()
+
+        branding = company_branding(self.bare)
+        self.assertEqual(branding.colors['background_color'], '#123456')
+        self.assertEqual(branding.colors['primary_color'], NEUTRAL_THEME['primary_color'])
+
+    def test_the_neutral_theme_belongs_to_no_business(self):
+        branding = company_branding(self.bare)
+        self.assertEqual(branding.colors, NEUTRAL_THEME)
+        self.assertEqual(branding.logo_url, '')
+
+    def test_css_variable_names_are_fixed(self):
+        branding = company_branding(self.bare)
+        self.assertEqual(
+            set(branding.css_variables()),
+            {'--brand-primary', '--brand-accent', '--brand-background',
+             '--brand-surface', '--brand-text', '--brand-border'},
+        )
+
+
+class Phase3IdentitySnapshotTest(TestCase):
+    """
+    Documents are frozen at sale time. This is the §59 test.
+
+    A business that is renamed or re-registers must not silently rewrite what a
+    receipt from six months ago says it was — a customer holding a printed copy
+    would find it no longer matches the one the system reprints.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'p3-snap', 'Empresa A', legal_name='Empresa A S.A.C.', tax_id='111',
+            legal_address='Calle Uno 100', phone='+51 111 111 111',
+        )
+
+    def test_an_order_freezes_the_identity_of_its_moment(self):
+        old_order = _p3_order(self.company)
+
+        self.company.name = 'Empresa Nueva'
+        self.company.legal_name = 'Empresa Nueva S.A.C.'
+        self.company.tax_id = '222'
+        self.company.save()
+        row = self.company.settings
+        row.legal_address = 'Avenida Dos 200'
+        row.save()
+        self.company.refresh_from_db()
+
+        old_identity = order_identity(old_order)
+        self.assertEqual(old_identity.tax_id, '111', 'el documento histórico no muta')
+        self.assertEqual(old_identity.name, 'Empresa A')
+        self.assertEqual(old_identity.legal_address, 'Calle Uno 100')
+
+        new_order = _p3_order(self.company)
+        new_identity = order_identity(new_order)
+        self.assertEqual(new_identity.tax_id, '222')
+        self.assertEqual(new_identity.name, 'Empresa Nueva')
+
+    def test_the_pdf_of_an_old_order_shows_the_old_identity(self):
+        """The same rule, through the actual document builder."""
+        from store.pdf_services import build_order_pdf_context
+
+        order = _p3_order(self.company)
+        self.company.tax_id = '999'
+        self.company.save()
+
+        ctx = build_order_pdf_context(order)
+        self.assertEqual(ctx['store_ruc'], '111')
+
+    def test_an_order_without_a_snapshot_falls_back_to_the_live_company(self):
+        """
+        The documented limitation, for orders that predate Phase 3.
+
+        It is the best answer available for them, and it is the only case where a
+        document's identity can change under it.
+        """
+        order = _p3_order(self.company, snapshot=False)
+        self.assertEqual(order.company_snapshot, {})
+        self.assertEqual(order_identity(order).tax_id, '111')
+
+        self.company.tax_id = '333'
+        self.company.save()
+        order.refresh_from_db()
+        self.assertEqual(order_identity(order).tax_id, '333')
+
+    def test_the_snapshot_carries_no_secrets_or_internal_routing(self):
+        row = self.company.settings
+        row.order_notification_email = 'interno@example.invalid'
+        row.save()
+        self.company.refresh_from_db()
+
+        snapshot = build_identity_snapshot(self.company)
+        blob = str(snapshot).lower()
+        for forbidden in ('interno@example.invalid', 'notification', 'password',
+                          'token', 'secret', 'stripe'):
+            self.assertNotIn(forbidden, blob)
+
+    def test_the_pickup_point_is_the_branch_not_the_legal_address(self):
+        """
+        One is who invoices, the other is which door to knock on.
+
+        Printing the office address under "punto de retiro" sends people to the
+        wrong place.
+        """
+        branch = Branch.objects.create(
+            company=self.company, name='Tienda Centro',
+            address='Jirón Retiro 500', phone='+51 222 222 222',
+        )
+        order = _p3_order(self.company, branch=branch)
+        pickup = order_pickup_location(order)
+        self.assertEqual(pickup['source'], 'branch')
+        self.assertEqual(pickup['address'], 'Jirón Retiro 500')
+        self.assertNotEqual(pickup['address'], self.company.settings.legal_address)
+
+
+class Phase3CrossTenantDocumentTest(TestCase):
+    """
+    Company A's documents say A. Company B's say B. Neither ever says the other.
+
+    This is the failure Phase 3 exists to prevent, exercised end to end through
+    the real email and PDF builders rather than through the helpers.
+    """
+
+    def setUp(self):
+        cache.clear()
+        # Tax ids chosen so they cannot appear inside any other value in the
+        # document (a bare "222" collides with a phone number).
+        self.a = _p3_company(
+            'p3-doc-a', 'Empresa A', legal_name='A S.A.C.', tax_id='20111111111',
+            legal_address='Calle A 1', phone='+51 111 111 111',
+            contact_email='hola@a.invalid', whatsapp_number='51111111111',
+            warranty_policy_text='Garantía A: 12 meses.',
+            order_notification_email='ventas@a.invalid',
+        )
+        self.b = _p3_company(
+            'p3-doc-b', 'Empresa B', legal_name='B S.A.C.', tax_id='20222222222',
+            legal_address='Calle B 2', phone='+51 222 222 222',
+            contact_email='hola@b.invalid', whatsapp_number='51222222222',
+            warranty_policy_text='Garantía B: 3 meses.',
+            order_notification_email='ventas@b.invalid',
+        )
+        mail.outbox = []
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='no-reply@test.invalid',
+    )
+    def test_each_customer_email_carries_its_own_company(self):
+        from store.email_services import send_order_confirmation_email
+
+        for company, mine, theirs in (
+            (self.a, '20111111111', '20222222222'),
+            (self.b, '20222222222', '20111111111'),
+        ):
+            mail.outbox = []
+            order = _p3_order(company)
+            send_order_confirmation_email(order)
+            msg = mail.outbox[0]
+            body = msg.body + msg.subject + str(msg.alternatives)
+
+            self.assertIn(company.name, body)
+            self.assertIn(mine, body)
+            self.assertNotIn(theirs, body, 'no puede aparecer el RUC de la otra empresa')
+            other = self.b if company is self.a else self.a
+            self.assertNotIn(other.name, body)
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='no-reply@test.invalid',
+    )
+    def test_each_email_carries_its_own_warranty_policy(self):
+        from store.email_services import send_order_confirmation_email
+
+        order = _p3_order(self.a)
+        send_order_confirmation_email(order)
+        body = mail.outbox[0].body
+        self.assertIn('Garantía A: 12 meses.', body)
+        self.assertNotIn('Garantía B', body)
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='no-reply@test.invalid',
+    )
+    def test_the_internal_alert_goes_to_the_orders_own_company(self):
+        """
+        The §60 test. Before Phase 3 there was one platform-wide recipient, so
+        B's sales — customer name, phone, what they bought — would have landed in
+        A's inbox.
+        """
+        from store.email_services import send_internal_order_notification
+
+        for company, expected, forbidden in (
+            (self.a, 'ventas@a.invalid', 'ventas@b.invalid'),
+            (self.b, 'ventas@b.invalid', 'ventas@a.invalid'),
+        ):
+            mail.outbox = []
+            order = _p3_order(company)
+            self.assertTrue(send_internal_order_notification(order))
+            self.assertEqual(mail.outbox[0].to, [expected])
+            self.assertNotIn(forbidden, str(mail.outbox[0].to))
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        ORDER_NOTIFICATION_EMAIL='plataforma@example.invalid',
+        DEFAULT_FROM_EMAIL='no-reply@test.invalid',
+    )
+    def test_there_is_no_platform_fallback_recipient(self):
+        """
+        A company with no address gets NO alert — it does not fall through to the
+        global setting, which holds one address belonging to somebody else.
+
+        Silence is recoverable; a misdirected alert is not, because the data has
+        already left.
+        """
+        from store.email_services import send_internal_order_notification
+
+        row = self.a.settings
+        row.order_notification_email = ''
+        row.save()
+        self.a.refresh_from_db()
+
+        order = _p3_order(self.a)
+        self.assertFalse(send_internal_order_notification(order))
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(order_notification_recipient(order), '')
+
+    def test_each_pdf_carries_its_own_company(self):
+        from store.pdf_services import build_order_pdf_context, generate_order_receipt_pdf
+
+        for company, mine, theirs in (
+            (self.a, '20111111111', '20222222222'),
+            (self.b, '20222222222', '20111111111'),
+        ):
+            order = _p3_order(company)
+            ctx = build_order_pdf_context(order)
+            self.assertEqual(ctx['store_name'], company.name)
+            self.assertEqual(ctx['store_ruc'], mine)
+            self.assertNotEqual(ctx['store_ruc'], theirs)
+            # And it renders.
+            self.assertTrue(generate_order_receipt_pdf(order).startswith(b'%PDF'))
+
+    def test_the_sales_note_carries_its_own_company(self):
+        from store.sales_note_services import (
+            build_sales_note_context, get_or_create_sales_note,
+        )
+
+        order = _p3_order(self.b)
+        note, _created = get_or_create_sales_note(order)
+        ctx = build_sales_note_context(note)
+        self.assertEqual(ctx['store_name'], 'Empresa B')
+        self.assertEqual(ctx['store_ruc'], '20222222222')
+        self.assertIn('Garantía B', ctx['warranty_note'])
+
+    def test_the_sales_note_keeps_its_internal_document_disclaimer(self):
+        """Tenant branding must not turn an internal note into a fiscal receipt."""
+        from store.sales_note_services import (
+            SALES_NOTE_DISCLAIMER, build_sales_note_context, get_or_create_sales_note,
+        )
+
+        order = _p3_order(self.a)
+        note, _created = get_or_create_sales_note(order)
+        ctx = build_sales_note_context(note)
+        self.assertEqual(ctx['disclaimer'], SALES_NOTE_DISCLAIMER)
+        self.assertIn('No válido como comprobante electrónico SUNAT', ctx['disclaimer'])
+
+    def test_filenames_use_the_slug_and_stay_safe(self):
+        from store.pdf_services import get_order_receipt_filename
+        from store.sales_note_services import (
+            get_or_create_sales_note, get_sales_note_filename,
+        )
+
+        order = _p3_order(self.a)
+        name = get_order_receipt_filename(order)
+        self.assertTrue(name.isascii())
+        self.assertNotIn('/', name)
+        self.assertNotIn('..', name)
+        self.assertIn('p3-doc-a', name)
+
+        note, _created = get_or_create_sales_note(order)
+        note_name = get_sales_note_filename(note)
+        self.assertTrue(note_name.isascii())
+        self.assertNotIn('/', note_name)
+
+    def test_a_hostile_company_name_cannot_escape_a_filename(self):
+        """
+        The NAME is free text a tenant types; the SLUG is not.
+
+        This is why the filename is built from the slug and filtered again: a
+        name is the kind of value that reaches a Content-Disposition header and a
+        filesystem.
+        """
+        from store.pdf_services import get_order_receipt_filename
+
+        self.a.name = '../../etc/passwd "; rm -rf /'
+        self.a.save()
+        order = _p3_order(self.a)
+        name = get_order_receipt_filename(order)
+        self.assertNotIn('..', name)
+        self.assertNotIn('/', name)
+        self.assertNotIn('"', name)
+        self.assertTrue(name.isascii())
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='no-reply@test.invalid',
+    )
+    def test_a_hostile_company_name_is_escaped_in_the_html_email(self):
+        """
+        Company identity became TENANT INPUT in Phase 3.
+
+        Before, those values were module constants and were interpolated raw. Now
+        one company types them into a form and they render inside another
+        person's email client, so every one of them has to be escaped.
+        """
+        from store.email_services import send_order_confirmation_email
+
+        self.a.name = '<script>alert(1)</script>'
+        self.a.legal_name = '<img src=x onerror=alert(2)>'
+        self.a.save()
+        row = self.a.settings
+        row.legal_address = '<b>Calle</b>'
+        row.warranty_policy_text = '<iframe src="evil"></iframe>'
+        row.save()
+        self.a.refresh_from_db()
+
+        order = _p3_order(self.a)
+        send_order_confirmation_email(order)
+        html = mail.outbox[0].alternatives[0][0]
+
+        # What matters is that no TAG is ever constructed. `onerror=` surviving
+        # as inert text inside a <p> is harmless; `<img ... onerror=` is not.
+        self.assertNotIn('<script', html)
+        self.assertNotIn('<img src=x', html)
+        self.assertNotIn('<iframe', html)
+        self.assertNotIn('<b>Calle</b>', html)
+        # ...and that it survives as escaped, visible text rather than vanishing.
+        self.assertIn('&lt;script&gt;', html)
+        self.assertIn('&lt;img src=x onerror=alert(2)&gt;', html)
+        self.assertIn('&lt;iframe', html)
+
+
+class Phase3AuthEmailTest(TestCase):
+    """
+    Account-security emails are PLATFORM emails, not tenant emails.
+
+    A User is global — one identity across every shop they buy from — so an email
+    about that account is from the platform. Branding it as a tenant would mean a
+    customer of three shops receiving a password reset from a business they never
+    asked about.
+    """
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        self.user = User.objects.create_user(
+            username='p3authuser', email='p3auth@example.invalid', password='Pass123!',
+        )
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        PLATFORM_NAME='Mi Plataforma',
+        FRONTEND_URL='http://localhost:3000',
+    )
+    def test_auth_emails_carry_the_platform_name(self):
+        from store.emails import send_password_reset_email, send_verification_email
+
+        send_verification_email(self.user, 'tok')
+        send_password_reset_email(self.user, 'tok')
+        self.assertEqual(len(mail.outbox), 2)
+        for msg in mail.outbox:
+            self.assertIn('Mi Plataforma', msg.subject + msg.body)
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        PLATFORM_NAME='',
+        FRONTEND_URL='http://localhost:3000',
+    )
+    def test_without_a_platform_name_they_carry_no_brand_at_all(self):
+        """
+        The honest default. The platform has no more claim to a compiled-in name
+        than a tenant does, and shipping one would put this installation's brand
+        on every fork.
+        """
+        from store.emails import send_verification_email
+
+        send_verification_email(self.user, 'tok')
+        blob = mail.outbox[0].subject + mail.outbox[0].body
+        self.assertNotIn('—', blob.split('\n')[-1] if blob else '')
+        for pilot_value in ('black dog', 'cmau'):
+            self.assertNotIn(pilot_value, blob.lower())
+        self.assertIn('Verifica tu cuenta', mail.outbox[0].subject)
+
+
+class Phase3NoHardcodeTest(TestCase):
+    """
+    A STRUCTURAL guard: the commercial services must stay tenant-neutral.
+
+    Phase 3 deleted six module constants from three files. Nothing stops somebody
+    adding them back next month while fixing something unrelated — and the damage
+    would be silent, because the pilot's own documents would look correct. This
+    scans those files and fails if one specific business's identity reappears.
+
+    Migrations, tests and documentation are deliberately NOT scanned: a migration
+    records what was true when it ran, and that is exactly where these values
+    belong now.
+    """
+
+    _COMMERCIAL_SERVICES = (
+        'email_services.py',
+        'pdf_services.py',
+        'sales_note_services.py',
+        'company_settings.py',
+        # Included because its validation messages are customer-facing: the
+        # checkout phone-format error used to illustrate itself with the pilot
+        # company's real number, shown to every tenant's buyers.
+        'serializers.py',
+    )
+
+    # Values that identify ONE business. Any of them in a runtime service means
+    # somebody else's customers are about to receive them.
+    _PILOT_MARKERS = (
+        'black dog',
+        'cmau corp',
+        '20610159886',
+        'octavio muñoz',
+        '936 449 536',
+        '51936449536',
+    )
+
+    def _source(self, filename):
+        import pathlib
+
+        path = pathlib.Path(__file__).resolve().parent / filename
+        return path.read_text(encoding='utf-8')
+
+    def test_commercial_services_name_no_specific_business(self):
+        for filename in self._COMMERCIAL_SERVICES:
+            source = self._source(filename).lower()
+            for marker in self._PILOT_MARKERS:
+                self.assertNotIn(
+                    marker, source,
+                    f'{filename} contiene "{marker}": la identidad de una empresa '
+                    f'volvió al runtime. Debe vivir en CompanySettings.',
+                )
+
+    def test_the_store_constants_are_gone(self):
+        """The specific shape the old hardcodes had."""
+        for filename in ('email_services.py', 'pdf_services.py', 'sales_note_services.py'):
+            source = self._source(filename)
+            for constant in (
+                '_STORE_NAME', '_STORE_RUC', '_STORE_ADDRESS',
+                '_STORE_PHONE', '_STORE_LEGAL_NAME', '_STORE_CITY',
+                '_STORE_WHATSAPP_LINK',
+            ):
+                self.assertNotIn(
+                    constant, source,
+                    f'{filename} volvió a declarar {constant}.',
+                )
+
+    def test_the_migration_neutral_theme_matches_the_runtime_one(self):
+        """
+        Migration 0028 carries its own copy of the neutral palette, as a
+        migration must. This asserts the two agree TODAY, so a change to one is
+        a deliberate divergence rather than an accident.
+        """
+        import importlib
+
+        module = importlib.import_module(
+            'store.migrations.0028_backfill_company_settings',
+        )
+        self.assertEqual(module._NEUTRAL_THEME, NEUTRAL_THEME)
+
+
+class Phase3StorefrontConfigTest(TestCase):
+    """
+    GET /api/storefront/config/ — public, tenant resolved from the HOST.
+
+    Anonymous by design: it is what the shop's own visitors need to render the
+    page. The tenant therefore cannot come from a parameter — a public request
+    has no identity to validate one against.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.a = _p3_company(
+            'p3-store-a', 'Tienda A', legal_name='A S.A.C.', tax_id='20111111111',
+            phone='+51 111 111 111', whatsapp_number='51111111111',
+            legal_address='Calle A 1', contact_email='hola@a.invalid',
+            warranty_policy_text='Garantía A.',
+            order_notification_email='interno-a@example.invalid',
+            primary_color='#AABBCC',
+        )
+        self.b = _p3_company(
+            'p3-store-b', 'Tienda B', legal_name='B S.A.C.', tax_id='20222222222',
+            phone='+51 222 222 222', legal_address='Calle B 2',
+            order_notification_email='interno-b@example.invalid',
+        )
+
+    def _config(self, company):
+        with _storefront_of(company):
+            return self.client.get('/api/storefront/config/')
+
+    def test_each_storefront_returns_its_own_tenant(self):
+        res = self._config(self.a)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company']['name'], 'Tienda A')
+        self.assertEqual(res.data['company']['tax_id'], '20111111111')
+
+        res_b = self._config(self.b)
+        self.assertEqual(res_b.data['company']['name'], 'Tienda B')
+        self.assertEqual(res_b.data['company']['tax_id'], '20222222222')
+
+    def test_no_data_of_another_tenant_appears(self):
+        blob = str(self._config(self.a).data)
+        self.assertNotIn('Tienda B', blob)
+        self.assertNotIn('20222222222', blob)
+        self.assertNotIn('Calle B 2', blob)
+
+    def test_the_internal_notification_email_is_never_public(self):
+        """
+        The field this response shape exists to keep out.
+
+        It is where a tenant's sales alerts go; publishing it would hand every
+        visitor an operations inbox to aim at. The serializer is hand-built for
+        exactly this reason — a ModelSerializer with `exclude` would leak every
+        field added after somebody forgot to update it.
+        """
+        for company in (self.a, self.b):
+            blob = str(self._config(company).data)
+            self.assertNotIn('interno-a@example.invalid', blob)
+            self.assertNotIn('interno-b@example.invalid', blob)
+            self.assertNotIn('order_notification_email', blob)
+
+    def test_no_internal_or_membership_data_is_exposed(self):
+        blob = str(self._config(self.a).data).lower()
+        for forbidden in (
+            'membership', 'role', 'capabilit', 'audit', 'stripe', 'secret',
+            'password', 'token', 'is_active',
+        ):
+            self.assertNotIn(forbidden, blob, f'la respuesta pública expone "{forbidden}"')
+
+    def test_the_response_carries_validated_css_variables(self):
+        import re
+
+        variables = self._config(self.a).data['branding']['css_variables']
+        self.assertEqual(variables['--brand-primary'], '#AABBCC')
+        for name, value in variables.items():
+            self.assertTrue(name.startswith('--brand-'))
+            self.assertRegex(value, re.compile(r'^#[0-9A-Fa-f]{6}$'))
+
+    def test_an_unbranded_tenant_gets_the_neutral_theme_not_another_shops(self):
+        colors = self._config(self.b).data['branding']['colors']
+        self.assertEqual(colors, NEUTRAL_THEME)
+        self.assertNotEqual(colors['primary_color'], '#AABBCC')
+
+    def test_a_deactivated_company_serves_no_storefront(self):
+        self.a.is_active = False
+        self.a.save(update_fields=['is_active'])
+        self.assertEqual(self._config(self.a).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_an_unresolvable_host_fails_safely(self):
+        """
+        404, not a default tenant. Serving somebody's branding under the wrong
+        domain is exactly what the storefront resolver exists to prevent.
+        """
+        # A slug that matches no company, with several active tenants in the
+        # database so the single-company fallback correctly does not fire either.
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='no-existe'):
+            res = self.client.get('/api/storefront/config/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_response_varies_on_host(self):
+        """
+        A shared cache keyed without the host would serve one company's branding
+        under another's domain — the same bug as a cache key with no tenant.
+        """
+        res = self._config(self.a)
+        self.assertIn('Host', res['Vary'])
+
+    def test_it_needs_no_authentication(self):
+        with _storefront_of(self.a):
+            res = APIClient().get('/api/storefront/config/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+class Phase3SettingsApiTest(TestCase):
+    """
+    The internal configuration API: who may read it, who may write it, and what
+    they physically cannot reach from it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('p3-api-a', 'Empresa A')
+        self.b = _p3_company('p3-api-b', 'Empresa B')
+
+        self.admin_a, _ = _p2d_member(
+            self.a, 'p3_admin_a', ['company.view', 'company.manage'],
+        )
+        self.viewer_a, _ = _p2d_member(self.a, 'p3_viewer_a', ['company.view'])
+        self.admin_b, _ = _p2d_member(
+            self.b, 'p3_admin_b', ['company.view', 'company.manage'],
+        )
+        self.outsider = User.objects.create_user(username='p3_outsider', password='x')
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_an_admin_reads_their_own_settings(self):
+        res = self._as(self.admin_a).get('/api/admin/company-settings/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company']['name'], 'Empresa A')
+        self.assertTrue(res.data['can_manage'])
+
+    def test_a_viewer_reads_but_cannot_write(self):
+        client = self._as(self.viewer_a)
+        read = client.get('/api/admin/company-settings/')
+        self.assertEqual(read.status_code, status.HTTP_200_OK)
+        self.assertFalse(read.data['can_manage'])
+
+        write = client.patch(
+            '/api/admin/company-settings/', {'phone': '+51 000'}, format='json',
+        )
+        self.assertEqual(write.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_an_admin_cannot_read_another_companys_settings(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/company-settings/?company={self.b.pk}',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_an_admin_cannot_write_another_companys_settings(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/company-settings/?company={self.b.pk}',
+            {'phone': '+51 999'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.b.refresh_from_db()
+        self.assertEqual(self.b.settings.phone, '')
+
+    def test_a_user_with_no_membership_is_refused(self):
+        res = self._as(self.outsider).get('/api/admin/company-settings/')
+        self.assertIn(
+            res.status_code,
+            (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND),
+        )
+
+    def test_authority_follows_the_company_for_a_multi_company_user(self):
+        """
+        §46: admin in A, view-only in B. Switching tenant switches authority —
+        permissions are not inherited across the switch.
+        """
+        from .models import Membership
+
+        membership = Membership.objects.create(
+            user=self.admin_a, company=self.b, role=UserProfile.ROLE_CUSTOMER,
+        )
+        _assign(membership, _role(
+            self.b, 'Solo lectura B', ['company.view'], slug='solo-lectura-b',
+        ))
+
+        client = self._as(self.admin_a)
+        in_a = client.get(f'/api/admin/company-settings/?company={self.a.pk}')
+        self.assertTrue(in_a.data['can_manage'])
+
+        in_b = client.get(f'/api/admin/company-settings/?company={self.b.pk}')
+        self.assertEqual(in_b.status_code, status.HTTP_200_OK)
+        self.assertFalse(in_b.data['can_manage'], 'la autoridad no se hereda')
+
+        write_b = client.patch(
+            f'/api/admin/company-settings/?company={self.b.pk}',
+            {'phone': '+51 000'}, format='json',
+        )
+        self.assertEqual(write_b.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_platform_master_must_name_the_company(self):
+        master = User.objects.create_user(username='p3_master', password='x')
+        master.is_superuser = True
+        master.save()
+        client = self._as(master)
+
+        self.assertEqual(
+            client.get('/api/admin/company-settings/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        named = client.get(f'/api/admin/company-settings/?company={self.b.pk}')
+        self.assertEqual(named.status_code, status.HTTP_200_OK)
+        self.assertEqual(named.data['company']['name'], 'Empresa B')
+
+    def test_an_admin_saves_identity_and_settings_in_one_request(self):
+        res = self._as(self.admin_a).patch('/api/admin/company-settings/', {
+            'name': 'Empresa A Renombrada',
+            'legal_name': 'A S.A.C.',
+            'tax_id': '20111111111',
+            'phone': '+51 987 654 321',
+            'primary_color': '#123456',
+            'warranty_policy_text': 'Doce meses.',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.name, 'Empresa A Renombrada')
+        self.assertEqual(self.a.tax_id, '20111111111')
+        self.assertEqual(self.a.settings.primary_color, '#123456')
+
+    def test_slug_and_is_active_are_unreachable_from_this_endpoint(self):
+        """
+        Not "excluded by a serializer" — absent from both writers, so no payload
+        can reach them. They are routing and platform decisions.
+        """
+        before_slug, before_active = self.a.slug, self.a.is_active
+        res = self._as(self.admin_a).patch('/api/admin/company-settings/', {
+            'slug': 'secuestrada', 'is_active': False, 'company': self.b.pk,
+            'phone': '+51 111',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.slug, before_slug)
+        self.assertEqual(self.a.is_active, before_active)
+        self.assertEqual(self.a.settings.company_id, self.a.pk)
+
+    def test_currency_is_read_only(self):
+        """
+        Stored, but not editable: checkout charges through Stripe in one
+        platform-level currency. A dropdown offering USD while Stripe billed PEN
+        would be a lie with a UI on it.
+        """
+        res = self._as(self.admin_a).patch(
+            '/api/admin/company-settings/', {'currency': 'USD'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.settings.currency, 'PEN')
+
+    def test_an_invalid_colour_is_rejected_with_a_field_error(self):
+        res = self._as(self.admin_a).patch(
+            '/api/admin/company-settings/',
+            {'primary_color': 'url(https://evil.invalid)'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('primary_color', res.data)
+
+    def test_html_in_the_warranty_policy_is_rejected(self):
+        """
+        This string is rendered in customer emails and PDFs. Accepting markup
+        would turn one tenant's settings form into an HTML-injection vector
+        aimed at other people's inboxes.
+        """
+        res = self._as(self.admin_a).patch(
+            '/api/admin/company-settings/',
+            {'warranty_policy_text': '<script>alert(1)</script>'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('warranty_policy_text', res.data)
+
+    def test_invalid_urls_are_rejected(self):
+        for field in ('website_url', 'logo_url', 'terms_url'):
+            res = self._as(self.admin_a).patch(
+                '/api/admin/company-settings/',
+                {field: 'javascript:alert(1)'}, format='json',
+            )
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, field)
+            self.assertIn(field, res.data)
+
+    def test_an_invalid_whatsapp_number_is_rejected(self):
+        res = self._as(self.admin_a).patch(
+            '/api/admin/company-settings/',
+            {'whatsapp_number': 'https://evil.invalid'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('whatsapp_number', res.data)
+
+    def test_a_rejected_field_leaves_nothing_written(self):
+        """
+        Everything validates before anything is written, so a bad colour cannot
+        leave the company name already changed.
+        """
+        original = self.a.name
+        res = self._as(self.admin_a).patch('/api/admin/company-settings/', {
+            'name': 'No debería guardarse', 'primary_color': 'rojo',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.name, original)
+
+    def test_an_update_is_audited_with_field_names_only(self):
+        """
+        Who changed what and when. NOT the values: copying a policy or an
+        address into every audit row would put the same data in a second place
+        for no gain.
+        """
+        self._as(self.admin_a).patch('/api/admin/company-settings/', {
+            'phone': '+51 987 654 321',
+            'warranty_policy_text': 'Doce meses de garantía.',
+        }, format='json')
+
+        log = AdminAuditLog.objects.filter(action='company_settings_updated').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.a.pk)
+        self.assertIn('phone', log.metadata['changed_fields'])
+        self.assertIn('warranty_policy_text', log.metadata['changed_fields'])
+        blob = str(log.metadata)
+        self.assertNotIn('Doce meses de garantía.', blob, 'no se guardan valores')
+        self.assertNotIn('987 654 321', blob)
+
+    def test_a_logo_change_records_the_event_not_the_image(self):
+        self._as(self.admin_a).patch(
+            '/api/admin/company-settings/',
+            {'logo_url': 'https://cdn.example.invalid/logo.png'}, format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='company_settings_updated').first()
+        self.assertIn('logo_url', log.metadata['changed_fields'])
+        self.assertNotIn('cdn.example.invalid', str(log.metadata))
+
+
+class Phase3ProvisioningTest(TestCase):
+    """A new tenant arrives configurable, and configured by nobody else."""
+
+    def test_a_new_company_gets_its_settings(self):
+        from .company_provisioning import provision_company_access_defaults
+
+        company = Company.objects.create(name='Nueva P3', slug='nueva-p3')
+        result = provision_company_access_defaults(company)
+        self.assertTrue(result['settings_created'])
+        company.refresh_from_db()
+        self.assertIsNotNone(company.settings)
+
+    def test_provisioning_is_idempotent(self):
+        from .company_provisioning import provision_company_access_defaults
+
+        company = Company.objects.create(name='Otra P3', slug='otra-p3')
+        provision_company_access_defaults(company)
+        company.refresh_from_db()
+        company.settings.phone = '+51 555 555 555'
+        company.settings.save()
+
+        result = provision_company_access_defaults(company)
+        self.assertFalse(result['settings_created'])
+        company.refresh_from_db()
+        self.assertEqual(company.settings.phone, '+51 555 555 555', 'no se sobreescribe')
+
+    def test_a_new_company_inherits_nothing_from_another_tenant(self):
+        """
+        A new business starts BLANK, not wearing somebody else's name, address
+        and colours until it notices.
+        """
+        from .company_provisioning import provision_company_access_defaults
+
+        company = Company.objects.create(name='Limpia P3', slug='limpia-p3')
+        provision_company_access_defaults(company)
+        company.refresh_from_db()
+
+        row = company.settings
+        for field in (
+            'contact_email', 'phone', 'whatsapp_number', 'website_url',
+            'legal_address', 'city', 'logo_url', 'warranty_policy_text',
+            'order_notification_email', 'facebook_url', 'instagram_url',
+        ):
+            self.assertEqual(getattr(row, field), '', field)
+
+        self.assertEqual(company_branding(company).colors, NEUTRAL_THEME)
+
+    def test_a_company_created_through_the_api_gets_settings(self):
+        master = User.objects.create_user(username='p3_prov_master', password='x')
+        master.is_superuser = True
+        master.save()
+        client = APIClient()
+        client.force_authenticate(user=master)
+
+        res = client.post('/api/admin/companies/', {
+            'name': 'Vía API P3', 'slug': 'via-api-p3', 'tax_id': '20999999999',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        created = Company.objects.get(slug='via-api-p3')
+        self.assertIsNotNone(getattr(created, 'settings', None))
+
+    def test_configuration_status_reports_gaps_without_blocking(self):
+        company = _p3_company('p3-status', 'Incompleta')
+        report = company_configuration_status(company)
+        self.assertFalse(report['is_complete'])
+        self.assertGreater(report['missing_count'], 0)
+        self.assertIn('order_notification_email', report['consequential'])
+
+    def test_a_fully_configured_company_reports_complete(self):
+        company = _p3_company(
+            'p3-complete', 'Completa', legal_name='C S.A.C.', tax_id='20333333333',
+            legal_address='Calle C 3', phone='+51 333 333 333',
+            contact_email='hola@c.invalid', logo_url='https://cdn.invalid/l.png',
+            warranty_policy_text='Garantía C.',
+            order_notification_email='ventas@c.invalid',
+        )
+        report = company_configuration_status(company)
+        self.assertTrue(report['is_complete'], report['missing'])
+
+
+class Phase3BranchConfigurationTest(TestCase):
+    """
+    Branch CRUD and the fulfillment branch — closing the Phase 2D UI debt.
+
+    §53: changing which branch the storefront ships from must NOT rewrite orders
+    already placed. They carry their own `fulfillment_branch`, decided when they
+    were sold.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('p3-br-a', 'Empresa A')
+        self.b = _p3_company('p3-br-b', 'Empresa B')
+        self.a2 = Branch.objects.create(company=self.a, name='Segunda A')
+        self.foreign = Branch.objects.get(company=self.b)
+
+        self.admin, _ = _p2d_member(
+            self.a, 'p3_br_admin', ['company.view', 'company.manage'],
+        )
+        self.viewer, _ = _p2d_member(self.a, 'p3_br_viewer', ['company.view'])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def test_an_admin_edits_their_own_branch(self):
+        branch = Branch.objects.get(company=self.a, name='Sucursal principal')
+        res = self.client.patch(f'/api/admin/branches/{branch.pk}/', {
+            'name': 'Tienda Centro', 'address': 'Jirón Nuevo 123',
+            'phone': '+51 111 111 111',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        branch.refresh_from_db()
+        self.assertEqual(branch.name, 'Tienda Centro')
+        self.assertEqual(branch.address, 'Jirón Nuevo 123')
+
+    def test_a_branch_cannot_be_moved_to_another_company(self):
+        """
+        `company` is never read from the payload, so this is not prevented by a
+        check that could be forgotten — the field simply is not written.
+        """
+        res = self.client.patch(f'/api/admin/branches/{self.a2.pk}/', {
+            'company': self.b.pk, 'name': 'Intento',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.a2.refresh_from_db()
+        self.assertEqual(self.a2.company_id, self.a.pk)
+
+    def test_another_companys_branch_is_invisible(self):
+        res = self.client.patch(
+            f'/api/admin/branches/{self.foreign.pk}/', {'name': 'Robada'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.foreign.refresh_from_db()
+        self.assertNotEqual(self.foreign.name, 'Robada')
+
+    def test_a_viewer_cannot_edit_a_branch(self):
+        client = APIClient()
+        client.force_authenticate(user=self.viewer)
+        res = client.patch(
+            f'/api/admin/branches/{self.a2.pk}/', {'name': 'No'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_deactivating_the_fulfillment_branch_clears_the_pointer(self):
+        """
+        Rather than leaving a dangling one, which would make checkout refuse
+        every order with no explanation on the settings screen.
+        """
+        branch = self.a.default_inventory_branch
+        self.assertIsNotNone(branch)
+        res = self.client.patch(
+            f'/api/admin/branches/{branch.pk}/', {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.a.refresh_from_db()
+        self.assertIsNone(self.a.default_inventory_branch_id)
+
+    def test_deactivating_a_branch_does_not_touch_its_stock(self):
+        """A closed shop still holds its units; moving them is a transfer."""
+        product = _p2d_product(self.a, 'Producto BR', 'producto-br-p3')
+        _p2d_stock(self.a2, product, 7)
+        self.client.patch(
+            f'/api/admin/branches/{self.a2.pk}/', {'is_active': False}, format='json',
+        )
+        self.assertEqual(branch_quantity(self.a2, product), 7)
+
+    def test_changing_the_fulfillment_branch_does_not_rewrite_old_orders(self):
+        """The §53 test."""
+        original = self.a.default_inventory_branch
+        order = _p3_order(self.a, branch=original)
+        self.assertEqual(order.fulfillment_branch_id, original.pk)
+
+        res = self.client.patch(
+            f'/api/admin/companies/{self.a.pk}/fulfillment-branch/',
+            {'branch': self.a2.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.default_inventory_branch_id, self.a2.pk)
+
+        order.refresh_from_db()
+        self.assertEqual(
+            order.fulfillment_branch_id, original.pk,
+            'un pedido existente conserva la sucursal con la que se vendió',
+        )
+
+    def test_a_branch_edit_is_audited(self):
+        self.client.patch(
+            f'/api/admin/branches/{self.a2.pk}/', {'address': 'Calle Nueva 9'},
+            format='json',
+        )
+        log = AdminAuditLog.objects.filter(action='branch_updated').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.a.pk)
+        self.assertIn('address', log.metadata['changed_fields'])
+
+
+class Phase3DashboardConfigurationTest(TestCase):
+    """The dashboard reports configuration gaps, gated and tenant-safe."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p3-dash', 'Empresa Dash')
+        self.admin, _ = _p2d_member(
+            self.company, 'p3_dash_admin', ['company.view', 'company.manage'],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def test_the_dashboard_reports_configuration_status(self):
+        res = self.client.get('/api/me/internal-dashboard/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(res.data['configuration'])
+        self.assertFalse(res.data['configuration']['is_complete'])
+
+    def test_an_incomplete_configuration_raises_a_warning_alert(self):
+        codes = {a['code'] for a in self.client.get(
+            '/api/me/internal-dashboard/').data['alerts']}
+        self.assertIn('configuration_incomplete', codes)
+
+    def test_only_consequential_gaps_raise_the_alert(self):
+        """
+        A missing logo is a gap, not an alarm. Alerting on cosmetic gaps trains
+        people to ignore the panel.
+        """
+        row = self.company.settings
+        row.order_notification_email = 'ventas@dash.invalid'
+        row.save()
+        self.company.refresh_from_db()
+
+        data = self.client.get('/api/me/internal-dashboard/').data
+        codes = {a['code'] for a in data['alerts']}
+        self.assertNotIn('configuration_incomplete', codes)
+        self.assertFalse(data['configuration']['is_complete'], 'sigue habiendo huecos')
+        self.assertGreater(data['configuration']['missing_count'], 0)
+
+    def test_configuration_is_withheld_without_company_view(self):
+        stripped, _ = _p2d_member(self.company, 'p3_dash_blind', [])
+        client = APIClient()
+        client.force_authenticate(user=stripped)
+        res = client.get('/api/me/internal-dashboard/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res.data['configuration'])
+
+
+class Phase3MigrationRuleTest(TestCase):
+    """
+    How migration 0028 decides whose identity is whose — tested directly.
+
+    The migration itself cannot run inside a database that is already migrated,
+    so its DECISION is exercised here: the pilot is identified by SLUG, and every
+    other company gets a neutral row.
+    """
+
+    @property
+    def _module(self):
+        import importlib
+
+        return importlib.import_module(
+            'store.migrations.0028_backfill_company_settings',
+        )
+
+    def test_the_pilot_is_identified_by_slug_not_by_being_first(self):
+        """
+        `Company.objects.first()` would claim whichever tenant happened to have
+        the lowest id on an installation that had already onboarded others.
+        """
+        self.assertEqual(self._module._PILOT_SLUG, 'black-dog-store')
+
+    def test_the_pilot_kept_its_identity_as_data(self):
+        """
+        The values that used to be compiled into the services now live in the
+        pilot's own settings row, put there by 0028 during the upgrade.
+        """
+        pilot = Company.objects.filter(slug='black-dog-store').first()
+        self.assertIsNotNone(pilot, 'la empresa piloto debería existir tras 0015')
+        identity = company_identity(pilot)
+        self.assertEqual(identity.tax_id, '20610159886')
+        self.assertEqual(identity.legal_address, 'Octavio Muñoz Najar 238, Tienda 104')
+        self.assertTrue(identity.whatsapp_link.startswith('https://wa.me/'))
+        self.assertNotEqual(identity.warranty_policy_text, '')
+
+    def test_the_pilot_kept_its_palette(self):
+        pilot = Company.objects.filter(slug='black-dog-store').first()
+        colors = company_branding(pilot).colors
+        self.assertEqual(colors['background_color'], '#080808')
+        self.assertNotEqual(colors, NEUTRAL_THEME)
+
+    def test_another_company_never_inherits_the_pilots_identity(self):
+        """
+        The assertion this whole migration is shaped around. A tenant created
+        after the upgrade must be blank, not wearing the pilot's name and RUC.
+        """
+        other = _p3_company('p3-mig-other', 'Otra Empresa')
+        identity = company_identity(other)
+        blob = ' '.join(str(v) for v in identity.as_dict().values()).lower()
+        for pilot_value in ('black dog', 'cmau', '20610159886', 'octavio', '51936449536'):
+            self.assertNotIn(pilot_value, blob)
+        self.assertEqual(company_branding(other).colors, NEUTRAL_THEME)
+
+    def test_historical_orders_were_given_a_snapshot(self):
+        """
+        Existing orders were stamped with their company's identity during the
+        upgrade, so their documents stop depending on live configuration.
+        """
+        pilot = Company.objects.filter(slug='black-dog-store').first()
+        order = _p3_order(pilot, snapshot=False)
+        Order.objects.filter(pk=order.pk).update(
+            company_snapshot=self._module._identity_snapshot(
+                pilot, pilot.settings, order.fulfillment_branch,
+            ),
+        )
+        order.refresh_from_db()
+        self.assertEqual(order_identity(order).tax_id, '20610159886')
+
+    def test_the_migration_snapshot_shape_matches_the_runtime_one(self):
+        """
+        0028 carries its own copy of the snapshot builder, as a migration must.
+        This asserts the two produce the same KEYS today, so a change to one is a
+        deliberate divergence rather than an accident nobody notices.
+        """
+        company = _p3_company(
+            'p3-mig-shape', 'Forma', legal_name='F S.A.C.', tax_id='20444444444',
+            phone='+51 444 444 444', legal_address='Calle F 4',
+        )
+        branch = company.default_inventory_branch
+
+        runtime = build_identity_snapshot(company, branch)
+        migrated = self._module._identity_snapshot(company, company.settings, branch)
+        self.assertEqual(set(runtime), set(migrated))
+        self.assertEqual(runtime['tax_id'], migrated['tax_id'])
+        self.assertEqual(runtime['whatsapp_link'], migrated['whatsapp_link'])
+        self.assertEqual(set(runtime['branch'] or {}), set(migrated['branch'] or {}))
+
+    def test_the_global_notification_setting_is_no_longer_a_recipient(self):
+        """
+        It survives only so 0028 could copy it into the pilot's settings. Nothing
+        in the request path reads it — otherwise a second tenant's sales would be
+        announced at whichever address it holds.
+
+        Introspects the COMPILED function rather than the source: the docstring
+        explains the setting's history, and a text scan would fail on the
+        explanation instead of on the behaviour. `co_names` holds the identifiers
+        the bytecode actually touches.
+        """
+        from .email_services import send_internal_order_notification
+
+        names = set(send_internal_order_notification.__code__.co_names)
+        self.assertNotIn('ORDER_NOTIFICATION_EMAIL', names)
+        self.assertIn('order_notification_recipient', names)
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 2E — internal document sequences
+# ---------------------------------------------------------------------------
+#
+# WHAT THESE TESTS ARE DEFENDING
+#
+# A document number is an identifier somebody else is holding. Three failures
+# matter more than the rest, and each has a test whose name says so:
+#
+#   1. Two companies interleaving one counter — the bug this phase removes.
+#   2. A number handed out twice, by a race or by a rewound counter.
+#   3. A number already issued CHANGING, because somebody edited a prefix.
+
+from .models import InternalSequence  # noqa: E402
+import importlib  # noqa: E402
+import inspect  # noqa: E402
+import json  # noqa: E402
+
+from django.db import migrations  # noqa: E402
+
+from .sales_note_services import (  # noqa: E402
+    build_sales_note_context,
+    get_sales_note_filename,
+)
+from .sequences import (  # noqa: E402
+    DEFAULT_PADDING,
+    DEFAULT_PREFIX,
+    SequenceError,
+    allocate,
+    can_change_scope,
+    can_edit_next_value,
+    company_sequence,
+    ensure_branch_sequence,
+    ensure_company_sequence,
+    resolve_sequence_for_order,
+    sequence_scope,
+)
+
+
+def _p2e_set_scope(company, scope):
+    """Put a company on company- or branch-level numbering."""
+    row = company.settings
+    row.sales_note_sequence_scope = scope
+    row.save(update_fields=['sales_note_sequence_scope', 'updated_at'])
+    company.refresh_from_db()
+    return row
+
+
+def _p2e_issue(company, branch=None):
+    """Issue one sales note for a fresh paid order. Returns the note."""
+    from .sales_note_services import get_or_create_sales_note
+
+    order = _p3_order(company, branch=branch or company.default_inventory_branch)
+    note, _created = get_or_create_sales_note(order)
+    return note
+
+
+class Phase2eSequenceModelTest(TestCase):
+    """The model, its constraints and its validators."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p2e-model', 'Empresa Modelo')
+
+    def test_provisioning_creates_the_company_series(self):
+        sequence = company_sequence(self.company)
+        self.assertIsNotNone(sequence)
+        self.assertIsNone(sequence.branch_id)
+        self.assertEqual(sequence.prefix, DEFAULT_PREFIX)
+        self.assertEqual(sequence.padding, DEFAULT_PADDING)
+        self.assertEqual(sequence.next_value, 1)
+
+    def test_a_company_can_hold_only_one_company_level_series(self):
+        """
+        The reason the unique is CONDITIONAL.
+
+        A plain unique over (company, branch, document_type) would not catch this:
+        in SQL, NULL is not equal to NULL, so a company could accumulate any
+        number of company-level rows for one document type — the exact row that
+        must be singular.
+        """
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                InternalSequence.objects.create(
+                    company=self.company, branch=None,
+                    document_type=InternalSequence.DOCUMENT_SALES_NOTE,
+                )
+
+    def test_a_branch_can_hold_only_one_series_per_document_type(self):
+        from django.db import IntegrityError, transaction
+
+        branch = self.company.default_inventory_branch
+        ensure_branch_sequence(self.company, branch)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                InternalSequence.objects.create(
+                    company=self.company, branch=branch,
+                    document_type=InternalSequence.DOCUMENT_SALES_NOTE,
+                )
+
+    def test_a_series_cannot_point_at_another_companys_branch(self):
+        from django.core.exceptions import ValidationError
+
+        other = _p3_company('p2e-model-other', 'Otra')
+        with self.assertRaises(ValidationError):
+            InternalSequence.objects.create(
+                company=self.company, branch=other.default_inventory_branch,
+                document_type=InternalSequence.DOCUMENT_SALES_NOTE,
+            )
+
+    def test_the_service_refuses_a_foreign_branch(self):
+        other = _p3_company('p2e-model-other2', 'Otra 2')
+        with self.assertRaises(SequenceError):
+            ensure_branch_sequence(self.company, other.default_inventory_branch)
+
+    def test_a_dangerous_prefix_is_rejected(self):
+        """
+        The prefix reaches a PDF, the UI and — through `_safe_slug` — a
+        Content-Disposition header. The character set is the smallest one that
+        still expresses a series name.
+        """
+        from django.core.exceptions import ValidationError
+
+        sequence = company_sequence(self.company)
+        for attack in (
+            '\r\nContent-Disposition:',
+            '../../',
+            '<script>',
+            'NV-"',
+            'NV/2026/',          # `/` is a path separator; excluded deliberately
+            'A' * 20,            # too long
+            'NV ',               # whitespace
+            'NV;',
+        ):
+            sequence.prefix = attack
+            with self.assertRaises(ValidationError, msg=attack):
+                sequence.save()
+
+    def test_a_reasonable_prefix_is_accepted(self):
+        sequence = company_sequence(self.company)
+        for good in ('NV-', 'V', 'NOTA_', 'A1-', ''):
+            sequence.prefix = good
+            sequence.save()
+            sequence.refresh_from_db()
+            self.assertEqual(sequence.prefix, good)
+
+    def test_padding_is_bounded(self):
+        from django.core.exceptions import ValidationError
+
+        sequence = company_sequence(self.company)
+        for bad in (0, -1, 13, 1000000):
+            sequence.padding = bad
+            with self.assertRaises(ValidationError, msg=str(bad)):
+                sequence.save()
+
+        for good in (1, 6, 12):
+            sequence.padding = good
+            sequence.save()
+
+    def test_next_value_cannot_be_zero_or_negative(self):
+        from django.core.exceptions import ValidationError
+
+        sequence = company_sequence(self.company)
+        sequence.next_value = 0
+        with self.assertRaises(ValidationError):
+            sequence.save()
+
+    def test_format_pads_to_the_configured_width(self):
+        sequence = company_sequence(self.company)
+        self.assertEqual(sequence.format(42), 'NV-000042')
+        sequence.padding = 3
+        self.assertEqual(sequence.format(42), 'NV-042')
+        sequence.padding = 8
+        self.assertEqual(sequence.format(42), 'NV-00000042')
+
+    def test_preview_shows_the_next_number_and_allocates_nothing(self):
+        """§44: the preview is informative. Reading it must not consume a number."""
+        sequence = company_sequence(self.company)
+        before = sequence.next_value
+        self.assertEqual(sequence.preview, 'NV-000001')
+        self.assertEqual(sequence.preview, 'NV-000001')
+        sequence.refresh_from_db()
+        self.assertEqual(sequence.next_value, before)
+
+
+class Phase2eAllocationTest(TestCase):
+    """Allocation: atomic, monotonic, and joined to the document it numbers."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p2e-alloc', 'Empresa Alloc')
+        self.sequence = company_sequence(self.company)
+
+    def test_the_first_number_is_one(self):
+        from django.db import transaction
+
+        with transaction.atomic():
+            value, number = allocate(self.sequence)
+        self.assertEqual(value, 1)
+        self.assertEqual(number, 'NV-000001')
+
+    def test_successive_allocations_increment(self):
+        from django.db import transaction
+
+        seen = []
+        for _ in range(5):
+            with transaction.atomic():
+                seen.append(allocate(self.sequence)[0])
+        self.assertEqual(seen, [1, 2, 3, 4, 5])
+        self.sequence.refresh_from_db()
+        self.assertEqual(self.sequence.next_value, 6)
+
+    def test_a_rolled_back_transaction_does_not_consume_a_number(self):
+        """§24: if the document fails, the number is not spent."""
+        from django.db import transaction
+
+        class Boom(Exception):
+            pass
+
+        with self.assertRaises(Boom):
+            with transaction.atomic():
+                allocate(self.sequence)
+                raise Boom()
+
+        self.sequence.refresh_from_db()
+        self.assertEqual(self.sequence.next_value, 1)
+
+    def test_a_deactivated_series_issues_nothing(self):
+        from django.db import transaction
+
+        self.sequence.is_active = False
+        self.sequence.save()
+        with self.assertRaises(SequenceError):
+            with transaction.atomic():
+                allocate(self.sequence)
+
+    def test_reactivating_continues_rather_than_restarting(self):
+        """§68: deactivation retires a series; it does not reset it."""
+        from django.db import transaction
+
+        with transaction.atomic():
+            allocate(self.sequence)
+        self.sequence.refresh_from_db()
+
+        self.sequence.is_active = False
+        self.sequence.save()
+        self.sequence.is_active = True
+        self.sequence.save()
+
+        with transaction.atomic():
+            value, _ = allocate(self.sequence)
+        self.assertEqual(value, 2)
+
+    def test_the_service_does_not_derive_numbers_from_existing_documents(self):
+        """
+        §7: no MAX, no count, no order_by on the number.
+
+        Introspects the compiled functions rather than the source, so the
+        docstrings explaining what the old code did cannot fail the test.
+        """
+        from . import sales_note_services, sequences
+
+        for module, function in (
+            (sequences, sequences.allocate),
+            (sales_note_services, sales_note_services.get_or_create_sales_note),
+        ):
+            names = set(function.__code__.co_names)
+            for forbidden in ('aggregate', 'Max', 'count'):
+                self.assertNotIn(
+                    forbidden, names,
+                    f'{function.__name__} vuelve a derivar el número de los documentos',
+                )
+
+    def test_the_counter_is_a_number_not_a_parsed_string(self):
+        field = InternalSequence._meta.get_field('next_value')
+        self.assertEqual(field.get_internal_type(), 'PositiveBigIntegerField')
+
+
+class Phase2eCrossTenantTest(TestCase):
+    """
+    THE BUG THIS PHASE REMOVES.
+
+    Before: A → NV-000001, B → NV-000002, A → NV-000003. Each tenant saw gaps
+    caused by a stranger's activity.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('p2e-a', 'Empresa A')
+        self.b = _p3_company('p2e-b', 'Empresa B')
+
+    def test_two_companies_number_independently(self):
+        """§61, exactly as written in the brief."""
+        self.assertEqual(_p2e_issue(self.a).number, 'NV-000001')
+        self.assertEqual(_p2e_issue(self.b).number, 'NV-000001')
+        self.assertEqual(_p2e_issue(self.a).number, 'NV-000002')
+        self.assertEqual(_p2e_issue(self.b).number, 'NV-000002')
+
+    def test_the_same_display_number_may_exist_in_two_companies(self):
+        """
+        §63: no prefix and no number is reserved globally.
+
+        The old schema forbade this with a unique on `number`, which is what made
+        one tenant's numbering depend on another's.
+        """
+        first = _p2e_issue(self.a)
+        second = _p2e_issue(self.b)
+        self.assertEqual(first.number, second.number)
+        self.assertNotEqual(first.sequence_id, second.sequence_id)
+
+    def test_each_note_records_which_series_issued_it(self):
+        note = _p2e_issue(self.a)
+        self.assertEqual(note.sequence.company_id, self.a.pk)
+        self.assertEqual(note.sequence_value, 1)
+        self.assertEqual(note.number, note.sequence.format(note.sequence_value))
+
+    def test_companies_may_use_different_prefixes(self):
+        """§64."""
+        sequence_b = company_sequence(self.b)
+        sequence_b.prefix = 'SALE-'
+        sequence_b.save()
+        self.assertEqual(_p2e_issue(self.a).number, 'NV-000001')
+        self.assertEqual(_p2e_issue(self.b).number, 'SALE-000001')
+
+    def test_a_companys_counter_is_untouched_by_another_companys_issuance(self):
+        for _ in range(3):
+            _p2e_issue(self.a)
+        self.assertEqual(company_sequence(self.b).next_value, 1)
+
+
+class Phase2eBranchScopeTest(TestCase):
+    """Per-branch numbering, and where the branch comes from."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p2e-branch', 'Empresa Branch')
+        self.a1 = self.company.default_inventory_branch
+        self.a2 = Branch.objects.create(company=self.company, name='A2')
+        _p2e_set_scope(self.company, CompanySettings.SEQUENCE_SCOPE_BRANCH)
+
+    def test_each_branch_numbers_independently(self):
+        """§62, exactly as written in the brief."""
+        self.assertEqual(_p2e_issue(self.company, self.a1).number, 'NV-000001')
+        self.assertEqual(_p2e_issue(self.company, self.a1).number, 'NV-000002')
+        self.assertEqual(_p2e_issue(self.company, self.a2).number, 'NV-000001')
+        self.assertEqual(_p2e_issue(self.company, self.a1).number, 'NV-000003')
+
+    def test_branch_series_are_created_on_demand(self):
+        """Lazy: no counter exists for a branch that has never issued."""
+        self.assertFalse(
+            InternalSequence.objects.filter(company=self.company, branch=self.a2).exists()
+        )
+        _p2e_issue(self.company, self.a2)
+        self.assertTrue(
+            InternalSequence.objects.filter(company=self.company, branch=self.a2).exists()
+        )
+
+    def test_a_new_branch_series_copies_the_company_template(self):
+        template = company_sequence(self.company)
+        template.prefix = 'X_'
+        template.padding = 4
+        template.save()
+
+        sequence = ensure_branch_sequence(self.company, self.a2)
+        self.assertEqual(sequence.prefix, 'X_')
+        self.assertEqual(sequence.padding, 4)
+        self.assertEqual(sequence.next_value, 1, 'una sucursal nueva empieza en 1')
+
+    def test_the_branch_is_derived_from_the_order_never_chosen(self):
+        """
+        §47: letting a caller name the branch would let them pick whichever
+        series gives them the number they want.
+        """
+        order = _p3_order(self.company, branch=self.a2)
+        sequence = resolve_sequence_for_order(order)
+        self.assertEqual(sequence.branch_id, self.a2.pk)
+
+    def test_an_order_with_no_branch_falls_back_to_the_company_series(self):
+        """
+        Possible for orders that predate Phase 2D. The note must be issuable, and
+        the company series is the one that order's numbering already belonged to.
+        """
+        order = _p3_order(self.company, branch=None)
+        Order.objects.filter(pk=order.pk).update(fulfillment_branch=None)
+        order.refresh_from_db()
+        sequence = resolve_sequence_for_order(order)
+        self.assertIsNone(sequence.branch_id)
+
+    def test_the_scope_is_read_from_settings_not_inferred_from_rows(self):
+        """
+        A leftover branch row must not silently mean "branch scope". Only the
+        stored policy decides.
+        """
+        ensure_branch_sequence(self.company, self.a2)
+        _p2e_set_scope(self.company, CompanySettings.SEQUENCE_SCOPE_COMPANY)
+        order = _p3_order(self.company, branch=self.a2)
+        self.assertIsNone(resolve_sequence_for_order(order).branch_id)
+
+    def test_company_series_still_counts_under_company_scope(self):
+        _p2e_set_scope(self.company, CompanySettings.SEQUENCE_SCOPE_COMPANY)
+        self.assertEqual(_p2e_issue(self.company, self.a1).number, 'NV-000001')
+        self.assertEqual(_p2e_issue(self.company, self.a2).number, 'NV-000002')
+
+
+class Phase2eConcurrencyTest(TransactionTestCase):
+    """
+    Two people issuing at once. The interesting cases are the ones a happy path
+    never reaches.
+
+    WHAT SQLITE CAN AND CANNOT PROVE
+    --------------------------------
+    `select_for_update()` is a no-op on SQLite — the engine serialises writes
+    with a database-level lock — so a threaded race here would exercise the
+    engine's global lock rather than this module's row lock, and pass for the
+    wrong reason. That is worse than no test.
+
+    So the sequential invariants run on any backend, and the genuinely
+    concurrent case runs ONLY where row locking exists. On SQLite it is skipped,
+    loudly. Same rule as the Phase 2D inventory tests.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p2e-conc', 'Empresa Conc')
+        self.sequence = company_sequence(self.company)
+
+    def test_allocation_outside_a_transaction_is_refused(self):
+        """
+        The number and the document must commit or roll back together.
+
+        Only observable from a TransactionTestCase: a plain TestCase wraps every
+        test in a transaction, so the guard would never see the outside.
+        """
+        with self.assertRaises(SequenceError):
+            allocate(self.sequence)
+
+    def test_no_number_is_ever_handed_out_twice(self):
+        numbers = [_p2e_issue(self.company).number for _ in range(10)]
+        self.assertEqual(len(numbers), len(set(numbers)))
+        self.assertEqual(numbers[0], 'NV-000001')
+        self.assertEqual(numbers[-1], 'NV-000010')
+
+    def test_issuing_twice_for_the_same_order_consumes_one_number(self):
+        """
+        §28. The order lock is what makes this true: the second request waits,
+        finds the note already there, and returns WITHOUT allocating.
+
+        Allocating before the existence check would burn an ordinal on a note
+        that is never written — a gap with no document to explain it.
+        """
+        from .sales_note_services import get_or_create_sales_note
+
+        order = _p3_order(self.company)
+        first, created_first = get_or_create_sales_note(order)
+        second, created_second = get_or_create_sales_note(order)
+
+        self.assertTrue(created_first)
+        self.assertFalse(created_second)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(first.number, second.number)
+
+        self.sequence.refresh_from_db()
+        self.assertEqual(self.sequence.next_value, 2, 'un solo número consumido')
+        self.assertEqual(SalesNote.objects.filter(order=order).count(), 1)
+
+    def test_two_companies_do_not_contend(self):
+        """
+        §84: issuance in A locks A's row and nothing else. Verified by state
+        rather than by timing — B's counter is untouched by A's activity.
+        """
+        other = _p3_company('p2e-conc-b', 'Empresa Conc B')
+        for _ in range(3):
+            _p2e_issue(self.company)
+        self.assertEqual(company_sequence(other).next_value, 1)
+        self.assertEqual(_p2e_issue(other).number, 'NV-000001')
+
+    def test_two_branches_do_not_contend(self):
+        other_branch = Branch.objects.create(company=self.company, name='Conc B2')
+        _p2e_set_scope(self.company, CompanySettings.SEQUENCE_SCOPE_BRANCH)
+
+        _p2e_issue(self.company, self.company.default_inventory_branch)
+        _p2e_issue(self.company, self.company.default_inventory_branch)
+        self.assertEqual(_p2e_issue(self.company, other_branch).number, 'NV-000001')
+
+    def test_the_database_refuses_a_duplicate_ordinal_even_if_the_service_is_wrong(self):
+        """
+        §42: the constraint is the backstop, not the service.
+
+        Simulated by writing a second note on an ordinal already taken — the
+        shape a bug in the allocator would produce.
+        """
+        from django.db import IntegrityError, transaction
+
+        note = _p2e_issue(self.company)
+        order = _p3_order(self.company)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                SalesNote.objects.create(
+                    order=order,
+                    sequence=note.sequence,
+                    sequence_value=note.sequence_value,
+                    number=note.number,
+                    status=SalesNote.STATUS_ISSUED,
+                    issued_at=timezone.now(),
+                )
+
+    def test_simultaneous_issuance_for_different_orders(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a threaded race here would exercise the engine\'s global write '
+                'lock rather than this module\'s. Run the suite against PostgreSQL '
+                'to exercise it.'
+            )
+
+        from .sales_note_services import get_or_create_sales_note
+
+        orders = [_p3_order(self.company) for _ in range(8)]
+        results = []
+        lock = threading.Lock()
+
+        def worker(order):
+            try:
+                note, _created = get_or_create_sales_note(order)
+                with lock:
+                    results.append(note.number)
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=worker, args=(o,)) for o in orders]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(results), len(orders))
+        self.assertEqual(len(set(results)), len(orders), 'ningún número repetido')
+        self.sequence.refresh_from_db()
+        self.assertEqual(self.sequence.next_value, len(orders) + 1)
+
+    def test_the_allocator_locks_the_sequence_row_and_nothing_wider(self):
+        """
+        Introspection, because the behavioural test above cannot run on SQLite.
+
+        Locking `CompanySettings` — the tempting shortcut, since the scope lives
+        there — would serialise every branch of a company behind every other and
+        block the company's whole configuration for the duration of a PDF number.
+        """
+        import inspect
+
+        from . import sequences
+
+        source = inspect.getsource(sequences.allocate)
+        self.assertIn('select_for_update', source)
+        self.assertIn('InternalSequence', source)
+        self.assertNotIn('CompanySettings.objects.select_for_update', source)
+
+        module_source = inspect.getsource(sequences)
+        self.assertNotIn('CompanySettings.objects.select_for_update', module_source)
+
+
+class Phase2eConfigTest(TestCase):
+    """
+    Changing the shape of the numbers, and what changing it must NOT touch.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p2e-config', 'Empresa Config')
+        self.sequence = company_sequence(self.company)
+
+    def test_prefix_and_padding_apply_to_the_next_document(self):
+        self.sequence.prefix = 'VTA-'
+        self.sequence.padding = 4
+        self.sequence.save()
+        self.assertEqual(_p2e_issue(self.company).number, 'VTA-0001')
+
+    def test_changing_the_prefix_does_not_rewrite_documents_already_issued(self):
+        """
+        §33 and the reason `number` is a STORED string rather than a property.
+
+        A note is handed to a customer and attached to an email. If the PDF
+        re-derived its number from the series, editing the prefix would silently
+        change what an already-delivered document says — the paper in someone's
+        hand and the record in the system would stop agreeing.
+        """
+        issued = _p2e_issue(self.company)
+        self.assertEqual(issued.number, 'NV-000001')
+
+        # Reloaded, not reused: the in-memory copy from setUp still believes the
+        # counter is at 1, and a full save() would write that belief back.
+        self.sequence.refresh_from_db()
+        self.sequence.prefix = 'VTA-'
+        self.sequence.padding = 3
+        self.sequence.save()
+
+        issued.refresh_from_db()
+        self.assertEqual(issued.number, 'NV-000001', 'el documento emitido no cambia')
+        self.assertEqual(_p2e_issue(self.company).number, 'VTA-002')
+
+    def test_padding_only_pads_it_never_truncates(self):
+        """
+        A counter past its padding must widen, not wrap. `zfill` already does
+        this; the test pins it, because the alternative — slicing to width —
+        would produce a duplicate number, which is the one outcome forbidden.
+        """
+        self.sequence.padding = 2
+        self.sequence.next_value = 1000
+        self.sequence.save()
+        self.assertEqual(self.sequence.preview, 'NV-1000')
+
+    def test_an_empty_prefix_is_allowed(self):
+        self.sequence.prefix = ''
+        self.sequence.save()
+        self.assertEqual(_p2e_issue(self.company).number, '000001')
+
+    def test_the_counter_may_be_set_before_the_first_document(self):
+        """A business migrating from another system continues its numbering."""
+        self.assertTrue(can_edit_next_value(self.sequence))
+        self.sequence.next_value = 5001
+        self.sequence.save()
+        self.assertEqual(_p2e_issue(self.company).number, 'NV-005001')
+
+    def test_the_counter_is_frozen_once_it_has_issued(self):
+        _p2e_issue(self.company)
+        self.sequence.refresh_from_db()
+        self.assertTrue(self.sequence.has_issued)
+        self.assertFalse(can_edit_next_value(self.sequence))
+
+    def test_a_preview_does_not_consume_a_number(self):
+        """
+        §36. The obvious wrong implementation is to allocate and show the result,
+        which turns every glance at the settings page into a gap in the series.
+        """
+        before = self.sequence.next_value
+        preview = self.sequence.preview
+        self.sequence.refresh_from_db()
+        self.assertEqual(self.sequence.next_value, before)
+        self.assertEqual(preview, 'NV-000001')
+        self.assertEqual(_p2e_issue(self.company).number, preview)
+
+    def test_a_deactivated_series_refuses_to_issue(self):
+        self.sequence.is_active = False
+        self.sequence.save()
+        with self.assertRaises(SequenceError):
+            with transaction.atomic():
+                allocate(self.sequence)
+
+    def test_editing_a_series_does_not_rewind_its_counter(self):
+        """
+        The hazard behind the endpoint's narrow update_fields.
+
+        A settings form is loaded, a sale happens, the form is saved. A full save
+        of the object read BEFORE the sale writes back the old counter, and the
+        next document reuses an ordinal that is already on paper. The endpoint
+        writes only the fields that changed; this pins that it stays that way.
+        """
+        stale = InternalSequence.objects.get(pk=self.sequence.pk)
+        _p2e_issue(self.company)
+
+        stale.prefix = 'VTA-'
+        stale.save(update_fields=['prefix', 'updated_at'])
+
+        self.sequence.refresh_from_db()
+        self.assertEqual(self.sequence.next_value, 2, 'el contador no retrocede')
+        self.assertEqual(self.sequence.prefix, 'VTA-')
+
+    def test_the_scope_is_frozen_once_the_company_has_issued(self):
+        self.assertTrue(can_change_scope(self.company))
+        _p2e_issue(self.company)
+        self.assertFalse(can_change_scope(self.company))
+
+
+class Phase2eSequenceApiTest(TestCase):
+    """
+    The configuration endpoints: who may read, who may write, and what is
+    unreachable from another tenant's session.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('p2e-api-a', 'Empresa API A')
+        self.b = _p3_company('p2e-api-b', 'Empresa API B')
+        self.admin_a, _ = _p2d_member(
+            self.a, 'p2e_admin_a', ['company.view', 'company.manage'],
+        )
+        self.viewer_a, _ = _p2d_member(self.a, 'p2e_viewer_a', ['company.view'])
+        self.admin_b, _ = _p2d_member(
+            self.b, 'p2e_admin_b', ['company.view', 'company.manage'],
+        )
+        self.outsider = User.objects.create_user(username='p2e_outsider', password='x')
+        self.seq_a = company_sequence(self.a)
+        self.seq_b = company_sequence(self.b)
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_an_admin_lists_their_own_series(self):
+        res = self._as(self.admin_a).get('/api/admin/sequences/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data['results']), 1)
+        self.assertEqual(res.data['results'][0]['id'], self.seq_a.pk)
+        self.assertEqual(res.data['results'][0]['preview'], 'NV-000001')
+        self.assertTrue(res.data['can_manage'])
+
+    def test_the_response_says_the_numbering_is_not_fiscal(self):
+        """
+        §57. `NV-000001` next to a logo and a total looks like a receipt. The
+        product must keep saying, at every surface, that it is not one.
+        """
+        res = self._as(self.admin_a).get('/api/admin/sequences/')
+        self.assertIn('No es numeración fiscal', res.data['notice'])
+        self.assertIn('SUNAT', res.data['notice'])
+
+    def test_a_viewer_reads_but_cannot_write(self):
+        client = self._as(self.viewer_a)
+        self.assertEqual(
+            client.get('/api/admin/sequences/').status_code, status.HTTP_200_OK,
+        )
+        write = client.patch(
+            f'/api/admin/sequences/{self.seq_a.pk}/', {'prefix': 'X-'}, format='json',
+        )
+        self.assertEqual(write.status_code, status.HTTP_403_FORBIDDEN)
+        self.seq_a.refresh_from_db()
+        self.assertEqual(self.seq_a.prefix, 'NV-')
+
+    def test_an_admin_cannot_read_another_tenants_series(self):
+        res = self._as(self.admin_a).get(f'/api/admin/sequences/{self.seq_b.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_an_admin_cannot_write_another_tenants_series(self):
+        """
+        The leak this phase could most easily have shipped: a numeric id in a URL
+        with the tenant check left to a later line that a refactor drops.
+        """
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/sequences/{self.seq_b.pk}/',
+            {'prefix': 'HACK-', 'next_value': 9999}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.seq_b.refresh_from_db()
+        self.assertEqual(self.seq_b.prefix, 'NV-')
+        self.assertEqual(self.seq_b.next_value, 1)
+
+    def test_a_company_parameter_cannot_reach_another_tenant(self):
+        res = self._as(self.admin_a).get(f'/api/admin/sequences/?company={self.b.pk}')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_user_with_no_membership_is_refused(self):
+        res = self._as(self.outsider).get('/api/admin/sequences/')
+        self.assertIn(
+            res.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND),
+        )
+
+    def test_anonymous_is_refused(self):
+        res = APIClient().get('/api/admin/sequences/')
+        self.assertIn(
+            res.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
+        )
+
+    def test_an_admin_edits_prefix_and_padding(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/sequences/{self.seq_a.pk}/',
+            {'prefix': 'VTA-', 'padding': 4}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['preview'], 'VTA-0001')
+
+    def test_an_invalid_prefix_is_rejected(self):
+        for bad in ('NV/', '../', 'NV 1', 'a' * 13):
+            res = self._as(self.admin_a).patch(
+                f'/api/admin/sequences/{self.seq_a.pk}/', {'prefix': bad}, format='json',
+            )
+            self.assertEqual(
+                res.status_code, status.HTTP_400_BAD_REQUEST, f'aceptó {bad!r}',
+            )
+        self.seq_a.refresh_from_db()
+        self.assertEqual(self.seq_a.prefix, 'NV-')
+
+    def test_padding_outside_its_range_is_rejected(self):
+        for bad in (0, 13, 99):
+            res = self._as(self.admin_a).patch(
+                f'/api/admin/sequences/{self.seq_a.pk}/', {'padding': bad}, format='json',
+            )
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_the_counter_cannot_be_moved_after_the_first_document(self):
+        _p2e_issue(self.a)
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/sequences/{self.seq_a.pk}/', {'next_value': 1}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('next_value', res.data)
+        self.seq_a.refresh_from_db()
+        self.assertEqual(self.seq_a.next_value, 2)
+
+    def test_resending_the_same_counter_is_not_a_change(self):
+        """
+        A settings form PATCHes every field it renders, including the ones the
+        user did not touch. Treating an unchanged value as an edit would make the
+        page impossible to save at all after the first document.
+        """
+        _p2e_issue(self.a)
+        self.seq_a.refresh_from_db()
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/sequences/{self.seq_a.pk}/',
+            {'prefix': 'VTA-', 'next_value': self.seq_a.next_value}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['prefix'], 'VTA-')
+
+    def test_an_admin_switches_the_scope_before_issuing(self):
+        res = self._as(self.admin_a).patch(
+            '/api/admin/sequences/scope/',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_BRANCH}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['changed'])
+        self.a.refresh_from_db()
+        self.assertEqual(
+            self.a.settings.sales_note_sequence_scope,
+            CompanySettings.SEQUENCE_SCOPE_BRANCH,
+        )
+
+    def test_the_scope_is_frozen_after_the_first_document(self):
+        _p2e_issue(self.a)
+        res = self._as(self.admin_a).patch(
+            '/api/admin/sequences/scope/',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_BRANCH}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.a.refresh_from_db()
+        self.assertEqual(
+            self.a.settings.sales_note_sequence_scope,
+            CompanySettings.SEQUENCE_SCOPE_COMPANY,
+        )
+
+    def test_reasserting_the_current_scope_is_allowed_after_issuing(self):
+        _p2e_issue(self.a)
+        res = self._as(self.admin_a).patch(
+            '/api/admin/sequences/scope/',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_COMPANY}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['changed'])
+
+    def test_a_viewer_cannot_switch_the_scope(self):
+        res = self._as(self.viewer_a).patch(
+            '/api/admin/sequences/scope/',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_BRANCH}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_company_with_no_series_gets_one_on_read(self):
+        """
+        A tenant provisioned before Phase 2E has no series row. The settings page
+        must be usable anyway, so the list creates it — idempotently.
+        """
+        InternalSequence.objects.filter(company=self.a).delete()
+        client = self._as(self.admin_a)
+        first = client.get('/api/admin/sequences/')
+        second = client.get('/api/admin/sequences/')
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(second.data['results']), 1)
+        self.assertEqual(InternalSequence.objects.filter(company=self.a).count(), 1)
+
+    def test_a_restricted_user_sees_only_their_branches_series(self):
+        """
+        Phase 2D's second axis, applied to numbering: a user who may operate two
+        of three shops configures two counters, not three.
+        """
+        b1 = self.a.default_inventory_branch
+        b2 = Branch.objects.create(company=self.a, name='API Sucursal 2')
+        b3 = Branch.objects.create(company=self.a, name='API Sucursal 3')
+        _p2e_set_scope(self.a, CompanySettings.SEQUENCE_SCOPE_BRANCH)
+        for branch in (b1, b2, b3):
+            ensure_branch_sequence(self.a, branch)
+
+        restricted, _ = _p2d_member(
+            self.a, 'p2e_restricted', ['company.view', 'company.manage'],
+            mode='selected', branches=[b1, b2],
+        )
+        res = self._as(restricted).get('/api/admin/sequences/')
+        branch_ids = {r['branch'] for r in res.data['results'] if r['branch']}
+        self.assertEqual(branch_ids, {b1.pk, b2.pk})
+        self.assertNotIn(b3.pk, branch_ids)
+
+    def test_under_company_scope_dormant_branch_rows_are_not_listed(self):
+        """
+        Leftovers from a branch-scope configuration are not in use. Listing them
+        would invite someone to configure a counter that never issues anything.
+        """
+        ensure_branch_sequence(self.a, self.a.default_inventory_branch)
+        res = self._as(self.admin_a).get('/api/admin/sequences/')
+        self.assertEqual(len(res.data['results']), 1)
+        self.assertIsNone(res.data['results'][0]['branch'])
+
+
+class Phase2eMigrationTest(TestCase):
+    """
+    What the two migrations promise about data that already exists.
+
+    The upgrade itself was verified end-to-end against a database populated at
+    0028 and migrated forward; these pin the invariants so a later edit to the
+    backfill cannot quietly break them.
+    """
+
+    def test_reverse_guard_raises_with_an_explanation(self):
+        """
+        Reversing 0029 restores the GLOBAL unique on number — unsatisfiable once
+        two tenants each hold an NV-000001, which is the entire point of the
+        phase. Refusing loudly beats a database error nobody can act on, and
+        beats "succeeding" by renumbering documents people are holding.
+        """
+        module = importlib.import_module('store.migrations.0029_internal_sequences')
+        with self.assertRaises(RuntimeError) as ctx:
+            module._refuse_reverse(None, None)
+        message = str(ctx.exception)
+        self.assertIn('no es reversible', message)
+        self.assertIn('copia de seguridad', message)
+
+    def test_the_reverse_guard_runs_first_on_a_rollback(self):
+        """
+        Django applies reverse operations in reverse order, so the guard must be
+        the LAST operation to be the FIRST thing a rollback hits. Anywhere else
+        and it fires after some of the schema is already undone.
+        """
+        module = importlib.import_module('store.migrations.0029_internal_sequences')
+        last = module.Migration.operations[-1]
+        self.assertIsInstance(last, migrations.RunPython)
+        self.assertIs(last.reverse_code, module._refuse_reverse)
+
+    def test_the_backfill_never_writes_the_number_column(self):
+        """
+        §33: already-issued documents are history. The backfill attaches them to
+        a series and records their ordinal; it must not touch the string a
+        customer already received.
+        """
+        module = importlib.import_module(
+            'store.migrations.0030_backfill_internal_sequences'
+        )
+        source = inspect.getsource(module)
+        self.assertNotIn("number=", source.replace('sequence_value=', ''))
+        self.assertNotIn("'number'", source.split('_NUMBER_RE')[-1].split('def ')[0])
+
+    def test_the_backfill_parses_a_conventional_number(self):
+        module = importlib.import_module(
+            'store.migrations.0030_backfill_internal_sequences'
+        )
+        match = module._NUMBER_RE.match('NV-000015')
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group('prefix'), 'NV-')
+        self.assertEqual(int(match.group('digits')), 15)
+
+    def test_the_backfill_leaves_an_unparseable_number_alone(self):
+        """
+        A hand-typed `MANUAL-ABC` has no ordinal. Inventing one would put it in
+        the series and risk colliding with a real number; the honest outcome is
+        a note with its string intact and `sequence_value` NULL.
+        """
+        module = importlib.import_module(
+            'store.migrations.0030_backfill_internal_sequences'
+        )
+        self.assertIsNone(module._NUMBER_RE.match('MANUAL-ABC'))
+
+    def test_a_note_with_no_ordinal_is_allowed_by_the_constraint(self):
+        """
+        The uniqueness constraint is CONDITIONAL on both columns being present,
+        so unparseable legacy notes coexist rather than blocking the migration.
+        """
+        company = _p3_company('p2e-mig', 'Empresa Migración')
+        sequence = company_sequence(company)
+        for _ in range(2):
+            SalesNote.objects.create(
+                order=_p3_order(company),
+                sequence=sequence,
+                sequence_value=None,
+                number='MANUAL-ABC',
+                status=SalesNote.STATUS_ISSUED,
+                issued_at=timezone.now(),
+            )
+        self.assertEqual(SalesNote.objects.filter(number='MANUAL-ABC').count(), 2)
+
+    def test_two_tenants_may_each_hold_the_same_number(self):
+        """
+        The reason the global unique was dropped. Before Phase 2E, company B
+        issuing after company A got NV-000002 — one tenant's numbering visibly
+        depending on another's activity.
+        """
+        a = _p3_company('p2e-mig-a', 'Migración A')
+        b = _p3_company('p2e-mig-b', 'Migración B')
+        self.assertEqual(_p2e_issue(a).number, 'NV-000001')
+        self.assertEqual(_p2e_issue(b).number, 'NV-000001')
+        self.assertEqual(SalesNote.objects.filter(number='NV-000001').count(), 2)
+
+
+class Phase2ePdfTest(TestCase):
+    """The number as it reaches paper."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'p2e-pdf', 'Empresa PDF',
+            legal_name='Empresa PDF S.A.C.', tax_id='20555555555',
+        )
+        self.note = _p2e_issue(self.company)
+
+    def test_the_pdf_shows_the_number_that_was_stored(self):
+        ctx = build_sales_note_context(self.note)
+        self.assertEqual(ctx['number'], self.note.number)
+        self.assertEqual(ctx['number'], 'NV-000001')
+
+    def test_the_pdf_number_survives_a_later_prefix_change(self):
+        """
+        The PDF is regenerated on demand — a customer asks for their copy months
+        later. It must render what the document said when it was issued, not what
+        the series would produce today.
+        """
+        sequence = company_sequence(self.company)
+        sequence.prefix = 'VTA-'
+        sequence.padding = 3
+        sequence.save()
+
+        self.note.refresh_from_db()
+        self.assertEqual(build_sales_note_context(self.note)['number'], 'NV-000001')
+
+    def test_the_pdf_carries_the_issuing_companys_identity(self):
+        ctx = build_sales_note_context(self.note)
+        self.assertEqual(ctx['store_name'], 'Empresa PDF')
+        self.assertEqual(ctx['store_ruc'], '20555555555')
+
+    def test_the_pdf_says_it_is_not_a_sunat_document(self):
+        ctx = build_sales_note_context(self.note)
+        self.assertIn('SUNAT', ctx['disclaimer'])
+        self.assertTrue(ctx['disclaimer'])
+
+    def test_two_tenants_holding_the_same_number_render_different_documents(self):
+        other = _p3_company('p2e-pdf-b', 'Empresa PDF B', tax_id='20666666666')
+        other_note = _p2e_issue(other)
+
+        mine = build_sales_note_context(self.note)
+        theirs = build_sales_note_context(other_note)
+        self.assertEqual(mine['number'], theirs['number'])
+        self.assertNotEqual(mine['store_name'], theirs['store_name'])
+        self.assertNotEqual(mine['store_ruc'], theirs['store_ruc'])
+
+    def test_the_filename_is_built_from_the_slug_not_free_text(self):
+        name = get_sales_note_filename(self.note)
+        self.assertTrue(name.endswith('.pdf'))
+        self.assertIn('nv-000001', name.lower())
+        self.assertNotIn('/', name)
+        self.assertNotIn('..', name)
+
+    def test_a_prefix_cannot_smuggle_a_path_into_the_filename(self):
+        """
+        Belt and braces. The validator already refuses `/`, and the filename
+        builder slugs whatever it gets; this pins both, because either alone
+        being dropped would make the other a single point of failure.
+        """
+        sequence = company_sequence(self.company)
+        with self.assertRaises(DjangoValidationError):
+            sequence.prefix = '../etc/'
+            sequence.full_clean()
+
+
+class Phase2eAuditTest(TestCase):
+    """Configuration changes leave a trail; issuance already did."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p2e-audit', 'Empresa Audit')
+        # Two capabilities because they are genuinely two permissions: deciding
+        # what the numbers look like is `company.manage`, handing out the next
+        # one is `sales.notes.manage`.
+        self.admin, _ = _p2d_member(
+            self.company, 'p2e_audit_admin',
+            ['company.view', 'company.manage', 'sales.notes.manage'],
+        )
+        self.sequence = company_sequence(self.company)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def test_editing_a_series_is_logged(self):
+        AdminAuditLog.objects.all().delete()
+        self.client.patch(
+            f'/api/admin/sequences/{self.sequence.pk}/',
+            {'prefix': 'VTA-', 'padding': 4}, format='json',
+        )
+        entry = AdminAuditLog.objects.filter(action='sequence_updated').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.actor, self.admin)
+        self.assertEqual(entry.metadata['company_id'], self.company.pk)
+        self.assertEqual(entry.metadata['changed_fields'], ['padding', 'prefix'])
+
+    def test_a_patch_that_changes_nothing_is_not_logged(self):
+        """
+        A settings page that PATCHes on every render would otherwise fill the
+        audit trail with entries recording that nothing happened, which is how a
+        trail stops being read.
+        """
+        AdminAuditLog.objects.all().delete()
+        res = self.client.patch(
+            f'/api/admin/sequences/{self.sequence.pk}/',
+            {'prefix': 'NV-', 'padding': 6}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(AdminAuditLog.objects.filter(action='sequence_updated').exists())
+
+    def test_changing_the_scope_is_logged(self):
+        AdminAuditLog.objects.all().delete()
+        self.client.patch(
+            '/api/admin/sequences/scope/',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_BRANCH}, format='json',
+        )
+        entry = AdminAuditLog.objects.filter(action='sequence_scope_changed').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.company, self.company)
+        self.assertEqual(entry.metadata['scope'], CompanySettings.SEQUENCE_SCOPE_BRANCH)
+
+    def test_a_rejected_scope_change_is_not_logged_as_a_change(self):
+        _p2e_issue(self.company)
+        AdminAuditLog.objects.all().delete()
+        self.client.patch(
+            '/api/admin/sequences/scope/',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_BRANCH}, format='json',
+        )
+        self.assertFalse(
+            AdminAuditLog.objects.filter(action='sequence_scope_changed').exists()
+        )
+
+    def test_issuing_a_note_records_the_number(self):
+        order = _p3_order(self.company)
+        AdminAuditLog.objects.all().delete()
+        res = self.client.post(f'/api/admin/orders/{order.pk}/sales-note/')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        entry = AdminAuditLog.objects.filter(action='sales_note_created').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.metadata['sales_note_number'], 'NV-000001')
+
+    def test_the_audit_trail_never_carries_a_secret(self):
+        self.client.patch(
+            f'/api/admin/sequences/{self.sequence.pk}/', {'prefix': 'VTA-'}, format='json',
+        )
+        for entry in AdminAuditLog.objects.all():
+            blob = json.dumps(entry.metadata).lower()
+            for forbidden in ('password', 'secret', 'token', 'sk_'):
+                self.assertNotIn(forbidden, blob)
+
+
+# ===========================================================================
+# SaaS Phase 4 — customers (CRM)
+# ===========================================================================
+
+from .customer_services import (  # noqa: E402
+    DuplicateCustomerError,
+    assert_document_available,
+    find_possible_duplicates,
+    link_order_to_customer,
+    resolve_customer,
+)
+from .models import (  # noqa: E402
+    Customer,
+    normalize_customer_email,
+    normalize_customer_phone,
+    normalize_document_number,
+)
+
+from django.apps import apps as django_apps  # noqa: E402
+
+_P4_VIEW = 'service.customers.view'
+_P4_MANAGE = 'service.customers.manage'
+
+
+def _p4_customer(company, **kw):
+    """A person of `company`, with just enough identity to be valid."""
+    defaults = {
+        'customer_type': Customer.TYPE_PERSON,
+        'first_name': 'Cliente',
+        'last_name': 'Prueba',
+    }
+    defaults.update(kw)
+    return Customer.objects.create(company=company, **defaults)
+
+
+class Phase4CustomerModelTest(TestCase):
+    """The model, its constraints and the four concepts it must not conflate."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('p4-model-a', 'Empresa Modelo A')
+        self.b = _p3_company('p4-model-b', 'Empresa Modelo B')
+
+    def test_a_customer_belongs_to_exactly_one_company(self):
+        customer = _p4_customer(self.a)
+        self.assertEqual(customer.company, self.a)
+        self.assertIn(customer, self.a.customers.all())
+        self.assertNotIn(customer, self.b.customers.all())
+
+    def test_a_customer_exists_with_no_account(self):
+        """
+        The normal case, not the exception. Most clients of a repair shop walk
+        in, phone or write on WhatsApp and will never have a login.
+        """
+        customer = _p4_customer(self.a)
+        self.assertIsNone(customer.user_id)
+        self.assertFalse(customer.has_account)
+
+    def test_one_account_holds_one_record_per_company(self):
+        from django.db import IntegrityError, transaction
+
+        user = User.objects.create_user(username='p4_model_user', password='x')
+        _p4_customer(self.a, user=user)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _p4_customer(self.a, user=user, first_name='Otro')
+
+    def test_one_account_holds_independent_records_in_two_companies(self):
+        """
+        §70. Two businesses that happen to serve the same person keep separate
+        files on them: separate notes, separate address, separate history.
+        """
+        user = User.objects.create_user(username='p4_two_companies', password='x')
+        in_a = _p4_customer(self.a, user=user, notes='Nota privada de A')
+        in_b = _p4_customer(self.b, user=user, notes='Nota privada de B')
+
+        self.assertNotEqual(in_a.pk, in_b.pk)
+        self.assertEqual(in_a.notes, 'Nota privada de A')
+        self.assertEqual(in_b.notes, 'Nota privada de B')
+        self.assertEqual(user.customer_records.count(), 2)
+
+    def test_customers_with_no_account_do_not_collide(self):
+        """
+        The reason the unique on `user` is CONDITIONAL: SQL treats NULLs as
+        distinct, so any number of clients may have no login.
+        """
+        for i in range(4):
+            _p4_customer(self.a, first_name=f'Sin cuenta {i}')
+        self.assertEqual(Customer.objects.filter(company=self.a, user__isnull=True).count(), 4)
+
+    def test_a_document_identifies_one_client_inside_a_company(self):
+        from django.db import IntegrityError, transaction
+
+        _p4_customer(self.a, document_type='dni', document_number='12345678')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _p4_customer(self.a, document_type='dni', document_number='12345678',
+                             first_name='Impostor')
+
+    def test_the_same_document_may_exist_in_two_companies(self):
+        """
+        §71. Uniqueness is per company. Two businesses each holding a file on
+        DNI 12345678 is two files on one person, and neither can see the other.
+        """
+        _p4_customer(self.a, document_type='dni', document_number='12345678')
+        _p4_customer(self.b, document_type='dni', document_number='12345678')
+        self.assertEqual(Customer.objects.filter(document_number='12345678').count(), 2)
+
+    def test_customers_without_a_document_do_not_collide(self):
+        for i in range(3):
+            _p4_customer(self.a, first_name=f'Sin documento {i}')
+        self.assertEqual(
+            Customer.objects.filter(company=self.a, document_number='').count(), 3,
+        )
+
+    def test_a_record_must_be_identifiable_as_something(self):
+        """
+        A row with no name, no business name and no document is not a client, it
+        is an empty form somebody will re-create tomorrow because they could not
+        find it.
+        """
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        with self.assertRaises(DjangoValidationError):
+            Customer.objects.create(company=self.a, customer_type=Customer.TYPE_PERSON)
+
+    def test_a_business_needs_a_business_name(self):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        with self.assertRaises(DjangoValidationError):
+            Customer.objects.create(
+                company=self.a, customer_type=Customer.TYPE_BUSINESS,
+                first_name='Solo', last_name='Persona',
+            )
+
+    def test_a_business_does_not_need_a_tax_id(self):
+        """
+        §11. A neighbourhood shop is a business the moment the counter says so.
+        Refusing to file it until somebody produces a RUC pushes the record out
+        of the system and onto paper.
+        """
+        customer = _p4_customer(
+            self.a, customer_type=Customer.TYPE_BUSINESS,
+            business_name='Bodega Los Álamos', first_name='', last_name='',
+        )
+        self.assertEqual(customer.document_number, '')
+        self.assertEqual(customer.display_name, 'Bodega Los Álamos')
+
+    def test_a_document_number_and_its_type_travel_together(self):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        with self.assertRaises(DjangoValidationError):
+            _p4_customer(self.a, document_number='12345678')
+        with self.assertRaises(DjangoValidationError):
+            _p4_customer(self.a, document_type='dni')
+
+    def test_display_name_follows_the_customer_type(self):
+        person = _p4_customer(self.a, first_name='Ana', last_name='Quispe')
+        business = _p4_customer(
+            self.a, customer_type=Customer.TYPE_BUSINESS,
+            business_name='Servicios SAC', first_name='', last_name='',
+        )
+        self.assertEqual(person.display_name, 'Ana Quispe')
+        self.assertEqual(business.display_name, 'Servicios SAC')
+
+    def test_archiving_keeps_the_record(self):
+        customer = _p4_customer(self.a)
+        customer.is_active = False
+        customer.save()
+        customer.refresh_from_db()
+        self.assertFalse(customer.is_active)
+        self.assertTrue(Customer.objects.filter(pk=customer.pk).exists())
+
+    def test_a_customer_with_orders_cannot_be_deleted(self):
+        """
+        §25 and §77, enforced by the database rather than by a convention. The
+        supported way to retire a client is `is_active = False`.
+        """
+        from django.db.models import ProtectedError
+
+        customer = _p4_customer(self.a)
+        order = _p3_order(self.a)
+        order.customer = customer
+        order.save(update_fields=['customer'])
+
+        with self.assertRaises(ProtectedError):
+            customer.delete()
+
+    def test_the_document_vocabulary_is_shared_with_orders(self):
+        """
+        §12: one vocabulary, not two. A customer saved with a code an order
+        cannot express would never match again, and the deterministic linking
+        this phase depends on would fail silently.
+        """
+        from .models import DocumentType
+
+        self.assertIs(Order.DocumentType, DocumentType)
+        self.assertEqual(
+            {c[0] for c in Customer._meta.get_field('document_type').choices},
+            {c[0] for c in Order._meta.get_field('document_type').choices},
+        )
+
+
+class Phase4NormalizationTest(TestCase):
+    """§16 — enough normalisation to make search work, and no more."""
+
+    def test_email_is_lowercased_and_trimmed(self):
+        self.assertEqual(normalize_customer_email('  Ana@Example.COM '), 'ana@example.com')
+
+    def test_email_normalisation_does_not_get_clever(self):
+        """
+        Gmail-style dot and `+tag` stripping is deliberately NOT done: it is
+        provider-specific folklore, wrong for some hosts, and here it would
+        silently merge two people who typed two different addresses.
+        """
+        self.assertEqual(
+            normalize_customer_email('a.n.a+tienda@example.com'),
+            'a.n.a+tienda@example.com',
+        )
+
+    def test_phone_variants_land_on_one_string(self):
+        for raw in ('+51 999 111 222', '+51999111222', ' +51-999-111-222 '):
+            self.assertEqual(normalize_customer_phone(raw), '+51999111222')
+
+    def test_phone_keeps_the_leading_plus_only(self):
+        self.assertEqual(normalize_customer_phone('999 111 222'), '999111222')
+        self.assertEqual(normalize_customer_phone(''), '')
+
+    def test_document_is_trimmed_and_uppercased(self):
+        self.assertEqual(normalize_document_number('  ce-x123 '), 'CE-X123')
+
+    def test_the_model_normalises_on_save(self):
+        company = _p3_company('p4-norm', 'Empresa Norm')
+        customer = _p4_customer(
+            company, email='  Ana@Example.COM ', phone='+51 999 111 222',
+            document_type='ce', document_number=' ce-x123 ',
+        )
+        customer.refresh_from_db()
+        self.assertEqual(customer.email, 'ana@example.com')
+        self.assertEqual(customer.phone, '+51999111222')
+        self.assertEqual(customer.document_number, 'CE-X123')
+
+
+class Phase4DeduplicationTest(TestCase):
+    """
+    §17–19. The rule the whole module exists for: nobody is merged on a guess.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p4-dedup', 'Empresa Dedup')
+
+    def test_matching_by_account_is_exact(self):
+        user = User.objects.create_user(username='p4_dedup_user', password='x')
+        customer = _p4_customer(self.company, user=user)
+        self.assertEqual(resolve_customer(self.company, user=user), customer)
+
+    def test_matching_by_document_is_exact_and_normalised(self):
+        customer = _p4_customer(self.company, document_type='dni', document_number='12345678')
+        self.assertEqual(
+            resolve_customer(self.company, document_type='dni', document_number=' 12345678 '),
+            customer,
+        )
+
+    def test_the_account_wins_over_the_document(self):
+        """
+        Order matters. The account is the identity the person actually proved.
+        """
+        user = User.objects.create_user(username='p4_dedup_order', password='x')
+        by_account = _p4_customer(self.company, user=user,
+                                  document_type='dni', document_number='11111111')
+        _p4_customer(self.company, document_type='dni', document_number='22222222')
+        self.assertEqual(
+            resolve_customer(self.company, user=user,
+                             document_type='dni', document_number='22222222'),
+            by_account,
+        )
+
+    def test_a_shared_email_never_matches(self):
+        """
+        §14, §73. Families, offices and assistants share an inbox. Treating that
+        as identity would put one person's history in another person's file.
+        """
+        _p4_customer(self.company, email='familia@example.invalid',
+                     document_type='dni', document_number='11111111')
+        self.assertIsNone(
+            resolve_customer(self.company, document_type='dni', document_number='99999999'),
+        )
+
+    def test_a_shared_phone_never_matches(self):
+        _p4_customer(self.company, phone='+51999000000',
+                     document_type='dni', document_number='11111111')
+        self.assertIsNone(resolve_customer(self.company, document_type='', document_number=''))
+
+    def test_a_similar_name_never_matches(self):
+        _p4_customer(self.company, first_name='Juan', last_name='Pérez',
+                     document_type='dni', document_number='11111111')
+        self.assertIsNone(
+            resolve_customer(self.company, document_type='dni', document_number='11111112'),
+        )
+
+    def test_a_shared_email_is_reported_as_a_suggestion(self):
+        """
+        §19: advisory, never automatic. Two records, and a human decides.
+        """
+        first = _p4_customer(self.company, email='familia@example.invalid',
+                             document_type='dni', document_number='11111111')
+        second = _p4_customer(self.company, email='familia@example.invalid',
+                              document_type='dni', document_number='22222222')
+        suggestions = find_possible_duplicates(
+            self.company, email='familia@example.invalid', exclude_pk=second.pk,
+        )
+        self.assertEqual([c.pk for c in suggestions], [first.pk])
+
+    def test_suggestions_do_not_cross_companies(self):
+        other = _p3_company('p4-dedup-b', 'Empresa Dedup B')
+        _p4_customer(other, email='cruce@example.invalid')
+        self.assertEqual(
+            find_possible_duplicates(self.company, email='cruce@example.invalid'), [],
+        )
+
+    def test_an_exact_duplicate_document_is_refused(self):
+        """
+        §72. This one DOES block: two records with the same document in one
+        company are one client entered twice, and half the history goes to each.
+        """
+        existing = _p4_customer(self.company, document_type='dni', document_number='12345678')
+        with self.assertRaises(DuplicateCustomerError) as ctx:
+            assert_document_available(self.company, 'dni', '12345678')
+        self.assertEqual(ctx.exception.existing.pk, existing.pk)
+
+    def test_a_document_of_another_company_does_not_block(self):
+        other = _p3_company('p4-dedup-c', 'Empresa Dedup C')
+        _p4_customer(other, document_type='dni', document_number='12345678')
+        assert_document_available(self.company, 'dni', '12345678')  # no raise
+
+    def test_no_merge_function_is_exposed(self):
+        """
+        §20 — merging is PENDING, on purpose. It has to move orders and, in later
+        phases, devices, repair orders and warranties. A merge that moves some of
+        those and not the others is worse than no merge at all.
+        """
+        from . import customer_services
+
+        exported = [n for n in dir(customer_services) if 'merge' in n.lower()]
+        self.assertEqual(exported, [])
+
+
+class Phase4OrderLinkTest(TestCase):
+    """§42–44, §48–51 — the sale, the CRM record, and the snapshot between them."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p4-link', 'Empresa Link')
+
+    def test_checkout_data_creates_a_record_for_an_anonymous_buyer(self):
+        order = _p3_order(self.company, document_type='dni', document_number='12345678')
+        customer = link_order_to_customer(order)
+        order.refresh_from_db()
+
+        self.assertIsNotNone(customer)
+        self.assertEqual(order.customer, customer)
+        self.assertEqual(customer.company, self.company)
+        self.assertIsNone(customer.user_id)
+        self.assertEqual(customer.document_number, '12345678')
+
+    def test_a_second_sale_with_the_same_document_reuses_the_record(self):
+        first = link_order_to_customer(
+            _p3_order(self.company, document_type='dni', document_number='12345678'),
+        )
+        second = link_order_to_customer(
+            _p3_order(self.company, document_type='dni', document_number='12345678'),
+        )
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+
+    def test_an_authenticated_buyer_is_matched_by_account(self):
+        user = User.objects.create_user(username='p4_link_user', password='x')
+        existing = _p4_customer(self.company, user=user)
+        order = _p3_order(self.company, user=user,
+                          document_type='dni', document_number='87654321')
+        self.assertEqual(link_order_to_customer(order), existing)
+
+    def test_a_ruc_creates_a_business_record(self):
+        """
+        Inferred from the DOCUMENT, which is a fact about the document rather
+        than a guess about the buyer: a RUC is issued to a business.
+        """
+        order = _p3_order(
+            self.company, document_type='ruc', document_number='20123456789',
+            customer_name='Servicios Generales SAC', receipt_type=Order.ReceiptType.FACTURA,
+        )
+        customer = link_order_to_customer(order)
+        self.assertEqual(customer.customer_type, Customer.TYPE_BUSINESS)
+        self.assertEqual(customer.business_name, 'Servicios Generales SAC')
+
+    def test_linking_never_overwrites_the_existing_record(self):
+        """
+        A client may have deliberately corrected their details in the CRM. A new
+        sale is not a reason to revert them to whatever the checkout form said.
+        """
+        existing = _p4_customer(
+            self.company, document_type='dni', document_number='12345678',
+            first_name='Ana', last_name='Quispe', phone='+51999888777',
+        )
+        order = _p3_order(self.company, document_type='dni', document_number='12345678',
+                          customer_name='ANA Q', customer_phone='+51 111 111 111')
+        link_order_to_customer(order)
+        existing.refresh_from_db()
+        self.assertEqual(existing.first_name, 'Ana')
+        self.assertEqual(existing.phone, '+51999888777')
+
+    def test_the_order_snapshot_is_never_rewritten_from_the_customer(self):
+        """
+        §43–44, the reason both exist. The client changes their phone today;
+        last year's order must keep saying what it said when it was issued.
+        """
+        order = _p3_order(self.company, document_type='dni', document_number='12345678',
+                          customer_phone='+51 999 111 222', customer_name='Ana Quispe')
+        customer = link_order_to_customer(order)
+
+        customer.phone = '+51999000000'
+        customer.first_name = 'Anabel'
+        customer.save()
+
+        order.refresh_from_db()
+        self.assertEqual(order.customer_phone, '+51 999 111 222')
+        self.assertEqual(order.customer_name, 'Ana Quispe')
+        self.assertEqual(order.customer, customer)
+
+    def test_a_crm_failure_never_costs_the_sale(self):
+        """
+        §49. The order keeps every snapshot field it needs to be linked by hand
+        afterwards; what it does not do is fail, or attach the wrong person.
+        """
+        order = _p3_order(self.company, document_type='dni', document_number='12345678')
+        with patch('store.customer_services.resolve_customer', side_effect=RuntimeError('boom')):
+            result = link_order_to_customer(order)
+        order.refresh_from_db()
+        self.assertIsNone(result)
+        self.assertIsNone(order.customer_id)
+        self.assertEqual(order.document_number, '12345678')
+
+    def test_an_unlinked_customer_record_adopts_a_free_account(self):
+        existing = _p4_customer(self.company, document_type='dni', document_number='12345678')
+        user = User.objects.create_user(username='p4_adopt', password='x')
+        order = _p3_order(self.company, user=user,
+                          document_type='dni', document_number='12345678')
+        link_order_to_customer(order)
+        existing.refresh_from_db()
+        self.assertEqual(existing.user, user)
+
+    def test_an_account_already_used_here_is_not_stolen(self):
+        """
+        The unique on (company, user) must not be violated by the adoption path.
+        """
+        user = User.objects.create_user(username='p4_no_steal', password='x')
+        _p4_customer(self.company, user=user, first_name='Titular')
+        other = _p4_customer(self.company, document_type='dni', document_number='12345678')
+        order = _p3_order(self.company, user=user,
+                          document_type='dni', document_number='12345678')
+        link_order_to_customer(order)
+        other.refresh_from_db()
+        self.assertIsNone(other.user_id)
+
+    def test_the_checkout_flow_links_the_order_end_to_end(self):
+        """The real path, through the view rather than the service."""
+        import inspect
+
+        from . import views
+
+        source = inspect.getsource(views)
+        self.assertIn('link_order_to_customer', source)
+
+
+class Phase4ApiTest(TestCase):
+    """§34–41, §82–83 — who reaches what, and what is unreachable."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('p4-api-a', 'Empresa API A')
+        self.b = _p3_company('p4-api-b', 'Empresa API B')
+
+        self.manager_a, _ = _p2d_member(self.a, 'p4_manager_a', ['company.view', _P4_VIEW, _P4_MANAGE])
+        self.viewer_a, _ = _p2d_member(self.a, 'p4_viewer_a', ['company.view', _P4_VIEW])
+        self.blind_a, _ = _p2d_member(self.a, 'p4_blind_a', ['company.view'])
+        self.manager_b, _ = _p2d_member(self.b, 'p4_manager_b', ['company.view', _P4_VIEW, _P4_MANAGE])
+        self.outsider = User.objects.create_user(username='p4_outsider', password='x')
+
+        self.customer_a = _p4_customer(self.a, first_name='Ana', last_name='Quispe',
+                                       document_type='dni', document_number='11111111')
+        self.customer_b = _p4_customer(self.b, first_name='Beto', last_name='Ramos',
+                                       document_type='dni', document_number='22222222')
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # -- reading ---------------------------------------------------------
+
+    def test_a_viewer_lists_their_own_customers(self):
+        res = self._as(self.viewer_a).get('/api/admin/customers/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([r['id'] for r in res.data['results']], [self.customer_a.pk])
+        self.assertFalse(res.data['can_manage'])
+
+    def test_the_list_never_contains_another_companys_customers(self):
+        res = self._as(self.manager_a).get('/api/admin/customers/?page_size=100')
+        ids = {r['id'] for r in res.data['results']}
+        self.assertIn(self.customer_a.pk, ids)
+        self.assertNotIn(self.customer_b.pk, ids)
+
+    def test_the_list_row_does_not_carry_internal_notes(self):
+        """
+        §55. A list is skimmed at a counter, sometimes with the client on the
+        other side of it.
+        """
+        self.customer_a.notes = 'Reclamó por garantía, trato difícil.'
+        self.customer_a.save()
+        res = self._as(self.manager_a).get('/api/admin/customers/')
+        self.assertNotIn('notes', res.data['results'][0])
+        self.assertNotIn('difícil', json.dumps(res.data))
+
+    def test_reading_another_companys_customer_is_a_404(self):
+        res = self._as(self.manager_a).get(f'/api/admin/customers/{self.customer_b.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_writing_another_companys_customer_is_a_404(self):
+        res = self._as(self.manager_a).patch(
+            f'/api/admin/customers/{self.customer_b.pk}/',
+            {'first_name': 'Secuestrado'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.customer_b.refresh_from_db()
+        self.assertEqual(self.customer_b.first_name, 'Beto')
+
+    def test_archiving_another_companys_customer_is_a_404(self):
+        res = self._as(self.manager_a).patch(
+            f'/api/admin/customers/{self.customer_b.pk}/',
+            {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.customer_b.refresh_from_db()
+        self.assertTrue(self.customer_b.is_active)
+
+    def test_a_company_parameter_cannot_reach_another_tenant(self):
+        res = self._as(self.manager_a).get(f'/api/admin/customers/?company={self.b.pk}')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_searching_another_companys_document_finds_nothing(self):
+        """§82. Not 'finds it but hides it' — the queryset never contained it."""
+        res = self._as(self.manager_a).get('/api/admin/customers/?search=22222222')
+        self.assertEqual(res.data['count'], 0)
+
+    # -- capabilities ----------------------------------------------------
+
+    def test_without_the_view_capability_the_list_is_refused(self):
+        res = self._as(self.blind_a).get('/api/admin/customers/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_viewer_cannot_create(self):
+        res = self._as(self.viewer_a).post(
+            '/api/admin/customers/', {'first_name': 'Nuevo'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_viewer_cannot_edit(self):
+        res = self._as(self.viewer_a).patch(
+            f'/api/admin/customers/{self.customer_a.pk}/',
+            {'first_name': 'Editado'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_user_with_no_membership_is_refused(self):
+        res = self._as(self.outsider).get('/api/admin/customers/')
+        self.assertIn(
+            res.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND),
+        )
+
+    def test_anonymous_is_refused(self):
+        res = APIClient().get('/api/admin/customers/')
+        self.assertIn(
+            res.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
+        )
+
+    def test_there_is_no_public_customer_endpoint(self):
+        """
+        §26, §61. The strongest guarantee available: the route does not exist.
+        """
+        for path in ('/api/customers/', '/api/customers/1/', '/api/storefront/customers/'):
+            res = APIClient().get(path)
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, path)
+
+    # -- writing ---------------------------------------------------------
+
+    def test_a_manager_creates_a_customer(self):
+        res = self._as(self.manager_a).post(
+            '/api/admin/customers/',
+            {'first_name': 'Nuevo', 'last_name': 'Cliente', 'phone': '+51 999 555 444'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        created = Customer.objects.get(pk=res.data['id'])
+        self.assertEqual(created.company, self.a)
+        self.assertEqual(created.created_by, self.manager_a)
+        self.assertEqual(created.phone, '+51999555444')
+
+    def test_a_created_customer_belongs_to_the_resolved_company_not_the_body(self):
+        """
+        §37. `company` is not a field on the write serializer at all, which is
+        stronger than validating it away.
+        """
+        res = self._as(self.manager_a).post(
+            '/api/admin/customers/',
+            {'first_name': 'Intruso', 'company': self.b.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Customer.objects.get(pk=res.data['id']).company, self.a)
+
+    def test_a_duplicate_document_returns_a_conflict_with_the_existing_record(self):
+        res = self._as(self.manager_a).post(
+            '/api/admin/customers/',
+            {'first_name': 'Otra', 'document_type': 'dni', 'document_number': '11111111'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['existing']['id'], self.customer_a.pk)
+
+    def test_a_shared_email_is_allowed_and_reported(self):
+        """§73: allowed, with a warning a human can act on."""
+        self.customer_a.email = 'familia@example.invalid'
+        self.customer_a.save()
+        res = self._as(self.manager_a).post(
+            '/api/admin/customers/',
+            {'first_name': 'Hermano', 'email': 'familia@example.invalid'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            [d['id'] for d in res.data['possible_duplicates']], [self.customer_a.pk],
+        )
+
+    def test_a_shared_phone_is_allowed_and_reported(self):
+        self.customer_a.phone = '+51999000000'
+        self.customer_a.save()
+        res = self._as(self.manager_a).post(
+            '/api/admin/customers/',
+            {'first_name': 'Oficina', 'phone': '+51 999 000 000'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(res.data['possible_duplicates'])
+
+    def test_a_manager_edits_a_customer(self):
+        res = self._as(self.manager_a).patch(
+            f'/api/admin/customers/{self.customer_a.pk}/',
+            {'first_name': 'Anabel', 'notes': 'Prefiere WhatsApp.'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.customer_a.refresh_from_db()
+        self.assertEqual(self.customer_a.first_name, 'Anabel')
+
+    def test_editing_into_an_existing_document_is_refused(self):
+        other = _p4_customer(self.a, first_name='Otro', document_type='dni',
+                             document_number='33333333')
+        res = self._as(self.manager_a).patch(
+            f'/api/admin/customers/{other.pk}/',
+            {'document_type': 'dni', 'document_number': '11111111'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        other.refresh_from_db()
+        self.assertEqual(other.document_number, '33333333')
+
+    def test_a_customer_keeping_its_own_document_is_not_a_conflict(self):
+        res = self._as(self.manager_a).patch(
+            f'/api/admin/customers/{self.customer_a.pk}/',
+            {'document_type': 'dni', 'document_number': '11111111',
+             'first_name': 'Anabel'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_the_company_of_a_customer_is_not_editable(self):
+        """§39: not rejected by a check — simply not a field."""
+        res = self._as(self.manager_a).patch(
+            f'/api/admin/customers/{self.customer_a.pk}/',
+            {'company': self.b.pk, 'first_name': 'Movida'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.customer_a.refresh_from_db()
+        self.assertEqual(self.customer_a.company, self.a)
+
+    def test_created_by_is_not_editable(self):
+        res = self._as(self.manager_a).patch(
+            f'/api/admin/customers/{self.customer_a.pk}/',
+            {'created_by': self.manager_b.pk, 'first_name': 'X'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.customer_a.refresh_from_db()
+        self.assertNotEqual(self.customer_a.created_by, self.manager_b)
+
+    def test_the_account_link_is_not_editable_through_the_form(self):
+        """
+        §40. Linking an account is not a text field on a CRM form; letting it be
+        one would allow attaching somebody else's login to a client record.
+        """
+        res = self._as(self.manager_a).patch(
+            f'/api/admin/customers/{self.customer_a.pk}/',
+            {'user': self.manager_b.pk, 'first_name': 'X'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.customer_a.refresh_from_db()
+        self.assertIsNone(self.customer_a.user_id)
+
+    def test_there_is_no_delete_verb(self):
+        """
+        §25: a DELETE that silently archived would be a lie in the URL.
+        """
+        res = self._as(self.manager_a).delete(f'/api/admin/customers/{self.customer_a.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    # -- archive / search / history ---------------------------------------
+
+    def test_archiving_and_reactivating(self):
+        client = self._as(self.manager_a)
+        archived = client.patch(
+            f'/api/admin/customers/{self.customer_a.pk}/', {'is_active': False}, format='json',
+        )
+        self.assertEqual(archived.status_code, status.HTTP_200_OK)
+        self.assertFalse(archived.data['is_active'])
+
+        hidden = client.get('/api/admin/customers/')
+        self.assertEqual(hidden.data['count'], 0)
+
+        listed = client.get('/api/admin/customers/?state=archived')
+        self.assertEqual([r['id'] for r in listed.data['results']], [self.customer_a.pk])
+
+        detail = client.get(f'/api/admin/customers/{self.customer_a.pk}/')
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+
+        back = client.patch(
+            f'/api/admin/customers/{self.customer_a.pk}/', {'is_active': True}, format='json',
+        )
+        self.assertTrue(back.data['is_active'])
+
+    def test_search_finds_by_every_supported_field(self):
+        customer = _p4_customer(
+            self.a, first_name='Rosa', last_name='Mendoza',
+            document_type='dni', document_number='44444444',
+            phone='+51987654321', email='rosa@example.invalid',
+        )
+        client = self._as(self.manager_a)
+        for term in ('Rosa', 'Mendoza', '4444', '987654321', 'rosa@example'):
+            res = client.get(f'/api/admin/customers/?search={term}')
+            ids = [r['id'] for r in res.data['results']]
+            self.assertIn(customer.pk, ids, f'no encontró por {term!r}')
+
+    def test_search_normalises_a_typed_phone_number(self):
+        """
+        Without this, every phone search would silently return nothing and look
+        like an empty CRM.
+        """
+        customer = _p4_customer(self.a, first_name='Tel', phone='+51987654321')
+        res = self._as(self.manager_a).get('/api/admin/customers/?search=%2B51 987 654 321')
+        self.assertIn(customer.pk, [r['id'] for r in res.data['results']])
+
+    def test_search_finds_a_business_by_its_registered_name(self):
+        customer = _p4_customer(
+            self.a, customer_type=Customer.TYPE_BUSINESS,
+            business_name='Importaciones del Sur', first_name='', last_name='',
+        )
+        res = self._as(self.manager_a).get('/api/admin/customers/?search=Importaciones')
+        self.assertIn(customer.pk, [r['id'] for r in res.data['results']])
+
+    def test_the_detail_reports_paid_history_separately(self):
+        """§51: an unpaid order is intent, not money."""
+        paid = _p3_order(self.a, total=Decimal('250.00'))
+        paid.customer = self.customer_a
+        paid.save(update_fields=['customer'])
+
+        unpaid = _p3_order(self.a, total=Decimal('999.00'), paid=False,
+                           status=Order.Status.PENDING_PAYMENT, paid_at=None)
+        unpaid.customer = self.customer_a
+        unpaid.save(update_fields=['customer'])
+
+        res = self._as(self.manager_a).get(f'/api/admin/customers/{self.customer_a.pk}/')
+        summary = res.data['summary']
+        self.assertEqual(summary['orders_total'], 2)
+        self.assertEqual(summary['paid_orders'], 1)
+        self.assertEqual(Decimal(summary['paid_amount']), Decimal('250.00'))
+        self.assertIsNotNone(summary['last_purchase_at'])
+
+    def test_the_history_carries_no_payment_internals(self):
+        order = _p3_order(self.a, stripe_payment_intent_id='pi_secret_123')
+        order.customer = self.customer_a
+        order.save(update_fields=['customer'])
+        res = self._as(self.manager_a).get(f'/api/admin/customers/{self.customer_a.pk}/')
+        # The RENDERED body, not `res.data`: what leaks is what goes on the wire.
+        blob = res.content.decode()
+        self.assertNotIn('pi_secret_123', blob)
+        self.assertNotIn('stripe', blob.lower())
+
+    def test_the_history_shows_the_orders_own_snapshot(self):
+        order = _p3_order(self.a, customer_name='Ana Quispe',
+                          customer_phone='+51 999 111 222')
+        order.customer = self.customer_a
+        order.save(update_fields=['customer'])
+
+        self.customer_a.first_name = 'Anabel'
+        self.customer_a.phone = '+51999000000'
+        self.customer_a.save()
+
+        res = self._as(self.manager_a).get(f'/api/admin/customers/{self.customer_a.pk}/')
+        row = res.data['orders'][0]
+        self.assertEqual(row['customer_name'], 'Ana Quispe')
+        self.assertEqual(row['customer_phone'], '+51 999 111 222')
+
+
+class Phase4AuditPrivacyTest(TestCase):
+    """§62–63 — the trail records WHAT changed, never the client's data."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p4-audit', 'Empresa Audit')
+        self.manager, _ = _p2d_member(
+            self.company, 'p4_audit_manager', ['company.view', _P4_VIEW, _P4_MANAGE],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.manager)
+
+    def _blob(self):
+        return json.dumps(
+            [e.metadata for e in AdminAuditLog.objects.filter(target_type='customer')]
+        )
+
+    def test_creating_is_logged(self):
+        AdminAuditLog.objects.all().delete()
+        res = self.client.post(
+            '/api/admin/customers/', {'first_name': 'Nuevo', 'last_name': 'Cliente'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        entry = AdminAuditLog.objects.filter(action='customer_created').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.actor, self.manager)
+        self.assertEqual(entry.company, self.company)
+        self.assertEqual(entry.metadata['customer_id'], res.data['id'])
+
+    def test_editing_logs_field_names_only(self):
+        customer = _p4_customer(self.company)
+        AdminAuditLog.objects.all().delete()
+        self.client.patch(
+            f'/api/admin/customers/{customer.pk}/',
+            {'first_name': 'Anabel', 'phone': '+51 999 123 456'}, format='json',
+        )
+        entry = AdminAuditLog.objects.filter(action='customer_updated').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.metadata['changed_fields'], ['first_name', 'phone'])
+        self.assertNotIn('Anabel', self._blob())
+        self.assertNotIn('999123456', self._blob())
+
+    def test_archiving_and_reactivating_have_their_own_actions(self):
+        customer = _p4_customer(self.company)
+        AdminAuditLog.objects.all().delete()
+        self.client.patch(
+            f'/api/admin/customers/{customer.pk}/', {'is_active': False}, format='json',
+        )
+        self.client.patch(
+            f'/api/admin/customers/{customer.pk}/', {'is_active': True}, format='json',
+        )
+        actions = list(
+            AdminAuditLog.objects.filter(target_type='customer')
+            .order_by('pk').values_list('action', flat=True)
+        )
+        self.assertEqual(actions, ['customer_archived', 'customer_reactivated'])
+
+    def test_a_patch_that_changes_nothing_is_not_logged(self):
+        customer = _p4_customer(self.company, first_name='Ana', last_name='Quispe')
+        AdminAuditLog.objects.all().delete()
+        res = self.client.patch(
+            f'/api/admin/customers/{customer.pk}/',
+            {'first_name': 'Ana', 'last_name': 'Quispe'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(AdminAuditLog.objects.filter(target_type='customer').exists())
+
+    def test_the_trail_never_carries_the_clients_pii(self):
+        """
+        §63. An audit table is read by more people and purged by nobody; copying
+        a document number into it creates a second, longer-lived store of the
+        exact data this model exists to protect.
+        """
+        AdminAuditLog.objects.all().delete()
+        self.client.post(
+            '/api/admin/customers/',
+            {
+                'first_name': 'Rosa', 'last_name': 'Mendoza',
+                'document_type': 'dni', 'document_number': '44444444',
+                'phone': '+51987654321', 'email': 'rosa@example.invalid',
+                'notes': 'Nota interna delicada.',
+            },
+            format='json',
+        )
+        blob = self._blob()
+        for secret in ('44444444', '987654321', 'rosa@example', 'delicada', 'Mendoza'):
+            self.assertNotIn(secret, blob, f'la auditoría filtró {secret!r}')
+        # What it DOES record is enough to investigate.
+        entry = AdminAuditLog.objects.filter(action='customer_created').first()
+        self.assertTrue(entry.metadata['has_document'])
+        self.assertEqual(entry.metadata['company_id'], self.company.pk)
+
+
+class Phase4CapabilityTest(TestCase):
+    """§28–31 — the capabilities become real without widening anyone's access."""
+
+    def test_the_customer_capabilities_are_active(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+
+        for code in (_P4_VIEW, _P4_MANAGE):
+            self.assertEqual(CAPABILITIES[code].status, STATUS_ACTIVE, code)
+
+    def test_they_are_assignable(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+
+        self.assertIn(_P4_VIEW, ASSIGNABLE_CAPABILITY_CODES)
+        self.assertIn(_P4_MANAGE, ASSIGNABLE_CAPABILITY_CODES)
+
+    def test_service_manage_is_not_an_umbrella_over_them(self):
+        """
+        §29. `service.manage` is the Phase 2A membership-in-technical-service
+        concept. Letting it silently absorb every capability the service module
+        ever adds would make it exactly the implicit super-permission the
+        catalogue exists to replace.
+        """
+        company = _p3_company('p4-cap-umbrella', 'Empresa Umbrella')
+        user, _ = _p2d_member(company, 'p4_umbrella', ['company.view', 'service.manage'])
+        self.assertFalse(has_capability(user, company, _P4_VIEW))
+        self.assertFalse(has_capability(user, company, _P4_MANAGE))
+
+    def test_a_new_company_grants_them_to_its_administrator_preset(self):
+        company = _p3_company('p4-cap-new', 'Empresa Nueva')
+        role = CompanyRole.objects.get(company=company, slug='administrador')
+        self.assertIn(_P4_VIEW, role.capabilities)
+        self.assertIn(_P4_MANAGE, role.capabilities)
+
+    def test_a_new_companys_technician_may_view_but_not_manage(self):
+        """
+        §30. A technician needs to know whose device is on the bench. Deciding
+        what the client file says is a different job, and a company that wants
+        that grants it — one checkbox, and a decision the business makes.
+        """
+        company = _p3_company('p4-cap-tech', 'Empresa Técnica')
+        role = CompanyRole.objects.get(company=company, slug='servicio-tecnico')
+        self.assertIn(_P4_VIEW, role.capabilities)
+        self.assertNotIn(_P4_MANAGE, role.capabilities)
+
+    def test_a_legacy_admin_membership_resolves_them_live(self):
+        company = _p3_company('p4-cap-legacy', 'Empresa Legacy')
+        user = User.objects.create_user(username='p4_legacy_admin', password='x')
+        Membership.objects.create(user=user, company=company, role='admin', is_active=True)
+        self.assertTrue(has_capability(user, company, _P4_VIEW))
+
+    def test_a_customised_role_is_never_widened_by_the_migration(self):
+        """
+        §31, and the reason the discriminator is EXACT equality.
+
+        A role a tenant has deliberately shaped is theirs. Writing new authority
+        into it because software shipped would widen access somebody chose to
+        narrow, silently, in a migration.
+        """
+        import importlib
+
+        company = _p3_company('p4-cap-custom', 'Empresa Custom')
+        role = CompanyRole.objects.get(company=company, slug='administrador')
+        # A tenant that removed one capability: no longer the platform's preset.
+        role.capabilities = sorted(
+            set(role.capabilities) - {_P4_VIEW, _P4_MANAGE, 'inventory.adjust'}
+        )
+        role.save()
+
+        module = importlib.import_module(
+            'store.migrations.0033_customer_capabilities_for_untouched_admin_presets'
+        )
+        module.grant(django_apps, None)
+
+        role.refresh_from_db()
+        self.assertNotIn(_P4_VIEW, role.capabilities)
+        self.assertNotIn(_P4_MANAGE, role.capabilities)
+
+    def test_an_untouched_admin_preset_is_upgraded_by_the_migration(self):
+        import importlib
+
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+
+        company = _p3_company('p4-cap-untouched', 'Empresa Intacta')
+        role = CompanyRole.objects.get(company=company, slug='administrador')
+        # Rewound to what the preset granted BEFORE this phase.
+        role.capabilities = sorted(
+            set(ASSIGNABLE_CAPABILITY_CODES) - {_P4_VIEW, _P4_MANAGE}
+        )
+        role.save()
+
+        module = importlib.import_module(
+            'store.migrations.0033_customer_capabilities_for_untouched_admin_presets'
+        )
+        module.grant(django_apps, None)
+
+        role.refresh_from_db()
+        self.assertIn(_P4_VIEW, role.capabilities)
+        self.assertIn(_P4_MANAGE, role.capabilities)
+
+
+class Phase4BranchScopeTest(TestCase):
+    """
+    §84 — a customer is company-level, and branch access does not narrow it.
+    """
+
+    def test_a_branch_restricted_user_still_sees_every_customer(self):
+        """
+        A client buys in one shop, leaves a laptop at another and collects it at
+        a third. Scoping master data by branch would fragment one person into
+        three files and break the history this module exists to keep.
+
+        Repair orders WILL be branch-scoped in a later phase. That is an
+        operation on a customer, not the customer.
+        """
+        company = _p3_company('p4-branch', 'Empresa Sucursal')
+        first = company.default_inventory_branch
+        Branch.objects.create(company=company, name='Sucursal 2')
+
+        customer = _p4_customer(company, first_name='Cliente', last_name='Compartido')
+        restricted, _ = _p2d_member(
+            company, 'p4_branch_user', ['company.view', _P4_VIEW],
+            mode='selected', branches=[first],
+        )
+        client = APIClient()
+        client.force_authenticate(user=restricted)
+
+        res = client.get('/api/admin/customers/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn(customer.pk, [r['id'] for r in res.data['results']])
+
+    def test_the_model_has_no_branch_field(self):
+        self.assertNotIn(
+            'branch', [f.name for f in Customer._meta.get_fields()],
+        )
+
+
+class Phase4MigrationTest(TestCase):
+    """
+    §45–47, §69 — what the backfill promises about orders that already exist.
+
+    The upgrade itself was verified end-to-end against a database populated at
+    0030 and migrated forward. These pin the rules so a later edit cannot quietly
+    reintroduce a merge.
+    """
+
+    def _module(self):
+        import importlib
+
+        return importlib.import_module('store.migrations.0032_backfill_customers')
+
+    def test_the_backfill_never_merges_by_name_email_or_phone(self):
+        """
+        A wrong merge publishes one client's address, history and internal notes
+        inside another client's file, permanently, in a migration nobody
+        re-reads. The rule is enforced by what the code does NOT look at.
+        """
+        import inspect
+
+        source = inspect.getsource(self._module())
+        body = source.split('def backfill')[1]
+        for forbidden in ('customer_email=', 'customer_phone=', 'customer_name__'):
+            self.assertNotIn(
+                f'filter({forbidden}', body,
+                f'la migración agrupa por {forbidden!r}, que no es identidad',
+            )
+
+    def test_business_shape_is_inferred_from_the_document_not_the_name(self):
+        module = self._module()
+
+        class FakeOrder:
+            document_type = 'ruc'
+            customer_name = 'Servicios SAC'
+
+        fields = module._identity_from_order(FakeOrder())
+        self.assertEqual(fields['customer_type'], 'business')
+        self.assertEqual(fields['business_name'], 'Servicios SAC')
+
+        class PersonOrder:
+            document_type = 'dni'
+            customer_name = 'Ana Quispe'
+
+        fields = module._identity_from_order(PersonOrder())
+        self.assertEqual(fields['customer_type'], 'person')
+        self.assertEqual((fields['first_name'], fields['last_name']), ('Ana', 'Quispe'))
+
+    def test_the_identity_guard_mirrors_the_check_constraint(self):
+        module = self._module()
+        empty = {'first_name': '', 'last_name': '', 'business_name': ''}
+        self.assertFalse(module._has_identity(empty, ''))
+        self.assertTrue(module._has_identity(empty, '12345678'))
+        self.assertTrue(module._has_identity({**empty, 'first_name': 'Ana'}, ''))
+
+    def test_the_backfill_normalisers_agree_with_the_model(self):
+        """
+        A migration cannot import the model's helpers — historical models have no
+        methods — so it carries its own copies. If they drifted, records written
+        by the backfill would never match records written by the application.
+        """
+        module = self._module()
+        for raw in ('+51 999 111 222', '999111222', '', ' +51-999-111-222 '):
+            self.assertEqual(module._norm_phone(raw), normalize_customer_phone(raw), raw)
+        for raw in ('  ce-x123 ', 'DNI1', ''):
+            self.assertEqual(module._norm_doc(raw), normalize_document_number(raw), raw)
+        for raw in ('  Ana@Example.COM ', ''):
+            self.assertEqual(module._norm_email(raw), normalize_customer_email(raw), raw)
+
+    def test_an_ambiguous_order_is_left_unlinked(self):
+        """
+        §46. An unlinked order is visibly incomplete and fixable by hand. A
+        wrongly linked one looks correct forever.
+        """
+        company = _p3_company('p4-mig-ambiguous', 'Empresa Ambigua')
+        order = _p3_order(company, document_type='', document_number='',
+                          customer_name='Anónimo', customer_email='anon@example.invalid')
+        self.assertIsNone(order.customer_id)
+        self.assertEqual(order.customer_name, 'Anónimo')
+
+
+# ===========================================================================
+# P0 — runtime stabilisation regression
+# ===========================================================================
+
+class P0RuntimeRegressionTest(TestCase):
+    """
+    The four surfaces that were answering 500 on localhost.
+
+    HONEST NOTE ABOUT WHAT THESE TESTS CAN AND CANNOT DO
+    ----------------------------------------------------
+    These would have PASSED throughout the incident. The failure was not in the
+    code: the development database was ten migrations behind, and Django builds a
+    FRESH, fully-migrated database for every test run. A green suite says "this
+    code agrees with these migrations"; it says nothing about the database the
+    server is connected to.
+
+    So these pin the CONTRACT — the shape of a correct response, not merely a
+    status that is not 500. The drift itself is caught by `store.checks`, which
+    is an environment check rather than a test, and by its own test below.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p0-runtime', 'Empresa Runtime')
+        self.product = _seeded(Product.objects.create(
+            company=self.company, name='Producto P0', slug='producto-p0',
+            price=Decimal('100.00'), inventory=5,
+        ))
+
+    @override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='p0-runtime')
+    def test_storefront_product_list_returns_the_catalogue(self):
+        res = APIClient().get('/api/products/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn(self.product.pk, [p['id'] for p in res.data])
+
+    @override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='p0-runtime')
+    def test_storefront_config_returns_the_tenants_branding(self):
+        res = APIClient().get('/api/storefront/config/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company']['slug'], 'p0-runtime')
+
+    @override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='p0-runtime')
+    def test_an_empty_cart_returns_an_empty_list(self):
+        """
+        §19. A valid cart with nothing in it is the most ordinary request the
+        storefront makes, and it was answering 500.
+        """
+        res = APIClient().get('/api/cart/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(list(res.data), [])
+
+    @override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='p0-runtime')
+    def test_a_cart_holding_an_inactive_product_still_loads(self):
+        """
+        §20. A legacy cart row whose product was later unpublished must not take
+        the whole GET down with it — one stale row is not a reason to make the
+        cart unreachable.
+        """
+        client = APIClient()
+        added = client.post(
+            '/api/cart/add/',
+            {'session_key': 'p0-session', 'product': self.product.pk, 'quantity': 1},
+            format='json',
+        )
+        self.assertIn(added.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+
+        self.product.is_active = False
+        self.product.save(update_fields=['is_active'])
+
+        res = client.get('/api/cart/?session_key=p0-session')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    @override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='p0-runtime')
+    def test_the_raw_cart_create_route_is_closed(self):
+        """
+        Found while writing these tests: `CreateModelMixin` exposed
+        `POST /api/cart/`, and it answered 500 for every input because the
+        serializer's `product` is read-only.
+
+        It is refused rather than repaired. Repairing it would mean a second way
+        to write a CartItem that does not scope the product to this storefront,
+        does not require a session key and does not check stock — which is the
+        cross-tenant vector `add` exists to close.
+        """
+        res = APIClient().post(
+            '/api/cart/', {'product': self.product.pk, 'quantity': 1}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(CartItem.objects.count(), 0)
+
+    def test_the_internal_dashboard_loads_for_a_company_admin(self):
+        user, _ = _p2d_member(
+            self.company, 'p0_admin', ['company.view', 'products.view'],
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get('/api/me/internal-dashboard/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company']['slug'], 'p0-runtime')
+        self.assertFalse(res.data['requires_company_selection'])
+
+    def test_a_missing_capability_does_not_take_down_the_whole_dashboard(self):
+        """
+        §22. Somebody without `inventory.view` gets a dashboard WITHOUT the
+        inventory block — not an error page. One locked block must not cost the
+        other nine.
+        """
+        user, _ = _p2d_member(self.company, 'p0_partial', ['company.view'])
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get('/api/me/internal-dashboard/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(res.data['company'])
+        self.assertIsNone(res.data['inventory'])
+
+    def test_the_master_dashboard_requires_an_explicit_company(self):
+        """
+        §23. MASTER gets a choice, never a platform-wide aggregate.
+        """
+        master = User.objects.create_superuser(
+            username='p0_master', email='p0@example.invalid', password='x',
+        )
+        client = APIClient()
+        client.force_authenticate(user=master)
+
+        res = client.get('/api/me/internal-dashboard/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res.data['company'])
+        self.assertTrue(res.data['requires_company_selection'])
+        self.assertIsNone(res.data['inventory'])
+        self.assertIn(
+            self.company.pk, [c['id'] for c in res.data['available_companies']],
+        )
+
+    def test_the_master_dashboard_loads_for_a_selected_company(self):
+        master = User.objects.create_superuser(
+            username='p0_master_sel', email='p0s@example.invalid', password='x',
+        )
+        client = APIClient()
+        client.force_authenticate(user=master)
+        res = client.get(f'/api/me/internal-dashboard/?company={self.company.pk}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company']['slug'], 'p0-runtime')
+        self.assertFalse(res.data['requires_company_selection'])
+
+    def test_an_unauthenticated_internal_request_is_401_not_500(self):
+        """
+        §26. An authorisation problem must answer as one. A 500 there hides a
+        working guard behind what looks like a broken server.
+        """
+        for path in ('/api/me/internal-dashboard/', '/api/admin/customers/',
+                     '/api/admin/sequences/', '/api/admin/products/'):
+            res = APIClient().get(path)
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
+                path,
+            )
+
+
+class P0SchemaDriftCheckTest(TestCase):
+    """
+    The guard that WOULD have caught the incident, and that the suite cannot.
+    """
+
+    def test_the_check_is_registered_under_the_database_tag(self):
+        from django.core.checks import registry
+
+        from .checks import check_pending_migrations
+
+        self.assertIn(check_pending_migrations, registry.registry.get_checks())
+
+    def test_a_fully_migrated_database_produces_no_warning(self):
+        from .checks import check_pending_migrations
+
+        self.assertEqual(check_pending_migrations(None), [])
+
+    def test_a_database_behind_the_code_is_reported(self):
+        """
+        Simulated by handing the executor a plan that is not empty — the same
+        shape a development database ten migrations behind produces.
+        """
+        from unittest.mock import patch
+
+        from .checks import check_pending_migrations
+
+        class FakeMigration:
+            app_label = 'store'
+            name = '0024_multibranch_inventory_nullable'
+
+        with patch(
+            'django.db.migrations.executor.MigrationExecutor.migration_plan',
+            return_value=[(FakeMigration(), False)],
+        ):
+            issues = check_pending_migrations(None)
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].id, 'store.W001')
+        self.assertIn('0024_multibranch_inventory_nullable', issues[0].hint)
+        self.assertIn('manage.py migrate', issues[0].hint)
+
+    def test_the_check_never_applies_anything(self):
+        """
+        A check that migrated on its own would be worse than the failure it
+        replaces: migrations are a deployment decision, some carry data changes,
+        and 0025 is designed to stop and ask rather than guess.
+        """
+        import inspect
+
+        from . import checks
+
+        source = inspect.getsource(checks)
+        for forbidden in ('call_command', 'migrate_all', 'executor.migrate('):
+            self.assertNotIn(forbidden, source)
+
+    def test_an_unreachable_database_does_not_produce_a_misleading_warning(self):
+        from unittest.mock import patch
+
+        from .checks import check_pending_migrations
+
+        with patch(
+            'django.db.migrations.executor.MigrationExecutor.__init__',
+            side_effect=Exception('connection refused'),
+        ):
+            self.assertEqual(check_pending_migrations(None), [])

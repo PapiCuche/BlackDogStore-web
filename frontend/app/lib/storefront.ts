@@ -1,0 +1,149 @@
+/**
+ * Storefront identity and branding — Phase 3.
+ *
+ * The public shop stops knowing which business it is. It asks
+ * `/api/storefront/config/`, which resolves the tenant from the REQUEST HOST —
+ * the same rule the catalogue and cart already use — and returns that company's
+ * name, logo, palette, contact details and policies.
+ *
+ * Fetched on the SERVER, in the root layout, for two reasons: the page renders
+ * with the right name and colours on first paint instead of flashing a neutral
+ * theme, and the metadata (title, description, OpenGraph) can carry the tenant's
+ * name, which a client-side fetch is too late to do.
+ *
+ * When the config cannot be fetched — the backend is down, the host resolves to
+ * nothing — the page falls back to the NEUTRAL platform theme and a shop with no
+ * name. It never falls back to a specific business: an unbranded page is a
+ * visible problem, one wearing the wrong company's identity is not.
+ */
+
+import { API_BASE } from "./api";
+
+export type StorefrontColors = {
+  primary_color: string;
+  accent_color: string;
+  background_color: string;
+  surface_color: string;
+  text_color: string;
+  border_color: string;
+};
+
+export type StorefrontConfig = {
+  company: {
+    name: string;
+    slug: string;
+    legal_name: string;
+    tax_id: string;
+  };
+  branding: {
+    logo_url: string;
+    colors: StorefrontColors;
+    /** `{"--brand-primary": "#FFFFFF", ...}` — already validated server-side. */
+    css_variables: Record<string, string>;
+  };
+  contact: {
+    email: string;
+    phone: string;
+    whatsapp_number: string;
+    whatsapp_link: string;
+    website_url: string;
+    facebook_url: string;
+    instagram_url: string;
+    address: string;
+    city: string;
+  };
+  policies: {
+    warranty_text: string;
+    warranty_url: string;
+    terms_url: string;
+    privacy_url: string;
+  };
+};
+
+/**
+ * The neutral platform theme, mirroring `company_settings.NEUTRAL_THEME`.
+ *
+ * Used only when the config cannot be fetched. Deliberately belongs to no
+ * business: a dark, unbranded surface.
+ */
+export const NEUTRAL_CONFIG: StorefrontConfig = {
+  company: { name: "", slug: "", legal_name: "", tax_id: "" },
+  branding: {
+    logo_url: "",
+    colors: {
+      primary_color: "#FFFFFF",
+      accent_color: "#A1A1AA",
+      background_color: "#0A0A0A",
+      surface_color: "#141414",
+      text_color: "#FAFAFA",
+      border_color: "#262626",
+    },
+    css_variables: {
+      "--brand-primary": "#FFFFFF",
+      "--brand-accent": "#A1A1AA",
+      "--brand-background": "#0A0A0A",
+      "--brand-surface": "#141414",
+      "--brand-text": "#FAFAFA",
+      "--brand-border": "#262626",
+    },
+  },
+  contact: {
+    email: "",
+    phone: "",
+    whatsapp_number: "",
+    whatsapp_link: "",
+    website_url: "",
+    facebook_url: "",
+    instagram_url: "",
+    address: "",
+    city: "",
+  },
+  policies: { warranty_text: "", warranty_url: "", terms_url: "", privacy_url: "" },
+};
+
+/** Only `#RRGGBB` reaches a stylesheet. The backend validates; so does this. */
+const HEX = /^#[0-9A-Fa-f]{6}$/;
+
+/**
+ * Turn the config's CSS variables into a style string for the document root.
+ *
+ * DEFENCE IN DEPTH, not paranoia about our own API: this string is interpolated
+ * into a `style` attribute, so it is the last point at which a malformed value
+ * could escape the declaration. Anything that is not six hex digits is dropped,
+ * and the variable name has to be one we asked for.
+ */
+export function brandingStyle(config: StorefrontConfig): Record<string, string> {
+  const allowed = new Set(Object.keys(NEUTRAL_CONFIG.branding.css_variables));
+  const style: Record<string, string> = {};
+  for (const [name, value] of Object.entries(config.branding.css_variables ?? {})) {
+    if (allowed.has(name) && HEX.test(value)) style[name] = value;
+  }
+  return style;
+}
+
+/**
+ * Fetch the storefront config. Never throws — a shop must render.
+ *
+ * `no-store` because the tenant depends on the request host: a cached response
+ * shared across hosts is the same bug as a cache key without a tenant, one layer
+ * up. The backend sets a short `Cache-Control` with `Vary: Host` for shared
+ * caches that key correctly.
+ */
+export async function fetchStorefrontConfig(): Promise<StorefrontConfig> {
+  try {
+    const res = await fetch(`${API_BASE}/storefront/config/`, { cache: "no-store" });
+    if (!res.ok) return NEUTRAL_CONFIG;
+    const data = (await res.json()) as StorefrontConfig;
+    return {
+      ...NEUTRAL_CONFIG,
+      ...data,
+      branding: { ...NEUTRAL_CONFIG.branding, ...(data.branding ?? {}) },
+      contact: { ...NEUTRAL_CONFIG.contact, ...(data.contact ?? {}) },
+      policies: { ...NEUTRAL_CONFIG.policies, ...(data.policies ?? {}) },
+      company: { ...NEUTRAL_CONFIG.company, ...(data.company ?? {}) },
+    };
+  } catch {
+    // The shop renders unbranded rather than not at all.
+    return NEUTRAL_CONFIG;
+  }
+}

@@ -546,13 +546,128 @@ def resolve_storefront_company(request) -> Company | None:
 
 
 def storefront_products(request):
-    """Active products of the storefront's tenant. Empty when unresolved."""
-    from .models import Product
+    """
+    Active products of the storefront's tenant, annotated with SELLABLE stock.
+
+    PHASE 2D — WHAT THE STOREFRONT SHOWS IS WHAT CHECKOUT CAN DELIVER.
+
+    `available_stock` is the quantity in the company's FULFILLMENT branch, not
+    the sum across every shop. Those are different numbers the moment a company
+    opens a second location, and showing the sum would promise units the online
+    order cannot take: a customer sees 20, checkout finds 2 in the branch that
+    actually ships, and the sale fails at the last step for no reason the
+    customer can understand.
+
+    A company with no resolvable fulfillment branch annotates ZERO everywhere —
+    consistent with checkout, which refuses. An empty shelf is the honest
+    failure; a full one that cannot ship is not.
+
+    Empty queryset when the storefront itself does not resolve.
+    """
+    from django.db.models import IntegerField, OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce
+
+    from .models import BranchStock, Product
 
     company = resolve_storefront_company(request)
     if company is None:
         return Product.objects.none()
-    return Product.objects.filter(company=company, is_active=True)
+
+    qs = Product.objects.filter(company=company, is_active=True)
+    branch = company_fulfillment_branch(company)
+    if branch is None:
+        return qs.annotate(available_stock=Value(0, output_field=IntegerField()))
+
+    in_branch = BranchStock.objects.filter(
+        branch=branch, product_id=OuterRef('pk'),
+    ).values('quantity')[:1]
+    return qs.annotate(
+        available_stock=Coalesce(
+            Subquery(in_branch, output_field=IntegerField()),
+            Value(0, output_field=IntegerField()),
+        ),
+    )
+
+
+def storefront_available_stock(request, product) -> int:
+    """
+    Sellable units of one product on this storefront. Zero without a branch.
+
+    The single-object counterpart of the `available_stock` annotation above, for
+    the cart and checkout paths, which hold a handful of products rather than a
+    page of them.
+    """
+    from .models import BranchStock
+
+    branch = storefront_fulfillment_branch(request)
+    if branch is None:
+        return 0
+    row = BranchStock.objects.filter(branch=branch, product=product).first()
+    return row.quantity if row else 0
+
+
+def storefront_cart_items(request, session_key):
+    """
+    The cart of this browser session ON THIS STOREFRONT.
+
+    CART TENANCY WITHOUT A CART MODEL (Phase 2C)
+    --------------------------------------------
+    A cart is identified by `session_key` + the storefront's company, derived
+    through `CartItem.product.company`. No `Cart` model and no `CartItem.company`
+    column were added, because neither would tell us anything the product does
+    not already say — and a duplicated company field is a second source of truth
+    that can drift out of sync with the product it points at.
+
+    A consequence worth stating: one browser can hold SEVERAL logical carts at
+    once, one per storefront, sharing a session key. That is correct — the same
+    person shopping at two tenants has two carts, and emptying one must not touch
+    the other.
+
+    Returns an EMPTY queryset when the storefront does not resolve, matching the
+    catalogue's safe failure.
+    """
+    from .models import CartItem
+
+    company = resolve_storefront_company(request)
+    if company is None or not session_key:
+        return CartItem.objects.none()
+    return CartItem.objects.filter(
+        session_key=session_key, product__company=company,
+    )
+
+
+def storefront_coupon(request, code):
+    """
+    A coupon of THIS storefront's tenant, or None.
+
+    Never a global lookup: two tenants may run the same code, and honouring
+    another company's discount is both a leak and a financial error.
+    """
+    from .models import Coupon
+
+    company = resolve_storefront_company(request)
+    if company is None or not code:
+        return None
+    return Coupon.objects.filter(
+        company=company, code=code, is_active=True,
+    ).first()
+
+
+def storefront_orders(request, user):
+    """
+    The authenticated customer's orders ON THIS STOREFRONT.
+
+    The same User may buy from several tenants — that is one identity, not
+    several. But inside storefront A they must see only their orders from A:
+    listing B's would leak what they bought elsewhere into an unrelated business's
+    account page.
+    """
+    from .models import Order
+
+    company = resolve_storefront_company(request)
+    if company is None or not user or not user.is_authenticated:
+        return Order.objects.none()
+    return Order.objects.filter(user=user, company=company)
 
 
 def storefront_categories(request):
@@ -722,3 +837,240 @@ def visible_companies(user):
     if not company_ids:
         return Company.objects.none()
     return Company.objects.filter(pk__in=company_ids)
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 2D — branch authority
+# ---------------------------------------------------------------------------
+#
+# TWO QUESTIONS, ASKED SEPARATELY, BOTH REQUIRED
+#
+#   has_capability(user, company, 'inventory.adjust')   MAY THEY move stock?
+#   has_branch_access(user, branch)                     WHERE may they move it?
+#
+# Collapsing these into one check is the mistake this section exists to prevent.
+# "Can adjust inventory" is a company-wide statement about a person's job;
+# "may operate branch Cayma" is a statement about where they work. A warehouse
+# clerk in Cayma holds the first and must not thereby hold the second for the
+# downtown shop.
+#
+# BRANCH IDS FROM CLIENTS ARE NEVER TRUSTED
+# Exactly as with `company`, a `branch` id arriving in a query string is data to
+# be validated against the caller's own grants, never the answer to "which
+# branch is this?". A branch the caller cannot reach answers like one that does
+# not exist — see BranchAccessError and how the views map it.
+
+class NoBranchError(TenantError):
+    """The caller has no branch they may operate in this company."""
+
+
+class BranchAccessError(TenantError):
+    """The named branch is not one the caller may operate."""
+
+
+def company_branches(company):
+    """Active branches of `company`, oldest first. Never crosses tenants."""
+    from .models import Branch
+
+    if company is None:
+        return Branch.objects.none()
+    return Branch.objects.filter(
+        company=company, is_active=True,
+    ).order_by('pk')
+
+
+def visible_branches(user, company):
+    """
+    Every ACTIVE branch of `company` the caller may operate in.
+
+    Resolution, in order:
+
+      1. Platform master → every active branch of the company they selected.
+         Their authority is platform-wide, but it is still exercised inside ONE
+         company at a time: this never mixes tenants.
+      2. Mode ALL        → every active branch, including ones created after the
+         membership was granted. That automatic inclusion is the point of ALL.
+      3. Mode SELECTED   → exactly the active grants, and nothing else. A branch
+         opened tomorrow is NOT included; somebody has to grant it.
+
+    An inactive company, an inactive membership or an inactive branch yields
+    nothing: a deactivated location is not somewhere work happens.
+
+    Returns an EMPTY queryset rather than raising, so callers can compose it into
+    a larger query. Use assert_branch_access() when you need the refusal.
+    """
+    from .models import Branch, Membership
+
+    if company is None:
+        return Branch.objects.none()
+
+    active = company_branches(company)
+
+    if is_platform_admin(user):
+        return active
+
+    if not company.is_active:
+        return Branch.objects.none()
+
+    membership = get_membership(user, company)
+    if membership is None:
+        # LEGACY BRIDGE, same one the catalogue and the Kardex use.
+        #
+        # A pre-SaaS operator has a staff role and no Membership. Phase 2B gave
+        # them the pilot company; without this they would reach that company and
+        # then find it has no branches THEY can operate, which is a 403 dressed
+        # up as an empty list. The bridge is company-wide by construction — it
+        # predates branches entirely — so it grants the pilot's active branches
+        # and nothing else, and never fires for anyone who has a real Membership.
+        bridged = legacy_catalog_company(user)
+        if bridged is not None and bridged.pk == company.pk:
+            return active
+        return Branch.objects.none()
+
+    if not membership.grants_business_access:
+        return Branch.objects.none()
+
+    if membership.branch_access_mode == Membership.ACCESS_MODE_ALL:
+        return active
+
+    return active.filter(
+        membership_access__membership=membership,
+        membership_access__is_active=True,
+    )
+
+
+def visible_branch_ids(user, company) -> list[int]:
+    """Primary keys of visible_branches(), for building `branch__in` filters."""
+    return list(visible_branches(user, company).values_list('pk', flat=True))
+
+
+def has_branch_access(user, branch) -> bool:
+    """Whether the caller may operate in `branch`, tenant included."""
+    if branch is None:
+        return False
+    return visible_branches(user, branch.company).filter(pk=branch.pk).exists()
+
+
+def assert_branch_access(user, branch) -> None:
+    """Raise BranchAccessError unless the caller may operate in `branch`."""
+    if not has_branch_access(user, branch):
+        raise BranchAccessError('Sucursal no encontrada o sin acceso.')
+
+
+def default_branch_for_user(user, company):
+    """
+    Which branch the internal control should open on, or None.
+
+    Preference order: the membership's own default (`Membership.branch`, kept
+    from Phase 1 for exactly this), then the company's fulfillment branch, then
+    the oldest branch they can reach. Every candidate is filtered through
+    visible_branches(), so a stale default that was later revoked degrades to
+    the next option instead of granting access it no longer carries.
+    """
+    visible = visible_branches(user, company)
+    if not visible.exists():
+        return None
+
+    membership = get_membership(user, company)
+    if membership is not None and membership.branch_id:
+        preferred = visible.filter(pk=membership.branch_id).first()
+        if preferred is not None:
+            return preferred
+
+    if company is not None and company.default_inventory_branch_id:
+        preferred = visible.filter(pk=company.default_inventory_branch_id).first()
+        if preferred is not None:
+            return preferred
+
+    return visible.first()
+
+
+# Sentinel for "the caller asked for every branch they can see", which is a
+# different request from "the caller did not say". A report may honour it; a
+# stock movement may not, because units are added to a place, not to a set.
+BRANCH_SCOPE_ALL = 'all'
+
+
+def resolve_branch_for_user(user, company, requested_branch_id=None, *, allow_all=False):
+    """
+    Resolve the branch a request acts on. Returns a Branch, or None for aggregate.
+
+    `requested_branch_id` is UNTRUSTED input. It can only ever SELECT among the
+    branches the caller already reaches; it can never widen them. A value naming
+    another tenant's branch, an inactive branch or one they were not granted
+    raises BranchAccessError — the same error as a branch id that does not
+    exist, so ids cannot be probed.
+
+    `allow_all` lets a READ endpoint accept the literal string "all" and answer
+    with the aggregate of the caller's visible branches (returned as None).
+    Write endpoints leave it False: there is no such place as "all branches" to
+    put units into.
+
+    Raises NoBranchError when the caller can reach no branch at all — which is a
+    real, expressible state (SELECTED mode with no grants), not a bug.
+    """
+    visible = visible_branches(user, company)
+
+    raw = '' if requested_branch_id is None else str(requested_branch_id).strip()
+
+    if raw and raw.lower() == BRANCH_SCOPE_ALL:
+        if not allow_all:
+            raise BranchAccessError('Esta operación requiere una sucursal concreta.')
+        if not visible.exists():
+            raise NoBranchError('No tienes acceso a ninguna sucursal de esta empresa.')
+        return None
+
+    if raw:
+        try:
+            branch_id = int(raw)
+        except (TypeError, ValueError):
+            raise BranchAccessError('Sucursal no encontrada o sin acceso.')
+        branch = visible.filter(pk=branch_id).first()
+        if branch is None:
+            raise BranchAccessError('Sucursal no encontrada o sin acceso.')
+        return branch
+
+    branch = default_branch_for_user(user, company)
+    if branch is None:
+        raise NoBranchError('No tienes acceso a ninguna sucursal de esta empresa.')
+    return branch
+
+
+# ---------------------------------------------------------------------------
+# Fulfillment branch — where the online store sells from
+# ---------------------------------------------------------------------------
+
+def company_fulfillment_branch(company):
+    """
+    The branch a company's e-commerce sells from, or None.
+
+    Order, and there is no third option:
+
+      1. `Company.default_inventory_branch`, if set and still active. An
+         explicit choice by the tenant.
+      2. The company's ONLY active branch. Unambiguous by construction — not
+         "the first of several", but "the only one there is". Without this rule
+         every single-branch installation would have to configure a field before
+         it could sell, which is a migration that breaks working shops.
+
+    With two or more active branches and no explicit default: None. The store
+    then refuses to check out and says so. Picking one silently would ship from
+    a shop that does not know it sold anything.
+    """
+    if company is None or not company.is_active:
+        return None
+
+    explicit = company.default_inventory_branch
+    if explicit is not None and explicit.is_active and explicit.company_id == company.pk:
+        return explicit
+
+    active = company_branches(company)
+    if active.count() == 1:
+        return active.first()
+
+    return None
+
+
+def storefront_fulfillment_branch(request):
+    """The fulfillment branch of the storefront this public request is on."""
+    return company_fulfillment_branch(resolve_storefront_company(request))

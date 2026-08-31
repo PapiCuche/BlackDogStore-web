@@ -5,6 +5,10 @@ from .models import (
     SalesNote, StockMovement,
     Branch, Company, Membership,
     CompanyArea, CompanyRole, MembershipRoleAssignment,
+    BranchStock, InventoryCount, InventoryCountItem,
+    MembershipBranchAccess, StockTransfer, StockTransferItem,
+    CompanySettings, InternalSequence,
+    Customer,
 )
 
 
@@ -159,20 +163,22 @@ class AdminAuditLogAdmin(admin.ModelAdmin):
 class StockMovementAdmin(admin.ModelAdmin):
     """
     Read-only on purpose: stock must only move through store.inventory_services
-    so that Product.inventory and the Kardex stay consistent. Editing a movement
-    here would desync the two.
+    so that BranchStock, the Kardex and the Product.inventory compatibility
+    aggregate stay consistent. Editing a movement here would desync all three,
+    and a Kardex whose lines can be edited is not a Kardex.
     """
     list_display = (
-        'id', 'created_at', 'product', 'movement_type',
+        'id', 'created_at', 'company', 'branch', 'product', 'movement_type',
         'quantity', 'stock_before', 'stock_after', 'actor', 'order',
     )
-    list_filter = ('movement_type', 'created_at')
+    list_filter = ('movement_type', 'company', 'branch', 'created_at')
     search_fields = ('product__name', 'reason', 'reference_id', 'actor__username')
     readonly_fields = (
-        'product', 'movement_type', 'quantity', 'stock_before', 'stock_after',
-        'reason', 'reference_type', 'reference_id', 'order', 'actor',
-        'created_at', 'metadata',
+        'company', 'branch', 'product', 'movement_type', 'quantity',
+        'stock_before', 'stock_after', 'reason', 'reference_type', 'reference_id',
+        'order', 'transfer', 'inventory_count', 'actor', 'created_at', 'metadata',
     )
+    list_select_related = ('company', 'branch', 'product', 'actor')
     date_hierarchy = 'created_at'
 
     def has_add_permission(self, request):
@@ -352,6 +358,315 @@ class MembershipRoleAssignmentAdmin(admin.ModelAdmin):
     def get_readonly_fields(self, request, obj=None):
         base = super().get_readonly_fields(request, obj)
         return (*base, 'membership', 'role') if obj else base
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 2D — multi-branch inventory
+# ---------------------------------------------------------------------------
+#
+# DJANGO ADMIN IS THE PLATFORM OPERATOR'S SURFACE, NOT A SECOND SaaS API.
+#
+# It exists here for inspection and for the rare repair a superuser has to make
+# by hand. It deliberately does NOT let anyone move stock: quantities are
+# read-only everywhere below, because a stock change with no Kardex line is the
+# one thing the whole module is built to prevent, and "the admin can do it"
+# would be a hole with a nice UI on it. Real work happens through the SaaS API,
+# which checks capability and branch access.
+
+@admin.register(BranchStock)
+class BranchStockAdmin(admin.ModelAdmin):
+    """
+    Stock per branch. `quantity` is READ-ONLY — move stock through the API.
+
+    The replenishment policy (minimum / target) IS editable: it is configuration,
+    not stock, and changing it moves nothing.
+    """
+
+    list_display = (
+        'id', 'branch', 'product', 'quantity', 'minimum_stock', 'target_stock',
+        'updated_at',
+    )
+    list_filter = ('branch__company', 'branch')
+    search_fields = ('product__name', 'product__slug', 'branch__name')
+    readonly_fields = ('quantity', 'created_at', 'updated_at')
+    list_select_related = ('branch', 'product')
+
+    def has_add_permission(self, request):
+        # Rows are created by the service layer the first time stock moves.
+        # Creating one here would be an empty shelf nobody asked for.
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(MembershipBranchAccess)
+class MembershipBranchAccessAdmin(admin.ModelAdmin):
+    """
+    Which branches a membership may operate, while its mode is SELECTED.
+
+    These rows are IGNORED in ALL mode — see Membership.branch_access_mode. A
+    grant listed here therefore does not by itself prove someone has access.
+    """
+
+    list_display = ('id', 'membership', 'branch', 'is_active', 'granted_by', 'created_at')
+    list_filter = ('is_active', 'branch__company', 'branch')
+    search_fields = (
+        'membership__user__username', 'branch__name', 'membership__company__name',
+    )
+    readonly_fields = ('created_at', 'updated_at')
+    list_select_related = ('membership__user', 'membership__company', 'branch')
+
+    def get_readonly_fields(self, request, obj=None):
+        base = super().get_readonly_fields(request, obj)
+        # Repointing a grant at a different membership or branch is a different
+        # grant; make a new one so the audit trail keeps both.
+        return (*base, 'membership', 'branch') if obj else base
+
+
+class StockTransferItemInline(admin.TabularInline):
+    model = StockTransferItem
+    extra = 0
+    readonly_fields = ('product', 'quantity')
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(StockTransfer)
+class StockTransferAdmin(admin.ModelAdmin):
+    """
+    Read-only. A transfer moves stock, so it may only progress through the
+    service layer — flipping `status` here would advance the paperwork without
+    creating the movements, leaving units in two places at once.
+    """
+
+    list_display = (
+        'id', 'created_at', 'company', 'source_branch', 'destination_branch',
+        'status', 'created_by', 'dispatched_at', 'received_at',
+    )
+    list_filter = ('status', 'company', 'source_branch', 'destination_branch')
+    search_fields = ('reference', 'reason', 'created_by__username')
+    readonly_fields = (
+        'company', 'source_branch', 'destination_branch', 'status', 'reason',
+        'reference', 'created_by', 'dispatched_by', 'received_by', 'cancelled_by',
+        'created_at', 'dispatched_at', 'received_at', 'cancelled_at', 'updated_at',
+        'metadata',
+    )
+    inlines = [StockTransferItemInline]
+    date_hierarchy = 'created_at'
+    list_select_related = ('company', 'source_branch', 'destination_branch')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class InventoryCountItemInline(admin.TabularInline):
+    model = InventoryCountItem
+    extra = 0
+    readonly_fields = (
+        'product', 'theoretical_at_start', 'physical_quantity',
+        'theoretical_at_approval', 'difference', 'note',
+    )
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(InventoryCount)
+class InventoryCountAdmin(admin.ModelAdmin):
+    """
+    Read-only, for the same reason as StockTransfer: approving a count writes
+    correction movements, and a status changed by hand would skip them.
+
+    The three theoretical/physical columns on each line are what makes a count
+    auditable months later — see the InventoryCount docstring.
+    """
+
+    list_display = (
+        'id', 'created_at', 'company', 'branch', 'status',
+        'created_by', 'approved_by', 'approved_at',
+    )
+    list_filter = ('status', 'company', 'branch')
+    search_fields = ('reason', 'created_by__username', 'approved_by__username')
+    readonly_fields = (
+        'company', 'branch', 'status', 'reason', 'created_by', 'approved_by',
+        'cancelled_by', 'created_at', 'approved_at', 'cancelled_at', 'updated_at',
+        'metadata',
+    )
+    inlines = [InventoryCountItemInline]
+    date_hierarchy = 'created_at'
+    list_select_related = ('company', 'branch')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 3 — company configuration
+# ---------------------------------------------------------------------------
+
+@admin.register(CompanySettings)
+class CompanySettingsAdmin(admin.ModelAdmin):
+    """
+    A company's configuration, for the PLATFORM OPERATOR.
+
+    `company` is locked after creation: settings are one-to-one with a company,
+    and repointing them would move one business's identity onto another — the
+    exact thing this phase exists to make impossible.
+
+    The model's `clean()` runs on save, so a colour typed here is validated by
+    the same rule the API uses. Django Admin is an operator's tool, not a second
+    API with weaker checks.
+    """
+
+    list_display = (
+        'company', 'contact_email', 'phone', 'order_notification_email',
+        'currency', 'updated_at',
+    )
+    list_filter = ('currency',)
+    search_fields = ('company__name', 'company__slug', 'contact_email', 'phone')
+    list_select_related = ('company',)
+    readonly_fields = ('created_at', 'updated_at')
+    fieldsets = (
+        ('Empresa', {'fields': ('company',)}),
+        ('Contacto', {
+            'fields': (
+                'contact_email', 'phone', 'whatsapp_number', 'website_url',
+                'facebook_url', 'instagram_url',
+                'legal_address', 'city', 'country_code',
+            ),
+        }),
+        ('Branding', {
+            'fields': (
+                'logo_url', 'primary_color', 'accent_color', 'background_color',
+                'surface_color', 'text_color', 'border_color',
+            ),
+        }),
+        ('Negocio', {'fields': ('timezone', 'currency')}),
+        ('Políticas', {
+            'fields': (
+                'warranty_policy_text', 'warranty_policy_url', 'terms_url',
+                'privacy_url',
+            ),
+        }),
+        ('Notificaciones internas', {'fields': ('order_notification_email',)}),
+        ('Auditoría', {'fields': ('created_at', 'updated_at')}),
+    )
+
+    def get_readonly_fields(self, request, obj=None):
+        base = super().get_readonly_fields(request, obj)
+        return (*base, 'company') if obj else base
+
+    def has_delete_permission(self, request, obj=None):
+        # Deleting settings would leave a live tenant with no identity and no
+        # obvious way to notice. Deactivate the company instead.
+        return False
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 2E — internal document sequences
+# ---------------------------------------------------------------------------
+
+@admin.register(InternalSequence)
+class InternalSequenceAdmin(admin.ModelAdmin):
+    """
+    A document counter, for the PLATFORM OPERATOR.
+
+    `company`, `branch` and `document_type` are locked after creation: they are
+    what makes a series that series, and repointing one would move a counter —
+    and the documents that PROTECT-reference it — to another tenant.
+
+    `next_value` becomes read-only once the series has issued. Django Admin is an
+    operator's tool, not a second API with weaker rules: moving the counter
+    backwards here would reissue identifiers already printed on documents, and
+    the constraint added in 0029 would then reject the next note with an
+    IntegrityError far from the cause.
+
+    No delete: `SalesNote.sequence` is PROTECT, so the database refuses anyway.
+    Retire a series with `is_active` — reactivating continues where it left off
+    rather than restarting.
+    """
+
+    list_display = (
+        'company', 'branch', 'document_type', 'prefix', 'padding',
+        'next_value', 'preview', 'is_active',
+    )
+    list_filter = ('document_type', 'is_active', 'company')
+    search_fields = ('company__name', 'company__slug', 'branch__name', 'prefix')
+    list_select_related = ('company', 'branch')
+    readonly_fields = ('preview', 'has_issued', 'created_at', 'updated_at')
+
+    @admin.display(description='Próximo número')
+    def preview(self, obj):
+        return obj.preview
+
+    def get_readonly_fields(self, request, obj=None):
+        base = list(super().get_readonly_fields(request, obj))
+        if obj is not None:
+            base += ['company', 'branch', 'document_type']
+            if obj.has_issued:
+                base.append('next_value')
+        return tuple(base)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+    """
+    Platform-operator view of the CRM.
+
+    `company` is locked after creation. A customer moved between companies would
+    take their orders with them — `Order.company` would then disagree with
+    `Order.customer.company`, and one tenant's sales history would be sitting in
+    another tenant's CRM. Django Admin is an operator tool, not an exemption from
+    the invariants the rest of the platform enforces.
+
+    No delete: `Order.customer` is PROTECT, so the database refuses for anyone
+    with history, and for anyone without it archiving is still the right answer.
+    """
+
+    list_display = (
+        'display_name', 'company', 'customer_type', 'document_type',
+        'document_number', 'is_active', 'created_at',
+    )
+    list_filter = ('company', 'customer_type', 'is_active', 'document_type')
+    search_fields = (
+        'first_name', 'last_name', 'business_name',
+        'document_number', 'email', 'phone',
+    )
+    list_select_related = ('company',)
+    readonly_fields = ('display_name', 'has_account', 'created_at', 'updated_at')
+    raw_id_fields = ('user', 'created_by')
+
+    @admin.display(description='Cliente')
+    def display_name(self, obj):
+        return obj.display_name
+
+    def get_readonly_fields(self, request, obj=None):
+        base = list(super().get_readonly_fields(request, obj))
+        if obj is not None:
+            base.append('company')
+        return tuple(base)
 
     def has_delete_permission(self, request, obj=None):
         return False

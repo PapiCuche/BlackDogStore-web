@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useStorefront } from "../components/StorefrontProvider";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { API_BASE } from "../lib/api";
@@ -27,6 +28,8 @@ type Order = {
 };
 
 export default function OrdersPage() {
+  // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
+  const whatsappLink = useStorefront().contact.whatsapp_link;
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
@@ -173,7 +176,7 @@ export default function OrdersPage() {
 
         <div className="mt-8 flex gap-4">
           <Link href="/product" className="text-sm text-slate-400 hover:text-white transition">← Seguir comprando</Link>
-          <a href="https://wa.me/51936449536" className="text-sm text-emerald-400 hover:text-emerald-300 transition">¿Problemas con tu pedido? WhatsApp →</a>
+          <a href={whatsappLink || "#"} className="text-sm text-emerald-400 hover:text-emerald-300 transition">¿Problemas con tu pedido? WhatsApp →</a>
         </div>
       </div>
     </div>

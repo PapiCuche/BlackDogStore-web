@@ -27,10 +27,29 @@ from .inventory_views import (
     AdminBestSellingView, AdminHighStockView, AdminInventorySummaryView,
     AdminLowStockView, AdminOrderSalesNotePdfView, AdminOrderSalesNoteView,
     AdminProductStockCardView, AdminStaleStockView, AdminStockMovementListView,
+    # --- Phase 2D: multi-branch inventory ---
+    AdminBranchStockListView, AdminBranchStockPolicyView,
+    AdminInventoryBranchListView, AdminInventoryDashboardView,
+    AdminInventoryCountApproveView, AdminInventoryCountCancelView,
+    AdminInventoryCountDetailView, AdminInventoryCountItemsView,
+    AdminInventoryCountListView, AdminReplenishmentView,
+    AdminStockTransferCancelView, AdminStockTransferDetailView,
+    AdminStockTransferDispatchView, AdminStockTransferItemsView,
+    AdminStockTransferListView, AdminStockTransferReceiveView,
+)
+from .customer_views import (
+    AdminCustomerDetailView,
+    AdminCustomerListView,
+)
+from .settings_views import (
+    AdminCompanySettingsView, AdminSequenceDetailView, AdminSequenceListView,
+    AdminSequenceScopeView, StorefrontConfigView,
 )
 from .tenant_views import (
-    AdminBranchListView, AdminCompanyDetailView, AdminCompanyListView,
-    AdminMembershipDetailView, AdminMembershipListView, MyMembershipsView,
+    AdminBranchDetailView, AdminBranchListView, AdminCompanyDetailView,
+    AdminCompanyFulfillmentBranchView,
+    AdminCompanyListView, AdminMembershipDetailView, AdminMembershipListView,
+    MyMembershipsView,
 )
 from .access_views import (
     AdminAreaDetailView, AdminAreaListView, AdminRoleAssignmentDetailView,
@@ -87,10 +106,32 @@ urlpatterns = [
     path('admin/orders/<int:pk>/sales-note/', AdminOrderSalesNoteView.as_view(), name='admin-order-sales-note'),
     path('admin/orders/<int:pk>/sales-note/pdf/', AdminOrderSalesNotePdfView.as_view(), name='admin-order-sales-note-pdf'),
 
+    # --- Phase 2D: multi-branch inventory ---
+    # The Phase 6.0 routes above keep their paths and their names; they gained a
+    # `?branch=` parameter and lost nothing, so existing clients keep working.
+    path('admin/inventory/branches/', AdminInventoryBranchListView.as_view(), name='admin-inventory-branches'),
+    path('admin/inventory/dashboard/', AdminInventoryDashboardView.as_view(), name='admin-inventory-dashboard'),
+    path('admin/inventory/stock/', AdminBranchStockListView.as_view(), name='admin-inventory-stock'),
+    path('admin/inventory/stock/<int:pk>/policy/', AdminBranchStockPolicyView.as_view(), name='admin-inventory-stock-policy'),
+    path('admin/inventory/replenishment/', AdminReplenishmentView.as_view(), name='admin-inventory-replenishment'),
+    path('admin/inventory/transfers/', AdminStockTransferListView.as_view(), name='admin-inventory-transfers'),
+    path('admin/inventory/transfers/<int:pk>/', AdminStockTransferDetailView.as_view(), name='admin-inventory-transfer-detail'),
+    path('admin/inventory/transfers/<int:pk>/items/', AdminStockTransferItemsView.as_view(), name='admin-inventory-transfer-items'),
+    path('admin/inventory/transfers/<int:pk>/dispatch/', AdminStockTransferDispatchView.as_view(), name='admin-inventory-transfer-dispatch'),
+    path('admin/inventory/transfers/<int:pk>/receive/', AdminStockTransferReceiveView.as_view(), name='admin-inventory-transfer-receive'),
+    path('admin/inventory/transfers/<int:pk>/cancel/', AdminStockTransferCancelView.as_view(), name='admin-inventory-transfer-cancel'),
+    path('admin/inventory/counts/', AdminInventoryCountListView.as_view(), name='admin-inventory-counts'),
+    path('admin/inventory/counts/<int:pk>/', AdminInventoryCountDetailView.as_view(), name='admin-inventory-count-detail'),
+    path('admin/inventory/counts/<int:pk>/items/', AdminInventoryCountItemsView.as_view(), name='admin-inventory-count-items'),
+    path('admin/inventory/counts/<int:pk>/approve/', AdminInventoryCountApproveView.as_view(), name='admin-inventory-count-approve'),
+    path('admin/inventory/counts/<int:pk>/cancel/', AdminInventoryCountCancelView.as_view(), name='admin-inventory-count-cancel'),
+
     # --- SaaS Phase 1: multi-tenant foundation ---
     path('admin/companies/', AdminCompanyListView.as_view(), name='admin-companies'),
     path('admin/companies/<int:pk>/', AdminCompanyDetailView.as_view(), name='admin-company-detail'),
+    path('admin/companies/<int:pk>/fulfillment-branch/', AdminCompanyFulfillmentBranchView.as_view(), name='admin-company-fulfillment-branch'),
     path('admin/branches/', AdminBranchListView.as_view(), name='admin-branches'),
+    path('admin/branches/<int:pk>/', AdminBranchDetailView.as_view(), name='admin-branch-detail'),
     path('admin/memberships/', AdminMembershipListView.as_view(), name='admin-memberships'),
     path('admin/memberships/<int:pk>/', AdminMembershipDetailView.as_view(), name='admin-membership-detail'),
     path('me/memberships/', MyMembershipsView.as_view(), name='me-memberships'),
@@ -105,4 +146,21 @@ urlpatterns = [
     path('admin/membership-role-assignments/<int:pk>/', AdminRoleAssignmentDetailView.as_view(), name='admin-role-assignment-detail'),
     path('me/company-access/', MyCompanyAccessView.as_view(), name='me-company-access'),
     path('me/internal-dashboard/', InternalDashboardView.as_view(), name='me-internal-dashboard'),
+
+    # --- SaaS Phase 3: company configuration and branding ---
+    path('storefront/config/', StorefrontConfigView.as_view(), name='storefront-config'),
+    path('admin/company-settings/', AdminCompanySettingsView.as_view(), name='admin-company-settings'),
+
+    # --- SaaS Phase 4: customers (internal CRM) ---
+    # No public counterpart. A customer's document, phone, address and the notes
+    # about them are internal control only.
+    path('admin/customers/', AdminCustomerListView.as_view(), name='admin-customers'),
+    path('admin/customers/<int:pk>/', AdminCustomerDetailView.as_view(), name='admin-customer-detail'),
+
+    # --- SaaS Phase 2E: internal document sequences ---
+    # `scope/` before `<int:pk>/` so the literal segment is not swallowed by
+    # the numeric one.
+    path('admin/sequences/', AdminSequenceListView.as_view(), name='admin-sequences'),
+    path('admin/sequences/scope/', AdminSequenceScopeView.as_view(), name='admin-sequence-scope'),
+    path('admin/sequences/<int:pk>/', AdminSequenceDetailView.as_view(), name='admin-sequence-detail'),
 ]

@@ -19,15 +19,19 @@
  * TWO ACCESS PREDICATES, ON PURPOSE
  * ---------------------------------
  * `requiredCapabilities` is the target model. `legacyRoles` is what is actually
- * true today for the commercial modules: Product, Order and StockMovement have
- * no `company` column, so their endpoints still authorise through
+ * true today for the modules that are still authorised through
  * UserProfile.role. Declaring only capabilities would make the sidebar show
  * links that then 403 — worse than a role check, because it looks correct.
  *
- * As each module is tenantised (Phase 2B onward) its `legacyRoles` disappears
- * and its `requiredCapabilities` starts governing. The resolver below prefers
- * capabilities whenever a module declares them and the caller has company
- * context, so the migration is per-module and needs no change here.
+ * As each module is tenantised its `legacyRoles` disappears and its
+ * `requiredCapabilities` starts governing. Products lost theirs in Phase 2B;
+ * INVENTORY LOST ITS IN PHASE 2D, when stock acquired an owner and a place and
+ * `inventory.*` became real authority. Orders still need theirs.
+ *
+ * Note what this file still cannot express: branch access. A module may be
+ * reachable and every one of its screens still show nothing, because the person
+ * has no branch granted. That is correct — the sidebar is not the place to
+ * explain it, and the screens say so themselves.
  */
 
 import type { IconComponent } from "../components/icons";
@@ -93,8 +97,9 @@ export const MODULE_GROUPS: ModuleGroup[] = [
   { id: "administration", label: "Administración", icon: IconAdministration },
 ];
 
+// Legacy role sets, for the modules whose endpoints still authorise by
+// UserProfile.role. Inventory dropped its set in Phase 2D.
 const STAFF_ROLES = ["inventory", "sales", "admin", "superadmin"];
-const INVENTORY_ROLES = ["inventory", "admin", "superadmin"];
 const ADMIN_ROLES = ["admin", "superadmin"];
 
 export const INTERNAL_MODULES: InternalModule[] = [
@@ -144,8 +149,20 @@ export const INTERNAL_MODULES: InternalModule[] = [
   { id: "purchases.receipts", group: "purchases", label: "Recepciones", description: "Recepción de mercadería.", status: "pending" },
 
   // ── Clientes ─────────────────────────────────────────────────────────────
-  { id: "customers.list", group: "customers", label: "Clientes", description: "Ficha e historial de clientes.", status: "pending" },
-  { id: "customers.devices", group: "customers", label: "Equipos", description: "Equipos registrados por cliente.", status: "pending" },
+  {
+    id: "customers.list",
+    group: "customers",
+    label: "Clientes",
+    description: "Ficha e historial comercial de los clientes de la empresa.",
+    href: "/admin/customers",
+    // Phase 4: no `legacyRoles`. Customer is tenantised from the first commit,
+    // so `service.customers.view` is real authority here and there is nothing
+    // for a legacy-role bridge to be transitional about.
+    requiredCapabilities: ["service.customers.view"],
+    status: "implemented",
+    quickAction: true,
+  },
+  { id: "customers.devices", group: "customers", label: "Equipos", description: "Equipos registrados por cliente. Fase 5.", status: "pending" },
   { id: "customers.warranties", group: "customers", label: "Garantías", description: "Garantías vigentes.", status: "pending" },
   { id: "customers.loyalty", group: "customers", label: "Fidelización", description: "Programas, reglas y premios.", status: "proposed" },
 
@@ -166,14 +183,16 @@ export const INTERNAL_MODULES: InternalModule[] = [
   { id: "products.categories", group: "products", label: "Categorías", description: "Taxonomía del catálogo. API tenant-aware, pantalla pendiente.", status: "partial" },
 
   // ── Inventario ───────────────────────────────────────────────────────────
+  // Phase 2D: `legacyRoles` is gone from every inventory module. Stock belongs
+  // to a company and sits in a branch now, so `inventory.*` is real authority
+  // rather than a label over globally shared data.
   {
     id: "inventory.stock",
     group: "inventory",
     label: "Stock",
-    description: "Resumen de existencias y alertas de reposición.",
+    description: "Existencias por sucursal y alertas de reposición.",
     href: "/admin/inventory",
     requiredCapabilities: ["inventory.view"],
-    legacyRoles: INVENTORY_ROLES,
     status: "implemented",
     quickAction: true,
   },
@@ -181,25 +200,47 @@ export const INTERNAL_MODULES: InternalModule[] = [
     id: "inventory.movements",
     group: "inventory",
     label: "Movimientos",
-    description: "Kardex completo: entradas, salidas y ajustes.",
+    description: "Kardex por sucursal: entradas, salidas y ajustes.",
     href: "/admin/inventory/movements",
-    requiredCapabilities: ["inventory.adjust"],
-    legacyRoles: INVENTORY_ROLES,
+    requiredCapabilities: ["inventory.view"],
     status: "implemented",
   },
   {
     id: "inventory.reports",
     group: "inventory",
     label: "Reportes",
-    description: "Bajo stock, rotación y valorización.",
+    description: "Bajo stock, rotación y valorización estimada.",
     href: "/admin/inventory/reports",
     requiredCapabilities: ["inventory.reports"],
-    legacyRoles: INVENTORY_ROLES,
     status: "implemented",
   },
-  { id: "inventory.transfers", group: "inventory", label: "Transferencias", description: "Traslados entre sucursales.", status: "pending" },
-  { id: "inventory.counts", group: "inventory", label: "Recuentos", description: "Inventarios físicos.", status: "pending" },
-  { id: "inventory.replenishment", group: "inventory", label: "Reposición", description: "Sugerencias de compra.", status: "pending" },
+  {
+    id: "inventory.transfers",
+    group: "inventory",
+    label: "Transferencias",
+    description: "Traslados de stock entre sucursales.",
+    href: "/admin/inventory/transfers",
+    requiredCapabilities: ["inventory.view"],
+    status: "implemented",
+  },
+  {
+    id: "inventory.counts",
+    group: "inventory",
+    label: "Recuentos",
+    description: "Inventarios físicos y ajustes por diferencia.",
+    href: "/admin/inventory/counts",
+    requiredCapabilities: ["inventory.view"],
+    status: "implemented",
+  },
+  {
+    id: "inventory.replenishment",
+    group: "inventory",
+    label: "Reposición",
+    description: "Sugerencias por mínimo y objetivo de cada sucursal.",
+    href: "/admin/inventory/replenishment",
+    requiredCapabilities: ["inventory.reports"],
+    status: "implemented",
+  },
   { id: "inventory.serial", group: "inventory", label: "Serial / IMEI", description: "Trazabilidad por unidad.", status: "pending" },
 
   // ── Servicio Técnico ─────────────────────────────────────────────────────
@@ -216,10 +257,9 @@ export const INTERNAL_MODULES: InternalModule[] = [
     id: "reports.inventory",
     group: "reports",
     label: "Inventario",
-    description: "Reportes operativos de stock.",
+    description: "Reportes operativos de stock por sucursal.",
     href: "/admin/inventory/reports",
-    requiredCapabilities: ["reports.view"],
-    legacyRoles: INVENTORY_ROLES,
+    requiredCapabilities: ["inventory.reports"],
     status: "implemented",
   },
   { id: "reports.sales", group: "reports", label: "Ventas", description: "Más vendidos e ingresos por producto.", status: "partial" },
@@ -252,17 +292,19 @@ export const INTERNAL_MODULES: InternalModule[] = [
     id: "admin.company",
     group: "administration",
     label: "Empresa",
-    description: "Datos de la empresa. API lista, pantalla pendiente.",
-    requiredCapabilities: ["company.manage"],
-    status: "partial",
+    description: "Identidad y datos fiscales. Se editan en Configuración.",
+    href: "/admin/settings",
+    requiredCapabilities: ["company.view"],
+    status: "implemented",
   },
   {
     id: "admin.branches",
     group: "administration",
     label: "Sucursales",
-    description: "Sucursales de la empresa. API lista, pantalla pendiente.",
-    requiredCapabilities: ["company.manage"],
-    status: "partial",
+    description: "Ubicaciones de la empresa y sucursal de despacho.",
+    href: "/admin/branches",
+    requiredCapabilities: ["company.view"],
+    status: "implemented",
   },
   {
     id: "admin.areas",
@@ -280,7 +322,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["roles.manage"],
     status: "partial",
   },
-  { id: "admin.settings", group: "administration", label: "Configuración", description: "Preferencias y branding.", status: "pending" },
+  {
+    id: "admin.settings",
+    group: "administration",
+    label: "Configuración",
+    description: "Identidad, branding, contacto y políticas de la empresa.",
+    href: "/admin/settings",
+    // `company.view` to reach the screen; the screen itself renders read-only
+    // without `company.manage`, which the backend enforces independently.
+    requiredCapabilities: ["company.view"],
+    status: "implemented",
+    quickAction: true,
+  },
 ];
 
 // ---------------------------------------------------------------------------

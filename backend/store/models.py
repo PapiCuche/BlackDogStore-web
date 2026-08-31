@@ -8,6 +8,30 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 
 
+class DocumentType(models.TextChoices):
+    """
+    Identity documents accepted across the platform.
+
+    Defined ONCE, at module level, because two domains need it: an `Order`
+    records the document the BUYER gave at checkout, and a `Customer` records the
+    document the CRM holds for that person or business. They describe the same
+    real-world vocabulary.
+
+    The alternative — a second enum on `Customer` — would have let the two drift.
+    A `Customer` saved with `'DNI'` and an `Order` saved with `'dni'` would never
+    match again, and the deterministic matching this phase depends on would fail
+    silently rather than loudly.
+
+    `Order.DocumentType` remains as an alias so existing call sites keep working,
+    and so the dependency runs Customer → shared vocabulary, never
+    Customer → Order.
+    """
+
+    DNI = 'dni', 'DNI'
+    RUC = 'ruc', 'RUC'
+    CE = 'ce', 'Carnet de Extranjería'
+
+
 class Category(models.Model):
     """
     A catalogue category owned by one Company.
@@ -45,9 +69,21 @@ class Product(models.Model):
     covered) AND independently in the admin serializer, so no request path relies
     on clean() alone.
 
-    `inventory` remains a single global-per-product integer. Now that Product
-    belongs to a Company, stock no longer crosses tenants — but it is still not
-    per-branch. See "Inventory branch isolation" in docs/saas-multiempresa.md.
+    `inventory` — SEMANTICS CHANGED IN PHASE 2D. READ THIS BEFORE USING IT.
+
+    It is no longer the source of truth. `BranchStock.quantity` is, per branch.
+    `inventory` is now a COMPATIBILITY AGGREGATE: the sum of this product's
+    BranchStock quantities across its company's branches, maintained inside the
+    same transaction as every stock movement by `store.inventory_services`.
+
+    It survives because the public catalogue API, the admin product list and
+    several reports have exposed a field with this name since Phase 0, and
+    breaking that would break the storefront for no gain. It is a DERIVED
+    number: nothing outside inventory_services may write it, and no decision
+    about whether a sale can be fulfilled may be taken from it — that question
+    is always "how much is in THIS branch", which only BranchStock answers.
+
+    See docs/saas-multiempresa.md, "Product.inventory (compatibilidad)".
     """
 
     company = models.ForeignKey(
@@ -105,12 +141,32 @@ class Product(models.Model):
 
 
 class Coupon(models.Model):
-    code = models.CharField(max_length=50, unique=True)
+    """
+    A discount code owned by one Company.
+
+    Phase 2C: `code` is no longer globally unique. Two tenants may each run a
+    "BIENVENIDO10" campaign — a global unique would have made the second one
+    impossible, and silently sharing one company's coupon with another would be
+    worse.
+    """
+
+    company = models.ForeignKey(
+        'store.Company', on_delete=models.PROTECT, related_name='coupons',
+    )
+    code = models.CharField(max_length=50)
     discount_percent = models.PositiveSmallIntegerField(
         validators=[MinValueValidator(1), MaxValueValidator(100)]
     )
     is_active = models.BooleanField(default=True)
     expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'code'], name='unique_coupon_code_per_company',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'code'])]
 
     def __str__(self):
         return f"{self.code} — {self.discount_percent}%"
@@ -134,10 +190,10 @@ class Order(models.Model):
         DELIVERED = 'delivered', 'Entregado'
         CANCELLED = 'cancelled', 'Cancelado operativo'
 
-    class DocumentType(models.TextChoices):
-        DNI = 'dni', 'DNI'
-        RUC = 'ruc', 'RUC'
-        CE = 'ce', 'Carnet de Extranjería'
+    # Alias of the module-level vocabulary — see DocumentType. Kept so that
+    # `Order.DocumentType.DNI` continues to read naturally where an order is the
+    # subject, without giving Customer a reason to import Order.
+    DocumentType = DocumentType
 
     class DeliveryMethod(models.TextChoices):
         PICKUP_STORE = 'pickup_store', 'Recojo en tienda'
@@ -148,7 +204,80 @@ class Order(models.Model):
         BOLETA = 'boleta', 'Boleta'
         FACTURA = 'factura', 'Factura'
 
+    # Phase 2C — explicit ownership.
+    #
+    # The tenant is NOT inferred from the items on every read. An order is used
+    # by administration, reports, the dashboard, fulfillment, auditing, the
+    # customer portal, the webhook and emails; making each of those re-derive the
+    # company through a join would be both slow and easy to get wrong once. The
+    # invariant `Order.company == every OrderItem.product.company` is enforced at
+    # write time instead — see checkout and OrderItem validation.
+    company = models.ForeignKey(
+        'store.Company', on_delete=models.PROTECT, related_name='orders',
+    )
+    # Phase 2D — WHICH BRANCH SELLS THIS ORDER.
+    #
+    # Stock lives in branches now, so "the company has 20 units" is not an
+    # answer to "can this order ship". Checkout resolves the storefront's
+    # fulfillment branch (Company.default_inventory_branch) once, stamps it here,
+    # and every later step — stock validation, the webhook's sale exits, the
+    # Kardex — reads it from the order instead of re-deciding. Re-deriving it
+    # later would let a configuration change reroute stock for orders that were
+    # already priced and paid against a different branch.
+    #
+    # Nullable because historical orders predate branches; migration 0025
+    # backfills them to the same branch their stock was migrated to. New orders
+    # always carry one — checkout refuses to create an order without it.
+    #
+    # INVARIANT: fulfillment_branch.company == order.company.
+    fulfillment_branch = models.ForeignKey(
+        'store.Branch', null=True, blank=True, on_delete=models.PROTECT,
+        related_name='fulfilled_orders',
+    )
+    # Phase 3 — WHO THE SELLER WAS, AT THE TIME OF THE SALE.
+    #
+    # Every document about this order — the confirmation email, the receipt PDF,
+    # the internal sales note — carries the company's legal identity. Rendering
+    # those from the CURRENT settings means a business that moves premises, is
+    # renamed or re-registers silently rewrites what a receipt from six months
+    # ago says it was. That is not a cosmetic problem: a customer holding a
+    # printed document would find it no longer matches the one the system
+    # reprints.
+    #
+    # So the identity is frozen here when the order is created, and historical
+    # documents read it from the order. The live settings drive the storefront
+    # and everything else; this drives the paperwork.
+    #
+    # Contains ONLY the commercial identity that appears on documents. No
+    # secrets, no configuration, no internal notification address — see
+    # company_settings.build_identity_snapshot().
+    #
+    # Empty dict for orders that predate the field and could not be backfilled;
+    # `order_identity()` then falls back to the live company, which is the best
+    # answer available and is documented as such.
+    company_snapshot = models.JSONField(default=dict, blank=True)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+
+    # PHASE 4 — the CRM record this sale belongs to.
+    #
+    # NULLABLE, and a null is a real answer rather than a gap to be filled later:
+    # a legacy order whose buyer cannot be identified with certainty is left
+    # unlinked on purpose. Attaching it to the wrong client would put one
+    # person's purchase history in another person's file, which is the failure
+    # this whole model is arranged to avoid.
+    #
+    # PROTECT because a client who has bought something is not deletable. The
+    # supported way to retire a customer is `is_active = False`; the database
+    # refuses the other one. Note this deliberately does NOT replace the
+    # `customer_*` snapshot fields below — see the comment there.
+    customer = models.ForeignKey(
+        'store.Customer', on_delete=models.PROTECT,
+        null=True, blank=True, related_name='orders',
+    )
+    # SNAPSHOT OF THE BUYER, frozen at the sale. NOT redundant with `customer`
+    # above, and not to be re-derived from it: when a client changes their phone
+    # number or moves, last year's order must keep saying what it said when it
+    # was issued. `customer` is who they are now; these are who they were then.
     customer_name = models.CharField(max_length=255, blank=True)
     customer_email = models.EmailField(blank=True)
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -208,12 +337,34 @@ class Order(models.Model):
     accepted_terms = models.BooleanField(default=False)
     accepted_warranty_policy = models.BooleanField(default=False)
 
+    class Meta:
+        # Every admin list, dashboard KPI and report starts by narrowing to one
+        # company and then filters by date or status — these match that shape.
+        indexes = [
+            models.Index(fields=['company', '-created_at']),
+            models.Index(fields=['company', 'paid_at']),
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'fulfillment_status']),
+        ]
+
     def __str__(self):
         owner = self.customer_name or self.user or "Anon"
         return f"Order #{self.id} [{self.status}] - {owner}"
 
 
 class OrderItem(models.Model):
+    """
+    A line of an order.
+
+    INVARIANT: `item.product.company == item.order.company`. Without it a tenant
+    could attach another tenant's product to its own order and drag it through
+    checkout, Stripe, the webhook and stock.
+
+    Enforced in `clean()` (covering every ORM object write) AND, critically, in
+    `assert_items_match_order()` for bulk paths — `bulk_create()` does NOT call
+    `clean()`, so a set-level check has to exist for code that uses it.
+    """
+
     order = models.ForeignKey(Order, related_name='items', on_delete=models.CASCADE)
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
@@ -221,6 +372,42 @@ class OrderItem(models.Model):
 
     def __str__(self):
         return f"{self.quantity} x {self.product.name}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not (self.order_id and self.product_id):
+            return
+        order_company = self.order.company_id
+        if order_company is None:
+            return  # pre-Phase-2C row being backfilled
+        if self.product.company_id != order_company:
+            raise ValidationError(
+                {'product': 'El producto no pertenece a la empresa de este pedido.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+def assert_items_match_order(order, products):
+    """
+    Set-level guard for bulk paths — `bulk_create()` bypasses `clean()`.
+
+    Raises ValidationError if any product belongs to a different company than the
+    order. Call this BEFORE writing, not after.
+    """
+    from django.core.exceptions import ValidationError
+
+    if order.company_id is None:
+        return
+    foreign = [p for p in products if p.company_id != order.company_id]
+    if foreign:
+        raise ValidationError(
+            f'Los productos {[p.pk for p in foreign]} no pertenecen a la empresa '
+            f'{order.company_id} del pedido {order.pk}.'
+        )
 
 
 class CartItem(models.Model):
@@ -411,7 +598,7 @@ class AccountToken(models.Model):
 
 class StockMovement(models.Model):
     """
-    Immutable Kardex line. Every change to Product.inventory must produce one.
+    Immutable Kardex line. Every change to BranchStock.quantity must produce one.
 
     Rules enforced by store.inventory_services (never write this model directly):
       - quantity is always POSITIVE; movement_type decides the sign.
@@ -419,6 +606,16 @@ class StockMovement(models.Model):
       - stock_after is never negative.
       - manual movements require an actor and a reason.
       - sale movements require an order and are idempotent per (order, product).
+
+    PHASE 2D — stock_before / stock_after CHANGED MEANING.
+    They are the stock OF THIS BRANCH before and after the movement, not a
+    company-wide total. A company with 3 branches now has 3 independent running
+    balances for the same product, which is the only reading that makes a Kardex
+    auditable: a branch's balance must be reconstructible from its own lines.
+
+    Rows migrated from before Phase 2D belong to the branch chosen by migration
+    0025 (see its docstring), and their snapshots are the pre-2D company totals —
+    correct, because at that time the company had exactly one stock location.
     """
 
     # --- Entries (add stock) ---
@@ -433,6 +630,9 @@ class StockMovement(models.Model):
     CORRECTION_NEGATIVE = 'correction_negative'
     DAMAGED_EXIT = 'damaged_exit'
     SERVICE_EXIT = 'service_exit'
+    # --- Phase 2D: inter-branch transfer, one line on each side ---
+    TRANSFER_OUT = 'transfer_out'
+    TRANSFER_IN = 'transfer_in'
 
     MOVEMENT_TYPE_CHOICES = [
         (INITIAL_STOCK, 'Stock inicial'),
@@ -440,26 +640,50 @@ class StockMovement(models.Model):
         (MANUAL_ENTRY, 'Entrada manual'),
         (RETURN_ENTRY, 'Entrada por devolución'),
         (CORRECTION_POSITIVE, 'Corrección positiva'),
+        (TRANSFER_IN, 'Entrada por transferencia'),
         (MANUAL_EXIT, 'Salida manual'),
         (SALE_EXIT, 'Salida por venta'),
         (CORRECTION_NEGATIVE, 'Corrección negativa'),
         (DAMAGED_EXIT, 'Salida por daño / merma'),
         (SERVICE_EXIT, 'Salida por servicio técnico'),
+        (TRANSFER_OUT, 'Salida por transferencia'),
     ]
 
     ENTRY_TYPES = frozenset([
-        INITIAL_STOCK, PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY, CORRECTION_POSITIVE,
+        INITIAL_STOCK, PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY,
+        CORRECTION_POSITIVE, TRANSFER_IN,
     ])
     EXIT_TYPES = frozenset([
         MANUAL_EXIT, SALE_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT, SERVICE_EXIT,
+        TRANSFER_OUT,
     ])
     # Types an operator may create through the admin API. sale_exit is excluded
-    # on purpose: it is only ever produced by the payment pipeline.
+    # on purpose: it is only ever produced by the payment pipeline, and the two
+    # transfer types likewise only by the transfer pipeline — a hand-written
+    # transfer_out with no matching transfer_in would be stock that vanished.
     MANUAL_TYPES = frozenset([
         PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY, CORRECTION_POSITIVE,
         MANUAL_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT,
     ])
 
+    # Phase 2D — explicit tenant and location.
+    #
+    # `company` is denormalised from product.company rather than joined on every
+    # read: the Kardex is filtered by company in every report, dashboard and
+    # export, and a two-table join to answer "whose movement is this?" would be
+    # both slower and easy to forget once. The invariants below are enforced at
+    # write time by inventory_services, which is the only writer.
+    #
+    # INVARIANTS:
+    #   movement.company == movement.product.company
+    #   movement.branch.company == movement.company
+    #   movement.order.company == movement.company          (when order is set)
+    company = models.ForeignKey(
+        'store.Company', on_delete=models.PROTECT, related_name='stock_movements',
+    )
+    branch = models.ForeignKey(
+        'store.Branch', on_delete=models.PROTECT, related_name='stock_movements',
+    )
     product = models.ForeignKey(
         Product, on_delete=models.PROTECT, related_name='stock_movements',
     )
@@ -476,6 +700,21 @@ class StockMovement(models.Model):
         Order, null=True, blank=True, on_delete=models.PROTECT,
         related_name='stock_movements',
     )
+    # Phase 2D: real foreign keys to the documents that caused the movement,
+    # rather than only `reference_type`/`reference_id` strings. A string pair
+    # cannot be joined, cannot be validated and silently rots when a row is
+    # renumbered; these can, and PROTECT means a transfer or a count can never
+    # be deleted out from under the Kardex line that cites it.
+    # `reference_type`/`reference_id` are still populated for the generic
+    # reference display the existing UI already renders.
+    transfer = models.ForeignKey(
+        'store.StockTransfer', null=True, blank=True, on_delete=models.PROTECT,
+        related_name='stock_movements',
+    )
+    inventory_count = models.ForeignKey(
+        'store.InventoryCount', null=True, blank=True, on_delete=models.PROTECT,
+        related_name='stock_movements',
+    )
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name='stock_movements',
@@ -489,6 +728,12 @@ class StockMovement(models.Model):
             models.Index(fields=['product', '-created_at']),
             models.Index(fields=['movement_type', '-created_at']),
             models.Index(fields=['order', 'movement_type']),
+            # Phase 2D — the shape every tenantised Kardex query actually has:
+            # narrow to the company, then to a branch, then order by date.
+            models.Index(fields=['company', '-created_at']),
+            models.Index(fields=['branch', '-created_at']),
+            models.Index(fields=['branch', 'product', '-created_at']),
+            models.Index(fields=['branch', 'movement_type', '-created_at']),
         ]
 
     def __str__(self):
@@ -509,7 +754,30 @@ class SalesNote(models.Model):
     INTERNAL sales note for a paid order.
 
     This is NOT a SUNAT electronic receipt, NOT fiscal numbering and has no
-    legal/tax validity. The number is an internal correlativo (NV-000001).
+    legal/tax validity.
+
+    NUMBERING — PHASE 2E
+    --------------------
+    Three fields, three different meanings, and conflating them is the mistake
+    this split exists to prevent:
+
+      number          THE IDENTIFIER THAT WAS ISSUED. A snapshot string, never
+                      recomputed. Editing the series prefix afterwards does not
+                      touch a note already issued — a document a customer or an
+                      auditor is holding must keep saying what it said.
+      sequence        which series handed it out. Gives the note its company,
+                      its branch scope and its formatting rules at issue time.
+      sequence_value  the ordinal within that series. The sortable, arithmetic
+                      form of the same fact — `number` is for reading.
+
+    `number` IS NO LONGER GLOBALLY UNIQUE, on purpose. Two companies must both
+    be able to issue NV-000001; a global unique made one tenant's numbering
+    depend on another's. Uniqueness belongs to the series, which is what
+    `unique_value_per_sequence` enforces.
+
+    NO `company` FIELD, deliberately. It is reachable twice already —
+    `sequence.company` and `order.company` — and a third copy would be a third
+    thing to keep in step, with no query that needs it.
     """
 
     STATUS_ISSUED = 'issued'
@@ -519,13 +787,22 @@ class SalesNote(models.Model):
         (STATUS_VOID, 'Anulada'),
     ]
 
-    NUMBER_PREFIX = 'NV-'
-    NUMBER_PADDING = 6
-
     order = models.OneToOneField(
         Order, on_delete=models.PROTECT, related_name='sales_note',
     )
-    number = models.CharField(max_length=30, unique=True)
+    # PROTECT: a series that has issued documents can never be deleted out from
+    # under them. Retire it with `is_active` instead — the history stays
+    # readable, and reactivating continues where it left off.
+    sequence = models.ForeignKey(
+        'store.InternalSequence', null=True, blank=True, on_delete=models.PROTECT,
+        related_name='sales_notes',
+    )
+    # Nullable for exactly one reason, documented in migration 0030: a legacy
+    # number that does not parse into an ordinal. Inventing one would either
+    # collide or lie; leaving it empty says truthfully "this number predates the
+    # series and has no ordinal".
+    sequence_value = models.PositiveBigIntegerField(null=True, blank=True)
+    number = models.CharField(max_length=40)
     status = models.CharField(
         max_length=30, choices=STATUS_CHOICES, default=STATUS_ISSUED, db_index=True,
     )
@@ -540,6 +817,23 @@ class SalesNote(models.Model):
 
     class Meta:
         ordering = ['-created_at', '-id']
+        constraints = [
+            # THE REAL UNIQUENESS. Not the display string — two tenants may both
+            # show NV-000001 — but one ordinal per series.
+            #
+            # Conditional because a legacy note may carry neither: it predates
+            # the series and has no ordinal to be unique about.
+            models.UniqueConstraint(
+                fields=['sequence', 'sequence_value'],
+                condition=models.Q(sequence__isnull=False)
+                & models.Q(sequence_value__isnull=False),
+                name='unique_value_per_sequence',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['sequence', 'sequence_value']),
+            models.Index(fields=['number']),
+        ]
 
     def __str__(self):
         return f"SalesNote({self.number}, order={self.order_id})"
@@ -559,9 +853,10 @@ class Company(models.Model):
     """
     A tenant: one business operating on the platform.
 
-    Black Dog Store is seeded as the first Company by a data migration, not by a
-    constant in the code — the platform must be able to host a completely
-    different business without touching business logic.
+    The first Company is seeded by a data migration, not by a constant in the
+    code — the platform must be able to host a completely different business
+    without touching business logic. From Phase 3 the same is true of its
+    commercial identity, which lives in `CompanySettings`.
     """
 
     name = models.CharField(max_length=200)
@@ -569,6 +864,23 @@ class Company(models.Model):
     tax_id = models.CharField(max_length=20, blank=True, db_index=True)
     slug = models.SlugField(max_length=80, unique=True)
     is_active = models.BooleanField(default=True, db_index=True)
+    # Phase 2D — WHERE THE ONLINE STORE SELLS FROM.
+    #
+    # The e-commerce has no branch picker: a customer adds to cart and pays
+    # without ever naming a location. Somebody still has to decide which branch's
+    # stock was sold, and "whichever one the query returns first" is not a
+    # decision — it is a bug that only shows up once a company opens its second
+    # branch. So the tenant states it, once, here.
+    #
+    # Nullable, and a null is a real state, not a placeholder: a company with no
+    # fulfillment branch simply cannot check out, and says so. It is never
+    # silently replaced by "some branch". SET_NULL rather than PROTECT because
+    # deleting the branch must not be blocked by this pointer — it must clear it,
+    # loudly, so the next checkout fails instead of shipping from nowhere.
+    default_inventory_branch = models.ForeignKey(
+        'store.Branch', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='fulfilling_companies',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -583,6 +895,24 @@ class Company(models.Model):
     def is_operational(self) -> bool:
         """A deactivated company keeps its history but cannot transact."""
         return self.is_active
+
+    def clean(self):
+        """A company cannot fulfil orders from another company's branch."""
+        from django.core.exceptions import ValidationError
+
+        if (
+            self.default_inventory_branch_id
+            and self.pk
+            and self.default_inventory_branch.company_id != self.pk
+        ):
+            raise ValidationError({
+                'default_inventory_branch':
+                    'La sucursal de despacho no pertenece a esta empresa.',
+            })
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class Branch(models.Model):
@@ -638,6 +968,32 @@ class Membership(models.Model):
 
     ROLE_CHOICES = UserProfile.ROLE_CHOICES
 
+    # --- Phase 2D: branch access mode -------------------------------------
+    #
+    # WHY A MODE AND NOT "NO ROWS MEANS EVERYTHING".
+    # The obvious design is a plain grant table where an empty set means "all
+    # branches". It is also the one that fails open: revoking a person's last
+    # branch would silently promote them from one branch to every branch, and
+    # a bug that deletes grants would widen access instead of narrowing it.
+    # An explicit mode makes "none" expressible and makes ALL a deliberate act.
+    #
+    #   ALL       every ACTIVE branch of the company, including ones created
+    #             tomorrow. For owners and small businesses where per-branch
+    #             restriction would be pure friction.
+    #   SELECTED  exactly the branches granted in MembershipBranchAccess and no
+    #             others. A branch opened later is NOT granted automatically —
+    #             that is the whole point of choosing this mode.
+    #
+    # SELECTED with zero active grants means NO branch. It is a valid state (a
+    # member who has not been placed anywhere yet), and it denies rather than
+    # allows.
+    ACCESS_MODE_ALL = 'all'
+    ACCESS_MODE_SELECTED = 'selected'
+    ACCESS_MODE_CHOICES = [
+        (ACCESS_MODE_ALL, 'Todas las sucursales'),
+        (ACCESS_MODE_SELECTED, 'Sucursales seleccionadas'),
+    ]
+
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='memberships',
     )
@@ -647,8 +1003,25 @@ class Membership(models.Model):
     role = models.CharField(
         max_length=20, choices=ROLE_CHOICES, default=UserProfile.ROLE_CUSTOMER, db_index=True,
     )
+    # LEGACY / DEPRECATED AS AUTHORITY — Phase 2D.
+    #
+    # Until 2D this field was the only branch a membership knew about, and it
+    # could not express "these three of our five". It is NOT consulted by any
+    # access decision any more; `branch_access_mode` + MembershipBranchAccess
+    # are. What it still means, and all it means, is the member's DEFAULT
+    # branch: which one the internal control opens on. Validated to be a branch
+    # they can actually reach — see clean().
+    #
+    # It is kept rather than dropped because dropping a column that every
+    # existing row uses, in the same phase that changes what it means, would
+    # make the migration unreviewable. Removal is tracked in
+    # docs/saas-multiempresa.md.
     branch = models.ForeignKey(
         Branch, null=True, blank=True, on_delete=models.SET_NULL, related_name='memberships',
+    )
+    branch_access_mode = models.CharField(
+        max_length=20, choices=ACCESS_MODE_CHOICES, default=ACCESS_MODE_ALL,
+        db_index=True,
     )
     is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -702,6 +1075,10 @@ class Membership(models.Model):
         """A membership only confers company access while both it and the company are active."""
         return self.is_active and self.company.is_active
 
+    @property
+    def sees_all_branches(self) -> bool:
+        return self.branch_access_mode == self.ACCESS_MODE_ALL
+
 
 # ---------------------------------------------------------------------------
 # SaaS Phase 2A.1 — configurable areas, roles and assignments
@@ -712,8 +1089,8 @@ class Membership(models.Model):
 #
 #   EXTERNAL PORTAL   the e-commerce. Open to ANY user — and its public parts to
 #                     anonymous visitors too. Holding a Membership does not take
-#                     it away: a Black Dog technician is still a customer when
-#                     they buy something.
+#                     it away: a company's own technician is still a customer
+#                     when they buy something from it.
 #   INTERNAL CONTROL  requires User + active Membership + active Company +
 #                     the capabilities of their roles.
 #   PLATFORM CONTROL  requires User.is_superuser, and only that.
@@ -722,7 +1099,7 @@ class Membership(models.Model):
 #
 #   User Carlos
 #     ├── buys products as a customer          (external portal)
-#     └── Membership @ Black Dog Store         (internal control)
+#     └── Membership @ una empresa             (internal control)
 #           └── Técnico
 #
 # Nothing in this module can turn a user into a platform master.
@@ -918,3 +1295,1178 @@ class MembershipRoleAssignment(models.Model):
             and self.role.is_active
             and self.membership.grants_business_access
         )
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 2D — multi-branch inventory
+# ---------------------------------------------------------------------------
+#
+# THE SHAPE OF THE PROBLEM
+#
+#   Company
+#     ├── Branch                     a physical stock location
+#     ├── Product                    what is sold, company-wide
+#     └── BranchStock(branch, product)   how much of it is HERE
+#
+# Before this phase a product carried one integer and the platform pretended a
+# company was one place. That is true of exactly one kind of business — the one
+# with a single shop — and false of every business worth selling this platform
+# to. Everything below exists to make "how much do we have?" a question that
+# cannot be asked without also asking "where?".
+#
+# AUTHORITY IS TWO INDEPENDENT AXES, AND BOTH MUST PASS
+#
+#   capability   what you may DO            inventory.adjust
+#   branch       where you may do it        MembershipBranchAccess
+#
+# Neither implies the other. `inventory.adjust` is not permission to adjust
+# every branch, and access to a branch is not permission to touch its stock.
+# See tenancy.assert_branch_access / has_capability — every write checks both.
+
+class MembershipBranchAccess(models.Model):
+    """
+    One branch a membership may operate in, while `branch_access_mode` is SELECTED.
+
+    Rows are IGNORED while the membership is in ALL mode. They are not deleted
+    when the mode flips, so switching a person to ALL for a week and back does
+    not destroy the grants somebody deliberately configured.
+
+    INVARIANT: membership.company == branch.company. A grant that crossed
+    companies would be a cross-tenant privilege, which is the one thing the
+    whole tenancy layer exists to prevent.
+    """
+
+    membership = models.ForeignKey(
+        Membership, on_delete=models.CASCADE, related_name='branch_access',
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.CASCADE, related_name='membership_access',
+    )
+    is_active = models.BooleanField(default=True, db_index=True)
+    granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='branch_access_granted',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['membership__company__name', 'branch__name']
+        verbose_name_plural = 'membership branch access'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['membership', 'branch'],
+                name='unique_branch_access_per_membership',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['membership', 'is_active']),
+            models.Index(fields=['branch', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"{self.membership.user.username} → {self.branch.name}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not (self.membership_id and self.branch_id):
+            return
+        if self.branch.company_id != self.membership.company_id:
+            raise ValidationError(
+                {'branch': 'La sucursal no pertenece a la empresa de esta membresía.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class BranchStock(models.Model):
+    """
+    How many units of one product sit in one branch. THE source of truth.
+
+    Rows are created on demand by store.inventory_services and never by a view,
+    a serializer or a signal. A product with no row in a branch has zero units
+    there — absence and zero mean the same thing, so no code has to distinguish
+    them.
+
+    `minimum_stock` / `target_stock` are the replenishment policy FOR THIS
+    BRANCH. The same product can be a fast mover downtown and dead weight in a
+    satellite shop; one company-wide threshold could not say that, which is why
+    the old global `?threshold=` parameter is now only a fallback.
+
+    INVARIANT: branch.company == product.company. Enforced in clean(), in the
+    service layer before every write, and structurally by the fact that no view
+    ever lets a caller name a branch outside their own tenant.
+    """
+
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name='stock_levels',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name='branch_stocks',
+    )
+    quantity = models.PositiveIntegerField(default=0)
+    minimum_stock = models.PositiveIntegerField(default=0)
+    target_stock = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['branch__name', 'product__name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['branch', 'product'], name='unique_stock_per_branch_product',
+            ),
+            # PositiveIntegerField already refuses negatives at the ORM layer;
+            # this states the same rule to the DATABASE, which is what actually
+            # holds when a future raw query or a bulk path skips the ORM.
+            models.CheckConstraint(
+                condition=models.Q(quantity__gte=0), name='branch_stock_quantity_non_negative',
+            ),
+            # A target below the minimum would make every replenishment
+            # suggestion negative, i.e. "order less than nothing". Zero means
+            # "no target set" and is therefore exempt.
+            models.CheckConstraint(
+                condition=models.Q(target_stock=0) | models.Q(target_stock__gte=models.F('minimum_stock')),
+                name='branch_stock_target_at_least_minimum',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['branch', 'quantity']),
+            models.Index(fields=['product', 'branch']),
+        ]
+
+    def __str__(self):
+        return f"{self.product.name} @ {self.branch.name}: {self.quantity}"
+
+    @property
+    def needs_replenishment(self) -> bool:
+        """At or below the branch minimum, with a minimum actually configured."""
+        return self.minimum_stock > 0 and self.quantity <= self.minimum_stock
+
+    @property
+    def suggested_quantity(self) -> int:
+        """
+        Units to bring this branch back up to target. A SUGGESTION, never an order.
+
+        Zero unless the branch is at or below its minimum: topping up a product
+        that is comfortably stocked is not replenishment, it is tying up cash.
+        """
+        if not self.needs_replenishment:
+            return 0
+        return max(self.target_stock - self.quantity, 0)
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not (self.branch_id and self.product_id):
+            return
+        if self.branch.company_id != self.product.company_id:
+            raise ValidationError(
+                {'product': 'El producto no pertenece a la empresa de esta sucursal.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class StockTransfer(models.Model):
+    """
+    A movement of stock from one branch to another, as a DOCUMENT.
+
+    THE REASON THIS IS A MODEL AND NOT TWO UPDATES.
+    `source -= q; destination += q` in one transaction is arithmetically
+    correct and operationally useless: units are not teleported, they travel.
+    Between dispatch and receipt they belong to neither branch's shelf, and the
+    business needs to know they exist, who sent them and who has not yet
+    confirmed arrival. A document holds that; two updates cannot.
+
+    LIFECYCLE — stock moves at the EDGES, never on a status field:
+
+        DRAFT ──dispatch──▶ IN_TRANSIT ──receive──▶ RECEIVED
+          │                (source -q)              (dest +q)
+          └──cancel──▶ CANCELLED
+
+    Dispatch subtracts from the source. Receipt adds to the destination. There
+    is deliberately NO write that does both: crediting the destination at
+    dispatch would show stock in a shop that does not physically have it, and
+    every stock count there would then be "wrong" by the contents of a van.
+    """
+
+    STATUS_DRAFT = 'draft'
+    STATUS_IN_TRANSIT = 'in_transit'
+    STATUS_RECEIVED = 'received'
+    STATUS_CANCELLED = 'cancelled'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, 'Borrador'),
+        (STATUS_IN_TRANSIT, 'En tránsito'),
+        (STATUS_RECEIVED, 'Recibida'),
+        (STATUS_CANCELLED, 'Anulada'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='stock_transfers',
+    )
+    source_branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name='transfers_out',
+    )
+    destination_branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name='transfers_in',
+    )
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True,
+    )
+    reason = models.TextField(blank=True)
+    reference = models.CharField(max_length=120, blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='transfers_created',
+    )
+    dispatched_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='transfers_dispatched',
+    )
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='transfers_received',
+    )
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='transfers_cancelled',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
+    received_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            # Stock cannot travel to where it already is, and a "transfer" that
+            # did would produce a matching pair of movements that cancel out —
+            # noise in the Kardex describing nothing.
+            models.CheckConstraint(
+                condition=~models.Q(source_branch=models.F('destination_branch')),
+                name='transfer_source_differs_from_destination',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', '-created_at']),
+            models.Index(fields=['source_branch', 'status']),
+            models.Index(fields=['destination_branch', 'status']),
+            models.Index(fields=['company', 'status']),
+        ]
+
+    def __str__(self):
+        return (
+            f"Transfer #{self.pk} {self.source_branch_id}→{self.destination_branch_id} "
+            f"[{self.status}]"
+        )
+
+    @property
+    def is_editable(self) -> bool:
+        """Items may only change before anything physically moved."""
+        return self.status == self.STATUS_DRAFT
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.source_branch_id and self.destination_branch_id:
+            if self.source_branch_id == self.destination_branch_id:
+                errors['destination_branch'] = (
+                    'El origen y el destino no pueden ser la misma sucursal.'
+                )
+        if self.company_id:
+            if self.source_branch_id and self.source_branch.company_id != self.company_id:
+                errors['source_branch'] = 'La sucursal de origen no pertenece a esta empresa.'
+            if (
+                self.destination_branch_id
+                and self.destination_branch.company_id != self.company_id
+            ):
+                errors['destination_branch'] = (
+                    'La sucursal de destino no pertenece a esta empresa.'
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class StockTransferItem(models.Model):
+    """One product line of a transfer. Quantities are fixed once dispatched."""
+
+    transfer = models.ForeignKey(
+        StockTransfer, on_delete=models.CASCADE, related_name='items',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name='transfer_items',
+    )
+    quantity = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ['product__name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['transfer', 'product'], name='unique_product_per_transfer',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0), name='transfer_item_quantity_positive',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.quantity} x {self.product.name}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not (self.transfer_id and self.product_id):
+            return
+        if self.product.company_id != self.transfer.company_id:
+            raise ValidationError(
+                {'product': 'El producto no pertenece a la empresa de esta transferencia.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class InventoryCount(models.Model):
+    """
+    A physical stock count of one branch.
+
+    THE CONCURRENCY PROBLEM THIS MODEL IS SHAPED AROUND.
+    Counting is not instantaneous. Somebody walks the shelves for an hour while
+    the shop keeps selling. The naive implementation records "system said 10,
+    I found 8, therefore -2" and applies -2 at approval — by which time the
+    system may say 6, and the correction silently destroys two units that were
+    legitimately sold during the count.
+
+    So each item keeps THREE numbers, not two:
+
+        theoretical_at_start    what the system said when counting began
+        physical_quantity       what the person actually found
+        theoretical_at_approval what the system says at the moment of approval,
+                                re-read under lock
+
+    and the correction applied is `physical - theoretical_at_approval`, never
+    `physical - theoretical_at_start`. The start value is kept because it is the
+    only evidence of what the counter was looking at — an auditor needs it, the
+    arithmetic does not.
+    """
+
+    STATUS_DRAFT = 'draft'
+    STATUS_COUNTING = 'counting'
+    STATUS_REVIEW = 'review'
+    STATUS_APPROVED = 'approved'
+    STATUS_CANCELLED = 'cancelled'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, 'Borrador'),
+        (STATUS_COUNTING, 'En conteo'),
+        (STATUS_REVIEW, 'En revisión'),
+        (STATUS_APPROVED, 'Aprobado'),
+        (STATUS_CANCELLED, 'Anulado'),
+    ]
+    # Statuses from which approval is possible. A draft with no counted items is
+    # not a count, and an approved one is finished.
+    APPROVABLE_STATUSES = frozenset([STATUS_COUNTING, STATUS_REVIEW])
+    EDITABLE_STATUSES = frozenset([STATUS_DRAFT, STATUS_COUNTING, STATUS_REVIEW])
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='inventory_counts',
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name='inventory_counts',
+    )
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True,
+    )
+    reason = models.TextField(blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='inventory_counts_created',
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='inventory_counts_approved',
+    )
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='inventory_counts_cancelled',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['company', '-created_at']),
+            models.Index(fields=['branch', 'status']),
+            models.Index(fields=['company', 'status']),
+        ]
+
+    def __str__(self):
+        return f"Count #{self.pk} @ {self.branch_id} [{self.status}]"
+
+    @property
+    def is_editable(self) -> bool:
+        return self.status in self.EDITABLE_STATUSES
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.company_id and self.branch_id and self.branch.company_id != self.company_id:
+            raise ValidationError(
+                {'branch': 'La sucursal no pertenece a la empresa de este recuento.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class InventoryCountItem(models.Model):
+    """
+    One product counted in one InventoryCount.
+
+    `physical_quantity` is null until somebody actually counts it — which is not
+    the same as counting zero. A product nobody reached must not be treated as
+    "we have none of these" and written down to zero at approval; those items
+    are skipped, and the count says how many were left uncounted.
+    """
+
+    count = models.ForeignKey(
+        InventoryCount, on_delete=models.CASCADE, related_name='items',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name='count_items',
+    )
+    theoretical_at_start = models.IntegerField(default=0)
+    physical_quantity = models.PositiveIntegerField(null=True, blank=True)
+    theoretical_at_approval = models.IntegerField(null=True, blank=True)
+    difference = models.IntegerField(null=True, blank=True)
+    note = models.CharField(max_length=250, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['product__name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['count', 'product'], name='unique_product_per_count',
+            ),
+        ]
+        indexes = [models.Index(fields=['count', 'product'])]
+
+    def __str__(self):
+        return f"{self.product.name}: {self.physical_quantity}"
+
+    @property
+    def is_counted(self) -> bool:
+        return self.physical_quantity is not None
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not (self.count_id and self.product_id):
+            return
+        if self.product.company_id != self.count.company_id:
+            raise ValidationError(
+                {'product': 'El producto no pertenece a la empresa de este recuento.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 3 — company configuration and branding
+# ---------------------------------------------------------------------------
+
+def validate_hex_color(value):
+    """
+    Accept `#RRGGBB` and nothing else.
+
+    A colour configured by a tenant ends up inside a `style` attribute and a CSS
+    custom property. Anything richer than six hex digits — `url(...)`, `var(...)`,
+    a `javascript:` scheme, a closing brace that escapes the rule — is a CSS
+    injection with a colour picker in front of it. Six hex digits cannot express
+    any of those, which is the whole reason the format is this narrow.
+    """
+    import re
+
+    from django.core.exceptions import ValidationError
+
+    if not value:
+        return
+    if not re.fullmatch(r'#[0-9A-Fa-f]{6}', str(value)):
+        raise ValidationError(
+            'El color debe tener el formato #RRGGBB (por ejemplo #1A1A1A).'
+        )
+
+
+def validate_timezone_name(value):
+    """Accept a real IANA zone name (`America/Lima`), never arbitrary text."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from django.core.exceptions import ValidationError
+
+    if not value:
+        return
+    try:
+        ZoneInfo(str(value))
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        raise ValidationError(
+            f'"{value}" no es una zona horaria IANA válida (ejemplo: America/Lima).'
+        )
+
+
+def validate_whatsapp_number(value):
+    """
+    Digits only, with the country code and no `+`.
+
+    Stored as digits rather than as a finished `https://wa.me/...` link on
+    purpose: a URL field is a place to put any URL, and this one is rendered as
+    an anchor in emails that customers open. Digits cannot carry a scheme.
+    """
+    import re
+
+    from django.core.exceptions import ValidationError
+
+    if not value:
+        return
+    if not re.fullmatch(r'\d{8,15}', str(value)):
+        raise ValidationError(
+            'El número de WhatsApp debe contener solo dígitos, incluido el código '
+            'de país y sin el signo "+" (ejemplo: 51987654321).'
+        )
+
+
+class CompanySettings(models.Model):
+    """
+    Everything a company can configure about how it presents itself.
+
+    WHY A SEPARATE MODEL AND NOT MORE COLUMNS ON `Company`
+    ------------------------------------------------------
+    `Company` is STRUCTURAL: who this tenant is to the platform. Its `slug` is
+    routing, its `is_active` decides whether the business can transact, and both
+    are platform-operator decisions. This model is OPERATIONAL: what the business
+    looks like and how it talks to its customers, edited by the business itself.
+
+    Keeping them apart means the endpoint a company administrator uses cannot
+    reach `slug` or `is_active` at all — not because a serializer remembers to
+    exclude them, but because they are not in the table it writes.
+
+    WHAT IS DELIBERATELY *NOT* HERE
+    -------------------------------
+      - `name`, `legal_name`, `tax_id` — they already exist on `Company`.
+        Duplicating them as `public_name` and friends would create two answers to
+        "what is this business called" with no rule for which wins. Where a
+        distinction is genuinely needed later, it can be added then, with the
+        rule written down.
+      - SMTP credentials, API keys, any secret. Transport stays in the
+        platform's environment. A tenant-editable table is the wrong place for a
+        password, and no UI here should ever ask for one.
+      - Series and correlativos. That is Phase 2E, and this model is where its
+        configuration will land.
+    """
+
+    company = models.OneToOneField(
+        Company, on_delete=models.CASCADE, related_name='settings',
+    )
+
+    # --- Contact, as customers see it ------------------------------------
+    contact_email = models.EmailField(blank=True)
+    phone = models.CharField(max_length=30, blank=True)
+    whatsapp_number = models.CharField(
+        max_length=20, blank=True, validators=[validate_whatsapp_number],
+        help_text='Solo dígitos, con código de país y sin "+". Ej: 51987654321',
+    )
+    website_url = models.URLField(max_length=300, blank=True)
+    # Two social links, not a generic list. A JSON blob of arbitrary
+    # network/URL pairs would be a place to put anything, rendered as an anchor
+    # in a public footer; two URLFields are validated by Django and are what the
+    # footer actually renders.
+    facebook_url = models.URLField(max_length=300, blank=True)
+    instagram_url = models.URLField(max_length=300, blank=True)
+    legal_address = models.CharField(max_length=300, blank=True)
+    city = models.CharField(max_length=120, blank=True)
+    country_code = models.CharField(max_length=2, blank=True, default='')
+
+    # --- Branding ---------------------------------------------------------
+    #
+    # Six colours, each mapping to exactly one CSS custom property the storefront
+    # already consumes. A seventh with no component reading it would be a field
+    # nobody fills and nobody notices is empty.
+    logo_url = models.URLField(max_length=500, blank=True)
+    primary_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
+    accent_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
+    background_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
+    surface_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
+    text_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
+    border_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
+
+    # --- Internal document numbering (Phase 2E) --------------------------
+    #
+    # WHERE THE SCOPE LIVES, AND WHY IT IS HERE RATHER THAN ON THE SERIES.
+    #
+    # It is a POLICY — "this business numbers per company" or "per branch" — not
+    # a counter, so it does not belong on a row that is locked during every
+    # issuance. Making it explicit rather than inferring it from which sequence
+    # rows exist matters for the same reason `branch_access_mode` is explicit:
+    # the presence of a branch row cannot distinguish a deliberate choice from a
+    # leftover, and guessing wrong here silently splits or merges a company's
+    # numbering.
+    #
+    # ONE COLUMN, ONE DOCUMENT TYPE, on purpose. This phase implements sales
+    # notes and nothing else; a generic policy table for document types that do
+    # not exist would be scaffolding around an empty room. When a second type
+    # arrives, that phase decides whether to add a column or generalise — with a
+    # real second case to design against.
+    SEQUENCE_SCOPE_COMPANY = 'company'
+    SEQUENCE_SCOPE_BRANCH = 'branch'
+    SEQUENCE_SCOPE_CHOICES = [
+        (SEQUENCE_SCOPE_COMPANY, 'Una numeración para toda la empresa'),
+        (SEQUENCE_SCOPE_BRANCH, 'Una numeración por sucursal'),
+    ]
+    sales_note_sequence_scope = models.CharField(
+        max_length=16, choices=SEQUENCE_SCOPE_CHOICES, default=SEQUENCE_SCOPE_COMPANY,
+    )
+
+    # --- Business ---------------------------------------------------------
+    timezone = models.CharField(
+        max_length=64, blank=True, validators=[validate_timezone_name],
+        help_text='Zona horaria IANA. Ej: America/Lima',
+    )
+    # READ-ONLY IN THE UI, AND THAT IS THE POINT.
+    #
+    # The value is stored so the model is ready for multi-currency, but checkout
+    # charges through Stripe in a single currency configured at the platform
+    # level. A settings screen that let a tenant pick USD while Stripe billed PEN
+    # would be a lie with a dropdown on it. See docs/saas-multiempresa.md.
+    currency = models.CharField(max_length=3, blank=True, default='PEN')
+
+    # --- Commercial policies ---------------------------------------------
+    #
+    # Plain text, escaped wherever it is rendered. Not HTML: this string reaches
+    # customer inboxes, and accepting markup would make every tenant's settings
+    # form an HTML-injection vector into other people's email clients.
+    warranty_policy_text = models.TextField(blank=True, max_length=2000)
+    warranty_policy_url = models.URLField(max_length=300, blank=True)
+    terms_url = models.URLField(max_length=300, blank=True)
+    privacy_url = models.URLField(max_length=300, blank=True)
+
+    # --- Internal notifications ------------------------------------------
+    #
+    # WHERE THIS COMPANY'S NEW-SALE ALERTS GO. Before Phase 3 there was one
+    # platform-wide address, which meant a second tenant's sales would have been
+    # announced in the pilot's inbox — customer names, phone numbers and all.
+    # Empty means no notification is sent, and that is the safe answer: silence
+    # is recoverable, a leak is not.
+    order_notification_email = models.EmailField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'company settings'
+        verbose_name_plural = 'company settings'
+
+    def __str__(self):
+        return f"Settings({self.company.name})"
+
+    def clean(self):
+        """
+        Run the field validators on every ORM write, not only on form input.
+
+        `full_clean()` is not called by `save()`, so a validator attached to a
+        field protects a serializer and a Django admin form and nothing else.
+        Calling it here means a colour written by a management command or a data
+        migration is checked too.
+        """
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        for field, validator in (
+            ('primary_color', validate_hex_color),
+            ('accent_color', validate_hex_color),
+            ('background_color', validate_hex_color),
+            ('surface_color', validate_hex_color),
+            ('text_color', validate_hex_color),
+            ('border_color', validate_hex_color),
+            ('timezone', validate_timezone_name),
+            ('whatsapp_number', validate_whatsapp_number),
+        ):
+            try:
+                validator(getattr(self, field))
+            except ValidationError as exc:
+                errors[field] = exc.messages
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 2E — internal document sequences
+# ---------------------------------------------------------------------------
+
+def validate_sequence_prefix(value):
+    """
+    Letters, digits, hyphen and underscore. Nothing else.
+
+    This string is typed by a tenant and ends up in a PDF, in the internal UI,
+    and — through `_safe_slug` — in a `Content-Disposition` header. The character
+    set is therefore the smallest one that still expresses a real series name.
+
+    `/` is DELIBERATELY EXCLUDED even though `NV/2026/` is a plausible
+    convention. It is a path separator; allowing it would put `../` one typo away
+    from a filename builder, and the convention buys nothing for an internal
+    document. CR, LF, quotes, angle brackets and control characters are excluded
+    for the same reason: header injection and markup are the two ways a string
+    like this stops being a label.
+    """
+    import re
+
+    from django.core.exceptions import ValidationError
+
+    if value in (None, ''):
+        return
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,12}', str(value)):
+        raise ValidationError(
+            'El prefijo solo admite letras, dígitos, guion y guion bajo, '
+            'con un máximo de 12 caracteres.'
+        )
+
+
+class InternalSequence(models.Model):
+    """
+    A counter for one kind of INTERNAL document, owned by one company.
+
+    WHAT WAS WRONG BEFORE
+    ---------------------
+    `SalesNote.number` was allocated with `MAX(number) + 1` over the whole table
+    and protected by a GLOBAL unique constraint. Two consequences, both bad:
+
+      - Company A issued NV-000001, company B got NV-000002, company A got
+        NV-000003. Each tenant saw gaps it could not explain, because its
+        numbering was interleaved with a stranger's.
+      - The next value was recovered by PARSING a formatted string, so changing
+        the prefix or the padding changed what "the last number" meant.
+
+    A counter is a number. This model stores it as one.
+
+    CONFIGURATION vs STATE
+    ----------------------
+      prefix, padding   configuration — how a number is DISPLAYED
+      next_value        transactional state — the next ordinal to hand out
+
+    They live in the same row because they are per-series, but only the second is
+    written during an issuance, and issuance locks THIS row and nothing else.
+    Locking `CompanySettings` instead would make two people issuing notes in
+    different branches queue behind each other for no reason, and would block the
+    whole company's configuration while a PDF number is allocated.
+
+    SCOPE
+    -----
+    `branch IS NULL`  the company-level series. Always exists, created by
+                      provisioning. Under company scope it is the counter; under
+                      branch scope it is the TEMPLATE new branch series copy
+                      their prefix and padding from.
+    `branch` set      one series per branch, created on demand.
+
+    Which one an issuance uses is decided by
+    `CompanySettings.sales_note_sequence_scope` — never by which rows happen to
+    exist, because "a branch row is present" cannot distinguish a deliberate
+    choice from a leftover.
+    """
+
+    # The only document type this phase implements. Others are named in the
+    # roadmap and deliberately absent: a choice for a document that does not
+    # exist is an invitation to write code for it, and there is nothing to
+    # allocate numbers for until the domain arrives.
+    DOCUMENT_SALES_NOTE = 'sales_note'
+    DOCUMENT_TYPE_CHOICES = [
+        (DOCUMENT_SALES_NOTE, 'Nota de venta interna'),
+    ]
+
+    MIN_PADDING = 1
+    MAX_PADDING = 12
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='sequences',
+    )
+    branch = models.ForeignKey(
+        Branch, null=True, blank=True, on_delete=models.PROTECT,
+        related_name='sequences',
+    )
+    document_type = models.CharField(
+        max_length=32, choices=DOCUMENT_TYPE_CHOICES, db_index=True,
+    )
+
+    prefix = models.CharField(
+        max_length=12, blank=True, validators=[validate_sequence_prefix],
+    )
+    padding = models.PositiveSmallIntegerField(default=6)
+
+    # THE COUNTER. A number, not a string to be parsed back.
+    #
+    # Monotonic and never recycled: a number handed out is spent, even if the
+    # document it was going to identify was never created. Gaps are cheaper than
+    # the alternative, which is two documents that once shared an identifier.
+    next_value = models.PositiveBigIntegerField(default=1)
+
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['company__name', 'document_type', 'branch__name']
+        constraints = [
+            # TWO CONDITIONAL UNIQUES, not one over (company, branch, type).
+            #
+            # In SQL, NULL is not equal to NULL, so a plain unique including
+            # `branch` would let a company hold any number of company-level rows
+            # for the same document type — exactly the row that must be unique.
+            models.UniqueConstraint(
+                fields=['company', 'document_type'],
+                condition=models.Q(branch__isnull=True),
+                name='unique_company_sequence_per_document',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'branch', 'document_type'],
+                condition=models.Q(branch__isnull=False),
+                name='unique_branch_sequence_per_document',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(padding__gte=1) & models.Q(padding__lte=12),
+                name='sequence_padding_within_range',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(next_value__gte=1),
+                name='sequence_next_value_positive',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'document_type']),
+            models.Index(fields=['branch', 'document_type']),
+        ]
+
+    def __str__(self):
+        where = self.branch.name if self.branch_id else 'empresa'
+        return f'{self.document_type} @ {self.company.name} ({where})'
+
+    def format(self, value: int) -> str:
+        """
+        `NV-` + `42` padded to 6 → `NV-000042`.
+
+        Used ONLY when a number is issued. A document already issued keeps the
+        string it was given; re-rendering it from the current configuration would
+        make a receipt printed last year change when somebody edits the prefix.
+        """
+        return f'{self.prefix}{str(int(value)).zfill(self.padding)}'
+
+    @property
+    def preview(self) -> str:
+        """What the NEXT issued number would look like. Allocates nothing."""
+        return self.format(self.next_value)
+
+    @property
+    def has_issued(self) -> bool:
+        """
+        Whether this series has ever handed out a number.
+
+        Read from `next_value`, not by counting documents: a number spent by a
+        rolled-back issuance is still spent, and the counter is the authority on
+        that.
+        """
+        return self.next_value > 1
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            errors['branch'] = 'La sucursal no pertenece a la empresa de esta serie.'
+        if not (self.MIN_PADDING <= (self.padding or 0) <= self.MAX_PADDING):
+            errors['padding'] = (
+                f'Los dígitos deben estar entre {self.MIN_PADDING} y {self.MAX_PADDING}.'
+            )
+        if (self.next_value or 0) < 1:
+            errors['next_value'] = 'El próximo número debe ser 1 o mayor.'
+        try:
+            validate_sequence_prefix(self.prefix)
+        except ValidationError as exc:
+            errors['prefix'] = exc.messages
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# SaaS Phase 4 — customers (CRM)
+# ---------------------------------------------------------------------------
+
+def normalize_customer_email(value: str) -> str:
+    """
+    Lowercase and trim. Nothing else.
+
+    Deliberately NOT doing the clever normalisations (stripping Gmail dots,
+    cutting `+tags`): they are provider-specific folklore, they are wrong for
+    some hosts, and here they would silently merge two people who typed two
+    different addresses. Email is not an identity key in this design anyway —
+    see `Customer`.
+    """
+    return (value or '').strip().lower()
+
+
+def normalize_customer_phone(value: str) -> str:
+    """
+    Collapse whitespace, keep digits and the leading `+`.
+
+    NOT a libphonenumber-grade parser, and not trying to be: the platform serves
+    one country today, numbers arrive from WhatsApp, from a form and from a
+    receptionist's memory, and a strict parser would reject valid input at the
+    counter. What this guarantees is that `+51 999 111 222`, `+51999111222` and
+    ` +51-999-111-222 ` land on the same string, so a search finds them.
+    """
+    raw = (value or '').strip()
+    if not raw:
+        return ''
+    plus = '+' if raw.startswith('+') else ''
+    digits = ''.join(ch for ch in raw if ch.isdigit())
+    return f'{plus}{digits}'
+
+
+def normalize_document_number(value: str) -> str:
+    """Trim and uppercase. `ce-x123` and `CE-X123` are the same document."""
+    return (value or '').strip().upper()
+
+
+class Customer(models.Model):
+    """
+    A commercial client of ONE company — the CRM record.
+
+    WHAT THIS IS NOT
+    ----------------
+    Not a `User`. A `User` is a platform login; most clients of a repair shop
+    walk in, phone, or write on WhatsApp and will never have one. A Customer
+    exists with no login at all, and that is the normal case rather than the
+    exception.
+
+    Not a `Membership`. A Membership says a person is STAFF of a company. A
+    Customer says a person BUYS from it. The same human can be both, in different
+    companies or even in the same one, and neither implies the other.
+
+    Not the `customer_*` fields on `Order`. Those are a SNAPSHOT of who bought,
+    frozen at the sale. This is who the client is TODAY. When someone changes
+    their phone number, this row changes and last year's order does not — that is
+    the entire reason both exist.
+
+    ONE PERSON, SEVERAL COMPANIES, SEVERAL RECORDS
+    ----------------------------------------------
+    `Customer(company=A, user=X)` and `Customer(company=B, user=X)` are two
+    independent records. They share a login and nothing else: not notes, not
+    address, not history. Two businesses that happen to serve the same person
+    must not be able to read each other's file on them.
+    """
+
+    TYPE_PERSON = 'person'
+    TYPE_BUSINESS = 'business'
+    TYPE_CHOICES = [
+        (TYPE_PERSON, 'Persona'),
+        (TYPE_BUSINESS, 'Empresa'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='customers',
+    )
+    # OPTIONAL, and the option is the point. A null here is not missing data: it
+    # is a client who has no account and does not need one.
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='customer_records',
+    )
+    customer_type = models.CharField(
+        max_length=16, choices=TYPE_CHOICES, default=TYPE_PERSON, db_index=True,
+    )
+
+    first_name = models.CharField(max_length=120, blank=True)
+    last_name = models.CharField(max_length=120, blank=True)
+    business_name = models.CharField(max_length=200, blank=True)
+
+    document_type = models.CharField(
+        max_length=10, choices=DocumentType.choices, blank=True,
+    )
+    document_number = models.CharField(max_length=20, blank=True)
+
+    phone = models.CharField(max_length=30, blank=True)
+    email = models.EmailField(blank=True)
+
+    address_line = models.CharField(max_length=300, blank=True)
+    district = models.CharField(max_length=100, blank=True)
+    city = models.CharField(max_length=100, blank=True)
+
+    # INTERNAL. Never returned by a public endpoint — there is no public
+    # endpoint for this model at all, which is the real guarantee.
+    notes = models.TextField(max_length=2000, blank=True)
+
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    # Traceability only. Never consulted for permissions: who typed a record in
+    # is not a reason to let them read it later.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='customers_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['last_name', 'first_name', 'business_name', 'pk']
+        indexes = [
+            models.Index(fields=['company', 'is_active']),
+            models.Index(fields=['company', 'document_number']),
+            models.Index(fields=['company', 'email']),
+            models.Index(fields=['company', 'phone']),
+            models.Index(fields=['company', 'created_at']),
+            models.Index(fields=['company', 'last_name', 'first_name']),
+            models.Index(fields=['company', 'business_name']),
+        ]
+        constraints = [
+            # One CRM record per login per company. Conditional because SQL
+            # treats NULLs as distinct, which is exactly what is wanted here: any
+            # number of customers may have no account.
+            models.UniqueConstraint(
+                fields=['company', 'user'],
+                condition=models.Q(user__isnull=False),
+                name='unique_customer_per_user_per_company',
+            ),
+            # A document identifies one client INSIDE one company. Company A and
+            # company B may each hold DNI 12345678 — they are different files on
+            # the same person, and neither can see the other.
+            models.UniqueConstraint(
+                fields=['company', 'document_type', 'document_number'],
+                condition=~models.Q(document_number=''),
+                name='unique_customer_document_per_company',
+            ),
+            # A record must be identifiable as SOMETHING. A row with no name, no
+            # business name and no document is not a client, it is an empty form
+            # that will be re-created tomorrow by whoever cannot find it.
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(first_name='')
+                    | ~models.Q(last_name='')
+                    | ~models.Q(business_name='')
+                    | ~models.Q(document_number='')
+                ),
+                name='customer_has_some_identity',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.display_name} ({self.company.name})'
+
+    # -- identity ---------------------------------------------------------
+
+    @property
+    def display_name(self) -> str:
+        """
+        What to call this client on screen.
+
+        A business is its registered name; a person is their name. Falls back to
+        the other field rather than showing an empty row: a business whose
+        `business_name` was never filled is still better identified by the
+        contact person's name than by nothing.
+        """
+        if self.customer_type == self.TYPE_BUSINESS:
+            return (
+                self.business_name.strip()
+                or f'{self.first_name} {self.last_name}'.strip()
+                or self.document_number
+                or f'Cliente #{self.pk}'
+            )
+        return (
+            f'{self.first_name} {self.last_name}'.strip()
+            or self.business_name.strip()
+            or self.document_number
+            or f'Cliente #{self.pk}'
+        )
+
+    @property
+    def has_account(self) -> bool:
+        return self.user_id is not None
+
+    # -- normalisation ----------------------------------------------------
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        self.email = normalize_customer_email(self.email)
+        self.phone = normalize_customer_phone(self.phone)
+        self.document_number = normalize_document_number(self.document_number)
+        self.first_name = (self.first_name or '').strip()
+        self.last_name = (self.last_name or '').strip()
+        self.business_name = (self.business_name or '').strip()
+
+        errors = {}
+
+        # A document number with no type is unidentifiable, and a type with no
+        # number is noise. Either both or neither.
+        if self.document_number and not self.document_type:
+            errors['document_type'] = ['Indica el tipo de documento.']
+        if self.document_type and not self.document_number:
+            errors['document_number'] = ['Indica el número de documento.']
+
+        if self.customer_type == self.TYPE_BUSINESS:
+            if not self.business_name:
+                errors['business_name'] = ['La razón social es obligatoria para una empresa.']
+        else:
+            if not self.first_name and not self.last_name:
+                errors['first_name'] = ['Indica al menos un nombre o apellido.']
+
+        # RUC is NOT required of a business, on purpose. A neighbourhood shop
+        # that brings in a laptop is a business the moment the counter says so,
+        # and refusing to file it until somebody produces a tax id would push the
+        # record out of the system and onto paper.
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)

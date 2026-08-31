@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { logout, getCurrentUser, isAdminRole, type AuthUser } from "../lib/auth";
 import { getSessionKey } from "../lib/cart";
 import { apiUrl } from "../lib/api";
+import { useStorefront } from "./StorefrontProvider";
 
 const CART_ICON = (
   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -22,6 +23,8 @@ const CATEGORY_LINKS = [
 ];
 
 export function Header() {
+  // Phase 3: the shop's own name and logo, from the tenant that owns this host.
+  const { company, branding, contact } = useStorefront();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -62,24 +65,28 @@ export function Header() {
     <header className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#080808]/95 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3">
 
-        {/* Logo */}
+        {/* Logo — the tenant's, or its name in type when it has no logo yet.
+            Never a placeholder image belonging to another business. */}
         <Link href="/" className="group flex items-center gap-3 shrink-0">
-          <div className="relative h-10 w-10 shrink-0">
-            <img
-              src="/assets/branding/logo-icon.png"
-              alt="Black Dog Store"
-              className="h-full w-full object-contain invert transition-opacity group-hover:opacity-75"
-            />
-          </div>
+          {branding.logo_url ? (
+            <div className="relative h-10 shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={branding.logo_url}
+                alt={company.name}
+                className="h-full w-auto object-contain transition-opacity group-hover:opacity-75"
+              />
+            </div>
+          ) : null}
           <div className="leading-none">
-            <img
-              src="/assets/branding/logo-text.png"
-              alt="Black Dog Store"
-              className="h-5 w-auto object-contain invert opacity-95 transition-opacity group-hover:opacity-70"
-            />
-            <span className="block text-[9px] font-semibold uppercase tracking-[0.3em] text-zinc-500">
-              Apple Specialist
+            <span className="block font-display text-base font-black uppercase tracking-tight text-white">
+              {company.name}
             </span>
+            {contact.city ? (
+              <span className="block text-[9px] font-semibold uppercase tracking-[0.3em] text-zinc-500">
+                {contact.city}
+              </span>
+            ) : null}
           </div>
         </Link>
 

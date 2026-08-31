@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 import stripe
@@ -11,9 +12,18 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Category, Product, Order, OrderItem, CartItem, Review, Coupon, UserProfile
+from .customer_services import link_order_to_customer
+from .models import (
+    BranchStock, Category, Product, Order, OrderItem, CartItem, Review, Coupon,
+    UserProfile, assert_items_match_order,
+)
+from .company_settings import build_identity_snapshot
 from .inventory_services import record_sale_stock_movements
-from .tenancy import resolve_storefront_company, storefront_categories, storefront_products
+from .tenancy import (
+    company_fulfillment_branch, resolve_storefront_company, storefront_available_stock,
+    storefront_cart_items, storefront_categories, storefront_coupon, storefront_orders,
+    storefront_fulfillment_branch, storefront_products,
+)
 from .permissions import get_user_role
 from .email_services import send_order_emails_after_payment
 from .serializers import (
@@ -32,6 +42,9 @@ from .throttles import (
     CartThrottle,
     PaymentStatusThrottle,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -82,7 +95,10 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         if search:
             queryset = queryset.filter(name__icontains=search)
         if in_stock == 'true':
-            queryset = queryset.filter(inventory__gt=0)
+            # The annotation, not the column: "in stock" has to mean "the
+            # branch that ships can ship it", or the filter promises deliveries
+            # the checkout will refuse.
+            queryset = queryset.filter(available_stock__gt=0)
         if ordering and ordering in _PRODUCT_ORDERING_WHITELIST:
             queryset = queryset.order_by(_PRODUCT_ORDERING_WHITELIST[ordering])
         return queryset
@@ -125,13 +141,16 @@ class CouponValidateView(APIView):
         code = request.data.get('code', '').upper().strip()
         if not code:
             return Response({'detail': 'Código requerido.'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            coupon = Coupon.objects.get(code=code, is_active=True)
-            if coupon.expires_at and coupon.expires_at < timezone.now():
-                return Response({'detail': 'El cupón ha expirado.'}, status=status.HTTP_400_BAD_REQUEST)
-            return Response(CouponSerializer(coupon).data)
-        except Coupon.DoesNotExist:
-            return Response({'detail': 'Cupón no válido o inactivo.'}, status=status.HTTP_404_NOT_FOUND)
+        # Scoped to this storefront: two tenants may run the same code, and
+        # honouring another company's discount is a leak and a financial error.
+        coupon = storefront_coupon(request, code)
+        if coupon is None:
+            return Response(
+                {'detail': 'Cupón no válido o inactivo.'}, status=status.HTTP_404_NOT_FOUND
+            )
+        if coupon.expires_at and coupon.expires_at < timezone.now():
+            return Response({'detail': 'El cupón ha expirado.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(CouponSerializer(coupon).data)
 
 
 class OrderViewSet(viewsets.ReadOnlyModelViewSet):
@@ -140,13 +159,18 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
-        if not user.is_authenticated:
-            return Order.objects.none()
-        role = get_user_role(user)
-        if role in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN, UserProfile.ROLE_SALES) or user.is_staff:
-            return Order.objects.prefetch_related('items__product').all()
-        return Order.objects.prefetch_related('items__product').filter(user=user)
+        """
+        The customer's own orders ON THIS STOREFRONT.
+
+        Phase 2C removed the staff shortcut that returned every order in the
+        database. This is the CUSTOMER surface: a staff member browsing the shop
+        is a customer here like anyone else, and internal order administration
+        lives at /api/admin/orders/ with its own tenant scoping. The old branch
+        would now expose every tenant's orders to any staff user.
+        """
+        return storefront_orders(self.request, self.request.user).prefetch_related(
+            'items__product',
+        )
 
 
 class CreateCheckoutSessionView(APIView):
@@ -173,15 +197,57 @@ class CreateCheckoutSessionView(APIView):
         customer_email = validated['customer_email']
         coupon_code = validated.get('coupon_code', '').upper().strip()
 
-        # Load cart and validate stock
+        # Phase 2C — the checkout's tenant comes from the STOREFRONT, never from
+        # the request body. A `company` field in the payload is not consulted
+        # anywhere in this flow.
+        storefront_company = resolve_storefront_company(request)
+        if storefront_company is None:
+            return Response(
+                {'detail': 'No se pudo determinar la tienda. Inténtelo nuevamente.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # PHASE 2D — WHICH BRANCH SELLS THIS ORDER, decided ONCE, here.
+        #
+        # Resolved from the company's configuration, never from the request: the
+        # customer has no branch picker and must not acquire one by editing a
+        # payload. Stamped on the order so stock validation now, the webhook's
+        # sale exits later and the Kardex all refer to the same shelf.
+        #
+        # No branch means no sale. A company that has not said where it ships
+        # from cannot take an online order, and saying so is better than
+        # shipping from a shop that does not know it sold anything.
+        fulfillment_branch = company_fulfillment_branch(storefront_company)
+        if fulfillment_branch is None:
+            return Response(
+                {
+                    'detail': 'La tienda no tiene una sucursal de despacho configurada. '
+                              'Inténtelo más tarde.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Load cart scoped to session AND storefront, so a cart holding another
+        # tenant's products simply is not visible to this checkout.
         cart_items = list(
-            CartItem.objects.select_related('product').filter(session_key=session_key)
+            storefront_cart_items(request, session_key).select_related('product')
         )
         if not cart_items:
             return Response(
                 {'detail': 'El carrito está vacío.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Stock is checked against the FULFILLMENT BRANCH, never against
+        # Product.inventory. Buying 5 must fail when the shipping branch holds
+        # 2, even if the company as a whole holds 20 across other shops.
+        branch_stock = {
+            row.product_id: row.quantity
+            for row in BranchStock.objects.filter(
+                branch=fulfillment_branch,
+                product_id__in=[i.product_id for i in cart_items],
+            )
+        }
 
         stock_errors = []
         subtotal = Decimal('0.00')
@@ -192,10 +258,11 @@ class CreateCheckoutSessionView(APIView):
             if item.quantity <= 0:
                 stock_errors.append(f'Cantidad inválida para {item.product.name}.')
                 continue
-            if item.product.inventory < item.quantity:
+            available = branch_stock.get(item.product_id, 0)
+            if available < item.quantity:
                 stock_errors.append(
                     f'Stock insuficiente para {item.product.name}. '
-                    f'Disponible: {item.product.inventory}, solicitado: {item.quantity}.'
+                    f'Disponible: {available}, solicitado: {item.quantity}.'
                 )
                 continue
             subtotal += item.product.price * item.quantity
@@ -211,29 +278,39 @@ class CreateCheckoutSessionView(APIView):
         discount_amount = Decimal('0.00')
         applied_coupon = None
         if coupon_code:
-            try:
-                coupon = Coupon.objects.get(code=coupon_code, is_active=True)
-                if coupon.expires_at and coupon.expires_at < timezone.now():
-                    return Response(
-                        {'detail': 'El cupón ha expirado.'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                discount_multiplier = (
-                    (Decimal('100') - Decimal(str(coupon.discount_percent))) / Decimal('100')
-                )
-                discount_amount = (subtotal * (1 - discount_multiplier)).quantize(Decimal('0.01'))
-                applied_coupon = coupon
-            except Coupon.DoesNotExist:
+            coupon = storefront_coupon(request, coupon_code)
+            if coupon is None:
                 return Response(
                     {'detail': 'Cupón no válido o inactivo.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if coupon.expires_at and coupon.expires_at < timezone.now():
+                return Response(
+                    {'detail': 'El cupón ha expirado.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            discount_multiplier = (
+                (Decimal('100') - Decimal(str(coupon.discount_percent))) / Decimal('100')
+            )
+            discount_amount = (subtotal * (1 - discount_multiplier)).quantize(Decimal('0.01'))
+            applied_coupon = coupon
 
         total = (subtotal - discount_amount).quantize(Decimal('0.01'))
 
         # Create order inside a transaction — cart NOT deleted, inventory NOT decremented
         with transaction.atomic():
             order = Order.objects.create(
+                company=storefront_company,
+                fulfillment_branch=fulfillment_branch,
+                # PHASE 3 — freeze WHO IS SELLING, right now.
+                #
+                # Every document this order ever produces reads its identity from
+                # here. Without the snapshot, a business that is later renamed or
+                # re-registers would silently rewrite what a receipt from months
+                # ago says it was — including the tax id on it.
+                company_snapshot=build_identity_snapshot(
+                    storefront_company, fulfillment_branch,
+                ),
                 user=request.user if request.user.is_authenticated else None,
                 customer_name=customer_name,
                 customer_email=customer_email,
@@ -257,6 +334,24 @@ class CreateCheckoutSessionView(APIView):
                 accepted_terms=validated['accepted_terms'],
                 accepted_warranty_policy=validated['accepted_warranty_policy'],
             )
+            # Belt and braces: the cart queryset already guarantees this, but the
+            # invariant is asserted before writing rather than trusted.
+            assert_items_match_order(order, [item.product for item in cart_items])
+
+            # PHASE 4 — attach this sale to a CRM record.
+            #
+            # Best-effort BY DESIGN. `link_order_to_customer` swallows its own
+            # failures and returns None, leaving `order.customer` null, because a
+            # problem in the CRM must never cost a sale (§49). The order keeps
+            # every snapshot field it needs to be linked by hand afterwards.
+            #
+            # Matching is deterministic only — the account, or the document
+            # checkout just validated. Nothing is merged on a resemblance.
+            link_order_to_customer(
+                order,
+                actor=request.user if request.user.is_authenticated else None,
+            )
+
             for item in cart_items:
                 OrderItem.objects.create(
                     order=order,
@@ -287,7 +382,13 @@ class CreateCheckoutSessionView(APIView):
                 success_url=f"{domain}/checkout/success?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url=f"{domain}/checkout?cancelled=true",
                 customer_email=customer_email or None,
-                metadata={'order_id': str(order.id)},
+                # Informational only. The webhook CHECKS this against
+                # Order.company; it never resolves the tenant from it.
+                metadata={
+                    'order_id': str(order.id),
+                    'company_id': str(order.company_id),
+                    'branch_id': str(order.fulfillment_branch_id or ''),
+                },
             )
         except stripe.StripeError as e:
             order.status = Order.Status.FAILED
@@ -337,6 +438,18 @@ class StripeWebhookView(APIView):
         return Response({'status': 'success'})
 
     def _handle_checkout_completed(self, session_obj):
+        """
+        Confirm a payment.
+
+        TENANT RESOLUTION IN A WEBHOOK (Phase 2C)
+        -----------------------------------------
+        The company comes from `Order.company` — the database — and from nowhere
+        else. Specifically NOT from the request host: Stripe calls a single
+        endpoint, so the host says nothing about which tenant sold what. And not
+        from Stripe metadata either: metadata is convenient for humans reading
+        the dashboard, but it is data we sent to a third party and got back, so
+        it can only ever be CHECKED against the database, never trusted over it.
+        """
         stripe_session_id = session_obj.get('id', '')
         payment_intent_id = session_obj.get('payment_intent', '') or ''
 
@@ -349,6 +462,29 @@ class StripeWebhookView(APIView):
             return
         except Order.MultipleObjectsReturned:
             # stripe_session_id has a unique constraint but catch defensively
+            return
+
+        # If we did send a company in the metadata, it must agree with the order.
+        # A mismatch means something is wrong upstream; refuse rather than guess.
+        metadata = session_obj.get('metadata') or {}
+        metadata_company = metadata.get('company_id')
+        if metadata_company not in (None, '') and str(metadata_company) != str(order.company_id):
+            logger.error(
+                'Stripe metadata company mismatch for order %s: metadata=%s, order=%s',
+                order.pk, metadata_company, order.company_id,
+            )
+            return
+
+        # Same treatment for the branch: checked against the database, never
+        # allowed to override it. Stock comes off the shelf the ORDER names.
+        metadata_branch = metadata.get('branch_id')
+        if metadata_branch not in (None, '') and str(metadata_branch) != str(
+            order.fulfillment_branch_id or ''
+        ):
+            logger.error(
+                'Stripe metadata branch mismatch for order %s: metadata=%s, order=%s',
+                order.pk, metadata_branch, order.fulfillment_branch_id,
+            )
             return
 
         # Idempotency guard — if already paid, do nothing
@@ -379,7 +515,13 @@ class StripeWebhookView(APIView):
 
             # Clear cart only after payment is confirmed
             if order.cart_session_key:
-                CartItem.objects.filter(session_key=order.cart_session_key).delete()
+                # Scoped to the order's own tenant. A browser may hold carts in
+                # several storefronts under one session key; paying at one must
+                # not empty the others.
+                CartItem.objects.filter(
+                    session_key=order.cart_session_key,
+                    product__company=order.company_id,
+                ).delete()
 
             # Schedule transactional emails to fire after this transaction commits.
             # on_commit guarantees payment is persisted before email goes out.
@@ -466,10 +608,30 @@ class CartViewSet(
     throttle_classes = [CartThrottle]
 
     def get_queryset(self):
+        """
+        Scoped by session AND storefront. One browser may hold a cart in several
+        tenants at once; each storefront sees only its own.
+        """
         session_key = self.request.query_params.get('session_key')
-        if session_key:
-            return CartItem.objects.filter(session_key=session_key)
-        return CartItem.objects.none()
+        return storefront_cart_items(self.request, session_key).select_related('product')
+
+    def get_serializer_context(self):
+        """
+        Tell the nested ProductSerializer which shelf to report stock from.
+
+        Without it the cart would show the company aggregate while the catalogue
+        the item came from showed the fulfillment branch — two different numbers
+        for the same product on two screens of the same purchase.
+        """
+        context = super().get_serializer_context()
+        context['storefront_branch'] = storefront_fulfillment_branch(self.request)
+        return context
+
+    def _cart_context(self):
+        return {
+            'request': self.request,
+            'storefront_branch': storefront_fulfillment_branch(self.request),
+        }
 
     def partial_update(self, request, *args, **kwargs):
         """PATCH /api/cart/{id}/?session_key=... — only quantity allowed; validates stock."""
@@ -480,10 +642,11 @@ class CartViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Scoped to this storefront: an item of another tenant's cart answers
+        # like one that does not exist, even with the right session key.
         item = get_object_or_404(
-            CartItem.objects.select_related('product'),
+            storefront_cart_items(request, session_key).select_related('product'),
             pk=kwargs.get('pk'),
-            session_key=session_key,
         )
 
         try:
@@ -500,12 +663,16 @@ class CartViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if quantity > item.product.inventory:
+        # Phase 2D: against the FULFILLMENT branch, the same number checkout
+        # will use. Validating against the company aggregate here would let a
+        # cart fill up with units the order could never take.
+        available = storefront_available_stock(request, item.product)
+        if quantity > available:
             return Response(
                 {
                     'detail': (
                         f'Stock insuficiente para {item.product.name}. '
-                        f'Disponible: {item.product.inventory}.'
+                        f'Disponible: {available}.'
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -513,11 +680,31 @@ class CartViewSet(
 
         item.quantity = quantity
         item.save(update_fields=['quantity'])
-        return Response(CartItemSerializer(item).data)
+        return Response(CartItemSerializer(item, context=self._cart_context()).data)
 
     def update(self, request, *args, **kwargs):
         """PUT is not supported — use PATCH to update quantity."""
         return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def create(self, request, *args, **kwargs):
+        """
+        Adding to the cart goes through `add`, never through the raw create.
+
+        P0: this route was reachable and answered 500 for EVERY input, because
+        `CartItemSerializer.product` is read-only, so the insert reached the
+        database with a null product.
+
+        It is closed rather than made to work, because making it work would mean
+        duplicating everything `add` exists to do: scope the product lookup to
+        this storefront, require a session key, and check available stock. A
+        second, thinner way to write a CartItem would be a way to put another
+        tenant's product in a cart — the exact vector the comment on `add`
+        describes closing.
+        """
+        return Response(
+            {'detail': 'Usa POST /api/cart/add/ para agregar al carrito.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
     @action(detail=False, methods=['post'])
     def add(self, request):
@@ -563,12 +750,13 @@ class CartViewSet(
         current_qty = existing.quantity if existing else 0
         new_qty = current_qty + quantity
 
-        if new_qty > product.inventory:
+        available = storefront_available_stock(request, product)
+        if new_qty > available:
             return Response(
                 {
                     'detail': (
                         f'Stock insuficiente para {product.name}. '
-                        f'Disponible: {product.inventory}, en carrito: {current_qty}.'
+                        f'Disponible: {available}, en carrito: {current_qty}.'
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -577,11 +765,11 @@ class CartViewSet(
         if existing:
             existing.quantity = new_qty
             existing.save(update_fields=['quantity'])
-            return Response(CartItemSerializer(existing).data)
+            return Response(CartItemSerializer(existing, context=self._cart_context()).data)
 
         item = CartItem.objects.create(
             session_key=session_key,
             product=product,
             quantity=quantity,
         )
-        return Response(CartItemSerializer(item).data)
+        return Response(CartItemSerializer(item, context=self._cart_context()).data)

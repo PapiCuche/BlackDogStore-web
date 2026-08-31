@@ -111,6 +111,8 @@ class CanManageProducts(BasePermission):
 
 
 class CanManageInventory(BasePermission):
+    # Phase 2D: no longer applied to /api/admin/products/{pk}/inventory-adjust/.
+    # Kept as the legacy role set the pre-SaaS bridge reproduces.
     message = 'Se requiere rol de inventario, administrador o superior.'
 
     def has_permission(self, request, view):
@@ -136,7 +138,18 @@ class CanManageOrderFulfillment(BasePermission):
 # ---------------------------------------------------------------------------
 
 class CanViewInventoryReports(BasePermission):
-    """Read inventory dashboards, Kardex and stock reports."""
+    """
+    Read inventory dashboards, Kardex and stock reports.
+
+    RETIRED AS THE INVENTORY AUTHORITY IN PHASE 2D. The /api/admin/inventory/
+    endpoints no longer apply this class: it can only answer "is this person an
+    inventory role SOMEWHERE", which on a multi-tenant install is not a question
+    worth answering. Authority is now the company capability plus branch
+    access — see store/inventory_views.py.
+
+    Kept because it still describes the legacy role set, which the bridge for
+    pre-SaaS operators reproduces. Do not wire it to a new endpoint.
+    """
     message = 'Se requiere rol de inventario, administrador o superior.'
 
     def has_permission(self, request, view):
@@ -144,7 +157,11 @@ class CanViewInventoryReports(BasePermission):
 
 
 class CanManageStockMovements(BasePermission):
-    """Create manual stock entries and exits. Sales/technician are excluded."""
+    """
+    Create manual stock entries and exits. Sales/technician are excluded.
+
+    RETIRED AS THE INVENTORY AUTHORITY IN PHASE 2D — see CanViewInventoryReports.
+    """
     message = 'Se requiere rol de inventario, administrador o superior para mover stock.'
 
     def has_permission(self, request, view):
@@ -239,11 +256,14 @@ class CanManageCompanySettings(_CompanyCapabilityPermission):
 
 class CanManageCompanyInventory(_CompanyCapabilityPermission):
     """
-    Company-scoped inventory authority.
+    Company-scoped inventory authority — a COARSE gate.
 
-    NOT wired to /api/admin/inventory/ yet: StockMovement has no company column,
-    so switching those endpoints now would grant tenant-shaped permissions over
-    globally-shared data — a false sense of isolation. See docs/saas-multiempresa.md.
+    Phase 2D tenantised inventory, so `inventory.adjust` is real authority now.
+    The inventory endpoints still do not use this class, and that is deliberate:
+    it answers "holds it in SOME company", which is one company too many. They
+    resolve the company first and ask `has_capability(user, company, ...)`, then
+    ask separately whether the caller may operate the BRANCH — a question no
+    permission class that only sees `request.user` can express.
     """
     capability = CAP_MANAGE_INVENTORY
     message = 'Se requiere rol de inventario de la empresa.'

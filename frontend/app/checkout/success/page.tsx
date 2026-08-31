@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useStorefront } from "../../components/StorefrontProvider";
 import Link from "next/link";
 import { API_BASE } from "../../lib/api";
 
@@ -15,6 +16,8 @@ type StatusData = {
 };
 
 export default function CheckoutSuccessPage() {
+  // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
+  const whatsappLink = useStorefront().contact.whatsapp_link;
   const [sessionId] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     return new URLSearchParams(window.location.search).get("session_id");
@@ -156,7 +159,7 @@ export default function CheckoutSuccessPage() {
               Seguir comprando
             </Link>
             <a
-              href="https://wa.me/51936449536"
+              href={whatsappLink || "#"}
               className="rounded-full border border-white/20 px-8 py-3 text-sm font-semibold text-white transition hover:border-white/40"
             >
               Contactar por WhatsApp

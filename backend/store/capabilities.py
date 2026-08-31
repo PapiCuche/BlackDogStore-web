@@ -86,13 +86,23 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('products.manage', 'products', 'Administrar productos',
          'Crear y editar productos y categorías.', STATUS_AVAILABLE),
 
-    # --- inventory (module exists; endpoints still legacy-authorised) ---
+    # --- inventory (ENFORCED from Phase 2D) ---
+    #
+    # These became real authority the moment stock acquired an owner and a
+    # place. Before 2D they were assignable but decorative: BranchStock did not
+    # exist and StockMovement had no company, so granting "inventory.view" in
+    # company A would have shown company B's stock — a tenant-shaped permission
+    # over platform-wide data, which is worse than no permission at all because
+    # it looks correct.
+    #
+    # Holding one of these is only half of an inventory decision. The other half
+    # is WHICH BRANCH, answered by MembershipBranchAccess. See tenancy.py.
     _cap('inventory.view', 'inventory', 'Ver inventario',
-         'Consultar stock y Kardex.', STATUS_AVAILABLE),
+         'Consultar stock y Kardex de las sucursales asignadas.', STATUS_ACTIVE),
     _cap('inventory.adjust', 'inventory', 'Mover inventario',
-         'Registrar entradas y salidas de stock.', STATUS_AVAILABLE),
+         'Registrar entradas, salidas, transferencias y recuentos.', STATUS_ACTIVE),
     _cap('inventory.reports', 'inventory', 'Reportes de inventario',
-         'Ver reportes de stock y rotación.', STATUS_AVAILABLE),
+         'Ver reportes de stock, rotación y reposición.', STATUS_ACTIVE),
 
     # --- sales (module exists; endpoints still legacy-authorised) ---
     _cap('sales.orders.view', 'sales', 'Ver pedidos',
@@ -115,12 +125,17 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     # as an authority concept even though no endpoint consumes it yet.
     _cap('service.manage', 'service', 'Servicio técnico',
          'Pertenecer a la autoridad de servicio técnico.', STATUS_AVAILABLE),
+    # PHASE 4 — the customers module exists and its endpoints enforce THESE
+    # capabilities directly, with no legacy-role bridge behind them. ACTIVE
+    # rather than AVAILABLE: available would mean the module exists but is still
+    # authorised by UserProfile.role, and it is not.
+    _cap('service.customers.view', 'service', 'Ver clientes',
+         'Consultar la ficha y el historial comercial de los clientes.',
+         STATUS_ACTIVE),
+    _cap('service.customers.manage', 'service', 'Administrar clientes',
+         'Crear, editar y archivar clientes.', STATUS_ACTIVE),
     # Everything below describes a module that DOES NOT EXIST. Reserved for
     # design; not assignable, so no role can claim authority over absent code.
-    _cap('service.customers.view', 'service', 'Ver clientes de servicio',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
-    _cap('service.customers.manage', 'service', 'Administrar clientes de servicio',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
     _cap('service.devices.view', 'service', 'Ver equipos',
          'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
     _cap('service.devices.manage', 'service', 'Administrar equipos',

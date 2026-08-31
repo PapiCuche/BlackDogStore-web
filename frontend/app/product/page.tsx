@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, Suspense } from "react";
+import { useStorefront } from "../components/StorefrontProvider";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { ProductCard } from "../components/ProductCard";
 import { fetcher, apiUrl } from "../lib/api";
@@ -28,6 +29,8 @@ const ORDERING_OPTIONS = [
 ];
 
 function CatalogContent() {
+  // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
+  const whatsappLink = useStorefront().contact.whatsapp_link;
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -239,7 +242,7 @@ function CatalogContent() {
             </p>
             <p className="text-sm text-zinc-500">Escríbenos y te ayudamos a conseguirlo.</p>
             <a
-              href="https://wa.me/51936449536"
+              href={whatsappLink || "#"}
               className="mt-2 inline-flex items-center gap-2.5 rounded-full bg-white px-7 py-3.5 text-xs font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
             >
               <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">

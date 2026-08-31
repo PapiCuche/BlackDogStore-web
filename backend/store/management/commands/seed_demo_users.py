@@ -166,7 +166,8 @@ class Command(BaseCommand):
     def _seed(self, company_slug):
         from store.company_provisioning import provision_company_access_defaults
         from store.models import (
-            Company, CompanyArea, CompanyRole, Membership, MembershipRoleAssignment,
+            Branch, Company, CompanyArea, CompanyRole, Membership,
+            MembershipRoleAssignment,
         )
 
         User = self._get_user_model()
@@ -211,6 +212,27 @@ class Command(BaseCommand):
             if not created and not assignment.is_active:
                 assignment.is_active = True
                 assignment.save()
+
+        # --- 5b. the storefront needs somewhere to ship from (Phase 2D) ---
+        #
+        # Stock lives in branches now. A development company with no fulfillment
+        # branch shows an empty catalogue and refuses every checkout, which reads
+        # as a broken environment rather than as missing configuration — so the
+        # seeder makes sure there is one and says which.
+        from store.tenancy import company_fulfillment_branch
+
+        if company_fulfillment_branch(company) is None:
+            first = Branch.objects.filter(
+                company=company, is_active=True,
+            ).order_by('pk').first()
+            if first is None:
+                raise CommandError(
+                    f'La empresa "{company_slug}" no tiene ninguna sucursal activa. '
+                    f'Cree una antes de sembrar usuarios demo: sin sucursal no hay '
+                    f'stock, y sin stock la tienda no vende.'
+                )
+            company.default_inventory_branch = first
+            company.save(update_fields=['default_inventory_branch', 'updated_at'])
 
         # --- 6. platform master ---
         # Authority comes from is_superuser ALONE. No Membership is created:
@@ -263,6 +285,15 @@ class Command(BaseCommand):
         self.stdout.write(f'  {"-" * 16}{"-" * 34}{"-" * 20}')
         for username, label, scope in rows:
             self.stdout.write(f'  {username:<16}{label:<34}{scope}')
+        company.refresh_from_db()
+        branch = company.default_inventory_branch
+        self.stdout.write(
+            f'\n  Sucursal de despacho: {branch.name if branch else "(sin configurar)"}'
+        )
+        self.stdout.write(
+            '  Alcance de sucursales del personal demo: todas '
+            '(Membership.branch_access_mode = "all")'
+        )
         self.stdout.write(self.style.WARNING(
             f'\n  Contraseña para todos: {DEMO_PASSWORD}'
         ))

@@ -208,6 +208,16 @@ export function Chip({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Peruvian soles, the currency the store already prices in. */
+export function formatSoles(value: string | number): string {
+  const n = typeof value === "string" ? parseFloat(value) : value;
+  if (!Number.isFinite(n)) return "S/ 0.00";
+  return `S/ ${n.toLocaleString("es-PE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 export function EmptyState({ message }: { message: string }) {
   return (
     <div className="rounded-xl border border-dashed border-white/10 px-4 py-8 text-center">

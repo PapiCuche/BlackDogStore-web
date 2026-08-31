@@ -1,18 +1,26 @@
 "use client";
 
-// Phase 6.0 — operational inventory dashboard.
+// Phase 6.0 — operational inventory dashboard. Rebuilt per branch in Phase 2D.
+//
+// Everything on this screen is scoped to the branch selected above it. When the
+// selection is "todas", the figures cover the branches THIS operator reaches,
+// which is not necessarily the whole company — <ScopeNote> spells that out
+// rather than letting a heading overclaim.
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
 import { StaffGuard } from "../components/StaffGuard";
+import { BranchSelector, ScopeNote } from "../components/BranchSelector";
+import { useBranchScope } from "../lib/use-branch-scope";
+import { HorizontalBarChart, VerticalBarChart } from "../components/charts";
 import {
+  BranchStockTable,
   EmptyBox,
   ErrorBox,
   Panel,
   Spinner,
   StatCard,
-  StockBadge,
   TableWrap,
   Td,
   Th,
@@ -23,58 +31,56 @@ import {
   movementReference,
 } from "../components/InventoryUi";
 import {
-  fetchBestSelling,
-  fetchHighStock,
-  fetchInventorySummary,
+  fetchBranchStock,
+  fetchInventoryDashboard,
   fetchLowStock,
   fetchStockMovements,
-  type BestSellingRow,
-  type InventoryProduct,
-  type InventorySummary,
+  type BranchStockRow,
+  type InventoryDashboard,
   type StockMovement,
 } from "../../lib/inventory";
 import type { AuthUser } from "../../lib/auth";
 
 type Data = {
-  summary: InventorySummary;
-  low: InventoryProduct[];
-  high: InventoryProduct[];
-  best: BestSellingRow[];
+  dashboard: InventoryDashboard;
+  low: BranchStockRow[];
+  high: BranchStockRow[];
   movements: StockMovement[];
 };
 
-function InventoryDashboard({ user }: { user: AuthUser }) {
+function InventoryDashboardPage({ user }: { user: AuthUser }) {
+  const scope = useBranchScope({ preferAggregate: true });
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const [summary, low, high, best, movements] = await Promise.all([
-        fetchInventorySummary(),
-        fetchLowStock({ limit: 8 }),
-        fetchHighStock({ limit: 8 }),
-        fetchBestSelling({ limit: 8 }),
-        fetchStockMovements({ page_size: 8 }),
-      ]);
-      return {
-        summary,
-        low: low.results,
-        high: high.results,
-        best: best.results,
-        movements: movements.results,
-      };
-    } catch (err) {
-      throw err instanceof Error ? err : new Error("No se pudo cargar el inventario.");
-    }
-  }, []);
+  const branch = scope.branch;
+
+  const load = useCallback(async (): Promise<Data> => {
+    const [dashboard, low, high, movements] = await Promise.all([
+      fetchInventoryDashboard({ branch }),
+      fetchLowStock({ branch, limit: 8 }),
+      fetchBranchStock({ branch, status: "in_stock", page_size: 8 }),
+      fetchStockMovements({ branch, page_size: 8 }),
+    ]);
+    return {
+      dashboard,
+      low: low.results,
+      high: high.results,
+      movements: movements.results,
+    };
+  }, [branch]);
 
   useEffect(() => {
+    if (!scope.ready) return;
     let cancelled = false;
     void (async () => {
       try {
         const result = await load();
-        if (!cancelled) setData(result);
+        if (!cancelled) {
+          setData(result);
+          setError(null);
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Error inesperado.");
       } finally {
@@ -84,7 +90,10 @@ function InventoryDashboard({ user }: { user: AuthUser }) {
     return () => {
       cancelled = true;
     };
-  }, [load]);
+  }, [load, scope.ready]);
+
+  const summary = data?.dashboard.summary;
+  const charts = data?.dashboard.charts;
 
   return (
     <AdminShell user={user}>
@@ -93,15 +102,41 @@ function InventoryDashboard({ user }: { user: AuthUser }) {
           <div>
             <h1 className="text-xl font-semibold text-white">Inventario</h1>
             <p className="mt-1 text-sm text-zinc-500">
-              Resumen operativo de stock, movimientos y rotación.
+              Stock por sucursal, movimientos y rotación.
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <BranchSelector
+              access={scope.access}
+              value={scope.branch}
+              onChange={(next) => {
+                setLoading(true);
+                scope.setBranch(next);
+              }}
+            />
             <Link
               href="/admin/inventory/movements"
               className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
             >
               Movimientos
+            </Link>
+            <Link
+              href="/admin/inventory/transfers"
+              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            >
+              Transferencias
+            </Link>
+            <Link
+              href="/admin/inventory/counts"
+              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            >
+              Recuentos
+            </Link>
+            <Link
+              href="/admin/inventory/replenishment"
+              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            >
+              Reposición
             </Link>
             <Link
               href="/admin/inventory/reports"
@@ -112,143 +147,91 @@ function InventoryDashboard({ user }: { user: AuthUser }) {
           </div>
         </div>
 
-        {loading ? <Spinner label="Cargando inventario…" /> : null}
+        <ScopeNote scope={data?.dashboard.scope} />
+
+        {scope.error ? <ErrorBox message={scope.error} /> : null}
+        {!scope.loading && !scope.ready && !scope.error ? (
+          <EmptyBox message="No tienes sucursales asignadas. Pide a un administrador de la empresa que te asigne al menos una." />
+        ) : null}
+        {loading && scope.ready ? <Spinner label="Cargando inventario…" /> : null}
         {error ? <ErrorBox message={error} /> : null}
 
-        {data ? (
+        {data && summary && charts ? (
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <StatCard
-                label="Productos"
-                value={data.summary.total_products}
-                hint={`${data.summary.active_products} activos`}
-              />
-              <StatCard
                 label="Unidades en stock"
-                value={data.summary.total_units}
-                hint="Solo productos activos con stock"
+                value={summary.total_units}
+                hint="Solo productos activos"
               />
               <StatCard
                 label="Sin stock"
-                value={data.summary.out_of_stock_count}
-                emphasis={data.summary.out_of_stock_count > 0}
-                hint="Productos activos agotados"
+                value={summary.out_of_stock_count}
+                emphasis={summary.out_of_stock_count > 0}
+                hint="Productos agotados en esta selección"
               />
               <StatCard
-                label="Bajo stock"
-                value={data.summary.low_stock_count}
-                emphasis={data.summary.low_stock_count > 0}
-                hint={`Umbral: ${data.summary.low_stock_threshold} u.`}
+                label="Bajo mínimo"
+                value={summary.low_stock_count}
+                emphasis={summary.low_stock_count > 0}
+                hint="Según el mínimo de cada sucursal"
               />
               <StatCard
-                label="Valor del inventario"
-                value={formatSoles(data.summary.inventory_value)}
-                hint="Stock × precio de venta"
+                label="Transferencias en tránsito"
+                value={data.dashboard.transfers_in_transit}
+                hint="Enviadas y aún no recibidas"
               />
               <StatCard
-                label="Más vendido"
-                value={data.summary.best_selling_product?.product_name ?? "—"}
-                hint={
-                  data.summary.best_selling_product
-                    ? `${data.summary.best_selling_product.units_sold} u. vendidas`
-                    : "Sin ventas registradas"
-                }
+                label="Recuentos pendientes"
+                value={data.dashboard.pending_counts}
+                hint="Sin aprobar ni anular"
+              />
+              <StatCard
+                label="Valor estimado"
+                value={formatSoles(summary.inventory_value)}
+                // Not "cost" and not "capital invertido": there is no purchase
+                // cost in the system, so the only honest basis is sale price.
+                hint="A precio de venta — no es costo"
               />
             </div>
 
             <div className="grid gap-6 lg:grid-cols-2">
+              <Panel title="Stock por sucursal" description="Unidades disponibles">
+                <HorizontalBarChart
+                  series={charts.stock_by_branch}
+                  emptyMessage="Sin stock registrado."
+                />
+              </Panel>
+              <Panel title="Bajo mínimo por sucursal" description="Productos a reponer">
+                <HorizontalBarChart
+                  series={charts.low_stock_by_branch}
+                  emptyMessage="Ningún producto bajo mínimo."
+                />
+              </Panel>
+              <Panel title="Entradas (7 días)" description="Unidades que ingresaron">
+                <VerticalBarChart
+                  series={charts.entries_trend}
+                  emptyMessage="Sin entradas en el período."
+                />
+              </Panel>
+              <Panel title="Salidas (7 días)" description="Unidades que salieron">
+                <VerticalBarChart
+                  series={charts.exits_trend}
+                  emptyMessage="Sin salidas en el período."
+                />
+              </Panel>
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-2">
               <Panel title="Bajo stock" description="Reponer con prioridad">
-                {data.low.length === 0 ? (
-                  <EmptyBox message="Ningún producto por debajo del umbral." />
-                ) : (
-                  <TableWrap>
-                    <thead>
-                      <tr className="border-b border-white/[0.06]">
-                        <Th>Producto</Th>
-                        <Th right>Stock</Th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.low.map((p) => (
-                        <tr key={p.id} className="border-b border-white/[0.03]">
-                          <Td>
-                            <Link
-                              href={`/admin/products/${p.id}/stock-card`}
-                              className="transition hover:text-white"
-                            >
-                              {p.name}
-                            </Link>
-                          </Td>
-                          <Td right>
-                            <StockBadge
-                              value={p.inventory}
-                              threshold={data.summary.low_stock_threshold}
-                            />
-                          </Td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </TableWrap>
-                )}
+                <BranchStockTable
+                  rows={data.low}
+                  emptyMessage="Ningún producto por debajo del mínimo."
+                />
               </Panel>
 
-              <Panel title="Alto stock" description="Mayor cantidad en tienda">
-                {data.high.length === 0 ? (
-                  <EmptyBox message="Sin productos activos." />
-                ) : (
-                  <TableWrap>
-                    <thead>
-                      <tr className="border-b border-white/[0.06]">
-                        <Th>Producto</Th>
-                        <Th right>Stock</Th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.high.map((p) => (
-                        <tr key={p.id} className="border-b border-white/[0.03]">
-                          <Td>
-                            <Link
-                              href={`/admin/products/${p.id}/stock-card`}
-                              className="transition hover:text-white"
-                            >
-                              {p.name}
-                            </Link>
-                          </Td>
-                          <Td right>
-                            <span className="tabular-nums text-zinc-300">{p.inventory} u.</span>
-                          </Td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </TableWrap>
-                )}
-              </Panel>
-
-              <Panel title="Más vendidos" description="Derivado de órdenes pagadas">
-                {data.best.length === 0 ? (
-                  <EmptyBox message="Todavía no hay ventas pagadas." />
-                ) : (
-                  <TableWrap>
-                    <thead>
-                      <tr className="border-b border-white/[0.06]">
-                        <Th>Producto</Th>
-                        <Th right>Unidades</Th>
-                        <Th right>Ingresos</Th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.best.map((row) => (
-                        <tr key={row.product_id} className="border-b border-white/[0.03]">
-                          <Td>{row.product_name}</Td>
-                          <Td right>
-                            <span className="tabular-nums text-zinc-300">{row.units_sold}</span>
-                          </Td>
-                          <Td right muted>{formatSoles(row.revenue)}</Td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </TableWrap>
-                )}
+              <Panel title="Con más stock" description="Mayor cantidad en tienda">
+                <BranchStockTable rows={data.high} emptyMessage="Sin stock registrado." />
               </Panel>
 
               <Panel
@@ -270,6 +253,7 @@ function InventoryDashboard({ user }: { user: AuthUser }) {
                     <thead>
                       <tr className="border-b border-white/[0.06]">
                         <Th>Fecha</Th>
+                        <Th>Sucursal</Th>
                         <Th>Producto</Th>
                         <Th>Tipo</Th>
                         <Th right>Cant.</Th>
@@ -280,6 +264,7 @@ function InventoryDashboard({ user }: { user: AuthUser }) {
                       {data.movements.map((m) => (
                         <tr key={m.id} className="border-b border-white/[0.03]">
                           <Td muted>{formatDateTime(m.created_at)}</Td>
+                          <Td muted>{m.branch_name}</Td>
                           <Td>{m.product_name}</Td>
                           <Td><MovementBadge movement={m} /></Td>
                           <Td right><SignedQty movement={m} /></Td>
@@ -290,6 +275,13 @@ function InventoryDashboard({ user }: { user: AuthUser }) {
                   </TableWrap>
                 )}
               </Panel>
+
+              <Panel title="Distribución de movimientos" description="Últimos 30 días">
+                <HorizontalBarChart
+                  series={charts.movement_types}
+                  emptyMessage="Sin movimientos en el período."
+                />
+              </Panel>
             </div>
           </>
         ) : null}
@@ -299,5 +291,5 @@ function InventoryDashboard({ user }: { user: AuthUser }) {
 }
 
 export default function InventoryPage() {
-  return <StaffGuard>{(user) => <InventoryDashboard user={user} />}</StaffGuard>;
+  return <StaffGuard>{(user) => <InventoryDashboardPage user={user} />}</StaffGuard>;
 }

@@ -1,8 +1,15 @@
 "use client";
 
-// Register a MANUAL stock entry or exit. Phase 6.0.
+// Register a MANUAL stock entry or exit. Phase 6.0, per branch from Phase 2D.
+//
 // The backend is the source of truth: it re-reads stock under a row lock and
-// rejects anything that would go negative. This form only pre-warns the operator.
+// rejects anything that would go negative. This form only pre-warns the operator,
+// and its warning is deliberately approximate — the product list carries the
+// company-wide aggregate, while the movement lands in ONE branch. The
+// authoritative refusal comes from the server.
+//
+// There is no "todas las sucursales" option and there will not be one: units are
+// added to a place, not to a set.
 
 import { useState } from "react";
 import {
@@ -14,14 +21,25 @@ import {
 import { ErrorBox } from "./InventoryUi";
 
 type ProductOption = { id: number; name: string; inventory: number };
+type BranchOption = { id: number; name: string };
 
 type Props = {
   products: ProductOption[];
+  branches?: BranchOption[];
+  defaultBranch?: number | null;
   onCreated?: (movement: StockMovement) => void;
 };
 
-export function StockMovementForm({ products, onCreated }: Props) {
+export function StockMovementForm({
+  products,
+  branches = [],
+  defaultBranch = null,
+  onCreated,
+}: Props) {
   const [productId, setProductId] = useState<string>("");
+  const [branchId, setBranchId] = useState<string>(
+    defaultBranch === null ? "" : String(defaultBranch),
+  );
   const [movementType, setMovementType] = useState<MovementType>("manual_entry");
   const [quantity, setQuantity] = useState<string>("1");
   const [reason, setReason] = useState<string>("");
@@ -35,11 +53,22 @@ export function StockMovementForm({ products, onCreated }: Props) {
   const qty = parseInt(quantity, 10);
   const qtyValid = Number.isFinite(qty) && qty > 0;
 
+  // Company-wide check only: if the whole company does not hold enough, no
+  // branch does either. The per-branch answer belongs to the server.
   const wouldGoNegative =
     isExit && selected !== undefined && qtyValid && selected.inventory - qty < 0;
 
+  // A branch is required whenever the operator can reach more than one. With a
+  // single branch the field is not rendered and the backend fills in their
+  // default, which is that same branch.
+  const branchRequired = branches.length > 1;
   const canSubmit =
-    !submitting && productId !== "" && qtyValid && reason.trim().length > 0 && !wouldGoNegative;
+    !submitting &&
+    productId !== "" &&
+    (!branchRequired || branchId !== "") &&
+    qtyValid &&
+    reason.trim().length > 0 &&
+    !wouldGoNegative;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -59,12 +88,14 @@ export function StockMovementForm({ products, onCreated }: Props) {
     try {
       const movement = await createStockMovement({
         product_id: Number(productId),
+        branch: branchId === "" ? undefined : Number(branchId),
         movement_type: movementType,
         quantity: qty,
         reason: reason.trim(),
       });
       setSuccess(
-        `Movimiento registrado: ${movement.movement_type_label} · ` +
+        `Movimiento registrado en ${movement.branch_name}: ` +
+          `${movement.movement_type_label} · ` +
           `stock ${movement.stock_before} → ${movement.stock_after}`,
       );
       setQuantity("1");
@@ -103,6 +134,24 @@ export function StockMovementForm({ products, onCreated }: Props) {
           </select>
         </div>
 
+        {branches.length > 1 ? (
+          <div>
+            <label className={labelClass} htmlFor="sm-branch">Sucursal</label>
+            <select
+              id="sm-branch"
+              className={fieldClass}
+              value={branchId}
+              onChange={(e) => setBranchId(e.target.value)}
+              disabled={submitting}
+            >
+              <option value="">Selecciona una sucursal…</option>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+
         <div>
           <label className={labelClass} htmlFor="sm-type">Tipo de movimiento</label>
           <select
@@ -138,10 +187,8 @@ export function StockMovementForm({ products, onCreated }: Props) {
           />
           {selected ? (
             <p className="mt-1 text-xs text-zinc-500">
-              Stock actual: {selected.inventory} u.
-              {isExit && qtyValid
-                ? ` → quedaría ${selected.inventory - qty} u.`
-                : ""}
+              Stock de la empresa: {selected.inventory} u. El stock de la sucursal
+              se valida en el servidor.
             </p>
           ) : null}
         </div>
@@ -169,6 +216,10 @@ export function StockMovementForm({ products, onCreated }: Props) {
         <div className="rounded-lg border border-white/15 bg-white/[0.05] px-4 py-3">
           <p className="text-sm text-zinc-200">{success}</p>
         </div>
+      ) : null}
+
+      {branchRequired && branchId === "" ? (
+        <p className="text-xs text-zinc-500">Selecciona la sucursal donde ocurre el movimiento.</p>
       ) : null}
 
       <button
