@@ -272,6 +272,51 @@ contraseña nativos. Devuelven 404 a propósito.
 
 Detalle en `docs/saas-multiempresa.md` § 8-duodevicies.
 
+### API v1 — superficie de CLIENTE
+
+Tercera audiencia, en su propio espacio de URL (**DEC-API-001**):
+
+| Prefijo | Audiencia | Auth |
+|---|---|---|
+| `/api/v1/storefront/<slug>/` | pública | ninguna |
+| `/api/v1/customer/<slug>/` | **cliente, sus propios registros** | Bearer v1 |
+| `/api/v1/internal/<slug>/` | staff bajo capability | **no existe todavía** |
+
+| Método | Endpoint | Notas |
+|--------|----------|-------|
+| GET | `/api/v1/customer/<company_slug>/orders/` | Solo los pedidos del llamante |
+| GET | `/api/v1/customer/<company_slug>/orders/<id>/` | 404 si no es suyo |
+
+**La propiedad son dos FKs**: `Order.user` (compró con sesión) o
+`Order.customer.user` (compra anónima que el negocio emparejó por documento con
+su ficha CRM, ficha luego enlazada a su cuenta). **El email nunca es propiedad**:
+no tiene unicidad y una familia comparte dirección.
+
+**Ser empleado no es ser cliente.** Vendedor, almacenero, técnico, administrador
+de empresa y platform master reciben **404** aquí. El acceso interno a los
+pedidos de la empresa será `sales.orders.view` en la superficie interna.
+
+Empresa desconocida, inactiva y "no eres cliente" → **el mismo 404**.
+
+`fulfillment_status` se expone por fin (**BR-003**, cerrado para v1). No viajan
+identificadores de Stripe, diagnósticos operativos ni claves de sesión.
+
+### `access_contexts` en el contrato de auth
+
+`login` y `me` incorporan, **junto a** `available_companies` (que no cambia):
+
+```json
+"access_contexts": [{"company": {...}, "customer": true, "member": true,
+                     "capabilities": ["inventory.view"]}],
+"platform": {"is_master": false}
+```
+
+`customer` y `member` son booleanos independientes, no un rol. Las capabilities
+salen de `resolve_capabilities()` y sirven **solo para presentación**: todo
+endpoint interno las vuelve a validar en el servidor.
+
+Detalle en `docs/saas-multiempresa.md` § 8-undevicies.
+
 ### Reglas de contraseña (registro)
 
 - Mínimo 8 caracteres (Django `MinimumLengthValidator`)
