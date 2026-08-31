@@ -2163,6 +2163,161 @@ el cuerpo, y su cookie **no** abre la superficie nativa.
 
 ---
 
+## 8-undevicies. Superficie de cliente y contexto de acceso (`/api/v1/customer/`)
+
+**Estado: IMPLEMENTADO (pedidos de cliente).** Sin migraciones. Aditiva.
+
+### Tres audiencias, tres superficies — DEC-API-001
+
+| Prefijo | Audiencia | Autenticación |
+|---|---|---|
+| `/api/v1/storefront/<slug>/` | **PÚBLICA** — cualquiera | ninguna |
+| `/api/v1/customer/<slug>/` | **CLIENTE** — sus *propios* registros | Bearer v1 |
+| `/api/v1/internal/<slug>/` | **INTERNA** — registros de la *empresa* bajo capability | **NO EXISTE TODAVÍA** |
+
+Son espacios de URL **separados**, no un endpoint que ensancha su queryset
+cuando quien pregunta es staff. Un endpoint cuyo resultado depende de quién
+llama está a un refactor de devolver el conjunto equivocado, y el fallo es
+silencioso: una pantalla de cliente listando las compras de todos.
+
+### Endpoints
+
+```
+GET /api/v1/customer/<company_slug>/orders/
+GET /api/v1/customer/<company_slug>/orders/<id>/
+```
+
+Solo lectura. Cancelar o reembolsar son decisiones del negocio; un cliente móvil
+afirmándolas estaría afirmando un desenlace que el servidor debe poseer.
+
+### La propiedad son DOS claves foráneas
+
+```python
+Order.objects.filter(
+    Q(user=user) | Q(customer__user=user),
+    company=verified_company,
+)
+```
+
+| FK | Qué cubre |
+|---|---|
+| `Order.user` | Compra hecha con sesión iniciada. Inequívoca |
+| `Order.customer.user` | Compra anónima que el negocio emparejó **por documento** con la ficha CRM del cliente, ficha que luego se enlazó a su cuenta |
+
+La segunda no es un extra: es el caso real que `Order.user` sola se pierde. Ver
+`customer_services.link_order_to_customer()`.
+
+**El email NUNCA es propiedad.** `Order.customer_email` es una instantánea de lo
+que se escribió al pagar, no tiene unicidad, y `find_possible_duplicates` existe
+precisamente porque una familia o una oficina pequeña comparten una dirección.
+Emparejar por ahí entregaría el historial de compras de una persona a otra.
+
+El documento tampoco se consulta aquí: emparejar documentos es trabajo del CRM
+en el momento del checkout, bajo la vista del negocio, no una regla de acceso.
+
+### Ser empleado no es ser cliente
+
+`has_customer_relation()` exige una de dos cosas, ambas hechos ya presentes en la
+base de datos:
+
+1. una ficha `Customer` **activa**, o
+2. ser dueño de al menos un pedido en esa empresa.
+
+La segunda existe para que **archivar una ficha no deje a nadie fuera de su
+propio historial**. Cerrar el expediente de un cliente es una decisión comercial;
+"ya no puedes ver lo que compraste" no es una que deba tomarse de rebote.
+
+Una **membresía no cuenta**. Un vendedor, un almacenero, un técnico y un
+administrador de empresa reciben **404** aquí, con test para cada uno. Y un
+empleado que además compra en su empresa ve **solo sus propias compras**.
+
+El acceso interno a los pedidos de toda la empresa será `sales.orders.view` en
+la superficie interna, que es otra cosa.
+
+### Fail-safe indistinguible
+
+Empresa desconocida, empresa inactiva y "no eres cliente aquí" devuelven **el
+mismo 404 con el mismo cuerpo**. Distinguirlos permitiría a cualquier cuenta
+válida mapear qué empresas existen en la plataforma, un slug cada vez.
+
+### BR-003 — cerrado para v1
+
+`fulfillment_status` existe en el modelo desde la Fase 2C, pero `OrderSerializer`
+nunca lo expuso: un cliente veía que su pago salió bien y **nada** sobre si la
+mercancía se había movido. El serializer v1 lo incluye, con su etiqueta legible.
+
+No se modificó el serializer legacy: pertenece al frontend web, y además lista
+`stripe_session_id` entre sus campos.
+
+### Qué NO viaja al cliente
+
+Identificadores de Stripe · `payment_error` · `email_send_error` ·
+`cart_session_key` · marcas de envío de correos internos · `company_snapshot` ·
+`fulfillment_branch` · notas internas · costos · márgenes · capabilities · datos
+de otros clientes.
+
+La lista de campos es una **allowlist**: añadir una columna al modelo no la añade
+a esta respuesta.
+
+### `access_contexts` — aditivo, nunca sustituto
+
+`/api/v1/auth/login/` y `/me/` incorporan dos campos **junto a**
+`available_companies`, que sigue intacto: un cliente ya publicado lo lee y debe
+seguir funcionando mientras esté instalado.
+
+```json
+{
+  "access_contexts": [
+    {
+      "company": {"slug": "...", "name": "..."},
+      "customer": true,
+      "member": true,
+      "capabilities": ["inventory.view", "sales.orders.view"]
+    }
+  ],
+  "platform": {"is_master": false}
+}
+```
+
+`customer` y `member` son booleanos **independientes**, no un rol. La misma
+persona puede comprarle a una empresa y trabajar en ella; colapsarlo en un campo
+obligaría al cliente a elegir cuál de dos verdades creer.
+
+Las capabilities salen de `resolve_capabilities()`, el resolutor real — no de una
+lista escrita a mano.
+
+### Las capabilities son presentación, jamás autorización — DEC-MOBILE-008
+
+Viajan para que la app decida **qué pestaña dibujar**, nunca si una operación
+está permitida. Todo endpoint interno las vuelve a resolver en el servidor: un
+cliente que mienta sobre tener `inventory.view` recibe un 403 del endpoint, no
+inventario.
+
+### Platform master, aparte
+
+`platform.is_master` se reporta **separado** de cualquier empresa y no concede
+nada: `access_contexts` se sigue construyendo desde filas reales. Ser
+administrador de plataforma no es ser miembro de todos los tenants, y no
+enumera los tenants dentro de un teléfono. Un platform master recibe **404** en
+la superficie de cliente, con test.
+
+### Sin cambios
+
+`/api/` legacy, autenticación web por cookie + CSRF, admin, Stripe, checkout web,
+`DEFAULT_AUTHENTICATION_CLASSES`, migraciones. Con tests de regresión.
+
+### Estado de los requerimientos de Mobile
+
+| ID | Estado |
+|---|---|
+| BR-003 `fulfillment_status` | **IMPLEMENTADO para v1** |
+| BR-002 | **PARCIAL** — público + cliente resueltos; superficie interna pendiente |
+| BR-007 | **PARCIAL** — catálogo + auth + pedidos de cliente |
+| BR-001B ciclo de cuenta | PENDIENTE |
+| BR-005 reparaciones · BR-006 marca · BR-008 tracking | PENDIENTE |
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

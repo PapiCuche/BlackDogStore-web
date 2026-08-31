@@ -9,6 +9,41 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## API v1 — superficie de cliente y contexto de acceso (M4)
+
+**Estado: IMPLEMENTADO (pedidos de cliente).** Sin migraciones. Aditiva.
+
+### Entregado
+
+- `GET /api/v1/customer/<company_slug>/orders/` y `/<id>/`
+- `customer_owned_orders()`, `has_customer_relation()`, `access_contexts()` en `tenancy.py`
+- Serializers de cliente propios, con `fulfillment_status` — **BR-003 cerrado para v1**
+- `access_contexts` y `platform` añadidos a `login` y `me`, junto a `available_companies`
+- 47 tests nuevos
+
+### Tres audiencias, tres superficies (DEC-API-001)
+
+Pública, cliente e interna son espacios de URL separados, no un endpoint que
+ensancha su queryset según quién pregunte. Un endpoint así está a un refactor de
+devolver el conjunto equivocado, en silencio.
+
+### Reglas
+
+- **Propiedad = `Order.user` o `Order.customer.user`.** El email nunca: no tiene
+  unicidad y una familia comparte dirección.
+- **Una membresía no da acceso al historial de clientes.** Vendedor, almacenero,
+  técnico, admin de empresa y platform master reciben 404, con test cada uno.
+- **Archivar una ficha CRM no quita acceso a las propias compras.**
+- Empresa desconocida, inactiva y "no eres cliente" → el mismo 404.
+- **Capabilities = presentación, jamás autorización.**
+- `platform.is_master` va aparte y no enumera tenants.
+
+### No tocado
+
+`/api/` legacy, cookie + CSRF, admin, Stripe, checkout web, migraciones.
+
+---
+
 ## API v1 — autenticación nativa (BR-001A)
 
 **Estado: IMPLEMENTADO (núcleo de sesión).** Sin migraciones. Aditiva.

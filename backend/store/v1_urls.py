@@ -9,6 +9,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
+from .v1_customer_views import V1CustomerOrderViewSet
 from .v1_views import V1StorefrontCategoryViewSet, V1StorefrontProductViewSet
 
 storefront_router = DefaultRouter()
@@ -18,6 +19,12 @@ storefront_router.register(
 storefront_router.register(
     r'categories', V1StorefrontCategoryViewSet, basename='v1-storefront-category',
 )
+
+# CUSTOMER audience. A separate router under a separate prefix, because a client
+# reading their own orders and staff reading the company's are different
+# questions with different answers (DEC-API-001).
+customer_router = DefaultRouter()
+customer_router.register(r'orders', V1CustomerOrderViewSet, basename='v1-customer-order')
 
 # The tenant is a path segment, so it is present in every route below by
 # construction. `[-a-z0-9_]+` matches the shape Company.slug is stored in;
@@ -29,6 +36,10 @@ urlpatterns = [
     ),
     # Native session core (BR-001A). Separate from `/api/auth/`, which belongs
     # to the web frontend and is not modified by any of this.
+    path(
+        'customer/<slug:company_slug>/',
+        include((customer_router.urls, 'v1-customer')),
+    ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),
     path('auth/logout/', V1LogoutView.as_view(), name='v1-auth-logout'),
