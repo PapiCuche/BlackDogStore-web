@@ -17068,7 +17068,14 @@ class V1IsAdditiveTest(TestCase):
 
 
 class V1DoesNotTouchAuthenticationTest(TestCase):
-    """BR-001 is still API_PENDING, and this phase must not have moved it."""
+    """
+    The WEB authentication contract is untouched, and Bearer is never global.
+
+    Written when `/api/v1/` held only the catalogue and BR-001 was entirely
+    pending. BR-001A has since added the native session core, so the assertions
+    about `/api/v1/auth/*` were re-pointed; everything about the LEGACY surface
+    and about `DEFAULT_AUTHENTICATION_CLASSES` still holds and still matters.
+    """
 
     def test_the_project_default_authentication_is_still_cookie_jwt(self):
         from django.conf import settings
@@ -17087,10 +17094,17 @@ class V1DoesNotTouchAuthenticationTest(TestCase):
         from .v1_views import V1StorefrontProductViewSet
         self.assertEqual(V1StorefrontProductViewSet.authentication_classes, [])
 
-    def test_there_is_no_v1_auth_endpoint_yet(self):
+    def test_the_v1_auth_endpoints_now_EXIST(self):
+        # Written in the catalogue phase to assert these were 404, and it failed
+        # the moment BR-001A shipped them — which is precisely what it was for.
+        # Re-pointed rather than deleted: the claim it protects is "auth does not
+        # appear by accident", and that is still worth asserting, now in the
+        # affirmative. What must still be absent is covered by
+        # V1AccountLifecycleIsOutOfScopeTest.
         client = APIClient()
         for path in ('/api/v1/auth/login/', '/api/v1/auth/refresh/', '/api/v1/auth/logout/'):
-            self.assertEqual(client.get(path).status_code, 404)
+            self.assertNotEqual(client.post(path, {}, format='json').status_code, 404)
+        self.assertNotEqual(client.get('/api/v1/auth/me/').status_code, 404)
 
     def test_there_is_no_v1_private_surface_yet(self):
         client = APIClient()
@@ -17168,3 +17182,733 @@ class V1SharedScopingHelperTest(TestCase):
         from .tenancy import company_storefront_categories, company_storefront_products
         self.assertEqual(company_storefront_products(None).count(), 0)
         self.assertEqual(company_storefront_categories(None).count(), 0)
+
+
+# =============================================================================
+# BR-001A — native session core: /api/v1/auth/
+# =============================================================================
+#
+# Two authentication contracts now coexist. The web one reads an HttpOnly cookie
+# and enforces CSRF; the native one reads `Authorization: Bearer` and does not.
+# Most of what follows exists to pin down that they stay apart: a token minted
+# for the app must not open a single legacy endpoint, and the web must keep
+# behaving exactly as it did.
+
+from .models import Customer as _V1Customer  # noqa: E402
+from .v1_authentication import V1BearerAuthentication  # noqa: E402
+
+V1_LOGIN = '/api/v1/auth/login/'
+V1_REFRESH = '/api/v1/auth/refresh/'
+V1_LOGOUT = '/api/v1/auth/logout/'
+V1_ME = '/api/v1/auth/me/'
+
+
+def _v1_user(username='cliente-v1', email='cliente@example.com', password='Pass123!', **extra):
+    return User.objects.create_user(
+        username=username, email=email, password=password, **extra,
+    )
+
+
+def _bearer(client, token):
+    client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+    return client
+
+
+def _v1_customer(company, user, **extra):
+    """A CRM record for `user` at `company`. `Customer.clean()` requires a name."""
+    extra.setdefault('first_name', 'Cliente')
+    return _V1Customer.objects.create(company=company, user=user, **extra)
+
+
+class V1LoginTest(TestCase):
+    """Signing in with an email, and every way it must refuse to."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password, first_name='Carlos')
+        self.client = APIClient()
+
+    def test_valid_credentials_return_tokens(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('access', response.json())
+        self.assertIn('refresh', response.json())
+
+    def test_response_reports_the_access_lifetime(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        # 30 minutes, from SIMPLE_JWT. The client schedules its refresh on this.
+        self.assertEqual(response.json()['expires_in'], 1800)
+
+    def test_response_carries_the_user_identity(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        user = response.json()['user']
+        self.assertEqual(user['email'], 'cliente@example.com')
+        self.assertEqual(user['first_name'], 'Carlos')
+        self.assertEqual(user['role'], 'customer')
+        self.assertTrue(user['is_email_verified'])
+
+    def test_email_matching_is_case_insensitive(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'CLIENTE@Example.COM', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_surrounding_whitespace_in_the_email_is_ignored(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': '  cliente@example.com  ', 'password': self.password},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_wrong_password_is_401(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': 'incorrecta'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_unknown_email_is_401(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'nadie@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_unknown_email_and_wrong_password_are_INDISTINGUISHABLE(self):
+        # Otherwise a login form answers "does this person have an account here?"
+        # to anyone willing to ask.
+        unknown = self.client.post(
+            V1_LOGIN, {'email': 'nadie@example.com', 'password': 'x'}, format='json',
+        )
+        wrong = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': 'x'}, format='json',
+        )
+
+        self.assertEqual(unknown.status_code, wrong.status_code)
+        self.assertEqual(unknown.json(), wrong.json())
+
+    def test_an_inactive_user_cannot_sign_in(self):
+        # In this installation an inactive account is either deactivated OR
+        # never email-verified — registration creates it inactive.
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_an_inactive_user_is_indistinguishable_from_a_wrong_password(self):
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+
+        inactive = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+        wrong = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': 'x'}, format='json',
+        )
+
+        self.assertEqual(inactive.json(), wrong.json())
+
+    def test_DUPLICATE_emails_refuse_rather_than_guess(self):
+        # `email` carries NO unique constraint on Django's stock User model, and
+        # the registration check has a race. Picking "the first match" would let
+        # whoever registered a duplicate address sign in as someone else.
+        _v1_user(username='otro', email='cliente@example.com', password=self.password)
+
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_a_duplicate_email_looks_like_any_other_failure(self):
+        _v1_user(username='otro', email='cliente@example.com', password=self.password)
+
+        duplicate = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+        unknown = self.client.post(
+            V1_LOGIN, {'email': 'nadie@example.com', 'password': 'x'}, format='json',
+        )
+
+        self.assertEqual(duplicate.json(), unknown.json())
+
+    def test_a_malformed_email_is_rejected_as_validation(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'no-es-un-email', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_missing_password_is_rejected(self):
+        response = self.client.post(V1_LOGIN, {'email': 'cliente@example.com'}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_login_sets_NO_cookies(self):
+        # The whole point of a native contract: the app holds its own tokens.
+        # A cookie here would be a second, invisible copy of a credential.
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(len(response.cookies), 0)
+
+    def test_the_response_leaks_no_secret(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+        body = response.content.decode()
+
+        self.assertNotIn(self.password, body)
+        self.assertNotIn('password', body)
+        self.assertNotIn('is_superuser', body)
+        self.assertNotIn('is_staff', body)
+
+    def test_the_user_object_carries_no_token(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(
+            set(response.json()['user']),
+            {'id', 'username', 'email', 'first_name', 'last_name', 'role', 'is_email_verified'},
+        )
+
+    def test_login_is_throttled_at_five_per_minute(self):
+        # Reuses the existing `login` scope rather than inventing a second
+        # budget: two endpoints with independent counters would double the
+        # attempts an attacker gets per minute.
+        for _ in range(5):
+            self.client.post(
+                V1_LOGIN, {'email': 'cliente@example.com', 'password': 'x'}, format='json',
+            )
+        blocked = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': 'x'}, format='json',
+        )
+
+        self.assertEqual(blocked.status_code, 429)
+
+
+class V1RefreshTest(TestCase):
+    """Rotation, blacklisting, and refusing to explain itself."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password)
+        self.client = APIClient()
+        login = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+        self.refresh = login.json()['refresh']
+
+    def test_a_valid_refresh_returns_a_new_access_token(self):
+        response = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('access', response.json())
+
+    def test_the_refresh_token_ROTATES(self):
+        response = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertIn('refresh', response.json())
+        self.assertNotEqual(response.json()['refresh'], self.refresh)
+
+    def test_the_OLD_refresh_token_stops_working_after_rotation(self):
+        # BLACKLIST_AFTER_ROTATION. A stolen refresh token is worth one use, and
+        # using it locks out the thief or the owner — whichever moves second.
+        self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        replay = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(replay.status_code, 401)
+
+    def test_the_rotated_token_works(self):
+        rotated = self.client.post(
+            V1_REFRESH, {'refresh': self.refresh}, format='json',
+        ).json()['refresh']
+
+        again = self.client.post(V1_REFRESH, {'refresh': rotated}, format='json')
+
+        self.assertEqual(again.status_code, 200)
+
+    def test_a_malformed_token_is_401_not_500(self):
+        # A 500 here would hand a stack trace to an anonymous caller.
+        response = self.client.post(V1_REFRESH, {'refresh': 'no-es-un-jwt'}, format='json')
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_an_access_token_is_not_accepted_as_a_refresh_token(self):
+        access = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()['access']
+
+        response = self.client.post(V1_REFRESH, {'refresh': access}, format='json')
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_a_deactivated_user_cannot_extend_their_session(self):
+        # Being switched off must take effect on the next refresh, not whenever
+        # the refresh token happens to expire.
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+
+        response = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_refresh_sets_no_cookies(self):
+        response = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(len(response.cookies), 0)
+
+    def test_refresh_needs_no_csrf_token(self):
+        # No cookie is involved, so there is no cross-site request to forge.
+        enforcing = APIClient(enforce_csrf_checks=True)
+        response = enforcing.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_every_failure_answers_the_same(self):
+        malformed = self.client.post(V1_REFRESH, {'refresh': 'basura'}, format='json')
+        self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+        blacklisted = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(malformed.json(), blacklisted.json())
+
+
+class V1MeTest(TestCase):
+    """Reading your own identity — the cold-start call."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password, first_name='Carlos')
+        self.client = APIClient()
+        self.access = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()['access']
+
+    def test_a_valid_bearer_token_returns_the_profile(self):
+        response = _bearer(self.client, self.access).get(V1_ME)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['user']['email'], 'cliente@example.com')
+
+    def test_no_credentials_is_401(self):
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_a_malformed_bearer_token_is_401(self):
+        self.assertEqual(_bearer(self.client, 'basura').get(V1_ME).status_code, 401)
+
+    def test_an_empty_bearer_header_is_401(self):
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer')
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_a_token_containing_spaces_is_401(self):
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer una cosa rara')
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_another_scheme_is_not_accepted(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.access}')
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_a_refresh_token_is_not_an_access_token(self):
+        refresh = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()['refresh']
+
+        self.assertEqual(_bearer(self.client, refresh).get(V1_ME).status_code, 401)
+
+    def test_a_user_deactivated_after_signing_in_is_401(self):
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+
+        self.assertEqual(_bearer(self.client, self.access).get(V1_ME).status_code, 401)
+
+    def test_a_deleted_user_is_401_not_500(self):
+        self.user.delete()
+
+        self.assertEqual(_bearer(self.client, self.access).get(V1_ME).status_code, 401)
+
+    def test_the_failure_never_says_WHY(self):
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+        inactive = _bearer(APIClient(), self.access).get(V1_ME)
+        malformed = _bearer(APIClient(), 'basura').get(V1_ME)
+
+        self.assertEqual(inactive.json(), malformed.json())
+
+    def test_me_sets_no_cookies(self):
+        response = _bearer(self.client, self.access).get(V1_ME)
+
+        self.assertEqual(len(response.cookies), 0)
+
+
+class V1CompanyContextTest(TestCase):
+    """`available_companies` — server-verified relations, never client claims."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password)
+        self.a = _saas_company('Empresa A', 'ctx-a', tax_id='20778000001')
+        self.b = _saas_company('Empresa B', 'ctx-b', tax_id='20778000002')
+        self.client = APIClient()
+
+    def _login(self):
+        return self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()
+
+    def _slugs(self, payload):
+        return {row['slug'] for row in payload['available_companies']}
+
+    def test_a_user_with_nothing_gets_an_empty_list(self):
+        # Fail-safe: no relation is not "all companies", it is none.
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_an_active_membership_appears_as_member(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+
+        rows = self._login()['available_companies']
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['slug'], 'ctx-a')
+        self.assertEqual(rows[0]['relation'], 'member')
+
+    def test_a_CUSTOMER_record_appears_too(self):
+        # Migration 0015 deliberately gave customers no Membership: a shopper is
+        # not staff. Memberships alone would therefore return nothing for the
+        # mobile app's entire audience.
+        _v1_customer(self.a, self.user)
+
+        rows = self._login()['available_companies']
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['relation'], 'customer')
+
+    def test_being_staff_AND_customer_reports_member(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+        _v1_customer(self.a, self.user)
+
+        rows = self._login()['available_companies']
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['relation'], 'member')
+
+    def test_an_INACTIVE_membership_is_excluded(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales', is_active=False)
+
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_a_membership_of_an_INACTIVE_company_is_excluded(self):
+        self.a.is_active = False
+        self.a.save(update_fields=['is_active'])
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_an_ARCHIVED_customer_record_is_excluded(self):
+        _v1_customer(self.a, self.user, is_active=False)
+
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_ANOTHER_users_relations_never_appear(self):
+        other = _v1_user(username='ajeno', email='ajeno@example.com')
+        Membership.objects.create(user=other, company=self.b, role='admin')
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+
+        self.assertEqual(self._slugs(self._login()), {'ctx-a'})
+
+    def test_several_relations_are_all_reported(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+        _v1_customer(self.b, self.user)
+
+        self.assertEqual(self._slugs(self._login()), {'ctx-a', 'ctx-b'})
+
+    def test_a_SUPERUSER_does_not_receive_every_company(self):
+        # A platform administrator does not silently get every tenant on a
+        # phone. If that is ever wanted it will be an explicit, audited feature.
+        self.user.is_superuser = True
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_superuser', 'is_staff'])
+
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_a_company_sent_BY_THE_CLIENT_is_never_echoed_back(self):
+        response = self.client.post(
+            V1_LOGIN,
+            {'email': 'cliente@example.com', 'password': self.password, 'company': 'ctx-b'},
+            format='json',
+        )
+
+        self.assertEqual(response.json()['available_companies'], [])
+
+    def test_a_company_HEADER_grants_nothing(self):
+        response = self.client.post(
+            V1_LOGIN,
+            {'email': 'cliente@example.com', 'password': self.password},
+            format='json',
+            HTTP_X_COMPANY_SLUG='ctx-b',
+        )
+
+        self.assertEqual(response.json()['available_companies'], [])
+
+    def test_me_reports_the_same_context_as_login(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+        payload = self._login()
+
+        me = _bearer(APIClient(), payload['access']).get(V1_ME).json()
+
+        self.assertEqual(me['available_companies'], payload['available_companies'])
+        self.assertEqual(me['user'], payload['user'])
+
+    def test_the_context_carries_no_internal_company_data(self):
+        Membership.objects.create(user=self.user, company=self.a, role='admin')
+        body = str(self._login()['available_companies'])
+
+        for internal in ('tax_id', 'legal_name', 'id', 'capabilit'):
+            self.assertNotIn(internal, body)
+
+
+class V1LogoutTest(TestCase):
+    """Best effort, always 200, never an oracle."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password)
+        self.client = APIClient()
+        payload = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()
+        self.refresh = payload['refresh']
+        self.access = payload['access']
+
+    def test_a_valid_refresh_token_is_blacklisted(self):
+        self.assertEqual(
+            self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json').status_code, 200,
+        )
+
+        replay = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+        self.assertEqual(replay.status_code, 401)
+
+    def test_logging_out_twice_is_not_an_error(self):
+        self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        again = self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(again.status_code, 200)
+
+    def test_a_malformed_token_still_answers_200(self):
+        # The client has already cleared its own credentials. Failing here would
+        # leave the app unable to finish a sign-out it has already committed to.
+        response = self.client.post(V1_LOGOUT, {'refresh': 'basura'}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_no_refresh_token_at_all_still_answers_200(self):
+        self.assertEqual(self.client.post(V1_LOGOUT, {}, format='json').status_code, 200)
+
+    def test_logout_does_NOT_require_a_live_access_token(self):
+        # Precisely when a session has expired is when a user reaches for
+        # "sign out". Requiring a valid access token would make it impossible.
+        response = APIClient().post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_logout_needs_no_csrf(self):
+        enforcing = APIClient(enforce_csrf_checks=True)
+
+        response = enforcing.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_logout_sets_no_cookies(self):
+        response = self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(len(response.cookies), 0)
+
+    def test_it_is_not_an_oracle_about_token_state(self):
+        # A live token, a dead token and a nonsense token answer identically, so
+        # this cannot be used to probe which refresh tokens are still valid.
+        valid = self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+        dead = self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+        nonsense = self.client.post(V1_LOGOUT, {'refresh': 'basura'}, format='json')
+
+        self.assertEqual(valid.json(), dead.json())
+        self.assertEqual(valid.json(), nonsense.json())
+
+
+class V1BearerIsScopedTest(TestCase):
+    """
+    THE ISOLATION BOUNDARY.
+
+    A token minted for the app must open the native surface and nothing else.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password)
+        self.user.is_staff = True
+        self.user.is_superuser = True
+        self.user.save(update_fields=['is_staff', 'is_superuser'])
+        profile, _ = UserProfile.objects.get_or_create(user=self.user)
+        profile.role = UserProfile.ROLE_SUPERADMIN
+        profile.save(update_fields=['role'])
+        self.client = APIClient()
+        self.access = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()['access']
+
+    def test_the_token_opens_the_native_surface(self):
+        self.assertEqual(_bearer(APIClient(), self.access).get(V1_ME).status_code, 200)
+
+    def test_the_token_does_NOT_open_the_legacy_admin_surface(self):
+        # Even for a superadmin. The legacy surface authenticates by cookie, and
+        # a Bearer header means nothing to it.
+        response = _bearer(APIClient(), self.access).get('/api/admin/users/')
+
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_the_token_does_NOT_open_the_legacy_profile_endpoint(self):
+        response = _bearer(APIClient(), self.access).get('/api/auth/me/')
+
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_the_token_does_NOT_open_legacy_orders(self):
+        response = _bearer(APIClient(), self.access).get('/api/orders/')
+
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_the_project_default_authentication_is_UNCHANGED(self):
+        from django.conf import settings
+
+        self.assertEqual(
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_the_bearer_class_is_not_installed_globally(self):
+        from django.conf import settings
+
+        joined = ' '.join(settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'])
+        self.assertNotIn('V1Bearer', joined)
+
+    def test_only_the_private_v1_view_declares_it(self):
+        from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
+
+        self.assertEqual(V1MeView.authentication_classes, [V1BearerAuthentication])
+        # The public ones authenticate nobody: they mint or destroy sessions.
+        self.assertEqual(V1LoginView.authentication_classes, [])
+        self.assertEqual(V1RefreshView.authentication_classes, [])
+        self.assertEqual(V1LogoutView.authentication_classes, [])
+
+    def test_a_bearer_token_does_not_change_the_public_catalogue(self):
+        company = _saas_company('Aislada', 'aislada-v1', tax_id='20778100001')
+        _prod(company, 'Producto', 'producto-aislado')
+        path = '/api/v1/storefront/aislada-v1/products/'
+
+        anonymous = APIClient().get(path).json()
+        with_token = _bearer(APIClient(), self.access).get(path).json()
+
+        self.assertEqual(anonymous, with_token)
+
+
+class V1DoesNotDisturbWebAuthTest(TestCase):
+    """Regression: the web contract behaves exactly as it did before."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(username='web-user', email='web@example.com', password=self.password)
+        self.client = APIClient()
+
+    def test_web_login_still_authenticates_by_USERNAME(self):
+        response = self.client.post(
+            '/api/auth/login/', {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_web_login_still_returns_its_tokens_in_COOKIES_not_the_body(self):
+        response = self.client.post(
+            '/api/auth/login/', {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertNotIn('access', response.json())
+        self.assertNotIn('refresh', response.json())
+        self.assertIn('blackdog_access', response.cookies)
+
+    def test_the_web_cookie_still_opens_the_web_profile_endpoint(self):
+        self.client.post(
+            '/api/auth/login/', {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(self.client.get('/api/auth/me/').status_code, 200)
+
+    def test_the_web_cookie_does_NOT_open_the_native_surface(self):
+        # The two contracts are separate in both directions.
+        self.client.post(
+            '/api/auth/login/', {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_the_native_login_does_not_accept_a_username(self):
+        response = self.client.post(
+            V1_LOGIN, {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_web_csrf_enforcement_is_untouched(self):
+        from .authentication import enforce_csrf  # noqa: F401
+        from .authentication import CookieJWTAuthentication
+
+        # Still the cookie class, still enforcing CSRF inside authenticate().
+        self.assertTrue(hasattr(CookieJWTAuthentication, 'enforce_csrf'))
+
+
+class V1AccountLifecycleIsOutOfScopeTest(TestCase):
+    """BR-001B. These endpoints must not silently appear to exist."""
+
+    def test_there_is_no_native_registration_endpoint(self):
+        self.assertEqual(APIClient().post('/api/v1/auth/register/').status_code, 404)
+
+    def test_there_is_no_native_password_reset_endpoint(self):
+        client = APIClient()
+        for path in (
+            '/api/v1/auth/password-reset/',
+            '/api/v1/auth/password-reset/confirm/',
+            '/api/v1/auth/change-password/',
+        ):
+            self.assertEqual(client.post(path).status_code, 404)
+
+    def test_there_is_no_native_email_verification_endpoint(self):
+        client = APIClient()
+        for path in ('/api/v1/auth/verify-email/', '/api/v1/auth/resend-verification/'):
+            self.assertEqual(client.post(path).status_code, 404)
+
+    def test_there_is_still_no_private_v1_business_surface(self):
+        client = APIClient()
+        for path in ('/api/v1/orders/', '/api/v1/repairs/', '/api/v1/me/'):
+            self.assertEqual(client.get(path).status_code, 404)

@@ -9,6 +9,61 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## API v1 — autenticación nativa (BR-001A)
+
+**Estado: IMPLEMENTADO (núcleo de sesión).** Sin migraciones. Aditiva.
+
+### Entregado
+
+- `POST /api/v1/auth/login/` — `{email, password}` → tokens en el cuerpo
+- `POST /api/v1/auth/refresh/` — rotación + blacklist del anterior
+- `POST /api/v1/auth/logout/` — best-effort, siempre 200
+- `GET /api/v1/auth/me/` — identidad + empresas verificadas
+- `V1BearerAuthentication` — **declarada por vista, jamás global**
+- `verified_company_relations()` en `tenancy.py`
+- 79 tests nuevos
+
+### Por qué un contrato aparte
+
+La web autentica por cookie HttpOnly + CSRF porque el navegador adjunta cookies
+a peticiones que el usuario no inició. Una app nativa guarda su token y lo envía
+a propósito. Fusionarlos habría hecho que la superficie web empezara a aceptar
+`Authorization: Bearer`.
+
+### Decisiones
+
+- **Login por email.** `email` NO es unique en esta DB (User estándar de Django).
+  No se añadió constraint: fallaría durante el deploy en cualquier instalación
+  con duplicados. 0, 1-con-password-mala, inactivo y >1 devuelven el mismo 401,
+  y sin usuario se verifica contra un hash dummy para no filtrar por tiempo.
+- **`available_companies` incluye clientes, no solo staff.** La migración 0015
+  deliberadamente no dio Membership a los `customer`; memberships solas habrían
+  devuelto lista vacía al público entero de la app. Se reportan `Membership`
+  activa y `Customer` activo, etiquetados. No es autorización.
+- **`is_superuser` se ignora**: un admin de plataforma no recibe todos los
+  tenants en un teléfono.
+
+### Fuera de scope — BR-001B
+
+Registro, verificación de correo, reenvío, reset y cambio de contraseña nativos.
+Devuelven 404, con tests que lo fijan.
+
+### No tocado
+
+`CookieJWTAuthentication`, CSRF, `/api/auth/*`, admin, `/api/` legacy,
+`DEFAULT_AUTHENTICATION_CLASSES`, migraciones. Tests de regresión incluidos.
+
+### Estado
+
+| ID | Estado |
+|---|---|
+| BR-001A | **IMPLEMENTADO** |
+| BR-001 completo | **PARCIAL** — falta BR-001B |
+| BR-002 · BR-007 | **PARCIAL** |
+| BR-003 · BR-005 · BR-006 · BR-008 | PENDIENTE |
+
+---
+
 ## API v1 — catálogo público para clientes nativos
 
 **Estado: IMPLEMENTADO (solo catálogo público).** Sin migraciones. Aditiva.

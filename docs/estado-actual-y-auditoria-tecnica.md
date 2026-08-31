@@ -1066,3 +1066,36 @@ historial de pedidos. La empresa piloto (Black Dog Store) se crea por migración
 de datos, no por una constante en el código.
 
 Detalle: [saas-multiempresa.md](saas-multiempresa.md) · [inventario-y-notas-de-venta.md](inventario-y-notas-de-venta.md)
+
+---
+
+## Actualización — API v1 para clientes nativos
+
+### Catálogo público — IMPLEMENTADO
+
+`/api/v1/storefront/<company_slug>/{products,categories}/`. El tenant va en la
+ruta porque una app móvil llega a un host de API compartido y no tiene el Host
+por el que se identifica el storefront web. Ese slug **selecciona** un escaparate
+público y no autoriza nada.
+
+### Autenticación nativa — IMPLEMENTADO (BR-001A)
+
+`/api/v1/auth/{login,refresh,logout,me}/`. Tokens en el cuerpo, `Bearer` en vez
+de cookie, sin CSRF.
+
+`V1BearerAuthentication` **no es global** y no debe añadirse a
+`DEFAULT_AUTHENTICATION_CLASSES`: eso abriría toda la superficie legacy a un
+token del contrato móvil. Cada vista privada v1 la declara explícitamente.
+
+### Deuda registrada en esta fase
+
+- **`email` no es unique** en `auth_user`. El registro lo valida en el serializer,
+  con una race, y no cubre filas creadas por `createsuperuser` o desde el admin.
+  El login v1 lo resuelve rechazando cuando hay más de una coincidencia. Añadir
+  la constraint es una decisión aparte: la migración fallaría durante el deploy
+  en cualquier instalación que ya tenga duplicados, así que necesita antes una
+  auditoría de datos y un plan de deduplicación.
+- **No existe columna de verificación de correo.** Verificar y activar son el
+  mismo hecho (`User.is_active`). Separarlos, si se quiere, es BR-001B.
+- **Ciclo de vida de cuenta nativo pendiente** (BR-001B): registro, verificación,
+  reenvío, reset y cambio de contraseña siguen siendo solo web.
