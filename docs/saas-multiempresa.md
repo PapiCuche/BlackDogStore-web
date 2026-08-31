@@ -1886,6 +1886,238 @@ era, en realidad, un agujero que no llegó a abrirse porque fallaba antes.
 
 ---
 
+## 8-septendecies. Punto de venta e inteligencia de stock (Fase Comercial C1)
+
+Migraciones **0034** (esquema) y **0035** (capacidades). Primera fase que sirve
+al mostrador además de a la web.
+
+### Un solo núcleo de ventas
+
+```
+   ONLINE ──┐
+            ├──► Order ──► OrderItem ──► inventory_services ──► SALE_EXIT ──► BranchStock
+   POS ─────┘                                                        │
+                                                    ┌────────────────┴────────────────┐
+                                              analítica                         reposición
+```
+
+Una venta de mostrador es un `Order`, igual que una de la web. La alternativa
+—un modelo `PosSale` aparte— habría duplicado cada reporte, cada movimiento de
+stock, cada documento interno y cada historial de cliente, con la obligación
+permanente de conciliarlos. Un negocio que vende el mismo cable por los dos
+canales ha hecho una venta en ambos casos.
+
+Lo que cambia no es el registro, es el momento:
+
+| | ONLINE | POS |
+|---|---|---|
+| Cuándo se cobra | fuera, antes del webhook | aquí, ahora |
+| Cuándo baja el stock | después del pago | en la misma transacción |
+| Si falta stock | se anota y se salta el ítem | **se rechaza la venta entera** |
+
+La asimetría es deliberada. Online el dinero ya está capturado, así que negarse
+dejaría un pedido pagado que nunca descontó nada. En el mostrador no se ha
+cobrado todavía, así que vender lo que no hay es exactamente el fallo a evitar.
+
+Ambos caminos comparten el mismo cuerpo en `record_sale_stock_movements`, con un
+parámetro `strict`. Dos copias habrían divergido, y la que divergiera sería la
+que nadie estaba mirando.
+
+### Modo estricto: validar todo antes de escribir nada
+
+En POS se bloquean **todas** las filas de `BranchStock` implicadas por adelantado
+—en el único orden que usa el módulo, `(branch_id, product_id)`— y se comprueban
+todas las cantidades antes de mover una sola unidad.
+
+Sin eso, una venta de dos líneas cuyo segundo artículo falta descontaría el
+primero, lanzaría, y desharía todo: correcto, pero manteniendo un lock que
+siempre iba a soltar, y mostrando al operador el stock del primer producto
+parpadeando mientras el error nombra al segundo.
+
+### Idempotencia: clave más huella
+
+Un doble clic, un timeout o un reintento de red no pueden cobrar dos veces.
+
+La clave la genera el navegador **antes** de enviar, así que un reintento lleva
+la misma. Pero la clave sola no basta: dice «es el mismo intento», no «es la
+misma venta». La huella —SHA-256 de empresa, sucursal, cliente, medio de pago y
+la lista ordenada de productos y cantidades— dice lo segundo.
+
+| | Resultado |
+|---|---|
+| Misma clave, misma cesta | devuelve la venta ya hecha, `created=false` |
+| Misma clave, otra cesta | **409** |
+
+Sin la huella, una clave reutilizada por una pestaña vieja o un bug devolvería la
+venta de otra cesta y afirmaría que ésta se cobró.
+
+Los precios quedan fuera de la huella a propósito: los decide el servidor, así
+que incluirlos ataría la huella a un valor que el cliente no controla y
+convertiría un cambio de precio en un conflicto espurio.
+
+### Agrupar líneas repetidas no es orden, es corrección
+
+`record_sale_stock_movements` es idempotente por `(order, product)`: dada una
+segunda `OrderItem` del mismo producto, escribiría la salida de la primera y
+**saltaría** la segunda. Vendería dos unidades descontando una.
+
+Por eso `normalize_items` fusiona líneas antes de tocar nada. El invariante que
+protege de un webhook reenviado no puede convertirse en una fuga de stock por
+culpa de una cesta de mostrador.
+
+### El código de barras es texto
+
+`0123456789012` y `123456789012` son artículos distintos. Un `int()` los fusiona
+en silencio y el ceros-a-la-izquierda deja de escanear para siempre. Tampoco se
+pasa a mayúsculas: Code128 puede llevar minúsculas que el lector reproduce fiel.
+
+Lo único que se recorta es el espacio envolvente —sobre todo el CR/LF que el
+lector envía en lugar de Enter, que si se guardara haría que ningún escaneo
+futuro volviera a coincidir. Los caracteres de control se **rechazan**, no se
+reparan: significan que llegó algo inesperado, y arreglarlo en silencio guarda un
+código que nadie puede volver a leer.
+
+`UNIQUE(company, code)`: dos tiendas que venden el mismo cable escanean el mismo
+EAN y ninguna ve el catálogo de la otra.
+
+### Pronóstico de demanda v1
+
+```
+forecast_diario = 0.50·avg7 + 0.30·avg30 + 0.20·avg90
+```
+
+Explicable a propósito. No es machine learning, no se llama «IA» en ningún sitio
+del producto, y cualquier número que muestra se puede rehacer a mano. Un tendero
+que discrepe de una sugerencia tiene que poder averiguar por qué; un modelo que
+sólo afirma un número no permite discutir.
+
+El peso mayor en 7 días reacciona a lo que se está vendiendo ahora; los 90 días
+impiden que una tarde buena domine el resultado.
+
+**La demanda son ventas, no mermas.** Sale exclusivamente de
+`StockMovement.SALE_EXIT`. El stock también se va por salidas manuales, roturas,
+correcciones, servicio técnico y transferencias — todas bajan la existencia y
+ninguna es un cliente queriendo el artículo. Contar una rotura como demanda
+encarga un reemplazo de algo que nadie compró.
+
+**Los días sin ventas cuentan como cero**, y es el error más común del género:
+
+```
+lunes 2 · martes 0 · miércoles 0 · jueves 2   →   1/día
+```
+
+Promediando sólo los días con venta salen 2/día, y ese error se hereda hacia
+abajo: la cobertura se reduce a la mitad, el punto de reposición se dobla, y el
+sistema manda comprar el doble de lo necesario.
+
+**Un producto nuevo no se rellena con ceros inventados.** Uno que entró hace
+cinco días tiene cinco días de historia, no noventa. Rellenar los ochenta y cinco
+anteriores dividiría sus ventas reales por dieciocho y presentaría un éxito
+reciente como un artículo parado.
+
+### Cuándo el sistema dice que no sabe
+
+| Condición | Resultado |
+|---|---|
+| < 14 días de historia, o < 3 días con venta | `insufficient_data` |
+| ≥ 14 días y ≥ 3 con venta | confianza `low` |
+| ≥ 30 días y ≥ 6 con venta | confianza `medium` |
+| ≥ 60 días y ≥ 12 con venta | confianza `high` |
+
+Sin pronóstico válido **no se muestra** cobertura, ni fecha estimada de quiebre,
+ni punto de reposición. Las alertas físicas —sin stock, bajo mínimo— siguen
+funcionando: no saber cuánto se vende no impide ver que el estante está vacío.
+
+Con demanda cero la cobertura **no es infinita**: la pantalla dice «sin consumo
+reciente», que es lo que realmente sabe.
+
+### Reposición
+
+```
+punto_reposicion = ceil(forecast_diario × lead_time_days + safety_stock)
+sugerido         = max(target − stock, punto_reposicion − stock, 0)
+```
+
+Cuatro números con cuatro trabajos distintos, y juntar dos cualesquiera es como
+una pantalla de reposición empieza a dar consejos que nadie sabe explicar:
+
+| Campo | Para qué |
+|---|---|
+| `minimum_stock` | umbral a partir del cual un operador quiere **verlo** |
+| `target_stock` | cuánto tener después de reponer |
+| `safety_stock` | colchón que usa la **aritmética** |
+| `lead_time_days` | cuánto tarda de verdad en llegar |
+
+`safety_stock` no reutiliza `minimum_stock` justamente porque uno es un umbral
+visual que el tendero pone a ojo y el otro entra en una fórmula. Que fueran el
+mismo campo significaría que cambiar una alerta cambia en silencio lo que el
+sistema manda comprar.
+
+**`lead_time_days = 0` es "sin configurar", no "llega al instante".** Sin él no
+se calcula punto de reposición: un plazo inventado da un número seguro y
+equivocado, que es peor que decir que falta el dato.
+
+### Riesgo, en orden de severidad
+
+```
+OUT_OF_STOCK  → stock 0
+CRITICAL      → cobertura ≤ lead time: se acaba antes de que llegue el pedido
+REORDER       → stock ≤ punto de reposición
+LOW           → stock ≤ mínimo
+INSUFFICIENT  → sin historial para juzgar
+OK            → el resto
+```
+
+### Transferencia antes que compra
+
+Antes de sugerir comprar fuera, se mira si las unidades ya están en la empresa.
+El excedente de una sucursal es conservador:
+
+```
+reserva  = max(target, minimum, safety)
+excedente = max(stock − reserva, 0)
+```
+
+Una sucursal sólo cede lo que sobra de su propio umbral más alto. Vaciar una
+tienda para llenar otra no es una solución, es la misma escasez en otro barrio.
+
+Es una **sugerencia**: no abre transferencia, no reserva nada, y sólo se muestran
+sucursales que el usuario tiene permiso de ver.
+
+### Tres autoridades, no una
+
+| Capacidad | Permite |
+|---|---|
+| `sales.pos.use` | operar la caja: buscar un artículo y cobrar |
+| `sales.analytics.view` | ver lo que factura el negocio |
+| `inventory.reports` | ver la aritmética de reposición detrás de los números |
+
+Quien cobra un cable necesita la primera y ninguna de las otras. Juntarlas
+significaría que un eventual en el mostrador lee la facturación de la empresa,
+que no es un permiso que nadie pidió conceder.
+
+**Vender no requiere `inventory.adjust`.** Un vendedor consume stock *vendiendo*;
+eso no es un ajuste manual, y dar `inventory.adjust` a cada cajero les dejaría
+reescribir el Kardex.
+
+`sales.orders.*` sigue AVAILABLE y no ACTIVE: su puente RBAC legacy sigue en pie,
+y cambiar la etiqueta sin quitarlo sería una mentira contada por un campo de
+estado.
+
+### Lo que no hay, y por qué
+
+**Sin margen, sin utilidad, sin ROI.** La plataforma no registra el costo de
+nada, así que cualquier cifra de rentabilidad sería inventada. Se reporta
+facturación, que sí se sabe.
+
+**Sin caja ni arqueo.** `payment_method` registra lo que el operador dice haber
+recibido; no procesa un pago, no abre un turno y no cuadra una gaveta. Está
+modelado de forma que C2 no tenga que migrarlo.
+
+**Sin SUNAT.** La nota de venta sigue siendo el documento interno de la Fase 2E.
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`
@@ -2062,6 +2294,26 @@ era, en realidad, un agujero que no llegó a abrirse porque fallaba antes.
    una variable de entorno. Documentado en `.env.example`, pero configurarlo
    todavía es tocar código. No se cambió aquí porque no hizo falta y habría sido
    ampliar el alcance de una fase de estabilización.
+
+### Deuda que deja la Fase Comercial C1
+
+54. **PENDIENTE — caja, arqueo y turnos.** `payment_method` registra el medio;
+   no hay apertura, cierre, retiros ni diferencias. Es Comercial C2.
+55. **PENDIENTE — devoluciones y anulaciones.** No se improvisan: una devolución
+   correcta es un movimiento compensatorio, nunca borrar un `SALE_EXIT` ni
+   sumar stock a mano. Sin el dominio completo, no se implementa a medias.
+56. **PENDIENTE — descuentos manuales en POS.** Reutilizar `Coupon` habría
+   forzado su semántica; inventar un campo de descuento sin política de
+   autorización habría sido peor.
+57. **PENDIENTE — costo real y rentabilidad.** Sin costo registrado no hay
+   margen honesto que mostrar.
+58. **PENDIENTE — compras y proveedores.** La reposición dice «repón N»; no
+   compra. Las órdenes de compra son C2/C3.
+59. **PENDIENTE — pronóstico estacional.** El v1 es un promedio ponderado
+   explicable. Estacionalidad y promociones necesitan más historia de la que
+   cualquier instalación tiene hoy.
+60. **PENDIENTE — cerrar el puente RBAC de `sales.orders.*`.** Sigue en pie, y
+   por eso esas capacidades siguen honestamente marcadas AVAILABLE.
 
 ---
 

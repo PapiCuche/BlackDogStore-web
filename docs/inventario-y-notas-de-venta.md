@@ -175,6 +175,9 @@ Reglas:
 - **Cada empresa numera desde su propio 1.** Dos empresas pueden tener cada una
   su `NV-000001`; ninguna ve la actividad de la otra en sus números.
 - Emitir o descargar una nota **no modifica el pago ni el inventario**.
+- Desde la Fase Comercial C1 una **venta de mostrador** también puede emitir su
+  nota interna: el POS crea un `Order` normal, pagado y con sucursal, así que
+  cumple todas las precondiciones sin ninguna vía paralela.
 
 ### Lo que la nota NO es
 

@@ -9,6 +9,88 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase Comercial C1 — Punto de venta, códigos de barras e inteligencia de stock
+
+**Estado: IMPLEMENTADO.** Migraciones **0034, 0035**.
+
+### El problema que cierra
+La plataforma sabía vender por internet y no sabía vender en el mostrador. Un
+negocio con tienda física llevaba las ventas presenciales fuera del sistema, así
+que el stock que mostraba el panel era el que quedaba *después de restar lo que
+nadie había registrado*. El Kardex describía media operación.
+
+Y sin ventas físicas registradas no había demanda real que medir: la reposición
+de la Fase 2D sólo podía decir «estás por debajo del mínimo», nunca «esto se te
+acaba el jueves».
+
+### IMPLEMENTADO
+- **Punto de venta** en `/admin/sales/pos`: escaneo, búsqueda, carrito, cliente
+  opcional, medio de pago y cobro.
+- **`ProductBarcode`** — varios códigos por artículo (EAN del fabricante, UPC,
+  etiqueta interna). `UNIQUE(company, code)`.
+- **Lector USB/Bluetooth** estándar (HID keyboard wedge), sin SDK propietario.
+  Todo funciona igual tecleando el código a mano.
+- **`Order.sales_channel`** (`online` | `pos`), **`payment_method`**,
+  **`sold_by`**, **`pos_idempotency_key`** + **`pos_request_fingerprint`**.
+- **`store/pos_services.py`** — la venta de mostrador, todo-o-nada.
+- **`store/inventory_forecasting.py`** — pronóstico de demanda explicable,
+  cobertura, punto de reposición, cantidad sugerida y riesgo.
+- **`BranchStock.safety_stock`** y **`lead_time_days`**.
+- **Dashboard comercial** en `/admin/sales`: facturación, tendencia, canales,
+  más vendidos, inventario en riesgo y reposición sugerida.
+- **`sales.pos.use`** y **`sales.analytics.view`** — nuevas y **ACTIVE**.
+- 64 tests nuevos (1444 → **1508 OK**, 3 omitidos).
+
+### Cambios de comportamiento
+- Una venta POS crea un `Order` normal, pagado, entregado y con su sucursal;
+  aparece en el historial, en los reportes y puede emitir su nota interna con la
+  numeración de la Fase 2E.
+- El stock se descuenta **de la sucursal donde se vende**, dentro de la misma
+  transacción que crea la venta.
+- Los pedidos históricos quedan `online` / `stripe` por el default de columna,
+  que es la evidencia real: todos se hicieron por la tienda.
+
+### Decisiones
+- **Un solo núcleo de ventas.** Un modelo `PosSale` aparte habría obligado a
+  calcular dos veces cada reporte, cada movimiento de stock, cada documento y
+  cada historial de cliente, y luego a conciliarlos.
+- **Dos canales, dos políticas ante el faltante — una implementación.** Online:
+  el dinero ya se capturó, así que el faltante se anota y el ítem se salta. POS:
+  no se ha cobrado nada, así que **lanza** y la transacción entera se deshace.
+  Dos copias del mismo bucle habrían divergido, y la que divergiera sería la que
+  nadie estaba mirando.
+- **El navegador nunca decide un precio.** Muestra uno para que el operador lea
+  el total en voz alta; el servidor cobra desde su propio catálogo.
+- **Idempotencia con huella.** La clave dice «es el mismo intento»; la huella
+  dice «es la misma venta». Sin ella, una clave reutilizada devolvería la venta
+  de otro y diría que salió bien. Misma clave + otra cesta → **409**.
+- **Las líneas repetidas se agrupan**, y no por orden: `SALE_EXIT` es idempotente
+  por `(order, product)`, así que dos `OrderItem` del mismo producto habrían
+  vendido dos unidades descontando una.
+- **El código de barras es texto, no número.** `0123456789012` y `123456789012`
+  son artículos distintos; un cast a entero los fusiona en silencio. Tampoco se
+  pasa a mayúsculas: Code128 distingue.
+- **Los días sin ventas cuentan como cero.** Es el error clásico: 2, 0, 0, 2 son
+  1/día, no 2/día. Omitir los ceros infla todo lo que viene después.
+- **Sin historial suficiente no hay pronóstico**, y se dice. Pero las alertas
+  físicas —sin stock, bajo mínimo— siguen funcionando.
+- **`lead_time_days = 0` significa sin configurar**, no «llega al instante». Un
+  plazo inventado produce un número seguro y equivocado.
+- **La sugerencia de transferencia es conservadora**: una sucursal sólo cede lo
+  que excede su propio umbral más alto. Vaciar una tienda para llenar otra es la
+  misma escasez en otro barrio.
+- **Nada de margen ni utilidad.** La plataforma no registra costos, así que
+  cualquier cifra sería inventada. Se reporta facturación, no ganancia.
+- **`sales.orders.*` sigue AVAILABLE**, no ACTIVE: su puente RBAC legacy sigue
+  en pie y cambiar la etiqueta sin quitarlo sería una mentira del catálogo.
+
+### PENDIENTE (Comercial C2)
+- Caja / arqueo · devoluciones y anulaciones compensatorias · compras y
+  proveedores · costo real y rentabilidad · descuentos manuales en POS ·
+  pronóstico estacional · lector por cámara.
+
+---
+
 ## P0 — Estabilización de runtime (incidente de esquema)
 
 **Estado: RESUELTO.** Sin migraciones nuevas. Correcciones de código y de entorno.

@@ -111,6 +111,22 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Gestionar el despacho de pedidos.', STATUS_AVAILABLE),
     _cap('sales.notes.manage', 'sales', 'Notas de venta internas',
          'Emitir y descargar notas de venta internas.', STATUS_AVAILABLE),
+    # PHASE C1 — ACTIVE, because the POS and analytics endpoints enforce these
+    # directly, with no legacy-role bridge behind them. The three above stay
+    # AVAILABLE precisely because theirs is still in place: relabelling them
+    # without removing it would be a lie told by a status field.
+    #
+    # `sales.pos.use` is deliberately NOT folded into `sales.orders.manage`.
+    # Reading the order book and taking money at a counter are different
+    # authorities, and a shop that lets someone look up a dispatch has not
+    # thereby let them sell.
+    _cap('sales.pos.use', 'sales', 'Punto de venta',
+         'Registrar ventas presenciales y descontar stock de la sucursal.',
+         STATUS_ACTIVE),
+    # Being allowed to sell is not being allowed to see what the business earns.
+    _cap('sales.analytics.view', 'sales', 'Analítica comercial',
+         'Ver facturación, productos más vendidos y comparativa de canales.',
+         STATUS_ACTIVE),
 
     # --- cross-cutting (module exists; endpoints still legacy-authorised) ---
     _cap('reports.view', 'reports', 'Ver reportes',

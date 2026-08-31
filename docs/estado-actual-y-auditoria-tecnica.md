@@ -1022,6 +1022,31 @@ Esquema local alineado con el código     SÍ (0033)
 Migraciones pendientes                   0
 500 en peticiones válidas                0
 Series / correlativos internos           IMPLEMENTADO
+POS interno                              IMPLEMENTADO
+Venta con código de barras               IMPLEMENTADO
+ProductBarcode                           IMPLEMENTADO
+POS aislamiento empresa/sucursal         IMPLEMENTADO
+POS idempotencia                         IMPLEMENTADO
+POS descuento transaccional de stock     IMPLEMENTADO
+Canal de venta (online/pos)              IMPLEMENTADO
+Medio de pago                            IMPLEMENTADO
+Vendedor (sold_by)                       IMPLEMENTADO
+Dashboard comercial                      IMPLEMENTADO
+Productos más vendidos                   IMPLEMENTADO
+Analítica por canal                      IMPLEMENTADO
+Pronóstico de demanda v1                 IMPLEMENTADO
+Confianza del pronóstico                 IMPLEMENTADO
+Días de cobertura                        IMPLEMENTADO
+Fecha estimada de quiebre                IMPLEMENTADO
+Lead time / safety stock                 IMPLEMENTADO
+Punto de reposición                      IMPLEMENTADO
+Reposición sugerida                      IMPLEMENTADO
+Sugerencia de transferencia interna      IMPLEMENTADO
+Caja / arqueo                            PENDIENTE C2
+Devoluciones / anulaciones               PENDIENTE C2
+Compras / proveedores                    PENDIENTE
+Costo y rentabilidad                     PENDIENTE
+Pronóstico estacional / ML               PENDIENTE
 Clientes tenant-aware (CRM)              IMPLEMENTADO
 Customer ↔ User (vínculo opcional)       IMPLEMENTADO
 Historial comercial del cliente          IMPLEMENTADO

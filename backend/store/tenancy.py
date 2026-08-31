@@ -309,6 +309,15 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
     UserProfile.ROLE_SALES: frozenset([
         'company.view', 'products.view', 'reports.view',
         'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage',
+        # PHASE C1: operating the till IS the commercial job, so the legacy role
+        # gets it for the same reason the `Ventas` preset does. Kept in step
+        # with that preset deliberately — a test asserts the two agree, because
+        # two descriptions of the same authority that drift apart mean somebody
+        # is granted different things depending on which one is consulted.
+        #
+        # `sales.analytics.view` is NOT here, also matching the preset: ringing
+        # up a cable does not require seeing the company's turnover.
+        'sales.pos.use',
     ]),
     UserProfile.ROLE_INVENTORY: frozenset([
         'company.view', 'products.view', 'reports.view',

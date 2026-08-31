@@ -601,6 +601,49 @@ Membership Invitation Flow               PENDIENTE
 IMEI/Serial                              PENDIENTE
 ```
 
+### Punto de venta y reposición inteligente (Fase Comercial C1)
+
+El mostrador entra al sistema. Antes, un negocio con tienda física vendía fuera
+de la plataforma, así que el stock del panel era el que quedaba *después de
+restar lo que nadie había registrado*.
+
+```
+   ONLINE ──┐
+            ├──► Order ──► SALE_EXIT ──► BranchStock ──► pronóstico
+   POS ─────┘
+```
+
+- **Una sola venta, dos canales.** Una venta de mostrador es un `Order` normal:
+  aparece en el historial, en los reportes y puede emitir su nota interna.
+- **Lector de código de barras USB o Bluetooth**, del tipo que se comporta como
+  un teclado. Sin drivers ni SDK. Todo funciona igual tecleando el código.
+- **Varios códigos por artículo**: el EAN del fabricante, un UPC y la etiqueta
+  propia de la tienda conviven. Se guardan como texto, así que
+  `0123456789012` no se convierte en `123456789012`.
+- **Todo o nada.** Si un artículo de la cesta no está, la venta entera se
+  rechaza: no se cobra, no se mueve stock y no queda pedido a medias.
+- **Un doble clic no cobra dos veces.** Cada cesta lleva su clave y su huella;
+  un reintento devuelve la misma venta, y la misma clave con otra cesta se
+  rechaza en vez de confundirlas.
+- **El stock sale de la sucursal donde se vende**, nunca de otra. Si hay
+  unidades en otra tienda el sistema lo dice — pero moverlas es una
+  transferencia, y esa es una decisión con papeleo.
+- **Pronóstico de demanda explicable**: `0.50·avg7 + 0.30·avg30 + 0.20·avg90`,
+  sobre las ventas reales de estante. Los días sin venta cuentan como cero, que
+  es donde casi todo el mundo se equivoca.
+- **Sin historial suficiente, el sistema lo dice** en vez de inventar una fecha.
+  Las alertas de "sin stock" y "bajo mínimo" siguen funcionando igual.
+- **Punto de reposición y cantidad sugerida** por sucursal, con el plazo de
+  entrega que configure el negocio. Sugiere; no compra nada.
+
+Pantallas: `/admin/sales` (facturación, canales, más vendidos, reposición) y
+`/admin/sales/pos` (la caja).
+
+> **No hay margen ni utilidad, a propósito.** La plataforma no registra cuánto
+> costó nada, así que cualquier cifra de rentabilidad sería inventada. Se
+> muestra facturación, que sí se sabe. Caja, arqueo y devoluciones son la
+> siguiente fase comercial.
+
 ### Actualizar una instalación existente
 
 El código y la base de datos tienen que ir a la par. Si la base se queda por

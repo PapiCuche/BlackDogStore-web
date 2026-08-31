@@ -704,3 +704,235 @@ export function updateCustomer(
     `/admin/customers/${customerId}/${qs}`, data, "No se pudo guardar el cliente.",
   );
 }
+
+// ---------------------------------------------------------------------------
+// Commercial Phase C1 — point of sale
+// ---------------------------------------------------------------------------
+
+export type PosBranch = { id: number; name: string };
+export type PosPaymentMethod = { value: string; label: string };
+
+export type PosContext = {
+  company: { id: number; name: string };
+  branches: PosBranch[];
+  /** null when the till must ask: several branches and no authorised default. */
+  default_branch: number | null;
+  payment_methods: PosPaymentMethod[];
+  can_manage_customers: boolean;
+  seller: { id: number; username: string };
+};
+
+export type PosProduct = {
+  id: number;
+  name: string;
+  /** Decimal as a string. Displayed, never sent back as authority. */
+  price: string;
+  available: number;
+  barcode: string;
+};
+
+export type PosSaleLine = { product: number; quantity: number };
+
+export type PosSaleResult = {
+  order_id: number;
+  created: boolean;
+  total: string;
+  paid_at: string | null;
+  payment_method: string;
+  branch: PosBranch;
+  seller: string;
+  items: { product: number; name: string; quantity: number; price: string }[];
+};
+
+/** A sale refused because the shelf is empty, with where the units actually are. */
+export class PosStockError extends Error {
+  elsewhere: { branch: string; product: string; quantity: number }[];
+  constructor(message: string, elsewhere: PosStockError["elsewhere"] = []) {
+    super(message);
+    this.name = "PosStockError";
+    this.elsewhere = elsewhere;
+  }
+}
+
+/** The idempotency key was already spent on a different basket. */
+export class PosConflictError extends Error {
+  existingOrder: number | null;
+  constructor(message: string, existingOrder: number | null) {
+    super(message);
+    this.name = "PosConflictError";
+    this.existingOrder = existingOrder;
+  }
+}
+
+export async function fetchPosContext(companyId: number | null): Promise<PosContext> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/context/${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo abrir el punto de venta."));
+  return res.json();
+}
+
+/**
+ * Resolve a scanned code. A 404 is an ordinary answer here — an unknown label
+ * is a normal event at a counter, not a transport failure.
+ */
+export async function posLookup(
+  companyId: number | null,
+  branchId: number,
+  code: string,
+): Promise<PosProduct | null> {
+  const qs = new URLSearchParams({ branch: String(branchId), code });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/lookup/?${qs}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo leer el código."));
+  return res.json();
+}
+
+export async function posSearch(
+  companyId: number | null,
+  branchId: number,
+  q: string,
+): Promise<PosProduct[]> {
+  const qs = new URLSearchParams({ branch: String(branchId), q });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/search/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo buscar."));
+  return (await res.json()).results ?? [];
+}
+
+export async function posSale(
+  companyId: number | null,
+  body: {
+    branch: number;
+    items: PosSaleLine[];
+    customer?: number | null;
+    payment_method: string;
+    idempotency_key: string;
+  },
+): Promise<PosSaleResult> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/sales/${qs}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (res.ok) return res.json();
+
+  const payload = await res.json().catch(() => null);
+  const detail = (payload as { detail?: string })?.detail ?? "No se pudo cobrar.";
+  if (res.status === 409) {
+    if ((payload as { code?: string })?.code === "insufficient_stock") {
+      throw new PosStockError(
+        detail,
+        (payload as { available_elsewhere?: PosStockError["elsewhere"] })
+          ?.available_elsewhere ?? [],
+      );
+    }
+    throw new PosConflictError(
+      detail,
+      (payload as { existing_order?: number })?.existing_order ?? null,
+    );
+  }
+  throw new Error(detail);
+}
+
+// ---------------------------------------------------------------------------
+// Commercial Phase C1 — analytics
+// ---------------------------------------------------------------------------
+
+export type SalesKpi = {
+  revenue: string;
+  orders: number;
+  units: number;
+  average_ticket: string;
+};
+
+export type SalesDashboard = {
+  company: { id: number; name: string };
+  branches: PosBranch[];
+  today: string;
+  kpis: Record<string, SalesKpi>;
+  channels: {
+    window_days: number;
+    by_channel: Record<string, { orders: number; revenue: string; units: number }>;
+  };
+  trend: { date: string; revenue: string; orders: number }[];
+  top_products: {
+    window_days: number;
+    results: {
+      product_id: number;
+      product_name: string;
+      units_sold: number;
+      revenue: string;
+      current_stock: number;
+      /** null when there is no recent consumption to divide by. */
+      days_of_cover: number | null;
+    }[];
+  };
+  stock_alerts: { out_of_stock: number; low: number } | null;
+};
+
+export type ReplenishmentRow = {
+  branch_id: number;
+  branch_name: string;
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  minimum_stock: number;
+  target_stock: number;
+  safety_stock: number;
+  lead_time_days: number;
+  days_of_cover: number | null;
+  estimated_stockout_date: string | null;
+  reorder_point: number | null;
+  reorder_state: string;
+  suggested_quantity: number;
+  risk: string;
+  forecast: {
+    daily: number;
+    avg_7: number;
+    avg_30: number;
+    avg_90: number;
+    history_days: number;
+    selling_days: number;
+    sufficient: boolean;
+    confidence: string;
+    trend: string;
+  };
+  transfer_options?: {
+    branch_id: number;
+    branch_name: string;
+    quantity: number;
+    can_transfer: number;
+  }[];
+};
+
+export type ReplenishmentReport = {
+  today: string;
+  branches: PosBranch[];
+  method: { formula: string; demand_source: string; note: string };
+  results: ReplenishmentRow[];
+};
+
+export async function fetchSalesDashboard(
+  companyId: number | null,
+  branchId?: number | null,
+): Promise<SalesDashboard> {
+  const qs = new URLSearchParams();
+  if (companyId) qs.set("company", String(companyId));
+  if (branchId) qs.set("branch", String(branchId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/dashboard/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar la analítica."));
+  return res.json();
+}
+
+export async function fetchReplenishment(
+  companyId: number | null,
+  branchId?: number | null,
+): Promise<ReplenishmentReport> {
+  const qs = new URLSearchParams();
+  if (companyId) qs.set("company", String(companyId));
+  if (branchId) qs.set("branch", String(branchId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/replenishment/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar la reposición."));
+  return res.json();
+}

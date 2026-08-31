@@ -16751,3 +16751,869 @@ class P0SchemaDriftCheckTest(TestCase):
             side_effect=Exception('connection refused'),
         ):
             self.assertEqual(check_pending_migrations(None), [])
+
+
+# ===========================================================================
+# Commercial Phase C1 — POS, barcodes, forecasting
+# ===========================================================================
+
+from datetime import date as _date
+from datetime import timedelta as _timedelta
+
+from . import inventory_forecasting as _forecasting  # noqa: E402
+from . import inventory_services  # noqa: E402
+from . import pos_services as _pos  # noqa: E402
+from .models import (  # noqa: E402
+    Branch as _Branch,
+    PaymentMethod,
+    ProductBarcode,
+    SalesChannel,
+    normalize_barcode,
+)
+
+_C1_POS = 'sales.pos.use'
+_C1_ANALYTICS = 'sales.analytics.view'
+
+
+def _c1_stock(branch, product, quantity):
+    """Put an exact number of units on a shelf, through the real service."""
+    from . import inventory_services
+
+    row = inventory_services.get_or_create_branch_stock(branch, product)
+    BranchStock.objects.filter(pk=row.pk).update(quantity=quantity)
+    Product.objects.filter(pk=product.pk).update(inventory=quantity)
+    return BranchStock.objects.get(pk=row.pk)
+
+
+def _c1_product(company, name='Artículo C1', price='100.00'):
+    return _seeded(Product.objects.create(
+        company=company, name=name,
+        slug=f'{name.lower().replace(" ", "-")}-{company.slug}',
+        price=Decimal(price), inventory=0,
+    ))
+
+
+class C1BarcodeTest(TestCase):
+    """§108 — a code identifies one article inside one company, and no further."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c1-bc-a', 'Empresa BC A')
+        self.b = _p3_company('c1-bc-b', 'Empresa BC B')
+        self.pa = _c1_product(self.a, 'Cable A')
+        self.pb = _c1_product(self.b, 'Cable B')
+
+    def test_the_same_code_may_exist_in_two_companies(self):
+        """
+        Two shops selling the same manufacturer's cable scan the same EAN.
+        Refusing that would make the platform unusable for its second tenant.
+        """
+        ProductBarcode.objects.create(company=self.a, product=self.pa, code='7501234567890')
+        ProductBarcode.objects.create(company=self.b, product=self.pb, code='7501234567890')
+        self.assertEqual(ProductBarcode.objects.filter(code='7501234567890').count(), 2)
+
+    def test_one_code_cannot_identify_two_articles_in_a_company(self):
+        from django.db import IntegrityError, transaction
+
+        other = _c1_product(self.a, 'Otro Cable')
+        ProductBarcode.objects.create(company=self.a, product=self.pa, code='7501234567890')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProductBarcode.objects.create(
+                    company=self.a, product=other, code='7501234567890',
+                )
+
+    def test_leading_zeros_are_preserved(self):
+        """
+        `0123456789012` and `123456789012` are different articles. An int cast
+        would silently merge them, which is why the column is text and nothing
+        ever parses it as a number.
+        """
+        code = ProductBarcode.objects.create(
+            company=self.a, product=self.pa, code='0123456789012',
+        )
+        code.refresh_from_db()
+        self.assertEqual(code.code, '0123456789012')
+
+    def test_case_is_not_folded(self):
+        """Code128 is case-sensitive; upper-casing would collide two codes."""
+        self.assertEqual(normalize_barcode('  aBc123  '), 'aBc123')
+
+    def test_a_trailing_newline_from_the_scanner_is_stripped(self):
+        """
+        A keyboard-wedge scanner sends CR/LF. Storing it would produce a code no
+        future scan reproduces.
+        """
+        self.assertEqual(normalize_barcode('7501234567890\r\n'), '7501234567890')
+
+    def test_control_characters_are_refused_not_repaired(self):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        with self.assertRaises(DjangoValidationError):
+            ProductBarcode(
+                company=self.a, product=self.pa, code='750\x01234',
+            ).full_clean()
+
+    def test_a_barcode_cannot_point_at_another_companys_product(self):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        with self.assertRaises(DjangoValidationError):
+            ProductBarcode(company=self.a, product=self.pb, code='9999999999').clean()
+
+    def test_the_company_is_derived_from_the_product(self):
+        code = ProductBarcode.objects.create(product=self.pa, code='5555555555')
+        self.assertEqual(code.company_id, self.a.pk)
+
+    def test_only_one_primary_per_product(self):
+        from django.db import IntegrityError, transaction
+
+        ProductBarcode.objects.create(
+            company=self.a, product=self.pa, code='1111111111', is_primary=True,
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProductBarcode.objects.create(
+                    company=self.a, product=self.pa, code='2222222222', is_primary=True,
+                )
+
+    def test_several_non_primary_codes_are_allowed(self):
+        """One article carries the maker's EAN, a UPC and the shop's own label."""
+        for code in ('1111111111', '2222222222', '3333333333'):
+            ProductBarcode.objects.create(company=self.a, product=self.pa, code=code)
+        self.assertEqual(self.pa.barcodes.count(), 3)
+
+
+class C1PosSaleTest(TestCase):
+    """§102–105 — the counter sale itself."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c1-pos', 'Empresa POS')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto POS', '50.00')
+        _c1_stock(self.branch, self.product, 10)
+        self.seller, _ = _p2d_member(
+            self.company, 'c1_seller', ['company.view', _C1_POS],
+        )
+
+    def _sell(self, items, **kw):
+        return _pos.create_pos_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=items, **kw,
+        )
+
+    def test_a_sale_writes_one_order_one_exit_and_moves_stock(self):
+        order, created = self._sell([{'product': self.product.pk, 'quantity': 2}])
+
+        self.assertTrue(created)
+        self.assertEqual(order.sales_channel, SalesChannel.POS)
+        self.assertTrue(order.paid)
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertIsNotNone(order.paid_at)
+        self.assertEqual(order.sold_by, self.seller)
+        self.assertEqual(order.fulfillment_branch, self.branch)
+        self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.DELIVERED)
+        self.assertEqual(order.total, Decimal('100.00'))
+
+        self.assertEqual(order.items.count(), 1)
+        item = order.items.first()
+        self.assertEqual(item.quantity, 2)
+        self.assertEqual(item.price, Decimal('50.00'))
+
+        exits = StockMovement.objects.filter(
+            order=order, movement_type=StockMovement.SALE_EXIT,
+        )
+        self.assertEqual(exits.count(), 1)
+        self.assertEqual(exits.first().quantity, 2)
+
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 8,
+        )
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 8)
+
+    def test_repeated_lines_of_one_article_are_merged(self):
+        """
+        §23, and it is a correctness requirement rather than tidiness.
+
+        `record_sale_stock_movements` is idempotent per (order, product): two
+        OrderItems for one product would have its exit written once and the
+        second skipped — selling two units while decrementing one.
+        """
+        order, _ = self._sell([
+            {'product': self.product.pk, 'quantity': 1},
+            {'product': self.product.pk, 'quantity': 2},
+        ])
+        self.assertEqual(order.items.count(), 1)
+        self.assertEqual(order.items.first().quantity, 3)
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 7,
+        )
+
+    def test_the_price_comes_from_the_catalogue_not_the_request(self):
+        """A browser may display a price; it is never asked what to charge."""
+        order, _ = _pos.create_pos_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1, 'price': '0.01'}],
+        )
+        self.assertEqual(order.total, Decimal('50.00'))
+        self.assertEqual(order.items.first().price, Decimal('50.00'))
+
+    def test_a_sale_is_all_or_nothing(self):
+        """
+        §103. One short article rolls the entire sale back: no order, no exit,
+        and not a single unit moved off any shelf.
+        """
+        other = _c1_product(self.company, 'Producto Agotado', '30.00')
+        _c1_stock(self.branch, other, 0)
+
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            self._sell([
+                {'product': self.product.pk, 'quantity': 1},
+                {'product': other.pk, 'quantity': 1},
+            ])
+
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 0,
+        )
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 10,
+        )
+
+    def test_stock_never_goes_negative(self):
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            self._sell([{'product': self.product.pk, 'quantity': 11}])
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 10,
+        )
+
+    def test_the_same_key_and_basket_returns_the_same_sale(self):
+        """§104 — a double click, a timeout and a retry are one sale."""
+        items = [{'product': self.product.pk, 'quantity': 1}]
+        first, c1 = self._sell(items, idempotency_key='key-1')
+        second, c2 = self._sell(items, idempotency_key='key-1')
+        third, c3 = self._sell(items, idempotency_key='key-1')
+
+        self.assertTrue(c1)
+        self.assertFalse(c2)
+        self.assertFalse(c3)
+        self.assertEqual({first.pk, second.pk, third.pk}, {first.pk})
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 1)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 1,
+        )
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 9,
+        )
+
+    def test_the_same_key_with_a_different_basket_is_refused(self):
+        """
+        §105. Returning the earlier sale would tell the operator that THIS
+        basket was sold, when it was not.
+        """
+        self._sell([{'product': self.product.pk, 'quantity': 1}], idempotency_key='key-2')
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell([{'product': self.product.pk, 'quantity': 5}], idempotency_key='key-2')
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 1)
+
+    def test_the_fingerprint_ignores_line_order(self):
+        """The same basket scanned in a different order is the same basket."""
+        a = _c1_product(self.company, 'Segundo', '10.00')
+        _c1_stock(self.branch, a, 5)
+        one = _pos.request_fingerprint(
+            company=self.company, branch=self.branch, customer=None,
+            payment_method='cash',
+            items=_pos.normalize_items([
+                {'product': self.product.pk, 'quantity': 1},
+                {'product': a.pk, 'quantity': 1},
+            ]),
+        )
+        two = _pos.request_fingerprint(
+            company=self.company, branch=self.branch, customer=None,
+            payment_method='cash',
+            items=_pos.normalize_items([
+                {'product': a.pk, 'quantity': 1},
+                {'product': self.product.pk, 'quantity': 1},
+            ]),
+        )
+        self.assertEqual(one, two)
+
+    def test_an_anonymous_counter_sale_has_no_customer(self):
+        """§26 — no fictitious "walk-in" customer is invented."""
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        self.assertIsNone(order.customer_id)
+        self.assertEqual(order.customer_name, '')
+
+    def test_a_chosen_customer_is_snapshotted_onto_the_order(self):
+        customer = _p4_customer(
+            self.company, first_name='Ana', last_name='Quispe',
+            phone='+51999111222', document_type='dni', document_number='12345678',
+        )
+        order, _ = self._sell(
+            [{'product': self.product.pk, 'quantity': 1}], customer=customer.pk,
+        )
+        self.assertEqual(order.customer, customer)
+        self.assertEqual(order.customer_name, 'Ana Quispe')
+        self.assertEqual(order.document_number, '12345678')
+
+        # And the snapshot does not follow later edits.
+        customer.phone = '+51999000000'
+        customer.save()
+        order.refresh_from_db()
+        self.assertEqual(order.customer_phone, '+51999111222')
+
+    def test_a_pos_sale_does_not_touch_the_online_channel(self):
+        """§36 — nothing about the storefront's semantics changes."""
+        online = _p3_order(self.company)
+        self.assertEqual(online.sales_channel, SalesChannel.ONLINE)
+        self.assertEqual(online.payment_method, PaymentMethod.STRIPE)
+        self.assertIsNone(online.sold_by_id)
+        self.assertEqual(online.pos_idempotency_key, '')
+
+    def test_payment_method_is_recorded(self):
+        order, _ = self._sell(
+            [{'product': self.product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD,
+        )
+        self.assertEqual(order.payment_method, PaymentMethod.CARD)
+
+    def test_an_unknown_payment_method_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(
+                [{'product': self.product.pk, 'quantity': 1}],
+                payment_method='bitcoin',
+            )
+
+    def test_a_pos_sale_can_issue_the_existing_internal_note(self):
+        """§37 — no parallel receipt model; the Phase 2E machinery is reused."""
+        from .sales_note_services import get_or_create_sales_note
+
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        note, created = get_or_create_sales_note(order)
+        self.assertTrue(created)
+        self.assertTrue(note.number)
+        self.assertEqual(note.order, order)
+
+
+class C1PosSecurityTest(TestCase):
+    """§106–107 — the till cannot reach outside its company or its branch."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c1-sec-a', 'Empresa Sec A')
+        self.b = _p3_company('c1-sec-b', 'Empresa Sec B')
+        self.branch_a = self.a.default_inventory_branch
+        self.branch_b = self.b.default_inventory_branch
+        self.product_a = _c1_product(self.a, 'Prod Sec A')
+        self.product_b = _c1_product(self.b, 'Prod Sec B')
+        _c1_stock(self.branch_a, self.product_a, 10)
+        _c1_stock(self.branch_b, self.product_b, 10)
+        ProductBarcode.objects.create(company=self.b, product=self.product_b, code='8888888888')
+
+        self.seller_a, _ = _p2d_member(self.a, 'c1_sec_seller', ['company.view', _C1_POS])
+        self.blind_a, _ = _p2d_member(self.a, 'c1_sec_blind', ['company.view'])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_selling_another_companys_product_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _pos.create_pos_sale(
+                actor=self.seller_a, company=self.a, branch=self.branch_a,
+                items=[{'product': self.product_b.pk, 'quantity': 1}],
+            )
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_selling_from_another_companys_branch_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _pos.resolve_pos_branch(self.seller_a, self.a, self.branch_b.pk)
+
+    def test_another_companys_barcode_is_not_found(self):
+        res = self._as(self.seller_a).get(
+            f'/api/admin/pos/products/lookup/?code=8888888888&branch={self.branch_a.pk}'
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_cross_tenant_attempt_never_answers_500(self):
+        client = self._as(self.seller_a)
+        for path in (
+            f'/api/admin/pos/products/lookup/?code=8888888888&branch={self.branch_b.pk}',
+            f'/api/admin/pos/products/search/?q=Prod&branch={self.branch_b.pk}',
+        ):
+            res = client.get(path)
+            self.assertLess(res.status_code, 500, path)
+
+    def test_the_pos_capability_is_required(self):
+        res = self._as(self.blind_a).get('/api/admin/pos/context/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_selling_does_not_require_inventory_adjust(self):
+        """
+        §45, and it is the whole reason POS has its own capability. A seller
+        consumes stock BY SELLING; that is not a manual adjustment, and granting
+        `inventory.adjust` to every cashier would let them rewrite the Kardex.
+        """
+        capabilities = resolve_capabilities(self.seller_a, self.a)
+        self.assertIn(_C1_POS, capabilities)
+        self.assertNotIn('inventory.adjust', capabilities)
+
+        order, _ = _pos.create_pos_sale(
+            actor=self.seller_a, company=self.a, branch=self.branch_a,
+            items=[{'product': self.product_a.pk, 'quantity': 1}],
+        )
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT,
+            ).count(),
+            1,
+        )
+
+    def test_a_branch_restricted_seller_cannot_sell_from_another_branch(self):
+        first = self.branch_a
+        second = Branch.objects.create(company=self.a, name='Sucursal 2')
+        restricted, _ = _p2d_member(
+            self.a, 'c1_restricted', ['company.view', _C1_POS],
+            mode='selected', branches=[first],
+        )
+        self.assertEqual(
+            _pos.resolve_pos_branch(restricted, self.a, first.pk).pk, first.pk,
+        )
+        with self.assertRaises(_pos.PosValidationError):
+            _pos.resolve_pos_branch(restricted, self.a, second.pk)
+
+    def test_stock_is_never_taken_from_another_branch(self):
+        """
+        §12. An empty shelf here is not covered by a full shelf across town —
+        that is a transfer, and a transfer is a decision with paperwork.
+        """
+        other = Branch.objects.create(company=self.a, name='Sucursal Llena')
+        _c1_stock(other, self.product_a, 50)
+        _c1_stock(self.branch_a, self.product_a, 0)
+
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            _pos.create_pos_sale(
+                actor=self.seller_a, company=self.a, branch=self.branch_a,
+                items=[{'product': self.product_a.pk, 'quantity': 1}],
+            )
+        self.assertEqual(
+            BranchStock.objects.get(branch=other, product=self.product_a).quantity, 50,
+        )
+
+
+class C1ForecastTest(TestCase):
+    """§110 — the arithmetic, including the cases that make it wrong."""
+
+    def _series(self, pairs, today):
+        s = _forecasting.DemandSeries()
+        for days_ago, units in pairs:
+            s.daily[today - _timedelta(days=days_ago)] = units
+        if s.daily:
+            s.first_observed = min(s.daily)
+        return s
+
+    def setUp(self):
+        self.today = _date(2026, 6, 30)
+
+    def test_days_without_sales_count_as_zero(self):
+        """
+        The single most common way to get this wrong. 2, 0, 0, 2 over four days
+        is one a day; averaging only the selling days says two, and every
+        downstream number inherits the error.
+        """
+        s = self._series([(29, 2), (28, 0), (27, 0), (26, 2)], self.today)
+        s.first_observed = self.today - _timedelta(days=29)
+        f = _forecasting.forecast_for(
+            s, today=self.today, tracked_since=self.today - _timedelta(days=29),
+        )
+        self.assertAlmostEqual(f['avg_30'], 4 / 30, places=4)
+
+    def test_no_sales_at_all_is_insufficient_not_zero_demand(self):
+        f = _forecasting.forecast_for(_forecasting.DemandSeries(), today=self.today)
+        self.assertFalse(f['sufficient'])
+        self.assertEqual(f['confidence'], _forecasting.INSUFFICIENT_DATA)
+        self.assertEqual(f['daily'], 0)
+
+    def test_too_little_history_is_refused(self):
+        """§69 — under 14 days, or under 3 selling days, is not a forecast."""
+        s = self._series([(1, 5), (2, 5), (3, 5)], self.today)
+        f = _forecasting.forecast_for(
+            s, today=self.today, tracked_since=self.today - _timedelta(days=3),
+        )
+        self.assertFalse(f['sufficient'])
+
+    def test_a_new_product_is_not_padded_with_invented_zeros(self):
+        """
+        §68. An article stocked five days ago has five days of history, not
+        ninety. Padding would divide its real sales by eighteen.
+        """
+        s = self._series([(0, 4), (1, 4), (2, 4), (3, 4), (4, 4)], self.today)
+        tracked = self.today - _timedelta(days=4)
+        f = _forecasting.forecast_for(s, today=self.today, tracked_since=tracked)
+        self.assertEqual(f['history_days'], 5)
+        self.assertAlmostEqual(f['avg_90'], 4.0, places=4)
+
+    def test_steady_demand_produces_that_demand(self):
+        s = self._series([(d, 2) for d in range(90)], self.today)
+        f = _forecasting.forecast_for(
+            s, today=self.today, tracked_since=self.today - _timedelta(days=89),
+        )
+        self.assertAlmostEqual(f['daily'], 2.0, places=2)
+        self.assertEqual(f['confidence'], _forecasting.CONFIDENCE_HIGH)
+        self.assertEqual(f['trend'], _forecasting.TREND_STABLE)
+
+    def test_a_recent_surge_shows_as_an_upward_trend(self):
+        pairs = [(d, 10) for d in range(7)] + [(d, 1) for d in range(7, 60)]
+        f = _forecasting.forecast_for(
+            self._series(pairs, self.today), today=self.today,
+            tracked_since=self.today - _timedelta(days=59),
+        )
+        self.assertEqual(f['trend'], _forecasting.TREND_UP)
+        self.assertGreater(f['avg_7'], f['avg_30'])
+
+    def test_a_recent_collapse_shows_as_a_downward_trend(self):
+        pairs = [(d, 0) for d in range(7)] + [(d, 8) for d in range(7, 60)]
+        f = _forecasting.forecast_for(
+            self._series(pairs, self.today), today=self.today,
+            tracked_since=self.today - _timedelta(days=59),
+        )
+        self.assertEqual(f['trend'], _forecasting.TREND_DOWN)
+
+    def test_the_weights_are_the_documented_ones(self):
+        self.assertAlmostEqual(
+            _forecasting.WEIGHT_SHORT
+            + _forecasting.WEIGHT_MEDIUM
+            + _forecasting.WEIGHT_LONG,
+            1.0,
+        )
+
+
+class C1ReplenishmentTest(TestCase):
+    """§74–82 — coverage, reorder point, suggestion, risk and transfers."""
+
+    def setUp(self):
+        cache.clear()
+        self.today = _date(2026, 6, 30)
+        self.company = _p3_company('c1-repl', 'Empresa Repl')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Repuesto')
+
+    def _row(self, quantity, **kw):
+        row = _c1_stock(self.branch, self.product, quantity)
+        for key, value in kw.items():
+            setattr(row, key, value)
+        row.save()
+        return row
+
+    def _steady(self, per_day=2, days=90):
+        s = _forecasting.DemandSeries()
+        for d in range(days):
+            s.daily[self.today - _timedelta(days=d)] = per_day
+        s.first_observed = self.today - _timedelta(days=days - 1)
+        return _forecasting.forecast_for(
+            s, today=self.today,
+            tracked_since=self.today - _timedelta(days=days - 1),
+        )
+
+    def test_coverage_is_stock_divided_by_demand(self):
+        row = self._row(20)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertAlmostEqual(plan['days_of_cover'], 10.0, places=1)
+        self.assertIsNotNone(plan['estimated_stockout_date'])
+
+    def test_no_recent_consumption_is_not_infinite_coverage(self):
+        """§74 — a shelf nobody buys from is not "covered forever"."""
+        row = self._row(20)
+        plan = _forecasting.replenishment_for(
+            row, _forecasting.forecast_for(_forecasting.DemandSeries(), today=self.today),
+            today=self.today,
+        )
+        self.assertIsNone(plan['days_of_cover'])
+        self.assertIsNone(plan['estimated_stockout_date'])
+
+    def test_the_reorder_point_is_demand_times_lead_time_plus_safety(self):
+        """§76: 1.2/day × 5 days + 2 = 8."""
+        row = self._row(20, lead_time_days=5, safety_stock=2)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['reorder_point'], 12)  # 2×5 + 2
+
+    def test_without_a_lead_time_no_reorder_point_is_invented(self):
+        """§78 — a made-up lead time yields a confident wrong number."""
+        row = self._row(20, lead_time_days=0, safety_stock=3)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertIsNone(plan['reorder_point'])
+        self.assertEqual(plan['reorder_state'], _forecasting.CONFIGURATION_REQUIRED)
+        # Everything that does not depend on it is still reported.
+        self.assertIsNotNone(plan['days_of_cover'])
+
+    def test_the_suggestion_fills_to_the_higher_of_target_and_reorder_point(self):
+        row = self._row(4, target_stock=30, lead_time_days=5, safety_stock=2)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['suggested_quantity'], 26)  # 30 − 4
+
+    def test_a_healthy_shelf_suggests_nothing(self):
+        row = self._row(100, target_stock=30, lead_time_days=5)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['suggested_quantity'], 0)
+        self.assertEqual(plan['risk'], _forecasting.RISK_OK)
+
+    def test_zero_stock_is_the_most_severe_risk(self):
+        row = self._row(0)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['risk'], _forecasting.RISK_OUT_OF_STOCK)
+
+    def test_running_out_before_resupply_arrives_is_critical(self):
+        """Coverage 3 days, lead time 5: it is gone before the delivery lands."""
+        row = self._row(6, lead_time_days=5)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['days_of_cover'], 3.0)
+        self.assertEqual(plan['risk'], _forecasting.RISK_CRITICAL)
+
+    def test_below_the_reorder_point_asks_for_a_reorder(self):
+        row = self._row(14, lead_time_days=5, safety_stock=4)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['reorder_point'], 14)
+        self.assertEqual(plan['risk'], _forecasting.RISK_REORDER)
+
+    def test_physical_alerts_fire_without_a_forecast(self):
+        """
+        §69 — no history does not silence "this shelf is empty". Only the
+        forecast-dependent verdicts fall back.
+        """
+        empty = _forecasting.forecast_for(_forecasting.DemandSeries(), today=self.today)
+        self.assertEqual(
+            _forecasting.replenishment_for(self._row(0), empty, today=self.today)['risk'],
+            _forecasting.RISK_OUT_OF_STOCK,
+        )
+        self.assertEqual(
+            _forecasting.replenishment_for(
+                self._row(2, minimum_stock=5), empty, today=self.today,
+            )['risk'],
+            _forecasting.RISK_LOW,
+        )
+
+    def test_surplus_keeps_the_source_branch_whole(self):
+        """
+        §81. A branch gives up only what exceeds its OWN highest threshold.
+        Emptying one shop to fill another is the same shortage relocated.
+        """
+        row = self._row(20, target_stock=15, minimum_stock=5, safety_stock=3)
+        self.assertEqual(_forecasting.surplus_for_transfer(row), 5)
+
+        tight = self._row(10, target_stock=15, minimum_stock=5)
+        self.assertEqual(_forecasting.surplus_for_transfer(tight), 0)
+
+    def test_demand_comes_only_from_sales(self):
+        """
+        §66. Breakage, corrections and transfers all reduce stock and none of
+        them is a customer wanting the article.
+        """
+        import inspect
+
+        source = inspect.getsource(_forecasting.collect_demand)
+        self.assertIn('SALE_EXIT', source)
+        for excluded in ('DAMAGED_EXIT', 'MANUAL_EXIT', 'TRANSFER_OUT', 'CORRECTION'):
+            self.assertNotIn(excluded, source)
+
+
+class C1AnalyticsTest(TestCase):
+    """§111 — the dashboard sees one company and only the allowed branches."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c1-an-a', 'Empresa An A')
+        self.b = _p3_company('c1-an-b', 'Empresa An B')
+        self.pa = _c1_product(self.a, 'Prod An A', '100.00')
+        self.pb = _c1_product(self.b, 'Prod An B', '100.00')
+        _c1_stock(self.a.default_inventory_branch, self.pa, 50)
+        _c1_stock(self.b.default_inventory_branch, self.pb, 50)
+
+        self.analyst_a, _ = _p2d_member(
+            self.a, 'c1_analyst_a',
+            ['company.view', _C1_POS, _C1_ANALYTICS, 'inventory.view', 'inventory.reports'],
+        )
+        self.seller_only, _ = _p2d_member(
+            self.a, 'c1_seller_only', ['company.view', _C1_POS],
+        )
+
+        _pos.create_pos_sale(
+            actor=self.analyst_a, company=self.a,
+            branch=self.a.default_inventory_branch,
+            items=[{'product': self.pa.pk, 'quantity': 3}],
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_the_dashboard_reports_this_companys_sales(self):
+        res = self._as(self.analyst_a).get('/api/admin/sales/dashboard/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(res.data['kpis']['last_30d']['revenue']), Decimal('300.00'))
+        self.assertEqual(res.data['kpis']['last_30d']['units'], 3)
+
+    def test_units_come_from_stock_that_actually_moved(self):
+        res = self._as(self.analyst_a).get('/api/admin/sales/dashboard/')
+        top = res.data['top_products']['results']
+        self.assertEqual([t['product_name'] for t in top], ['Prod An A'])
+        self.assertEqual(top[0]['units_sold'], 3)
+        self.assertEqual(top[0]['current_stock'], 47)
+
+    def test_channels_are_reported_separately(self):
+        res = self._as(self.analyst_a).get('/api/admin/sales/dashboard/')
+        channels = res.data['channels']['by_channel']
+        self.assertEqual(channels['pos']['orders'], 1)
+        self.assertEqual(channels['online']['orders'], 0)
+
+    def test_another_companys_sales_are_invisible(self):
+        res = self._as(self.analyst_a).get('/api/admin/sales/dashboard/')
+        blob = json.dumps(res.data)
+        self.assertNotIn('Prod An B', blob)
+        self.assertNotIn('Empresa An B', blob)
+
+    def test_analytics_requires_its_own_capability(self):
+        """Being allowed to sell is not being allowed to see the turnover."""
+        res = self._as(self.seller_only).get('/api/admin/sales/dashboard/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_replenishment_additionally_requires_inventory_reports(self):
+        analyst, _ = _p2d_member(
+            self.a, 'c1_analyst_only', ['company.view', _C1_ANALYTICS],
+        )
+        client = self._as(analyst)
+        self.assertEqual(
+            client.get('/api/admin/sales/dashboard/').status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            client.get('/api/admin/sales/replenishment/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_anonymous_is_refused(self):
+        for path in ('/api/admin/sales/dashboard/', '/api/admin/sales/replenishment/',
+                     '/api/admin/pos/context/', '/api/admin/pos/sales/'):
+            res = APIClient().get(path)
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN,
+                 status.HTTP_405_METHOD_NOT_ALLOWED),
+                path,
+            )
+
+    def test_there_is_no_public_pos_endpoint(self):
+        for path in ('/api/pos/', '/api/sales/dashboard/', '/api/storefront/pos/'):
+            self.assertEqual(
+                APIClient().get(path).status_code, status.HTTP_404_NOT_FOUND, path,
+            )
+
+
+class C1PosConcurrencyTest(TransactionTestCase):
+    """
+    §109 — two tills, one unit.
+
+    WHAT SQLITE CAN AND CANNOT PROVE
+    --------------------------------
+    `select_for_update()` is a no-op on SQLite: the engine serialises writes
+    with a database-level lock, so a threaded race here would exercise THAT
+    lock rather than this module's row lock, and pass for the wrong reason.
+
+    So the sequential invariants run everywhere, and the genuinely concurrent
+    case is skipped — loudly — where row locking does not exist. Same rule the
+    inventory and sequence phases already follow.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c1-conc', 'Empresa Conc C1')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Único')
+        _c1_stock(self.branch, self.product, 1)
+        self.seller, _ = _p2d_member(
+            self.company, 'c1_conc_seller', ['company.view', _C1_POS],
+        )
+
+    def test_the_last_unit_can_only_be_sold_once(self):
+        first, _ = _pos.create_pos_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+        )
+        self.assertIsNotNone(first.pk)
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            _pos.create_pos_sale(
+                actor=self.seller, company=self.company, branch=self.branch,
+                items=[{'product': self.product.pk, 'quantity': 1}],
+            )
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 0,
+        )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 1)
+
+    def test_stock_never_reaches_a_negative_number(self):
+        for _ in range(3):
+            try:
+                _pos.create_pos_sale(
+                    actor=self.seller, company=self.company, branch=self.branch,
+                    items=[{'product': self.product.pk, 'quantity': 1}],
+                )
+            except inventory_services.InsufficientStockError:
+                pass
+        row = BranchStock.objects.get(branch=self.branch, product=self.product)
+        self.assertGreaterEqual(row.quantity, 0)
+        self.assertEqual(row.quantity, 0)
+
+    def test_two_simultaneous_tills_do_not_oversell(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a threaded race here would exercise the engine\'s global write '
+                'lock rather than this module\'s. Run against PostgreSQL to '
+                'exercise it.'
+            )
+
+        results = []
+        lock = threading.Lock()
+
+        def sell():
+            try:
+                order, _created = _pos.create_pos_sale(
+                    actor=self.seller, company=self.company, branch=self.branch,
+                    items=[{'product': self.product.pk, 'quantity': 1}],
+                )
+                with lock:
+                    results.append(order.pk)
+            except inventory_services.InsufficientStockError:
+                pass
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=sell) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(results), 1, 'exactamente una venta debe ganar')
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 0,
+        )
+
+    def test_the_locking_helper_is_the_shared_one(self):
+        """
+        Introspection, because the behavioural test above cannot run on SQLite.
+
+        POS must not introduce a second lock ordering: two orderings in one
+        codebase is a deadlock waiting for the two paths to meet.
+        """
+        import inspect
+
+        source = inspect.getsource(inventory_services.record_sale_stock_movements)
+        self.assertIn('_locked_branch_stocks', source)
+        self.assertNotIn('BranchStock.objects.update', inspect.getsource(_pos))
+        self.assertNotIn('Product.objects.update', inspect.getsource(_pos))

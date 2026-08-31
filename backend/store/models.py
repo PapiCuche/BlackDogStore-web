@@ -1,4 +1,5 @@
 import hashlib
+import re
 import secrets
 from datetime import timedelta
 
@@ -30,6 +31,34 @@ class DocumentType(models.TextChoices):
     DNI = 'dni', 'DNI'
     RUC = 'ruc', 'RUC'
     CE = 'ce', 'Carnet de Extranjería'
+
+
+class SalesChannel(models.TextChoices):
+    """
+    Where a sale happened. Module level because analytics, the POS service and
+    the storefront all reason about it, and none of them should import another.
+    """
+
+    ONLINE = 'online', 'Tienda online'
+    POS = 'pos', 'Punto de venta'
+
+
+class PaymentMethod(models.TextChoices):
+    """
+    How the money arrived.
+
+    `STRIPE` is what every historical order used. The rest are what a person at
+    a counter reports having received — this records the fact, it does not
+    process a payment. A card terminal integration, a cash drawer and a till
+    reconciliation are a different phase, and this field is shaped so that phase
+    does not have to migrate it.
+    """
+
+    STRIPE = 'stripe', 'Stripe (online)'
+    CASH = 'cash', 'Efectivo'
+    CARD = 'card', 'Tarjeta'
+    TRANSFER = 'transfer', 'Transferencia'
+    OTHER = 'other', 'Otro'
 
 
 class Category(models.Model):
@@ -274,6 +303,38 @@ class Order(models.Model):
         'store.Customer', on_delete=models.PROTECT,
         null=True, blank=True, related_name='orders',
     )
+    # --- Commercial Phase C1 -------------------------------------------
+    #
+    # ONE sales core, two channels. The alternative — a separate PosSale model —
+    # would have meant every report, every stock movement, every internal
+    # document and every customer history had to be computed twice and then
+    # reconciled. A shop that sells the same article over the counter and online
+    # has made one sale either way.
+    sales_channel = models.CharField(
+        max_length=16, choices=SalesChannel.choices,
+        default=SalesChannel.ONLINE, db_index=True,
+    )
+    payment_method = models.CharField(
+        max_length=16, choices=PaymentMethod.choices,
+        default=PaymentMethod.STRIPE, db_index=True,
+    )
+    # Who rang it up. Null for every online order and for history — nobody sold
+    # those. NEVER consulted for permissions: recording who did something is not
+    # the same as deciding who may.
+    sold_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='pos_sales',
+    )
+    # POS IDEMPOTENCY — the reason a double click cannot charge twice.
+    #
+    # The key is minted by the browser before the request leaves, so a retry
+    # after a timeout carries the SAME key as the attempt whose answer was lost.
+    # The fingerprint is what makes the key trustworthy: it pins what the key
+    # was used for, so a key reused with different contents is refused instead
+    # of silently returning somebody else's sale.
+    pos_idempotency_key = models.CharField(max_length=64, blank=True, default='')
+    pos_request_fingerprint = models.CharField(max_length=64, blank=True, default='')
+
     # SNAPSHOT OF THE BUYER, frozen at the sale. NOT redundant with `customer`
     # above, and not to be re-derived from it: when a client changes their phone
     # number or moves, last year's order must keep saying what it said when it
@@ -345,6 +406,22 @@ class Order(models.Model):
             models.Index(fields=['company', 'paid_at']),
             models.Index(fields=['company', 'status']),
             models.Index(fields=['company', 'fulfillment_status']),
+            # C1: analytics slice by channel, and the POS history by seller.
+            models.Index(fields=['company', 'sales_channel', 'paid_at']),
+            models.Index(fields=['company', 'sold_by', 'paid_at']),
+        ]
+        constraints = [
+            # ONE sale per idempotency key per company.
+            #
+            # Conditional on the key being present, because the column is blank
+            # for every online order and for all history — and in SQL a plain
+            # unique over a column that is usually '' would make the second
+            # online order collide with the first.
+            models.UniqueConstraint(
+                fields=['company', 'pos_idempotency_key'],
+                condition=~models.Q(pos_idempotency_key=''),
+                name='unique_pos_idempotency_key_per_company',
+            ),
         ]
 
     def __str__(self):
@@ -1410,6 +1487,25 @@ class BranchStock(models.Model):
     quantity = models.PositiveIntegerField(default=0)
     minimum_stock = models.PositiveIntegerField(default=0)
     target_stock = models.PositiveIntegerField(default=0)
+    # --- Commercial Phase C1: replenishment configuration ----------------
+    #
+    # FOUR NUMBERS, FOUR DISTINCT JOBS. Collapsing any two of them is how a
+    # replenishment screen starts giving advice nobody can explain:
+    #
+    #   minimum_stock  the line below which an operator wants to SEE the product
+    #   target_stock   how much to hold after restocking
+    #   safety_stock   the buffer the ARITHMETIC keeps against demand variance
+    #   lead_time_days how long a resupply actually takes to arrive
+    #
+    # `safety_stock` is deliberately not `minimum_stock` reused: one is a display
+    # threshold a shopkeeper sets by feel, the other is an input to a formula.
+    # Making them the same field means changing an alert silently changes what
+    # the system tells you to buy.
+    safety_stock = models.PositiveIntegerField(default=0)
+    # ZERO MEANS UNCONFIGURED, not "arrives instantly". No reorder point is
+    # computed without it: a made-up lead time produces a confident number that
+    # is wrong, which is worse than saying the setting is missing.
+    lead_time_days = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2468,5 +2564,150 @@ class Customer(models.Model):
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Commercial Phase C1 — barcodes
+# ---------------------------------------------------------------------------
+
+_BARCODE_ALLOWED = re.compile(r'^[\x21-\x7E]{4,64}$')
+
+
+def normalize_barcode(value: str) -> str:
+    """
+    Trim the outside, keep everything else exactly as scanned.
+
+    NOT uppercased and NOT cast to an integer, and both of those are the point.
+
+    A barcode is a STRING of symbols, not a number. `0123456789012` and
+    `123456789012` are different articles, and an int cast silently merges them.
+    Code128 can carry mixed case that a scanner reproduces faithfully, so
+    upper-casing would make two distinct codes collide.
+
+    What is stripped is the wrapping whitespace a keyboard-wedge scanner adds
+    around the payload — most importantly the trailing CR/LF it sends instead of
+    Enter, which would otherwise become part of the stored code and never match
+    again.
+    """
+    return (value or '').strip()
+
+
+def validate_barcode(value):
+    """
+    Printable ASCII, 4 to 64 characters.
+
+    Control characters are refused rather than stripped: a code containing one
+    means the scanner or the form sent something unexpected, and silently
+    repairing it would store a code that no future scan reproduces.
+    """
+    from django.core.exceptions import ValidationError
+
+    if not _BARCODE_ALLOWED.fullmatch(str(value or '')):
+        raise ValidationError(
+            'El código debe tener entre 4 y 64 caracteres imprimibles, sin espacios '
+            'ni caracteres de control.'
+        )
+
+
+class ProductBarcode(models.Model):
+    """
+    A scannable code that identifies one product inside one company.
+
+    WHY A TABLE AND NOT `Product.barcode`
+    -------------------------------------
+    One article routinely carries several codes: the manufacturer's EAN, a
+    distributor's UPC, and the shop's own internal label stuck over both. A
+    single field forces a choice between them, and whichever loses stops
+    scanning — which the person at the counter experiences as "the system does
+    not have this product".
+
+    WHY `company` IS DUPLICATED HERE
+    --------------------------------
+    It is reachable through `product.company`, and it is stored anyway so that
+    the uniqueness constraint and every lookup are expressed directly in this
+    table. A scan is untrusted input arriving at speed; resolving it must be one
+    indexed query scoped to the caller's company, not a join that some future
+    refactor could widen. `clean()` keeps the two in agreement.
+    """
+
+    EAN13 = 'ean13'
+    EAN8 = 'ean8'
+    UPCA = 'upca'
+    CODE128 = 'code128'
+    CODE39 = 'code39'
+    INTERNAL = 'internal'
+    UNKNOWN = 'unknown'
+    SYMBOLOGY_CHOICES = [
+        (EAN13, 'EAN-13'),
+        (EAN8, 'EAN-8'),
+        (UPCA, 'UPC-A'),
+        (CODE128, 'Code 128'),
+        (CODE39, 'Code 39'),
+        (INTERNAL, 'Código interno'),
+        (UNKNOWN, 'Sin especificar'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='product_barcodes',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='barcodes',
+    )
+    code = models.CharField(max_length=64, validators=[validate_barcode])
+    # Informational only. A keyboard-wedge scanner sends the digits and nothing
+    # else, so nothing may DEPEND on this being right — lookup is by code alone.
+    symbology = models.CharField(
+        max_length=16, choices=SYMBOLOGY_CHOICES, default=UNKNOWN,
+    )
+    is_primary = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-is_primary', 'code']
+        indexes = [
+            models.Index(fields=['company', 'code']),
+            models.Index(fields=['product', 'is_active']),
+        ]
+        constraints = [
+            # A code identifies ONE article inside a company. Across companies it
+            # may repeat freely: two shops selling the same manufacturer's cable
+            # scan the same EAN, and neither can see the other's catalogue.
+            models.UniqueConstraint(
+                fields=['company', 'code'],
+                name='unique_barcode_per_company',
+            ),
+            # At most one primary per product. Conditional, because "not primary"
+            # is the normal state and must not be constrained at all.
+            models.UniqueConstraint(
+                fields=['product'],
+                condition=models.Q(is_primary=True),
+                name='unique_primary_barcode_per_product',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.code} → {self.product.name}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        self.code = normalize_barcode(self.code)
+        validate_barcode(self.code)
+
+        if self.product_id and self.company_id:
+            if self.product.company_id != self.company_id:
+                raise ValidationError(
+                    {'product': 'El producto no pertenece a esta empresa.'}
+                )
+
+    def save(self, *args, **kwargs):
+        # The company is DERIVED from the product rather than accepted, so the
+        # two cannot disagree even if a caller passes the wrong one.
+        if self.product_id and not self.company_id:
+            self.company_id = self.product.company_id
         self.clean()
         return super().save(*args, **kwargs)

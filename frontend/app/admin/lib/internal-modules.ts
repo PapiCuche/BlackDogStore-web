@@ -134,7 +134,27 @@ export const INTERNAL_MODULES: InternalModule[] = [
     legacyRoles: ["sales", "admin", "superadmin"],
     status: "partial",
   },
-  { id: "sales.pos", group: "sales", label: "Nueva venta / POS", description: "Punto de venta en tienda.", status: "pending" },
+  {
+    id: "sales.summary",
+    group: "sales",
+    label: "Resumen comercial",
+    description: "Facturación, canales, más vendidos y reposición sugerida.",
+    href: "/admin/sales",
+    // Phase C1: real authority, no legacy bridge. The replenishment section
+    // inside additionally needs `inventory.reports` and hides itself without it.
+    requiredCapabilities: ["sales.analytics.view"],
+    status: "implemented",
+  },
+  {
+    id: "sales.pos",
+    group: "sales",
+    label: "Punto de venta",
+    description: "Venta presencial con lector de código de barras.",
+    href: "/admin/sales/pos",
+    requiredCapabilities: ["sales.pos.use"],
+    status: "implemented",
+    quickAction: true,
+  },
   { id: "sales.quotes", group: "sales", label: "Cotizaciones", description: "Cotizaciones a clientes.", status: "pending" },
   { id: "sales.receivables", group: "sales", label: "Cuentas por cobrar", description: "Saldos pendientes de cobro.", status: "pending" },
 

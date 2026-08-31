@@ -87,6 +87,11 @@ REST_FRAMEWORK = {
         'admin_sales_notes': '60/min',
         'admin_customers': '120/min',
         'admin_customer_write': '60/min',
+        # A barcode scanner fires several lookups a second while an
+        # operator works through a basket, so this ceiling is generous.
+        'admin_pos': '600/min',
+        'admin_pos_sale': '60/min',
+        'admin_sales_analytics': '120/min',
     },
 }
 

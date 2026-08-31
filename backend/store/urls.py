@@ -37,6 +37,17 @@ from .inventory_views import (
     AdminStockTransferDispatchView, AdminStockTransferItemsView,
     AdminStockTransferListView, AdminStockTransferReceiveView,
 )
+from .pos_views import (
+    AdminPosContextView,
+    AdminPosLookupView,
+    AdminPosSaleView,
+    AdminPosSearchView,
+    AdminProductBarcodeView,
+)
+from .sales_analytics_views import (
+    AdminSalesDashboardView,
+    AdminSalesReplenishmentView,
+)
 from .customer_views import (
     AdminCustomerDetailView,
     AdminCustomerListView,
@@ -150,6 +161,17 @@ urlpatterns = [
     # --- SaaS Phase 3: company configuration and branding ---
     path('storefront/config/', StorefrontConfigView.as_view(), name='storefront-config'),
     path('admin/company-settings/', AdminCompanySettingsView.as_view(), name='admin-company-settings'),
+
+    # --- Commercial Phase C1: point of sale + analytics ---
+    # All internal control. `sales.pos.use` for the till, `sales.analytics.view`
+    # for the numbers, and `inventory.reports` on top for the forecast detail.
+    path('admin/pos/context/', AdminPosContextView.as_view(), name='admin-pos-context'),
+    path('admin/pos/products/lookup/', AdminPosLookupView.as_view(), name='admin-pos-lookup'),
+    path('admin/pos/products/search/', AdminPosSearchView.as_view(), name='admin-pos-search'),
+    path('admin/pos/sales/', AdminPosSaleView.as_view(), name='admin-pos-sale'),
+    path('admin/products/<int:pk>/barcodes/', AdminProductBarcodeView.as_view(), name='admin-product-barcodes'),
+    path('admin/sales/dashboard/', AdminSalesDashboardView.as_view(), name='admin-sales-dashboard'),
+    path('admin/sales/replenishment/', AdminSalesReplenishmentView.as_view(), name='admin-sales-replenishment'),
 
     # --- SaaS Phase 4: customers (internal CRM) ---
     # No public counterpart. A customer's document, phone, address and the notes
