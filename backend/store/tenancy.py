@@ -699,6 +699,131 @@ def company_storefront_categories(company):
     return Category.objects.filter(company=company)
 
 
+def customer_owned_orders(user, company):
+    """
+    The orders `user` OWNS inside `company`. The security boundary of the
+    customer surface.
+
+    OWNERSHIP IS TWO FKs, AND BOTH ARE NEEDED:
+
+      `Order.user`            — set at checkout when the buyer was signed in.
+                                Unambiguous: an account authenticated for it.
+
+      `Order.customer.user`   — the CRM record this sale belongs to, linked to
+                                an account. This covers the real case that
+                                `Order.user` alone misses: someone bought
+                                anonymously, the business matched them to their
+                                CRM file by DOCUMENT, and that file was later
+                                linked to their login (see
+                                `customer_services.link_order_to_customer`).
+                                Those purchases are genuinely theirs.
+
+    EMAIL IS NEVER OWNERSHIP. `Order.customer_email` is a snapshot of what was
+    typed at checkout, it carries no uniqueness, and `find_possible_duplicates`
+    exists precisely because a household or a small office share one address.
+    Matching on it would hand one person another person's purchase history.
+    Nor is the document consulted here: matching documents is the CRM's job at
+    checkout time, under the business's own eyes, not an access rule.
+
+    A null company yields nothing rather than everything.
+    """
+    from django.db.models import Q
+
+    from .models import Order
+
+    if company is None or user is None or not user.is_authenticated:
+        return Order.objects.none()
+
+    return Order.objects.filter(
+        Q(user=user) | Q(customer__user=user),
+        company=company,
+    ).distinct()
+
+
+def has_customer_relation(user, company) -> bool:
+    """
+    Whether `user` is a client OF `company`, as the server can prove.
+
+    Two ways, either of which is a fact already in the database:
+
+      1. an ACTIVE `Customer` row — the business keeps a file on them;
+      2. they own at least one order here — they bought something.
+
+    The second exists so that archiving a CRM record cannot lock someone out of
+    their own purchase history. "We closed your file" is a commercial decision;
+    "you may no longer see what you bought" is not one it should be able to make
+    by accident.
+
+    A MEMBERSHIP IS NOT A CUSTOMER RELATION. Working for a company does not make
+    its clients' orders yours, and this surface must never become a staff view
+    by way of an employee who happens to be signed in. Internal access to
+    company-wide orders is a DIFFERENT surface with a different permission
+    (`sales.orders.view`) — see DEC-API-001.
+    """
+    from .models import Customer
+
+    if company is None or user is None or not user.is_authenticated:
+        return False
+
+    if Customer.objects.filter(company=company, user=user, is_active=True).exists():
+        return True
+
+    return customer_owned_orders(user, company).exists()
+
+
+def access_contexts(user):
+    """
+    Everything the CLIENT may know about where this user can act.
+
+    One entry per company the user has any verified relation with, saying which
+    relations hold and — for members — which capabilities the server resolved.
+
+    ⚠️  THIS IS FOR PRESENTATION. Capabilities travel so the app can decide
+    which tab to draw, not whether an operation is allowed. Every internal
+    endpoint re-resolves them server-side; a client that lies about holding
+    `inventory.view` gets a 403 from the endpoint, not inventory. See
+    DEC-MOBILE-008.
+
+    Platform master is reported SEPARATELY and grants nothing here: it does not
+    enumerate every tenant into a phone. Operating on a company as platform
+    master stays an explicit, audited act on the internal surface.
+    """
+    from .models import Customer
+
+    if user is None or not user.is_authenticated:
+        return []
+
+    contexts: dict[int, dict] = {}
+
+    def slot(company):
+        if company.pk not in contexts:
+            contexts[company.pk] = {
+                'company': {'slug': company.slug, 'name': company.name},
+                'customer': False,
+                'member': False,
+                'capabilities': [],
+            }
+        return contexts[company.pk]
+
+    for membership in (
+        Membership.objects
+        .filter(user=user, is_active=True, company__is_active=True)
+        .select_related('company')
+    ):
+        entry = slot(membership.company)
+        entry['member'] = True
+        entry['capabilities'] = sorted(resolve_capabilities(user, membership.company))
+
+    for record in (
+        Customer.objects
+        .filter(user=user, is_active=True, company__is_active=True)
+        .select_related('company')
+    ):
+        slot(record.company)['customer'] = True
+
+    return sorted(contexts.values(), key=lambda row: row['company']['name'])
+
+
 RELATION_MEMBER = 'member'      # staff of the company
 RELATION_CUSTOMER = 'customer'  # buys from the company
 

@@ -86,3 +86,40 @@ class V1UserSerializer(serializers.ModelSerializer):
         contract then keeps working.
         """
         return bool(obj.is_active)
+
+
+class V1CompanyRefSerializer(serializers.Serializer):
+    slug = serializers.CharField()
+    name = serializers.CharField()
+
+
+class V1AccessContextSerializer(serializers.Serializer):
+    """
+    Where one identity may act inside one company.
+
+    `customer` and `member` are INDEPENDENT booleans, not a role. The same
+    person can buy from a company and work for it, and collapsing that into one
+    field would force a client to choose which of two true things to believe.
+
+    `capabilities` travels for PRESENTATION only (DEC-MOBILE-008): it decides
+    which tab is drawn, never whether an operation is allowed. Every internal
+    endpoint re-resolves capabilities server-side.
+    """
+
+    company = V1CompanyRefSerializer()
+    customer = serializers.BooleanField()
+    member = serializers.BooleanField()
+    capabilities = serializers.ListField(child=serializers.CharField())
+
+
+class V1PlatformSerializer(serializers.Serializer):
+    """
+    Platform-master status, reported SEPARATELY from any company.
+
+    Being a platform administrator is not membership of every tenant, and this
+    field grants nothing: `access_contexts` is still built from real rows.
+    Acting on a company as platform master stays an explicit, audited act on the
+    internal surface.
+    """
+
+    is_master = serializers.BooleanField()

@@ -1099,3 +1099,30 @@ token del contrato móvil. Cada vista privada v1 la declara explícitamente.
   mismo hecho (`User.is_active`). Separarlos, si se quiere, es BR-001B.
 - **Ciclo de vida de cuenta nativo pendiente** (BR-001B): registro, verificación,
   reenvío, reset y cambio de contraseña siguen siendo solo web.
+
+---
+
+## Actualización — superficie de cliente (M4)
+
+`/api/v1/customer/<slug>/orders/` es la tercera audiencia del contrato v1, en su
+propio espacio de URL. La propiedad de un pedido son dos FKs (`Order.user` o
+`Order.customer.user`); el email no es propiedad.
+
+**Ser empleado no es ser cliente**: una membresía no abre esta superficie. El
+acceso interno a los pedidos de la empresa será `sales.orders.view` sobre
+`/api/v1/internal/`, que todavía no existe.
+
+**BR-003 cerrado para v1**: `fulfillment_status` se expone en el serializer de
+cliente. El legacy no se tocó — pertenece al frontend web y además lista
+`stripe_session_id`.
+
+### Deuda registrada
+
+- **`OrderSerializer` legacy expone `stripe_session_id`.** Fuera del alcance de
+  esta fase (es el contrato del frontend web), pero merece una revisión propia:
+  un identificador de pasarela de pago no aporta nada a un cliente.
+- **`delivery_method` es `blank=True` sin default.** Los pedidos anteriores al
+  campo no lo tienen; el serializer devuelve etiqueta vacía, que es la respuesta
+  honesta.
+- **Superficie interna v1 pendiente.** `sales.orders.view` e `inventory.view`
+  existen en el catálogo de capabilities y todavía no tienen endpoints v1.

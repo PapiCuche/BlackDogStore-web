@@ -17912,3 +17912,626 @@ class V1AccountLifecycleIsOutOfScopeTest(TestCase):
         client = APIClient()
         for path in ('/api/v1/orders/', '/api/v1/repairs/', '/api/v1/me/'):
             self.assertEqual(client.get(path).status_code, 404)
+
+
+# =============================================================================
+# M4 — CUSTOMER surface: /api/v1/customer/<company_slug>/orders/
+# =============================================================================
+#
+# THREE AUDIENCES, THREE SURFACES (DEC-API-001):
+#
+#   /api/v1/storefront/  PUBLIC    anonymous
+#   /api/v1/customer/    CUSTOMER  a client reading their OWN records
+#   /api/v1/internal/    INTERNAL  staff under a capability — NOT BUILT YET
+#
+# Most of what follows exists to pin down that the second never becomes the
+# third. The failure being prevented is a customer screen quietly listing every
+# client's purchases because an employee happened to be signed in.
+
+from .models import OrderItem as _M4OrderItem  # noqa: E402
+
+
+def _m4_orders_url(slug):
+    return f'/api/v1/customer/{slug}/orders/'
+
+
+def _m4_user(username, email=None, password='Pass123!'):
+    return User.objects.create_user(
+        username=username, email=email or f'{username}@example.com', password=password,
+    )
+
+
+def _m4_login(user_email, password='Pass123!'):
+    client = APIClient()
+    payload = client.post(
+        '/api/v1/auth/login/', {'email': user_email, 'password': password}, format='json',
+    ).json()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {payload['access']}")
+    return client, payload
+
+
+class M4CustomerOrdersOwnershipTest(TestCase):
+    """Whose orders come back, and whose never do."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'm4-a', tax_id='20779000001')
+        self.b = _saas_company('Empresa B', 'm4-b', tax_id='20779000002')
+
+        self.ana = _m4_user('ana')
+        self.beto = _m4_user('beto')
+
+        _v1_customer(self.a, self.ana)
+        _v1_customer(self.a, self.beto)
+
+        self.ana_order = _order(self.a, user=self.ana, total='100.00', paid=True)
+        self.beto_order = _order(self.a, user=self.beto, total='200.00', paid=True)
+
+    def test_anonymous_is_401(self):
+        self.assertEqual(APIClient().get(_m4_orders_url('m4-a')).status_code, 401)
+
+    def test_a_customer_sees_their_own_orders(self):
+        client, _ = _m4_login('ana@example.com')
+
+        rows = client.get(_m4_orders_url('m4-a')).json()
+
+        self.assertEqual([row['id'] for row in rows], [self.ana_order.id])
+
+    def test_a_customer_does_NOT_see_another_customer_of_the_same_company(self):
+        # The single most important assertion in this file.
+        client, _ = _m4_login('ana@example.com')
+
+        rows = client.get(_m4_orders_url('m4-a')).json()
+
+        self.assertNotIn(self.beto_order.id, [row['id'] for row in rows])
+
+    def test_another_customers_order_is_404_by_id(self):
+        client, _ = _m4_login('ana@example.com')
+
+        response = client.get(f"{_m4_orders_url('m4-a')}{self.beto_order.id}/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_orders_of_another_COMPANY_never_appear(self):
+        _v1_customer(self.b, self.ana)
+        other = _order(self.b, user=self.ana, total='300.00', paid=True)
+        client, _ = _m4_login('ana@example.com')
+
+        rows = client.get(_m4_orders_url('m4-a')).json()
+
+        self.assertNotIn(other.id, [row['id'] for row in rows])
+
+    def test_a_customer_of_TWO_companies_gets_the_right_scope_per_path(self):
+        _v1_customer(self.b, self.ana)
+        in_b = _order(self.b, user=self.ana, total='300.00', paid=True)
+        client, _ = _m4_login('ana@example.com')
+
+        in_a_ids = [row['id'] for row in client.get(_m4_orders_url('m4-a')).json()]
+        in_b_ids = [row['id'] for row in client.get(_m4_orders_url('m4-b')).json()]
+
+        self.assertEqual(in_a_ids, [self.ana_order.id])
+        self.assertEqual(in_b_ids, [in_b.id])
+
+    def test_a_cross_tenant_id_does_not_resolve(self):
+        _v1_customer(self.b, self.ana)
+        in_b = _order(self.b, user=self.ana, total='300.00', paid=True)
+        client, _ = _m4_login('ana@example.com')
+
+        response = client.get(f"{_m4_orders_url('m4-a')}{in_b.id}/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_an_order_linked_through_the_CRM_record_is_owned_too(self):
+        # Bought anonymously, matched to their CRM file by document, and that
+        # file later linked to their login. Those purchases are genuinely theirs
+        # and `Order.user` alone would miss them.
+        # setUp already created it: Customer is unique per (company, user).
+        record = Customer.objects.get(company=self.a, user=self.ana)
+        anonymous = _order(self.a, user=None, total='400.00', paid=True, customer=record)
+        client, _ = _m4_login('ana@example.com')
+
+        rows = client.get(_m4_orders_url('m4-a')).json()
+
+        self.assertIn(anonymous.id, [row['id'] for row in rows])
+
+    def test_an_order_is_NOT_owned_by_matching_email(self):
+        # `customer_email` is a snapshot of what was typed, carries no
+        # uniqueness, and a household or a small office share one address.
+        _order(self.a, user=None, total='500.00', customer_email='ana@example.com')
+        client, _ = _m4_login('ana@example.com')
+
+        rows = client.get(_m4_orders_url('m4-a')).json()
+
+        self.assertEqual([row['id'] for row in rows], [self.ana_order.id])
+
+    def test_an_unlinked_anonymous_order_belongs_to_nobody(self):
+        orphan = _order(self.a, user=None, total='600.00')
+        client, _ = _m4_login('ana@example.com')
+
+        rows = client.get(_m4_orders_url('m4-a')).json()
+
+        self.assertNotIn(orphan.id, [row['id'] for row in rows])
+
+    def test_orders_are_newest_first(self):
+        newer = _order(self.a, user=self.ana, total='700.00', paid=True)
+        client, _ = _m4_login('ana@example.com')
+
+        rows = client.get(_m4_orders_url('m4-a')).json()
+
+        self.assertEqual(rows[0]['id'], newer.id)
+
+
+class M4CustomerSurfaceIsNotStaffAccessTest(TestCase):
+    """
+    Being an employee is not a customer relation.
+
+    Every one of these would be a privilege-confusion bug: staff reading the
+    company's client history through an endpoint built for one client.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Empresa', 'm4-staff', tax_id='20779100001')
+        self.client_user = _m4_user('cliente')
+        _v1_customer(self.company, self.client_user)
+        self.customer_order = _order(
+            self.company, user=self.client_user, total='100.00', paid=True,
+        )
+
+    def _as_member(self, username, role):
+        user = _m4_user(username)
+        Membership.objects.create(user=user, company=self.company, role=role)
+        return _m4_login(f'{username}@example.com')[0]
+
+    def test_a_SALES_member_gets_no_customer_history_here(self):
+        # `sales.orders.view` is a real capability, and this is not where it
+        # applies. Company-wide orders are the INTERNAL surface (DEC-API-001).
+        client = self._as_member('vendedor', 'sales')
+
+        self.assertEqual(client.get(_m4_orders_url('m4-staff')).status_code, 404)
+
+    def test_an_INVENTORY_member_gets_nothing(self):
+        client = self._as_member('almacen', 'inventory')
+
+        self.assertEqual(client.get(_m4_orders_url('m4-staff')).status_code, 404)
+
+    def test_a_TECHNICIAN_gets_nothing(self):
+        client = self._as_member('tecnico', 'technician')
+
+        self.assertEqual(client.get(_m4_orders_url('m4-staff')).status_code, 404)
+
+    def test_a_COMPANY_ADMIN_gets_nothing_here(self):
+        client = self._as_member('jefa', 'admin')
+
+        self.assertEqual(client.get(_m4_orders_url('m4-staff')).status_code, 404)
+
+    def test_a_PLATFORM_MASTER_cannot_inspect_clients_through_this_surface(self):
+        master = _m4_user('plataforma')
+        master.is_superuser = True
+        master.is_staff = True
+        master.save(update_fields=['is_superuser', 'is_staff'])
+        client, _ = _m4_login('plataforma@example.com')
+
+        self.assertEqual(client.get(_m4_orders_url('m4-staff')).status_code, 404)
+
+    def test_a_member_who_is_ALSO_a_client_sees_only_their_own_purchases(self):
+        # The legitimate overlap: an employee who shops where they work.
+        employee = _m4_user('empleada')
+        Membership.objects.create(user=employee, company=self.company, role='sales')
+        _v1_customer(self.company, employee)
+        own = _order(self.company, user=employee, total='50.00', paid=True)
+        client, _ = _m4_login('empleada@example.com')
+
+        rows = client.get(_m4_orders_url('m4-staff')).json()
+
+        self.assertEqual([row['id'] for row in rows], [own.id])
+        self.assertNotIn(self.customer_order.id, [row['id'] for row in rows])
+
+
+class M4CustomerCompanySelectorTest(TestCase):
+    """The path selects a company. It authorises nothing."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'm4-sel-a', tax_id='20779200001')
+        self.b = _saas_company('Empresa B', 'm4-sel-b', tax_id='20779200002')
+        self.ana = _m4_user('selana')
+        _v1_customer(self.a, self.ana)
+        _order(self.a, user=self.ana, total='100.00', paid=True)
+        self.client_a, _ = _m4_login('selana@example.com')
+
+    def test_a_company_the_user_has_no_relation_with_is_404(self):
+        self.assertEqual(self.client_a.get(_m4_orders_url('m4-sel-b')).status_code, 404)
+
+    def test_an_unknown_company_is_404(self):
+        self.assertEqual(self.client_a.get(_m4_orders_url('no-existe')).status_code, 404)
+
+    def test_an_inactive_company_is_404(self):
+        self.a.is_active = False
+        self.a.save(update_fields=['is_active'])
+
+        self.assertEqual(self.client_a.get(_m4_orders_url('m4-sel-a')).status_code, 404)
+
+    def test_unrelated_unknown_and_inactive_are_INDISTINGUISHABLE(self):
+        # Otherwise any valid login can map which companies exist on the
+        # platform, one slug at a time.
+        unrelated = self.client_a.get(_m4_orders_url('m4-sel-b'))
+        unknown = self.client_a.get(_m4_orders_url('no-existe'))
+
+        self.assertEqual(unrelated.status_code, unknown.status_code)
+        self.assertEqual(unrelated.json(), unknown.json())
+
+    def test_the_404_body_names_no_company(self):
+        body = self.client_a.get(_m4_orders_url('m4-sel-b')).content.decode()
+
+        self.assertNotIn('m4-sel-b', body)
+        self.assertNotIn('Empresa B', body)
+
+    def test_a_query_parameter_cannot_change_the_company(self):
+        _v1_customer(self.b, self.ana)
+        in_b = _order(self.b, user=self.ana, total='999.00', paid=True)
+
+        rows = self.client_a.get(
+            f"{_m4_orders_url('m4-sel-a')}?company=m4-sel-b&company_id={self.b.id}",
+        ).json()
+
+        self.assertNotIn(in_b.id, [row['id'] for row in rows])
+
+    def test_a_tenant_header_cannot_change_the_company(self):
+        _v1_customer(self.b, self.ana)
+        in_b = _order(self.b, user=self.ana, total='999.00', paid=True)
+
+        rows = self.client_a.get(
+            _m4_orders_url('m4-sel-a'), HTTP_X_COMPANY_SLUG='m4-sel-b',
+        ).json()
+
+        self.assertNotIn(in_b.id, [row['id'] for row in rows])
+
+    def test_an_ARCHIVED_customer_keeps_access_to_their_own_purchases(self):
+        # Closing a CRM file is a commercial decision. "You may no longer see
+        # what you bought" is not one it should make by accident.
+        Customer.objects.filter(company=self.a, user=self.ana).update(is_active=False)
+
+        self.assertEqual(self.client_a.get(_m4_orders_url('m4-sel-a')).status_code, 200)
+
+
+class M4CustomerOrderContractTest(TestCase):
+    """Shape, BR-003, and everything that must not be in the response."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Contrato', 'm4-contrato', tax_id='20779300001')
+        self.ana = _m4_user('contratoana')
+        _v1_customer(self.company, self.ana)
+        product = _prod(self.company, 'MacBook Air', 'macbook-air-m4')
+        self.order = _order(
+            self.company, user=self.ana, total='4500.00', paid=True,
+            stripe_session_id='cs_test_secreto',
+            stripe_payment_intent_id='pi_test_secreto',
+            cart_session_key='session-secreta',
+            payment_error='tarjeta rechazada internamente',
+            customer_phone='999888777',
+            fulfillment_status=Order.FulfillmentStatus.SHIPPED,
+            delivery_method=Order.DeliveryMethod.PICKUP_STORE,
+        )
+        _M4OrderItem.objects.create(
+            order=self.order, product=product, quantity=2, price=Decimal('2250.00'),
+        )
+        self.client_ana, _ = _m4_login('contratoana@example.com')
+
+    def _row(self):
+        return self.client_ana.get(_m4_orders_url('m4-contrato')).json()[0]
+
+    def test_the_field_list_is_exactly_the_agreed_contract(self):
+        self.assertEqual(
+            set(self._row()),
+            {
+                'id', 'status', 'status_label',
+                'fulfillment_status', 'fulfillment_status_label',
+                'total', 'discount_amount', 'coupon_code',
+                'delivery_method', 'delivery_method_label',
+                'created_at', 'paid_at', 'items',
+            },
+        )
+
+    def test_fulfillment_status_is_exposed_at_last(self):
+        # BR-003. The column has existed since Phase 2C; the legacy serializer
+        # never exposed it, so a customer could see that a payment succeeded and
+        # nothing about whether the goods had moved.
+        row = self._row()
+
+        self.assertEqual(row['fulfillment_status'], 'shipped')
+        self.assertTrue(row['fulfillment_status_label'])
+
+    def test_it_carries_human_labels_so_the_app_invents_no_copy(self):
+        row = self._row()
+
+        self.assertTrue(row['status_label'])
+        self.assertTrue(row['fulfillment_status_label'])
+        self.assertTrue(row['delivery_method_label'])
+
+    def test_an_order_with_NO_delivery_method_still_serializes(self):
+        # `delivery_method` is `blank=True` with no default: orders predating
+        # the field have none. An empty label is the honest answer; a crash on
+        # an old order would be a customer unable to open their own history.
+        legacy = _order(self.company, user=self.ana, total='10.00', paid=True)
+        rows = self.client_ana.get(_m4_orders_url('m4-contrato')).json()
+
+        row = next(r for r in rows if r['id'] == legacy.id)
+        self.assertEqual(row['delivery_method'], '')
+        self.assertEqual(row['delivery_method_label'], '')
+
+    def test_items_carry_the_price_PAID(self):
+        item = self._row()['items'][0]
+
+        self.assertEqual(item['quantity'], 2)
+        self.assertEqual(str(item['price']), '2250.00')
+        self.assertEqual(item['product_name'], 'MacBook Air')
+
+    def test_NO_stripe_identifier_reaches_the_customer(self):
+        body = self.client_ana.get(_m4_orders_url('m4-contrato')).content.decode()
+
+        self.assertNotIn('cs_test_secreto', body)
+        self.assertNotIn('pi_test_secreto', body)
+        self.assertNotIn('stripe', body.lower())
+
+    def test_NO_operational_diagnostic_reaches_the_customer(self):
+        body = self.client_ana.get(_m4_orders_url('m4-contrato')).content.decode()
+
+        self.assertNotIn('tarjeta rechazada internamente', body)
+        self.assertNotIn('payment_error', body)
+        self.assertNotIn('email_send_error', body)
+
+    def test_NO_session_handle_reaches_the_customer(self):
+        body = self.client_ana.get(_m4_orders_url('m4-contrato')).content.decode()
+
+        self.assertNotIn('session-secreta', body)
+        self.assertNotIn('cart_session_key', body)
+
+    def test_NO_internal_structure_reaches_the_customer(self):
+        body = self.client_ana.get(_m4_orders_url('m4-contrato')).content.decode()
+
+        for internal in ('company_snapshot', 'fulfillment_branch', 'internal_notification'):
+            self.assertNotIn(internal, body)
+
+    def test_the_surface_is_READ_ONLY(self):
+        # Cancelling and refunding are decisions the business makes. A mobile
+        # client asserting one would be asserting an outcome the server owns.
+        url = _m4_orders_url('m4-contrato')
+        for method in ('post', 'put', 'patch', 'delete'):
+            self.assertIn(getattr(self.client_ana, method)(url).status_code, (403, 405))
+
+    def test_the_detail_endpoint_is_read_only_too(self):
+        url = f"{_m4_orders_url('m4-contrato')}{self.order.id}/"
+        for method in ('post', 'put', 'patch', 'delete'):
+            self.assertIn(getattr(self.client_ana, method)(url).status_code, (403, 405))
+
+    def test_it_answers_a_raw_array(self):
+        self.assertIsInstance(
+            self.client_ana.get(_m4_orders_url('m4-contrato')).json(), list,
+        )
+
+
+class M4CustomerSurfaceAuthenticationTest(TestCase):
+    """Only a v1 Bearer token opens this. Nothing else."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Auth', 'm4-auth', tax_id='20779400001')
+        self.ana = _m4_user('authana')
+        _v1_customer(self.company, self.ana)
+        _order(self.company, user=self.ana, total='100.00', paid=True)
+
+    def test_a_web_session_cookie_does_NOT_open_it(self):
+        # This surface exists for native clients. A browser reaching it would be
+        # reaching past the frontend that was built for it.
+        client = APIClient()
+        client.post(
+            '/api/auth/login/', {'username': 'authana', 'password': 'Pass123!'}, format='json',
+        )
+
+        self.assertEqual(client.get(_m4_orders_url('m4-auth')).status_code, 401)
+
+    def test_a_malformed_bearer_token_is_401(self):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION='Bearer basura')
+
+        self.assertEqual(client.get(_m4_orders_url('m4-auth')).status_code, 401)
+
+    def test_a_refresh_token_is_not_an_access_token(self):
+        plain = APIClient()
+        payload = plain.post(
+            '/api/v1/auth/login/', {'email': 'authana@example.com', 'password': 'Pass123!'},
+            format='json',
+        ).json()
+        plain.credentials(HTTP_AUTHORIZATION=f"Bearer {payload['refresh']}")
+
+        self.assertEqual(plain.get(_m4_orders_url('m4-auth')).status_code, 401)
+
+    def test_a_user_deactivated_after_signing_in_is_401(self):
+        client, _ = _m4_login('authana@example.com')
+        self.ana.is_active = False
+        self.ana.save(update_fields=['is_active'])
+
+        self.assertEqual(client.get(_m4_orders_url('m4-auth')).status_code, 401)
+
+
+class M4AccessContextTest(TestCase):
+    """`access_contexts` — where an identity may act, and what it may see."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'm4-ctx-a', tax_id='20779500001')
+        self.b = _saas_company('Empresa B', 'm4-ctx-b', tax_id='20779500002')
+        self.user = _m4_user('ctxuser')
+
+    def _me(self):
+        client, _ = _m4_login('ctxuser@example.com')
+        return client.get('/api/v1/auth/me/').json()
+
+    def test_no_relation_yields_an_empty_list(self):
+        self.assertEqual(self._me()['access_contexts'], [])
+
+    def test_a_customer_relation_reports_customer_true_and_member_false(self):
+        _v1_customer(self.a, self.user)
+
+        context = self._me()['access_contexts'][0]
+
+        self.assertTrue(context['customer'])
+        self.assertFalse(context['member'])
+        self.assertEqual(context['capabilities'], [])
+
+    def test_a_membership_reports_member_true_with_capabilities(self):
+        Membership.objects.create(user=self.user, company=self.a, role='admin')
+
+        context = self._me()['access_contexts'][0]
+
+        self.assertTrue(context['member'])
+        self.assertFalse(context['customer'])
+        self.assertGreater(len(context['capabilities']), 0)
+
+    def test_BOTH_relations_are_reported_independently(self):
+        # The same person can buy from a company and work for it. Collapsing
+        # that into a role would force the client to pick which truth to believe.
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+        _v1_customer(self.a, self.user)
+
+        context = self._me()['access_contexts'][0]
+
+        self.assertTrue(context['customer'])
+        self.assertTrue(context['member'])
+
+    def test_capabilities_come_from_the_real_resolver(self):
+        Membership.objects.create(user=self.user, company=self.a, role='inventory')
+
+        capabilities = self._me()['access_contexts'][0]['capabilities']
+
+        self.assertIn('inventory.view', capabilities)
+        self.assertNotIn('memberships.manage', capabilities)
+
+    def test_capabilities_do_not_leak_across_companies(self):
+        Membership.objects.create(user=self.user, company=self.a, role='admin')
+        _v1_customer(self.b, self.user)
+
+        contexts = {c['company']['slug']: c for c in self._me()['access_contexts']}
+
+        self.assertGreater(len(contexts['m4-ctx-a']['capabilities']), 0)
+        self.assertEqual(contexts['m4-ctx-b']['capabilities'], [])
+
+    def test_an_inactive_membership_contributes_nothing(self):
+        Membership.objects.create(user=self.user, company=self.a, role='admin', is_active=False)
+
+        self.assertEqual(self._me()['access_contexts'], [])
+
+    def test_an_inactive_company_is_excluded(self):
+        Membership.objects.create(user=self.user, company=self.a, role='admin')
+        self.a.is_active = False
+        self.a.save(update_fields=['is_active'])
+
+        self.assertEqual(self._me()['access_contexts'], [])
+
+    def test_another_users_contexts_never_appear(self):
+        other = _m4_user('ctxotro')
+        Membership.objects.create(user=other, company=self.b, role='admin')
+        _v1_customer(self.a, self.user)
+
+        slugs = {c['company']['slug'] for c in self._me()['access_contexts']}
+
+        self.assertEqual(slugs, {'m4-ctx-a'})
+
+    def test_platform_master_is_reported_SEPARATELY_and_enumerates_nothing(self):
+        # Being a platform administrator is not membership of every tenant.
+        self.user.is_superuser = True
+        self.user.save(update_fields=['is_superuser'])
+
+        payload = self._me()
+
+        self.assertTrue(payload['platform']['is_master'])
+        self.assertEqual(payload['access_contexts'], [])
+
+    def test_a_normal_user_is_not_platform_master(self):
+        self.assertFalse(self._me()['platform']['is_master'])
+
+    def test_available_companies_is_STILL_present(self):
+        # Additive, not a replacement. A shipped client reads the older field
+        # and must keep working for as long as it is installed.
+        _v1_customer(self.a, self.user)
+        payload = self._me()
+
+        self.assertIn('available_companies', payload)
+        self.assertEqual(payload['available_companies'][0]['slug'], 'm4-ctx-a')
+
+    def test_login_reports_the_same_contexts_as_me(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+        client = APIClient()
+        login = client.post(
+            '/api/v1/auth/login/', {'email': 'ctxuser@example.com', 'password': 'Pass123!'},
+            format='json',
+        ).json()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {login['access']}")
+
+        self.assertEqual(client.get('/api/v1/auth/me/').json()['access_contexts'],
+                         login['access_contexts'])
+
+
+class M4SurfacesStayApartTest(TestCase):
+    """Regression: adding a customer surface moved nothing else."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Aparte', 'm4-aparte', tax_id='20779600001')
+        self.ana = _m4_user('aparteana')
+        _v1_customer(self.company, self.ana)
+        _prod(self.company, 'Producto', 'producto-m4')
+
+    def test_the_public_catalogue_is_still_anonymous(self):
+        response = APIClient().get('/api/v1/storefront/m4-aparte/products/')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_customer_token_does_not_change_the_public_catalogue(self):
+        path = '/api/v1/storefront/m4-aparte/products/'
+        anonymous = APIClient().get(path).json()
+        client, _ = _m4_login('aparteana@example.com')
+
+        self.assertEqual(client.get(path).json(), anonymous)
+
+    def test_there_is_still_NO_internal_surface(self):
+        client, _ = _m4_login('aparteana@example.com')
+
+        for path in (
+            '/api/v1/internal/m4-aparte/orders/',
+            '/api/v1/internal/m4-aparte/inventory/',
+        ):
+            self.assertEqual(client.get(path).status_code, 404)
+
+    def test_the_legacy_orders_endpoint_is_unchanged(self):
+        # It still authenticates by cookie and ignores a Bearer header.
+        client, _ = _m4_login('aparteana@example.com')
+
+        self.assertIn(client.get('/api/orders/').status_code, (401, 403))
+
+    def test_the_project_default_authentication_is_still_cookie_only(self):
+        from django.conf import settings
+
+        self.assertEqual(
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_the_customer_view_declares_the_bearer_class_explicitly(self):
+        from .v1_authentication import V1BearerAuthentication
+        from .v1_customer_views import V1CustomerOrderViewSet
+
+        self.assertEqual(
+            V1CustomerOrderViewSet.authentication_classes, [V1BearerAuthentication],
+        )
+
+    def test_web_login_still_returns_its_tokens_in_cookies(self):
+        client = APIClient()
+        response = client.post(
+            '/api/auth/login/', {'username': 'aparteana', 'password': 'Pass123!'}, format='json',
+        )
+
+        self.assertIn('blackdog_access', response.cookies)
+        self.assertNotIn('access', response.json())

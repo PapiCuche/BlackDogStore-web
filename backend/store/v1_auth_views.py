@@ -30,12 +30,14 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .tenancy import verified_company_relations
+from .tenancy import access_contexts, is_platform_admin, verified_company_relations
 from .throttles import LoginThrottle
 from .v1_auth_serializers import (
+    V1AccessContextSerializer,
     V1CompanyRelationSerializer,
     V1LoginSerializer,
     V1LogoutSerializer,
+    V1PlatformSerializer,
     V1RefreshSerializer,
     V1UserSerializer,
 )
@@ -61,12 +63,26 @@ _DUMMY_HASH = (
 
 
 def _identity_payload(user):
-    """The identity half of every auth response — the same shape everywhere."""
+    """
+    The identity half of every auth response — the same shape everywhere.
+
+    `access_contexts` was ADDED in M4 alongside `available_companies`, not
+    instead of it. A shipped client reads the older field and must keep working
+    for as long as it is installed; removing it to tidy the payload would break
+    every app in the field on the day the server deployed.
+
+    The two answer different questions. `available_companies` says WHICH
+    companies this person relates to. `access_contexts` says WHAT they may do
+    there — and, crucially, keeps `customer` and `member` apart instead of
+    flattening them into a role.
+    """
     return {
         'user': V1UserSerializer(user).data,
         'available_companies': V1CompanyRelationSerializer(
             verified_company_relations(user), many=True,
         ).data,
+        'access_contexts': V1AccessContextSerializer(access_contexts(user), many=True).data,
+        'platform': V1PlatformSerializer({'is_master': is_platform_admin(user)}).data,
     }
 
 
