@@ -1126,3 +1126,32 @@ cliente. El legacy no se tocó — pertenece al frontend web y además lista
   honesta.
 - **Superficie interna v1 pendiente.** `sales.orders.view` e `inventory.view`
   existen en el catálogo de capabilities y todavía no tienen endpoints v1.
+
+---
+
+## Actualización — checkout nativo (M5)
+
+`checkout_services.py` concentra el dominio comercial del checkout. Las dos
+superficies —navegador y app— conservan su autenticación, su resolución de
+tenant y su forma de entrada, y comparten precios, stock, cupón, sucursal de
+despacho y creación del `Order`.
+
+**Migración 0034**: `Order.idempotency_key`, `Order.idempotency_fingerprint` y
+una `UniqueConstraint(company, user, idempotency_key)` **parcial**
+(`idempotency_key__isnull=False`). Parcial a propósito: todo pedido de navegador
+tiene la clave nula, y una constraint no parcial permitiría exactamente un
+pedido de invitado por empresa.
+
+`build_storefront_config_payload()` extraído de `StorefrontConfigView` para que
+la variante por slug devuelva exactamente lo mismo.
+
+### Deuda registrada
+
+- **Sin reserva de stock.** Dos compradores pueden validar la última unidad y
+  ambos llegar a Stripe; el stock definitivo se resuelve en el webhook, como ya
+  ocurría. No se cambió la semántica de inventario en esta fase.
+- **`stripe_session_id` es `unique=True`**, lo que es correcto, y conviene
+  recordarlo al escribir tests con mocks: dos pedidos no pueden compartir id.
+- **URL de checkout no persistida.** En un replay se recupera de Stripe; si la
+  sesión caducó, `checkout_url` es null y el cliente lee el estado del pedido.
+- **Superficie interna v1 pendiente**, con `sales.orders.view` ya en el catálogo.

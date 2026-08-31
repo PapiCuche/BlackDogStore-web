@@ -9,6 +9,36 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## API v1 — checkout autenticado y config pública por slug (M5)
+
+**Estado: IMPLEMENTADO.** Migración **0034**. Aditiva.
+
+### Entregado
+
+- `POST /api/v1/customer/<company_slug>/checkout/` — idempotente, Bearer v1
+- `GET /api/v1/storefront/<company_slug>/config/` — público, cierra **BR-006**
+- `checkout_services.py` — dominio comercial compartido por ambas superficies
+- `build_storefront_config_payload()` — un solo constructor para web y app
+- `Order.idempotency_key` + `idempotency_fingerprint` + constraint parcial única
+- 61 tests nuevos
+
+### Decisiones
+
+- **DEC-API-002** — el checkout nativo y el del navegador comparten servicios de
+  dominio, no contrato de transporte ni de sesión.
+- **DEC-API-003** — la creación de checkout es idempotente por empresa + cliente
+  autenticado + clave de petición.
+
+### Reglas
+
+- El cliente propone ítems; **el servidor calcula todo** y rechaza cualquier
+  campo comercial que llegue del cliente.
+- Nada se consume antes del pago: ni carrito ni stock.
+- Misma clave con distinto contenido → **409**, nunca el pedido anterior.
+- El checkout web sigue **AllowAny**: acepta invitados como siempre.
+
+---
+
 ## API v1 — superficie de cliente y contexto de acceso (M4)
 
 **Estado: IMPLEMENTADO (pedidos de cliente).** Sin migraciones. Aditiva.
