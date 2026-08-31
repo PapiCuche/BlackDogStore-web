@@ -2115,6 +2115,124 @@ recibido; no procesa un pago, no abre un turno y no cuadra una gaveta. Está
 modelado de forma que C2 no tenga que migrarlo.
 
 **Sin SUNAT.** La nota de venta sigue siendo el documento interno de la Fase 2E.
+## 8-septendecies. API pública versionada para clientes nativos (`/api/v1/`)
+
+**Estado: IMPLEMENTADO (solo catálogo público).** Sin migraciones. Aditiva.
+
+### El problema que resuelve
+
+El storefront web resuelve su empresa por **Host**: lo fijan el DNS y el proxy
+inverso, y el JavaScript de la página no puede tocarlo. Para la web eso es
+correcto y sigue intacto.
+
+Una app móvil no tiene ese Host. Llega a **un único host de API compartido**, así
+que sin un selector explícito solo caben dos finales: catálogo vacío, o —mucho
+peor— el catálogo de la empresa que el fallback eligiera.
+
+Por eso `/api/v1/` nombra el tenant **en la ruta**. No en una cabecera, no en un
+query param, no en el body: en la ruta, donde es imposible añadirlo por
+accidente e imposible no verlo al leer un log.
+
+### Endpoints
+
+| Método | Ruta | Quién |
+|---|---|---|
+| `GET` | `/api/v1/storefront/<company_slug>/products/` | Público, anónimo |
+| `GET` | `/api/v1/storefront/<company_slug>/products/<product_slug>/` | Público, anónimo |
+| `GET` | `/api/v1/storefront/<company_slug>/categories/` | Público, anónimo |
+| `GET` | `/api/v1/storefront/<company_slug>/categories/<slug>/` | Público, anónimo |
+
+Filtros de productos: `?category=`, `?search=`, `?in_stock=true`,
+`?ordering=` (allowlist: `price`, `-price`, `name`, `-name`, `newest`).
+
+Respuesta: **array crudo**, igual que la superficie legacy.
+
+### Qué es el slug — y qué no
+
+**Es** un selector de escaparate público.
+**No es** autorización, ni identidad, ni una concesión de ningún tipo.
+
+Nombrar un tenant elige qué estantería pública leer. No puede alcanzar datos
+privados, porque este resolutor solo lo usan las vistas públicas de catálogo:
+toda superficie privada sigue derivando su empresa de la membresía del usuario
+autenticado, jamás de un segmento de ruta. Cualquiera puede escribir cualquier
+slug; eso es inofensivo cuando la respuesta es un escaparate y fatal cuando es
+un historial de pedidos, y por eso **los dos caminos nunca convergen**.
+
+### Fail-safe
+
+Desconocida, inactiva, malformada y vacía producen **el mismo 404**, con el mismo
+cuerpo. Un 403 para "inactiva" y un 404 para "desconocida" responderían, a quien
+esté dispuesto a iterar, la pregunta "¿qué empresas existen en esta plataforma?".
+
+No hay fallback a "la primera empresa": el queryset nace scopeado desde la
+`Company` resuelta, o no hay queryset.
+
+### Reutilización, no duplicación
+
+`storefront_products()` y `storefront_categories()` se refactorizaron para
+delegar en `company_storefront_products(company)` y
+`company_storefront_categories(company)`. La lógica de scoping y de stock por
+sucursal de despacho existe **una sola vez**. Una segunda copia derivaría, y la
+deriva sería una fuga cross-tenant que ningún diff enseña.
+
+`resolve_public_storefront_company(slug)` es el único punto nuevo de decisión.
+
+### Serializers propios
+
+`v1_serializers.py` declara sus **propias** listas de campos. Los serializers
+legacy pertenecen al frontend web y pueden cambiar cuando el equipo web lo
+necesite; una app móvil pasa por colas de revisión y vive meses en dispositivos,
+así que no puede compartir una forma libre de moverse bajo sus pies.
+
+Un campo añadido a `ProductSerializer` no aparece en el contrato móvil, y uno
+eliminado falla ruidosamente en los tests de v1 en vez de vaciar en silencio una
+pantalla ya publicada.
+
+Campos expuestos: `id`, `name`, `slug`, `description`, `price`, `inventory`,
+`category`, `image_url`, `average_rating`, `review_count`. Nada interno: ni
+costos, ni márgenes, ni proveedor, ni reparto por sucursal, ni identidad fiscal,
+ni identificadores de Stripe.
+
+### Autenticación: deliberadamente apagada
+
+`authentication_classes = []`. `CookieJWTAuthentication` se ejecutaría si no, y
+una superficie que lee una cookie de sesión es una superficie cuyo
+comportamiento depende de quién esté logueado — exactamente lo que un escaparate
+anónimo y cacheable no debe ser. Un navegador con sesión y una app anónima
+reciben catálogos byte a byte idénticos.
+
+**BR-001 sigue `API_PENDING`.** Esta fase no toca `CookieJWTAuthentication`,
+CSRF, login, refresh, logout ni el admin. No hay Bearer global. No existen
+`/api/v1/auth/*` ni ninguna superficie privada v1.
+
+### Aditiva por construcción
+
+Nada aquí importa ni modifica las vistas legacy, y `store/urls.py` no cambió.
+`/api/` se comporta hoy exactamente igual que antes de que este módulo
+existiera, y hay tests de regresión que lo demuestran.
+
+### Archivos
+
+| Archivo | Qué |
+|---|---|
+| `store/v1_serializers.py` | Contrato de campos, propio de v1 |
+| `store/v1_views.py` | Vistas públicas y resolución de tenant por ruta |
+| `store/v1_urls.py` | Rutas v1, montadas en `backend/urls.py` |
+| `store/tenancy.py` | `resolve_public_storefront_company` + helpers company-first |
+| `backend/urls.py` | `path('api/v1/', include('store.v1_urls'))` |
+
+### Estado de los requerimientos de Mobile
+
+| ID | Qué pide Mobile | Estado |
+|---|---|---|
+| BR-002 | Selección de tenant validada server-side | **Catálogo público: IMPLEMENTADO.** Autorización de tenant en datos privados: PENDIENTE (depende de BR-001) |
+| BR-007 | Superficie versionada `/api/v1/` | **PARCIAL** — existe el slice de catálogo; auth y superficie privada, PENDIENTE |
+| BR-001 | Contrato de autenticación nativo | `API_PENDING` |
+| BR-003 | `fulfillment_status` en pedidos | PENDIENTE |
+| BR-005 | Dominio de reparaciones | PENDIENTE — no existe `RepairOrder` |
+| BR-006 | Endpoint público de marca | PENDIENTE |
+| BR-008 | Seguimiento seguro por enlace | `API_PENDING` — depende de BR-005 |
 
 ---
 

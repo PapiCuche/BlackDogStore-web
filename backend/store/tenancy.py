@@ -573,12 +573,27 @@ def storefront_products(request):
 
     Empty queryset when the storefront itself does not resolve.
     """
+    return company_storefront_products(resolve_storefront_company(request))
+
+
+def company_storefront_products(company):
+    """
+    The same queryset as `storefront_products`, for a Company already resolved.
+
+    Extracted so a surface that names its tenant EXPLICITLY — the `/api/v1/`
+    catalogue Mobile calls, which reaches a shared API host and therefore cannot
+    be identified by Host header — reuses this scoping instead of restating it.
+    One definition of "what this storefront sells" is the point: a second copy
+    would drift, and the drift would be a cross-tenant leak nobody sees in a
+    diff.
+
+    `None` yields an empty queryset, exactly as an unresolved Host does.
+    """
     from django.db.models import IntegerField, OuterRef, Subquery, Value
     from django.db.models.functions import Coalesce
 
     from .models import BranchStock, Product
 
-    company = resolve_storefront_company(request)
     if company is None:
         return Product.objects.none()
 
@@ -681,12 +696,49 @@ def storefront_orders(request, user):
 
 def storefront_categories(request):
     """Categories of the storefront's tenant. Empty when unresolved."""
+    return company_storefront_categories(resolve_storefront_company(request))
+
+
+def company_storefront_categories(company):
+    """Categories of an already-resolved Company. Empty for `None`."""
     from .models import Category
 
-    company = resolve_storefront_company(request)
     if company is None:
         return Category.objects.none()
     return Category.objects.filter(company=company)
+
+
+def resolve_public_storefront_company(slug) -> Company | None:
+    """
+    Resolve the tenant NAMED BY THE CLIENT for a public catalogue request.
+
+    This is the `/api/v1/` counterpart of `resolve_storefront_company`, and the
+    difference matters. The web storefront identifies its tenant by Host,
+    because DNS and the reverse proxy set it and page JavaScript cannot. A
+    mobile app has no such signal: it reaches ONE shared API host, so it must
+    say which storefront it wants.
+
+    WHAT THIS SLUG IS: a SELECTOR of a public catalogue.
+    WHAT IT IS NOT: authorization, identity, or a grant of any kind.
+
+    Naming a tenant selects which PUBLIC shelf to read. It cannot reach private
+    data, because this resolver is only ever used by public catalogue views —
+    every private surface keeps deriving its company from the authenticated
+    user's membership (BR-001/BR-002), never from a path segment. Anyone can
+    type any slug; that is fine when the answer is a shop window and fatal when
+    it is an order history, which is why these two paths never converge.
+
+    Only an ACTIVE company resolves. Unknown, inactive, malformed and blank all
+    return None, and the views turn None into a 404 — indistinguishable from
+    each other on purpose, so the endpoint cannot be walked to enumerate which
+    companies exist.
+    """
+    if not isinstance(slug, str):
+        return None
+    normalized = slug.strip().lower()
+    if not normalized or len(normalized) > 100:
+        return None
+    return Company.objects.filter(slug=normalized, is_active=True).first()
 
 
 def resolve_company_from_host(host: str) -> Company | None:

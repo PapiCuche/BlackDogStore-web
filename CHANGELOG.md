@@ -88,6 +88,51 @@ acaba el jueves».
 - Caja / arqueo · devoluciones y anulaciones compensatorias · compras y
   proveedores · costo real y rentabilidad · descuentos manuales en POS ·
   pronóstico estacional · lector por cámara.
+## API v1 — catálogo público para clientes nativos
+
+**Estado: IMPLEMENTADO (solo catálogo público).** Sin migraciones. Aditiva.
+
+### Entregado
+
+- `GET /api/v1/storefront/<company_slug>/products/` — `IMPLEMENTADO`
+- `GET /api/v1/storefront/<company_slug>/products/<product_slug>/` — `IMPLEMENTADO`
+- `GET /api/v1/storefront/<company_slug>/categories/` — `IMPLEMENTADO`
+- `resolve_public_storefront_company()` — resolución de tenant por ruta, solo empresas activas
+- `company_storefront_products()` / `company_storefront_categories()` — extraídos de los
+  helpers por Host para que la lógica de scoping exista **una sola vez**
+- `v1_serializers.py` — contrato de campos propio, desacoplado del serializer web
+- 60 tests nuevos
+
+### Por qué
+
+El storefront web identifica su empresa por **Host**, y eso es correcto para la
+web: lo fijan el DNS y el proxy, no la página. Una app móvil llega a un host de
+API compartido y no tiene ese Host. Sin un selector explícito solo caben dos
+finales: catálogo vacío, o el catálogo de la empresa que el fallback eligiera.
+
+### Reglas
+
+- El slug de la ruta **selecciona** un escaparate público. No autoriza nada.
+- Empresa desconocida, inactiva, malformada y vacía → **el mismo 404**. Un 403
+  para "inactiva" respondería qué empresas existen.
+- Sin fallback a "la primera empresa": el queryset nace scopeado o no existe.
+- Ni query param, ni cabecera, ni Host, ni `DEFAULT_STOREFRONT_COMPANY_SLUG`
+  pueden cambiar el tenant de la ruta. Con test para cada uno.
+- Autenticación apagada explícitamente en estas vistas.
+
+### No tocado
+
+`CookieJWTAuthentication`, CSRF, login, refresh, logout, admin, `/api/` legacy,
+migraciones. **BR-001 sigue `API_PENDING`**; no hay Bearer global ni superficie
+privada v1.
+
+### Estado de los requerimientos de Mobile
+
+| ID | Estado |
+|---|---|
+| BR-002 | Catálogo público: **IMPLEMENTADO**. Autorización de datos privados: PENDIENTE |
+| BR-007 | **PARCIAL** — slice de catálogo únicamente |
+| BR-001 · BR-003 · BR-005 · BR-006 · BR-008 | PENDIENTE / `API_PENDING` |
 
 ---
 

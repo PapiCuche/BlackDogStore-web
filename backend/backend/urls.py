@@ -20,4 +20,7 @@ from django.urls import path, include
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('store.urls')),
+    # Versioned surface for native clients. ADDITIVE: `api/` above is untouched,
+    # and nothing under `api/v1/` is reachable from it.
+    path('api/v1/', include('store.v1_urls')),
 ]

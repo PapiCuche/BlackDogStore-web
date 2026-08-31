@@ -210,6 +210,33 @@ BlackDogStore-web/
 | GET | `/api/auth/csrf/` | Público | — | Emite csrftoken cookie (JS-legible) |
 | GET | `/api/auth/me/` | **Auth requerida** | — | Perfil del usuario |
 
+### API v1 — catálogo público para clientes nativos
+
+Superficie **versionada y aditiva**. `/api/` no cambia.
+
+| Método | Endpoint | Permiso | Notas |
+|--------|----------|---------|-------|
+| GET | `/api/v1/storefront/<company_slug>/products/` | Público, anónimo | Filtros: category, search, in_stock, ordering |
+| GET | `/api/v1/storefront/<company_slug>/products/<product_slug>/` | Público, anónimo | Lookup por slug |
+| GET | `/api/v1/storefront/<company_slug>/categories/` | Público, anónimo | |
+
+El storefront web resuelve su empresa por **Host**. Una app móvil llega a un
+host de API compartido y no tiene ese Host, así que aquí el tenant va **en la
+ruta**.
+
+Ese slug **selecciona un escaparate público; no autoriza nada**. Las superficies
+privadas siguen derivando su empresa de la membresía del usuario autenticado,
+nunca de un segmento de ruta.
+
+Empresa desconocida, inactiva, malformada o vacía → **el mismo 404**, para que
+el endpoint no pueda recorrerse y enumerar qué empresas existen.
+
+Autenticación **apagada explícitamente** en estas vistas: un navegador con
+sesión y una app anónima reciben el mismo catálogo. `/api/v1/auth/*` no existe
+todavía.
+
+Detalle en `docs/saas-multiempresa.md` § 8-septendecies.
+
 ### Reglas de contraseña (registro)
 
 - Mínimo 8 caracteres (Django `MinimumLengthValidator`)
