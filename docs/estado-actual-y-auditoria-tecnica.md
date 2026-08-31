@@ -1023,6 +1023,21 @@ Migraciones pendientes                   0
 500 en peticiones válidas                0
 Series / correlativos internos           IMPLEMENTADO
 POS interno                              IMPLEMENTADO
+Cliente en POS                           IMPLEMENTADO
+Vendedor / operador separados            IMPLEMENTADO
+Reasignación de vendedor                 IMPLEMENTADO
+Comisión por Membership                  IMPLEMENTADO
+Comisión congelada por venta             IMPLEMENTADO
+Analítica de comisiones                  IMPLEMENTADO
+Cupón en POS                             IMPLEMENTADO
+Descuento manual autorizado              IMPLEMENTADO
+Preview de totales (servidor)            IMPLEMENTADO
+Efectivo y vuelto                        IMPLEMENTADO
+Referencia de pago / observaciones       IMPLEMENTADO
+Pagos mixtos                             PENDIENTE C2
+Liquidación de comisiones                PENDIENTE C2
+Comisión dividida                        PENDIENTE
+Grupos de clientes                       PENDIENTE
 Venta con código de barras               IMPLEMENTADO
 ProductBarcode                           IMPLEMENTADO
 POS aislamiento empresa/sucursal         IMPLEMENTADO

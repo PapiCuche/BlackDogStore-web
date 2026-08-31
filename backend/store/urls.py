@@ -38,13 +38,16 @@ from .inventory_views import (
     AdminStockTransferListView, AdminStockTransferReceiveView,
 )
 from .pos_views import (
+    AdminCommissionSettingsView,
     AdminPosContextView,
+    AdminPosPreviewView,
     AdminPosLookupView,
     AdminPosSaleView,
     AdminPosSearchView,
     AdminProductBarcodeView,
 )
 from .sales_analytics_views import (
+    AdminCommissionsView,
     AdminSalesDashboardView,
     AdminSalesReplenishmentView,
 )
@@ -170,7 +173,11 @@ urlpatterns = [
     path('admin/pos/products/search/', AdminPosSearchView.as_view(), name='admin-pos-search'),
     path('admin/pos/sales/', AdminPosSaleView.as_view(), name='admin-pos-sale'),
     path('admin/products/<int:pk>/barcodes/', AdminProductBarcodeView.as_view(), name='admin-product-barcodes'),
+    path('admin/pos/preview/', AdminPosPreviewView.as_view(), name='admin-pos-preview'),
     path('admin/sales/dashboard/', AdminSalesDashboardView.as_view(), name='admin-sales-dashboard'),
+    path('admin/sales/commissions/', AdminCommissionsView.as_view(), name='admin-sales-commissions'),
+    path('admin/sales/commission-settings/', AdminCommissionSettingsView.as_view(), name='admin-commission-settings'),
+    path('admin/sales/commission-settings/<int:pk>/', AdminCommissionSettingsView.as_view(), name='admin-commission-setting-detail'),
     path('admin/sales/replenishment/', AdminSalesReplenishmentView.as_view(), name='admin-sales-replenishment'),
 
     # --- SaaS Phase 4: customers (internal CRM) ---

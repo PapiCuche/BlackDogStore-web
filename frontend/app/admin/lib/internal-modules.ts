@@ -156,6 +156,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     quickAction: true,
   },
   { id: "sales.quotes", group: "sales", label: "Cotizaciones", description: "Cotizaciones a clientes.", status: "pending" },
+  {
+    id: "sales.commissions",
+    group: "sales",
+    label: "Comisiones",
+    description: "Comisiones devengadas por vendedor y porcentajes del equipo.",
+    href: "/admin/sales/commissions",
+    // Phase C1.2: what a colleague earns is management information, so this is
+    // NOT part of the sales preset. Configuring a rate needs `manage` on top,
+    // checked inside the screen.
+    requiredCapabilities: ["sales.commissions.view"],
+    status: "implemented",
+  },
   { id: "sales.receivables", group: "sales", label: "Cuentas por cobrar", description: "Saldos pendientes de cobro.", status: "pending" },
 
   // ── Caja ─────────────────────────────────────────────────────────────────

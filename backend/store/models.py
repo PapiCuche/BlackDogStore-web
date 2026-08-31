@@ -3,6 +3,8 @@ import re
 import secrets
 from datetime import timedelta
 
+from decimal import Decimal
+
 from django.conf import settings
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
@@ -41,6 +43,21 @@ class SalesChannel(models.TextChoices):
 
     ONLINE = 'online', 'Tienda online'
     POS = 'pos', 'Punto de venta'
+
+
+class DiscountSource(models.TextChoices):
+    """
+    Why money came off a sale.
+
+    Kept apart from the AMOUNT on purpose: `discount_amount` is what the
+    customer did not pay, and this is the reason it was allowed. A promotion the
+    company configured in advance and a decision somebody made at the counter
+    are different events, and only the second one needs a name attached to it.
+    """
+
+    NONE = 'none', 'Sin descuento'
+    COUPON = 'coupon', 'Código promocional'
+    MANUAL = 'manual', 'Descuento manual'
 
 
 class PaymentMethod(models.TextChoices):
@@ -334,6 +351,49 @@ class Order(models.Model):
     # of silently returning somebody else's sale.
     pos_idempotency_key = models.CharField(max_length=64, blank=True, default='')
     pos_request_fingerprint = models.CharField(max_length=64, blank=True, default='')
+
+    # --- Commercial Phase C1.2: the enriched sale -------------------------
+    #
+    # WHO GETS CREDITED, frozen as text. `sold_by` can become NULL if the
+    # account is ever removed, and a commission ledger that forgets whose it
+    # was is not a ledger. Never consulted for permissions — a name is not an
+    # authority.
+    seller_name_snapshot = models.CharField(max_length=150, blank=True, default='')
+
+    # WHERE THE DISCOUNT CAME FROM. `discount_amount` already records how much
+    # money came off; this records why, which is what an auditor asks second.
+    discount_source = models.CharField(
+        max_length=10, choices=DiscountSource.choices,
+        default=DiscountSource.NONE, db_index=True,
+    )
+    discount_reason = models.CharField(max_length=200, blank=True, default='')
+    # Who authorised a MANUAL discount. Coupons need nobody: the company
+    # configured the promotion in advance, so applying one is not a decision.
+    discount_authorized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='authorized_discounts',
+    )
+
+    # CASH. Null for card, transfer and online — those have no change to give,
+    # and inventing a zero would make "paid exactly" indistinguishable from
+    # "not cash".
+    amount_received = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    change_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    # An operation number, an authorisation code, a bank reference. Short text
+    # a human typed off a terminal — never a credential.
+    payment_reference = models.CharField(max_length=100, blank=True, default='')
+
+    # NAMED FIELDS, not a JSON catch-all. A free-form blob becomes the place
+    # everything lands and nothing can be validated, reported on, or removed.
+    external_reference = models.CharField(max_length=100, blank=True, default='')
+    # About THIS sale, not about the customer — `Customer.notes` is the
+    # standing file on a person and outlives every order. Internal control
+    # only; no public surface returns it.
+    sale_notes = models.TextField(max_length=1000, blank=True, default='')
 
     # SNAPSHOT OF THE BUYER, frozen at the sale. NOT redundant with `customer`
     # above, and not to be re-derived from it: when a client changes their phone
@@ -1101,6 +1161,21 @@ class Membership(models.Model):
         db_index=True,
     )
     is_active = models.BooleanField(default=True, db_index=True)
+    # --- Commercial Phase C1.2 -------------------------------------------
+    #
+    # COMMISSION BELONGS TO THE EMPLOYMENT, NOT TO THE PERSON.
+    #
+    # One human can sell for two businesses on different terms — 3% here, 5%
+    # there — so a rate on `User` could not express the truth. It is not on
+    # `role` either: two salespeople in one shop are routinely on different
+    # deals, and tying the rate to a role would force a new role per rate.
+    #
+    # Zero is the default and means exactly that: this person earns no
+    # commission. It is not "unconfigured" — see `SalesCommission`, which is
+    # simply not written when the rate is zero.
+    commission_rate_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal('0.00'),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1111,6 +1186,11 @@ class Membership(models.Model):
             # companies, but never twice to the same one.
             models.UniqueConstraint(
                 fields=['user', 'company'], name='unique_membership_per_user_company',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(commission_rate_percent__gte=Decimal('0.00'))
+                & models.Q(commission_rate_percent__lte=Decimal('100.00')),
+                name='membership_commission_rate_within_range',
             ),
         ]
         indexes = [
@@ -2709,5 +2789,112 @@ class ProductBarcode(models.Model):
         # two cannot disagree even if a caller passes the wrong one.
         if self.product_id and not self.company_id:
             self.company_id = self.product.company_id
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Commercial Phase C1.2 — sales commissions
+# ---------------------------------------------------------------------------
+
+class SalesCommission(models.Model):
+    """
+    What a company owes a seller for one sale.
+
+    WHY ITS OWN TABLE RATHER THAN THREE COLUMNS ON `Order`
+    ------------------------------------------------------
+    Columns would have been less code today and a migration later. A commission
+    is not a property of a sale, it is an OBLIGATION with a life of its own: it
+    is accrued now, it may be voided when the goods come back, and eventually it
+    is settled and paid in a batch alongside dozens of others. None of that fits
+    in three fields hanging off the order it happened to originate from.
+
+    The row is written only when there is something to owe. A seller on 0% does
+    not generate a row of zeros — a ledger should list obligations, and "nothing
+    is owed" is not one. That also keeps the table meaningful to count.
+
+    EVERYTHING IS FROZEN AT THE SALE
+    --------------------------------
+    The rate, the base and the amount are all snapshots. When somebody is moved
+    from 3% to 5%, last month's sales stay at 3%: the company agreed to pay 3%
+    for those, and recomputing them from today's rate would rewrite a debt after
+    the fact. `seller_name_snapshot` exists for the same reason — the ledger must
+    still name whose money it is after an account is deleted.
+    """
+
+    STATUS_ACCRUED = 'accrued'
+    STATUS_VOIDED = 'voided'
+    STATUS_CHOICES = [
+        # ACCRUED: earned and owed. Deliberately NOT called "pending", which
+        # would imply a payment process that does not exist yet.
+        (STATUS_ACCRUED, 'Devengada'),
+        # VOIDED: the sale came back. Written by a future returns flow; nothing
+        # in this phase sets it, and pretending otherwise would be a fiction.
+        (STATUS_VOIDED, 'Anulada'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='sales_commissions',
+    )
+    order = models.OneToOneField(
+        Order, on_delete=models.PROTECT, related_name='sales_commission',
+    )
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='sales_commissions',
+    )
+    seller_name_snapshot = models.CharField(max_length=150, blank=True, default='')
+
+    rate_percent = models.DecimalField(max_digits=5, decimal_places=2)
+    # The NET sale — what the customer actually paid for goods. Commission is
+    # not owed on money the shop never received, so the discount comes off
+    # before the rate is applied.
+    base_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+    status = models.CharField(
+        max_length=12, choices=STATUS_CHOICES, default=STATUS_ACCRUED,
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['company', 'seller', 'created_at']),
+            models.Index(fields=['company', 'status']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(rate_percent__gte=Decimal('0.00'))
+                & models.Q(rate_percent__lte=Decimal('100.00')),
+                name='commission_rate_within_range',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gte=Decimal('0.00')),
+                name='commission_amount_not_negative',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(base_amount__gte=Decimal('0.00')),
+                name='commission_base_not_negative',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.seller_name_snapshot or "?"} — {self.amount} (#{self.order_id})'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.order_id and self.company_id:
+            if self.order.company_id != self.company_id:
+                raise ValidationError(
+                    {'order': 'El pedido no pertenece a esta empresa.'}
+                )
+
+    def save(self, *args, **kwargs):
+        if self.order_id and not self.company_id:
+            self.company_id = self.order.company_id
         self.clean()
         return super().save(*args, **kwargs)

@@ -56,6 +56,10 @@ from .tenancy import (
 from .throttles import AdminPosThrottle, AdminPosSaleThrottle, AdminSalesAnalyticsThrottle
 
 CAP_POS = 'sales.pos.use'
+CAP_ASSIGN_SELLER = 'sales.pos.assign_seller'
+CAP_DISCOUNTS = 'sales.discounts.apply'
+CAP_COMMISSIONS_VIEW = 'sales.commissions.view'
+CAP_COMMISSIONS_MANAGE = 'sales.commissions.manage'
 CAP_ANALYTICS = 'sales.analytics.view'
 CAP_INVENTORY_REPORTS = 'inventory.reports'
 CAP_PRODUCTS_MANAGE = 'products.manage'
@@ -156,11 +160,43 @@ class AdminPosContextView(APIView):
             'can_manage_customers': has_capability(
                 request.user, company, 'service.customers.manage',
             ),
+            # The UI asks once, at open, rather than guessing per action. A
+            # control that appears and then 403s is worse than one that is not
+            # offered.
+            'can_assign_seller': has_capability(request.user, company, CAP_ASSIGN_SELLER),
+            'can_apply_discount': has_capability(request.user, company, CAP_DISCOUNTS),
+            'can_view_commissions': has_capability(
+                request.user, company, CAP_COMMISSIONS_VIEW,
+            ),
             'seller': {
                 'id': request.user.pk,
                 'username': request.user.get_username(),
+                'name': pos_services.seller_display_name(request.user),
             },
+            'sellers': self._sellers(request, company),
         })
+
+    def _sellers(self, request, company):
+        """
+        Who this sale may be credited to.
+
+        Empty unless the caller may reassign — a list of colleagues is staffing
+        information, and a cashier who cannot use it has no reason to receive it.
+        """
+        if not has_capability(request.user, company, CAP_ASSIGN_SELLER):
+            return []
+        from .models import Membership
+
+        return [
+            {
+                'id': m.user_id,
+                'name': pos_services.seller_display_name(m.user) or m.user.get_username(),
+            }
+            for m in Membership.objects
+            .filter(company=company, is_active=True, user__is_active=True)
+            .select_related('user')
+            .order_by('user__first_name', 'user__username')[:200]
+        ]
 
 
 class AdminPosLookupView(APIView):
@@ -262,19 +298,35 @@ class AdminPosSaleView(APIView):
         if error:
             return error
 
+        data = request.data
         try:
             order, created = pos_services.create_pos_sale(
                 actor=request.user,
                 company=company,
                 branch=branch,
-                items=request.data.get('items'),
-                customer=request.data.get('customer'),
-                payment_method=request.data.get('payment_method', PaymentMethod.CASH),
+                items=data.get('items'),
+                customer=data.get('customer'),
+                seller_id=data.get('seller'),
+                payment_method=data.get('payment_method', PaymentMethod.CASH),
                 # NOT truncated here. `[:64]` would fold two distinct long keys
                 # into one and answer the second sale with the first one's
                 # order; the service validates and rejects instead.
-                idempotency_key=request.data.get('idempotency_key'),
-                terms_confirmed=request.data.get('terms_confirmed') is True,
+                idempotency_key=data.get('idempotency_key'),
+                terms_confirmed=data.get('terms_confirmed') is True,
+                coupon_code=data.get('coupon_code', ''),
+                manual_discount_type=data.get('manual_discount_type', ''),
+                manual_discount_value=data.get('manual_discount_value'),
+                discount_reason=data.get('discount_reason', ''),
+                amount_received=data.get('amount_received'),
+                payment_reference=data.get('payment_reference', ''),
+                external_reference=data.get('external_reference', ''),
+                sale_notes=data.get('sale_notes', ''),
+                # Authority is resolved HERE, from the caller's capabilities —
+                # never read from the request body.
+                may_assign_seller=has_capability(request.user, company, CAP_ASSIGN_SELLER),
+                may_apply_manual_discount=has_capability(
+                    request.user, company, CAP_DISCOUNTS,
+                ),
                 request=request,
             )
         except pos_services.PosIdempotencyConflict as exc:
@@ -298,15 +350,37 @@ class AdminPosSaleView(APIView):
                 payload['available_elsewhere'] = other
             return Response(payload, status=status.HTTP_409_CONFLICT)
 
+        commission = getattr(order, 'sales_commission', None)
         return Response(
             {
                 'order_id': order.pk,
                 'created': created,
+                'subtotal': str(order.total + order.discount_amount),
+                'discount': str(order.discount_amount),
+                'discount_source': order.discount_source,
+                'discount_reason': order.discount_reason,
                 'total': str(order.total),
                 'paid_at': order.paid_at,
                 'payment_method': order.payment_method,
+                'amount_received': (
+                    str(order.amount_received) if order.amount_received is not None else None
+                ),
+                'change_amount': (
+                    str(order.change_amount) if order.change_amount is not None else None
+                ),
+                'payment_reference': order.payment_reference,
                 'branch': {'id': branch.pk, 'name': branch.name},
-                'seller': order.sold_by.get_username() if order.sold_by else '',
+                'seller': order.seller_name_snapshot,
+                'customer': order.customer_name,
+                # Only to someone allowed to see earnings. A cashier does not
+                # need to know what the sale paid a colleague.
+                'commission': (
+                    str(commission.amount)
+                    if commission and has_capability(
+                        request.user, company, CAP_COMMISSIONS_VIEW,
+                    )
+                    else None
+                ),
                 'items': [
                     {
                         'product': i.product_id,
@@ -519,3 +593,187 @@ class AdminProductBarcodeView(APIView):
                 request=request, company=company,
             )
         return Response({'results': self._rows(product)})
+
+
+class AdminPosPreviewView(APIView):
+    """
+    POST /api/admin/pos/preview/ — what this basket costs, before charging it.
+
+    The operator has to read a total aloud before taking money, and that number
+    must be the one the server will charge. So this runs the SAME resolution and
+    the SAME arithmetic as the sale — the discount is validated, the permission
+    is checked, the cash is checked — and then writes nothing.
+
+    It moves no stock, creates no order and consumes no idempotency key. A
+    preview that spent a key would make the sale that follows it a "retry".
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminPosThrottle]
+
+    def post(self, request):
+        company, error = _context(request, CAP_POS)
+        if error:
+            return error
+        branch, error = _branch_or_error(request, company, request.data.get('branch'))
+        if error:
+            return error
+
+        data = request.data
+        try:
+            priced = pos_services.build_pos_sale(
+                operator=request.user,
+                company=company,
+                branch=branch,
+                items=data.get('items'),
+                customer=data.get('customer'),
+                seller_id=data.get('seller'),
+                payment_method=data.get('payment_method', PaymentMethod.CASH),
+                coupon_code=data.get('coupon_code', ''),
+                manual_discount_type=data.get('manual_discount_type', ''),
+                manual_discount_value=data.get('manual_discount_value'),
+                discount_reason=data.get('discount_reason', ''),
+                # Cash is NOT validated in a preview: the operator is still
+                # counting it out, and refusing to show the total until they
+                # finish would defeat the purpose. The sale checks it.
+                validate_cash=False,
+                may_assign_seller=has_capability(request.user, company, CAP_ASSIGN_SELLER),
+                may_apply_manual_discount=has_capability(
+                    request.user, company, CAP_DISCOUNTS,
+                ),
+            )
+        except pos_services.PosValidationError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        seller = priced['seller']
+        may_see_commission = has_capability(request.user, company, CAP_COMMISSIONS_VIEW)
+        return Response({
+            'subtotal': str(priced['subtotal']),
+            'discount': str(priced['discount_amount']),
+            'discount_source': priced['discount']['source'],
+            'coupon_code': priced['discount']['coupon_code'],
+            'total': str(priced['total']),
+            'seller': {
+                'id': seller.pk if seller else None,
+                'name': pos_services.seller_display_name(seller),
+            },
+            'customer': (
+                {'id': priced['customer'].pk, 'name': priced['customer'].display_name}
+                if priced['customer'] else None
+            ),
+            'commission': (
+                {
+                    'rate_percent': str(priced['commission']['rate']),
+                    'base_amount': str(priced['commission']['base']),
+                    'amount': str(priced['commission']['amount']),
+                }
+                if may_see_commission else None
+            ),
+            'lines': [
+                {
+                    'product': p.pk, 'name': p.name,
+                    'quantity': q, 'price': str(u),
+                }
+                for p, q, u in priced['lines']
+            ],
+        })
+
+
+class AdminCommissionSettingsView(APIView):
+    """
+    GET   /api/admin/sales/commission-settings/       — `sales.commissions.view`
+    PATCH /api/admin/sales/commission-settings/{pk}/  — `sales.commissions.manage`
+
+    The rate lives on the MEMBERSHIP, so this configures an employment rather
+    than a person: the same human may sell for two companies on different terms,
+    and neither company can see the other's deal.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminSalesAnalyticsThrottle]
+
+    def get(self, request):
+        from .models import Membership
+
+        company, error = _context(request, CAP_COMMISSIONS_VIEW)
+        if error:
+            return error
+
+        rows = (
+            Membership.objects
+            .filter(company=company, is_active=True)
+            .select_related('user')
+            .order_by('user__first_name', 'user__username')
+        )
+        return Response({
+            'can_manage': has_capability(request.user, company, CAP_COMMISSIONS_MANAGE),
+            'results': [
+                {
+                    'membership_id': m.pk,
+                    'user_id': m.user_id,
+                    'name': pos_services.seller_display_name(m.user) or m.user.get_username(),
+                    'role': m.role,
+                    'commission_rate_percent': str(m.commission_rate_percent),
+                }
+                for m in rows
+            ],
+        })
+
+    def patch(self, request, pk):
+        from decimal import Decimal, InvalidOperation
+
+        from .models import Membership
+
+        company, error = _context(request, CAP_COMMISSIONS_MANAGE)
+        if error:
+            return error
+
+        # Scoped by walking DOWN from this company's memberships: another
+        # tenant's membership id is not in the set being searched.
+        membership = Membership.objects.filter(company=company, pk=pk).first()
+        if membership is None:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            rate = Decimal(str(request.data.get('commission_rate_percent'))).quantize(
+                Decimal('0.01'),
+            )
+        except (InvalidOperation, TypeError, ValueError):
+            return Response(
+                {'commission_rate_percent': ['Porcentaje inválido.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not (Decimal('0') <= rate <= Decimal('100')):
+            return Response(
+                {'commission_rate_percent': ['Debe estar entre 0 y 100.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if membership.commission_rate_percent != rate:
+            previous = membership.commission_rate_percent
+            membership.commission_rate_percent = rate
+            membership.save(update_fields=['commission_rate_percent', 'updated_at'])
+            AdminAuditLog.log(
+                actor=request.user,
+                action='commission_rate_changed',
+                target_type='membership',
+                target_id=membership.pk,
+                metadata={
+                    'company_id': company.pk,
+                    'membership_id': membership.pk,
+                    # The rate is the term being agreed, not personal data, and
+                    # a change to it is exactly what an auditor comes here for.
+                    'from': str(previous),
+                    'to': str(rate),
+                },
+                request=request,
+                company=company,
+            )
+            # PAST SALES ARE NOT TOUCHED. Their commissions were frozen at the
+            # rate agreed when they happened; recomputing them from today's rate
+            # would rewrite a debt after the fact.
+
+        return Response({
+            'membership_id': membership.pk,
+            'commission_rate_percent': str(membership.commission_rate_percent),
+        })

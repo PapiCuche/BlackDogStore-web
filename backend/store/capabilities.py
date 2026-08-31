@@ -127,6 +127,24 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('sales.analytics.view', 'sales', 'Analítica comercial',
          'Ver facturación, productos más vendidos y comparativa de canales.',
          STATUS_ACTIVE),
+    # PHASE C1.2 — four authorities that all sound like "selling" and are not.
+    #
+    # Attributing a sale to a colleague MOVES MONEY: without a gate, anyone
+    # could credit any commission to anyone, including themselves.
+    _cap('sales.pos.assign_seller', 'sales', 'Atribuir venta a otro vendedor',
+         'Registrar una venta a nombre de otro vendedor de la empresa.',
+         STATUS_ACTIVE),
+    # A coupon needs no permission — the company configured that promotion in
+    # advance. Typing a discount at the counter is a decision, and decisions
+    # about price are not part of working a till.
+    _cap('sales.discounts.apply', 'sales', 'Aplicar descuentos manuales',
+         'Descontar un porcentaje o un monto fuera de una promoción configurada.',
+         STATUS_ACTIVE),
+    _cap('sales.commissions.view', 'sales', 'Ver comisiones',
+         'Consultar comisiones devengadas por vendedor.', STATUS_ACTIVE),
+    _cap('sales.commissions.manage', 'sales', 'Configurar comisiones',
+         'Definir el porcentaje de comisión de cada miembro del equipo.',
+         STATUS_ACTIVE),
 
     # --- cross-cutting (module exists; endpoints still legacy-authorised) ---
     _cap('reports.view', 'reports', 'Ver reportes',

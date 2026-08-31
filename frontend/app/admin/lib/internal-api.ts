@@ -719,7 +719,13 @@ export type PosContext = {
   default_branch: number | null;
   payment_methods: PosPaymentMethod[];
   can_manage_customers: boolean;
-  seller: { id: number; username: string };
+  /** Resolved once at open, so the UI never offers a control that then 403s. */
+  can_assign_seller: boolean;
+  can_apply_discount: boolean;
+  can_view_commissions: boolean;
+  seller: { id: number; username: string; name: string };
+  /** Empty unless the caller may reassign — staffing is not public. */
+  sellers: PosSeller[];
 };
 
 export type PosProduct = {
@@ -736,11 +742,20 @@ export type PosSaleLine = { product: number; quantity: number };
 export type PosSaleResult = {
   order_id: number;
   created: boolean;
+  subtotal: string;
+  discount: string;
+  discount_source: string;
+  discount_reason: string;
   total: string;
   paid_at: string | null;
   payment_method: string;
+  amount_received: string | null;
+  change_amount: string | null;
+  payment_reference: string;
   branch: PosBranch;
   seller: string;
+  customer: string;
+  commission: string | null;
   items: { product: number; name: string; quantity: number; price: string }[];
 };
 
@@ -802,15 +817,7 @@ export async function posSearch(
 
 export async function posSale(
   companyId: number | null,
-  body: {
-    branch: number;
-    items: PosSaleLine[];
-    customer?: number | null;
-    payment_method: string;
-    idempotency_key: string;
-    /** The operator asserting they explained the terms. The backend requires it. */
-    terms_confirmed: boolean;
-  },
+  body: PosSaleInput,
 ): Promise<PosSaleResult> {
   const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
   const res = await fetchWithAuth(`${API_BASE}/admin/pos/sales/${qs}`, {
@@ -937,4 +944,123 @@ export async function fetchReplenishment(
   const res = await fetchWithAuth(`${API_BASE}/admin/sales/replenishment/?${qs}`);
   if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar la reposición."));
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Commercial Phase C1.2 — enriched sale
+// ---------------------------------------------------------------------------
+
+export type PosSeller = { id: number; name: string };
+
+export type PosPreview = {
+  subtotal: string;
+  discount: string;
+  discount_source: "none" | "coupon" | "manual";
+  coupon_code: string;
+  total: string;
+  seller: { id: number | null; name: string };
+  customer: { id: number; name: string } | null;
+  /** null unless the caller may see earnings. */
+  commission: { rate_percent: string; base_amount: string; amount: string } | null;
+  lines: { product: number; name: string; quantity: number; price: string }[];
+};
+
+export type PosSaleInput = {
+  branch: number;
+  items: PosSaleLine[];
+  customer?: number | null;
+  seller?: number | null;
+  payment_method: string;
+  idempotency_key: string;
+  terms_confirmed: boolean;
+  coupon_code?: string;
+  manual_discount_type?: "percent" | "amount" | "";
+  manual_discount_value?: string | number | null;
+  discount_reason?: string;
+  amount_received?: string | number | null;
+  payment_reference?: string;
+  external_reference?: string;
+  sale_notes?: string;
+};
+
+export type CommissionRow = {
+  seller_id: number | null;
+  seller_name: string;
+  sales: number;
+  net_amount: string;
+  commission: string;
+  /** Shown BESIDE the historical total, never used to compute it. */
+  current_rate_percent: string | null;
+};
+
+export type CommissionReport = {
+  window_days: number;
+  today: string;
+  branches: PosBranch[];
+  total_commission: string;
+  note: string;
+  results: CommissionRow[];
+};
+
+export type CommissionSetting = {
+  membership_id: number;
+  user_id: number;
+  name: string;
+  role: string;
+  commission_rate_percent: string;
+};
+
+/**
+ * Price a basket without charging it.
+ *
+ * Runs the server's own arithmetic, so the total shown is the total that will
+ * be charged. A discount the sale would refuse is refused here too, rather than
+ * displaying a number that then fails at the till.
+ */
+export async function posPreview(
+  companyId: number | null,
+  body: Omit<PosSaleInput, "idempotency_key" | "terms_confirmed">,
+): Promise<PosPreview> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/preview/${qs}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo calcular el total."));
+  return res.json();
+}
+
+export async function fetchCommissions(
+  companyId: number | null,
+  params: { days?: number; branch?: number | null } = {},
+): Promise<CommissionReport> {
+  const qs = new URLSearchParams();
+  if (companyId) qs.set("company", String(companyId));
+  if (params.days) qs.set("days", String(params.days));
+  if (params.branch) qs.set("branch", String(params.branch));
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/commissions/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron cargar las comisiones."));
+  return res.json();
+}
+
+export async function fetchCommissionSettings(
+  companyId: number | null,
+): Promise<{ can_manage: boolean; results: CommissionSetting[] }> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/commission-settings/${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar la configuración."));
+  return res.json();
+}
+
+export function updateCommissionRate(
+  membershipId: number,
+  companyId: number | null,
+  rate: string,
+): Promise<{ membership_id: number; commission_rate_percent: string }> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/commission-settings/${membershipId}/${qs}`,
+    { commission_rate_percent: rate },
+    "No se pudo guardar el porcentaje.",
+  );
 }

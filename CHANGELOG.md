@@ -9,6 +9,82 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase Comercial C1.2 — Venta enriquecida: cliente, vendedor, comisiones y descuentos
+
+**Estado: IMPLEMENTADO.** Migraciones **0036, 0037**.
+
+### El problema que cierra
+El POS de C1 sabía cobrar y descontar stock, y no sabía nada más. No podía decir
+a quién se le vendió, a quién se le acredita la venta, cuánto gana quien la hizo,
+ni por qué se cobró menos de lo que marcaba la etiqueta. Un mostrador real
+necesita las cuatro cosas, y un negocio que paga comisiones las necesita
+registradas en el momento, no reconstruidas después.
+
+### IMPLEMENTADO
+- **Cliente en el POS**: sin identificar, buscar o seleccionar uno del CRM. Se
+  reutiliza `Customer`; no hay un segundo modelo de cliente.
+- **Operador ≠ vendedor.** `request.user` es quien opera y firma la auditoría;
+  `Order.sold_by` es a quién se acredita la venta.
+- **Reasignación de vendedor** con `sales.pos.assign_seller`.
+- **`Membership.commission_rate_percent`** — la comisión pertenece al empleo.
+- **`SalesCommission`** — el ledger: una fila por venta, congelada.
+- **Descuentos**: cupón existente reutilizado, o descuento manual con
+  `sales.discounts.apply`, motivo obligatorio y autor registrado.
+- **`POST /api/admin/pos/preview/`** — el total del servidor antes de cobrar.
+- **Efectivo y vuelto**, calculados en el servidor.
+- **Datos opcionales acotados**: `payment_reference`, `external_reference`,
+  `sale_notes`.
+- **`/admin/sales/commissions`** — devengado por vendedor y porcentajes del equipo.
+- Cuatro capabilities nuevas, todas **ACTIVE**.
+- 59 tests nuevos (1676 → **1735 OK**, 4 omitidos).
+
+### Decisiones
+- **La comisión es del empleo, no de la persona.** Un mismo humano vende para
+  dos empresas en condiciones distintas, así que una tasa en `User` no podría
+  decir la verdad. Tampoco va en el rol: dos vendedores de una misma tienda
+  suelen tener tratos distintos.
+- **`SalesCommission` es una tabla, no tres columnas en `Order`.** Una comisión
+  no es una propiedad de la venta: es una obligación con vida propia —se
+  devenga, puede anularse cuando el producto vuelve, y algún día se liquida en
+  lote. Nada de eso cabe en tres campos colgando de un pedido.
+- **Todo se congela al vender.** Tasa, base e importe son snapshots. Si mañana
+  alguien pasa de 3% a 5%, lo de ayer sigue en 3%: la empresa acordó pagar 3%
+  por esas ventas, y recalcularlas desde la tasa de hoy reescribiría una deuda
+  a posteriori.
+- **La comisión se calcula sobre la venta NETA.** El descuento se resta primero:
+  pagar un porcentaje de dinero que la tienda no cobró haría que cada descuento
+  costara más de lo que aparenta.
+- **Tasa 0% no escribe fila.** Un ledger lista obligaciones, y «no se debe nada»
+  no es una. Una tabla de ceros habría que filtrarla en cada informe.
+- **Un cupón no necesita permiso; un descuento manual sí.** La empresa configuró
+  la promoción de antemano, así que aplicarla no es una decisión del cajero.
+  Teclear un precio sí lo es, y por eso lleva permiso, motivo y autor.
+- **Cupón y descuento manual no se apilan.** Apilar es una política de negocio
+  con reglas —cuál se aplica primero, si componen, cuál es el suelo—. Adivinar
+  una aquí habría metido una política sin examinar dentro de una caja.
+- **El total lo calcula el servidor, también en el preview.** Recalcular el
+  porcentaje del cupón en el navegador significaría que el número que el
+  operador lee en voz alta lo produce un código distinto del que cobra, y el
+  cliente está delante cuando no coinciden.
+- **Sin efectivo no hay venta en efectivo, y sin efectivo no hay vuelto en
+  tarjeta.** Los campos quedan NULL: escribir cero haría indistinguible «pagó
+  justo en efectivo» de «no pagó en efectivo».
+- **Campos con nombre, no un JSON cajón de sastre.** Un blob libre se convierte
+  en el sitio donde cae todo y nada se puede validar, reportar ni borrar.
+
+### Corregido durante la fase
+- **El preview era inusable para ventas en efectivo.** Validaba el efectivo
+  recibido, así que exigía contar el dinero *antes* de poder mostrar el total —
+  justo al revés de para qué sirve un preview. Ahora el preview no lo valida y
+  la venta sí.
+
+### PENDIENTE (Comercial C2)
+- Pagos mixtos (efectivo + tarjeta) · liquidación y pago de comisiones ·
+  devoluciones, que deberán anular la comisión con un movimiento compensatorio ·
+  comisión dividida entre dos vendedores · grupos de clientes · caja y arqueo.
+
+---
+
 ## Fase Comercial C1.1 — Hardening previo al merge
 
 **Estado: IMPLEMENTADO.** Sin migraciones nuevas.

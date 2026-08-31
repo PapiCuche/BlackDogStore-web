@@ -703,8 +703,20 @@ restar lo que nadie había registrado*.
 - **Punto de reposición y cantidad sugerida** por sucursal, con el plazo de
   entrega que configure el negocio. Sugiere; no compra nada.
 
-Pantallas: `/admin/sales` (facturación, canales, más vendidos, reposición) y
-`/admin/sales/pos` (la caja).
+- **Cliente, vendedor y comisión en cada venta.** El POS registra a quién se le
+  vendió, a quién se le acredita —que no siempre es quien cobra— y cuánto genera
+  de comisión, congelado en el momento: cambiar un porcentaje mañana no reescribe
+  lo de ayer.
+- **Descuentos con reglas.** Un cupón que la empresa configuró lo aplica
+  cualquiera; teclear un descuento a mano necesita permiso, motivo y queda
+  firmado. Los dos juntos se rechazan: apilar promociones es una política que el
+  negocio debe decidir, no la caja.
+- **Efectivo y vuelto los calcula el servidor**, y en tarjeta simplemente no
+  existen en lugar de figurar como cero.
+
+Pantallas: `/admin/sales` (facturación, canales, más vendidos, reposición),
+`/admin/sales/pos` (la caja) y `/admin/sales/commissions` (devengado por vendedor
+y porcentajes del equipo).
 
 > **No hay margen ni utilidad, a propósito.** La plataforma no registra cuánto
 > costó nada, así que cualquier cifra de rentabilidad sería inventada. Se

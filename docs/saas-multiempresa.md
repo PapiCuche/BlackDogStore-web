@@ -2529,6 +2529,158 @@ el cuerpo, y su cookie **no** abre la superficie nativa.
 
 ---
 
+## 8-undevicies. Venta enriquecida y comisiones (Fase Comercial C1.2)
+
+Migraciones **0036** (esquema) y **0037** (capacidades).
+
+### Operador y vendedor son dos personas
+
+```
+OPERADOR   request.user       quien trabajó la caja · firma la auditoría
+VENDEDOR   Order.sold_by      a quién se acredita la venta · cobra la comisión
+```
+
+Normalmente coinciden, y por eso el vendedor viene preseleccionado: nadie debería
+elegirse a sí mismo en una lista para cada venta. Pero un supervisor registrando
+la venta que hizo un compañero es una tienda normal, y fingir lo contrario deja
+dos opciones malas: perder la atribución, o que el personal comparta usuario.
+
+Reasignar está detrás de `sales.pos.assign_seller` porque **mueve dinero**: sin
+esa puerta, cualquiera podría acreditar cualquier comisión a cualquiera,
+incluido a sí mismo.
+
+### La comisión pertenece al empleo
+
+`Membership.commission_rate_percent`, no `User.commission_rate`.
+
+Un mismo humano puede vender para dos empresas con tratos distintos —3% aquí, 5%
+allá—, así que una tasa en `User` no podría expresar la verdad. Tampoco va en el
+rol: dos vendedores de una misma tienda suelen estar en condiciones distintas, y
+atarlo al rol obligaría a crear un rol por tarifa.
+
+Cero es el valor por defecto y significa exactamente eso: esta persona no cobra
+comisión. No es «sin configurar».
+
+### `SalesCommission` es una tabla, y esa es la decisión
+
+Tres columnas en `Order` habrían sido menos código hoy y una migración mañana.
+
+Una comisión no es una propiedad de la venta: es una **obligación con vida
+propia**. Se devenga ahora, puede anularse cuando el producto vuelve, y algún día
+se liquida en lote junto a docenas más. Nada de eso cabe colgando del pedido que
+la originó.
+
+**Todo se congela al vender** — tasa, base e importe:
+
+```
+venta de ayer     tasa 3%   →   comisión al 3%, para siempre
+hoy pasa a 5%     →   las de mañana al 5%; las de ayer no se tocan
+```
+
+La empresa acordó pagar 3% por aquellas ventas. Recalcularlas desde la tasa
+actual reescribiría una deuda a posteriori, y un informe que lo hiciera estaría
+mintiendo con aritmética.
+
+`seller_name_snapshot` existe por lo mismo: `sold_by` puede quedar en NULL si se
+elimina la cuenta, y un ledger que olvida de quién era el dinero no es un ledger.
+
+**No se escribe fila con tasa 0.** Un ledger lista obligaciones, y «no se debe
+nada» no es una. Una tabla de ceros habría que filtrarla en cada informe que la
+lea.
+
+### La comisión va sobre la venta neta
+
+```
+base   = subtotal − descuento
+importe = base × tasa / 100
+```
+
+El descuento se resta **primero**. Una tienda que regaló el 10% no cobró ese
+dinero, y pagar un porcentaje de él haría que cada descuento costara más de lo
+que aparenta. Decimal en todo el camino, cuantizado al céntimo: un tercio de
+céntimo perdido por venta es un ledger que no cuadra nunca.
+
+### Dos fuentes de descuento, y sólo una a la vez
+
+| Fuente | Permiso | Por qué |
+|---|---|---|
+| Cupón | ninguno extra | la empresa configuró esa promoción de antemano |
+| Manual | `sales.discounts.apply` | teclear un precio es una decisión |
+
+Un cupón válido lo aplica cualquiera con `sales.pos.use`: honrar una promoción
+que el negocio ya definió no es una decisión del cajero. Un descuento manual sí
+lo es, así que lleva **permiso, motivo obligatorio y autor registrado**, más su
+propia entrada de auditoría.
+
+**No se apilan.** Pedir los dos devuelve 400. Apilar promociones es una política
+de negocio con reglas —cuál se aplica primero, si componen, cuál es el suelo— y
+adivinar una aquí habría metido una política sin examinar dentro de una caja
+registradora.
+
+`discount_source` guarda de dónde vino el dinero descontado, separado del
+`discount_amount` que dice cuánto: uno es el hecho, el otro la razón, y un
+auditor pregunta por los dos.
+
+### El total lo calcula el servidor, incluido el preview
+
+`POST /api/admin/pos/preview/` corre **la misma** resolución y **la misma**
+aritmética que la venta, y no escribe nada: ni pedido, ni stock, ni clave de
+idempotencia consumida.
+
+Recalcular el porcentaje del cupón en el navegador significaría que el número que
+el operador lee en voz alta lo produce un código distinto del que después cobra —
+y el cliente está delante cuando los dos no coinciden.
+
+El preview **no** valida el efectivo, y la venta sí. La primera versión lo
+validaba en ambos, lo que exigía contar el dinero antes de poder ver el total:
+justo al revés de para qué sirve un preview.
+
+### Efectivo y vuelto
+
+```
+vuelto = recibido − total        (calculado en el servidor)
+```
+
+Para tarjeta, transferencia y online los dos campos quedan en **NULL**. Escribir
+cero haría indistinguible «pagó justo en efectivo» de «no pagó en efectivo», y
+esa diferencia importa cuando alguien cuadra una caja.
+
+Las sugerencias de billete se calculan desde el total, no desde una escalera fija:
+una lista pensada para un teléfono no sirve para un cable.
+
+### Idempotencia ampliada
+
+La huella de C1.1 ahora incluye el vendedor, el descuento **resuelto**, y las
+referencias y observaciones escritas al lado. Sin el vendedor dentro, un
+reintento con otro vendedor devolvería el pedido anterior y diría que salió bien
+mientras la comisión se quedaba con la persona equivocada.
+
+| | Resultado |
+|---|---|
+| Misma clave, misma venta | devuelve la venta, `created=false` |
+| Misma clave, otro vendedor / cupón / cliente / nota | **409** |
+
+### Campos con nombre, no un JSON
+
+`payment_reference`, `external_reference` y `sale_notes` son columnas concretas.
+Un blob libre se convierte en el sitio donde cae todo y donde nada se puede
+validar, reportar ni borrar.
+
+`sale_notes` es sobre **esta venta**; `Customer.notes` es el expediente
+permanente de la persona. No son lo mismo y no deben mezclarse. Ninguna de las
+dos sale por una API pública.
+
+### Lo que no se hizo, y por qué
+
+**Pagos mixtos** (efectivo + tarjeta) necesitan `Payment` y `PaymentAllocation`,
+que es un dominio, no un campo. **Liquidación de comisiones** necesita un flujo
+que realmente pague; por eso el estado inicial es `accrued` y no existe `paid` —
+inventarlo sería afirmar que hay un pago donde no lo hay. **Devoluciones**
+deberán anular la comisión con un movimiento compensatorio, nunca borrando la
+fila. Todo ello es C2.
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

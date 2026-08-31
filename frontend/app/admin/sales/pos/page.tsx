@@ -45,11 +45,15 @@ import {
 import {
   PosConflictError,
   PosStockError,
+  fetchCustomers,
   fetchPosContext,
   posLookup,
+  posPreview,
   posSale,
   posSearch,
+  type CustomerRow,
   type PosContext,
+  type PosPreview,
   type PosProduct,
   type PosSaleResult,
 } from "../../lib/internal-api";
@@ -77,6 +81,24 @@ function newKey() {
     : `pos-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
 }
 
+/**
+ * Round-number notes an operator is likely to be handed, for THIS total.
+ *
+ * Computed rather than hardcoded: a fixed ladder that suits a phone sale is
+ * useless for a cable, and a SaaS cannot assume either price range.
+ */
+function cashSuggestions(total: number): number[] {
+  if (!Number.isFinite(total) || total <= 0) return [];
+  const exact = Math.ceil(total * 100) / 100;
+  const out = new Set<number>([exact]);
+  for (const step of [10, 20, 50, 100, 200]) {
+    const up = Math.ceil(total / step) * step;
+    if (up >= total) out.add(up);
+    if (out.size >= 4) break;
+  }
+  return [...out].sort((a, b) => a - b).slice(0, 4);
+}
+
 const FIELD =
   "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
 
@@ -101,6 +123,28 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const [term, setTerm] = useState("");
   const [found, setFound] = useState<PosProduct[]>([]);
 
+  // --- the enriched sale ---------------------------------------------------
+  const [customer, setCustomer] = useState<CustomerRow | null>(null);
+  const [customerTerm, setCustomerTerm] = useState("");
+  const [customerHits, setCustomerHits] = useState<CustomerRow[]>([]);
+  const [pickingCustomer, setPickingCustomer] = useState(false);
+
+  const [seller, setSeller] = useState<number | null>(null);
+
+  const [couponCode, setCouponCode] = useState("");
+  const [manualType, setManualType] = useState<"" | "percent" | "amount">("");
+  const [manualValue, setManualValue] = useState("");
+  const [manualReason, setManualReason] = useState("");
+
+  const [received, setReceived] = useState("");
+  const [paymentReference, setPaymentReference] = useState("");
+  const [saleNotes, setSaleNotes] = useState("");
+
+  // Priced BY THE SERVER. The browser shows what the till will actually
+  // charge, rather than a number it computed itself and hoped matched.
+  const [preview, setPreview] = useState<PosPreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
   const scanRef = useRef<HTMLInputElement | null>(null);
   // Held across renders and across retries: the same basket keeps one key.
   const keyRef = useRef<string>(newKey());
@@ -114,6 +158,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         if (cancelled) return;
         setContext(c);
         setBranch(c.default_branch);
+        setSeller(c.seller.id);
         setPayment(c.payment_methods[0]?.value ?? "cash");
         setFatal(null);
       } catch (err) {
@@ -206,8 +251,84 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     };
   }, [term, branch, companyId]);
 
-  const total = lines.reduce((sum, l) => sum + Number(l.price) * l.quantity, 0);
+  // Customer search, debounced like the product one.
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (customerTerm.trim().length < 2) {
+        setCustomerHits([]);
+        return;
+      }
+      void (async () => {
+        try {
+          const page = await fetchCustomers(companyId, { search: customerTerm.trim() });
+          if (!cancelled) setCustomerHits(page.results.slice(0, 8));
+        } catch {
+          if (!cancelled) setCustomerHits([]);
+        }
+      })();
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [customerTerm, companyId]);
+
+  // THE TOTAL COMES FROM THE SERVER.
+  //
+  // Recomputing a coupon percentage in the browser would mean the number the
+  // operator reads aloud is produced by different code from the number that is
+  // charged — and the customer is standing there when they disagree.
+  useEffect(() => {
+    let cancelled = false;
+    if (branch === null || lines.length === 0) {
+      const timer = setTimeout(() => {
+        setPreview(null);
+        setPreviewError(null);
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const p = await posPreview(companyId, {
+            branch,
+            items: lines.map((l) => ({ product: l.product, quantity: l.quantity })),
+            customer: customer?.id ?? null,
+            seller,
+            payment_method: payment,
+            coupon_code: couponCode.trim(),
+            manual_discount_type: manualType,
+            manual_discount_value: manualValue || null,
+            discount_reason: manualReason,
+          });
+          if (!cancelled) {
+            setPreview(p);
+            setPreviewError(null);
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setPreview(null);
+            setPreviewError(err instanceof Error ? err.message : "No se pudo calcular.");
+          }
+        }
+      })();
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    branch, lines, customer, seller, payment, couponCode,
+    manualType, manualValue, manualReason, companyId,
+  ]);
+
+  const subtotal = lines.reduce((sum, l) => sum + Number(l.price) * l.quantity, 0);
+  const total = preview ? Number(preview.total) : subtotal;
+  const discount = preview ? Number(preview.discount) : 0;
   const units = lines.reduce((sum, l) => sum + l.quantity, 0);
+  const isCash = payment === "cash";
+  const change = isCash && received ? Number(received) - total : null;
 
   function setQuantity(productId: number, quantity: number) {
     setLines((prev) =>
@@ -219,19 +340,38 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
   async function charge() {
     if (charging || !lines.length || branch === null || !terms) return;
+    if (isCash && (received === "" || Number(received) < total)) return;
     setCharging(true);
     setFeedback(null);
     try {
       const result = await posSale(companyId, {
         branch,
         items: lines.map((l) => ({ product: l.product, quantity: l.quantity })),
+        customer: customer?.id ?? null,
+        seller,
         payment_method: payment,
         idempotency_key: keyRef.current,
         terms_confirmed: terms,
+        coupon_code: couponCode.trim(),
+        manual_discount_type: manualType,
+        manual_discount_value: manualValue || null,
+        discount_reason: manualReason,
+        amount_received: isCash ? received : null,
+        payment_reference: paymentReference,
+        sale_notes: saleNotes,
       });
       setDone(result);
       setLines([]);
       setTerms(false);
+      setCustomer(null);
+      setCouponCode("");
+      setManualType("");
+      setManualValue("");
+      setManualReason("");
+      setReceived("");
+      setPaymentReference("");
+      setSaleNotes("");
+      setPreview(null);
       // A new basket gets a new key. Retiring it only HERE is what makes a
       // retry of the request above idempotent rather than a second sale.
       keyRef.current = newKey();
@@ -286,15 +426,37 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             Venta registrada
           </p>
           <p className="font-display text-3xl text-white">{money(done.total)}</p>
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 text-left text-sm text-zinc-400">
+          <div className="space-y-1 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 text-left text-sm text-zinc-400">
             <p>Pedido #{done.order_id}</p>
-            <p>Sucursal: {done.branch.name}</p>
+            <p>Cliente: {done.customer || "Sin identificar"}</p>
             <p>Vendedor: {done.seller || "—"}</p>
-            <p>
+            <p>Sucursal: {done.branch.name}</p>
+            <p className="pt-2">Subtotal: {money(done.subtotal)}</p>
+            {Number(done.discount) > 0 ? (
+              <p>
+                Descuento: −{money(done.discount)}
+                {done.discount_reason ? ` (${done.discount_reason})` : ""}
+              </p>
+            ) : null}
+            <p className="text-zinc-200">Total: {money(done.total)}</p>
+            <p className="pt-2">
               Medio de pago:{" "}
               {context.payment_methods.find((m) => m.value === done.payment_method)?.label ??
                 done.payment_method}
             </p>
+            {/* Cash and change ONLY when cash was involved — a card sale has
+                no change, and printing a zero would imply otherwise. */}
+            {done.amount_received !== null ? (
+              <>
+                <p>Efectivo recibido: {money(done.amount_received)}</p>
+                <p className="text-zinc-200">Vuelto: {money(done.change_amount ?? "0")}</p>
+              </>
+            ) : null}
+            {done.payment_reference ? <p>Referencia: {done.payment_reference}</p> : null}
+            {/* Null unless this operator may see earnings. */}
+            {done.commission ? (
+              <p className="pt-2 text-zinc-500">Comisión: {money(done.commission)}</p>
+            ) : null}
           </div>
           <div className="flex flex-wrap justify-center gap-3">
             <button
@@ -515,6 +677,173 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               </div>
             )}
 
+            {/* --- cliente --------------------------------------------- */}
+            <div className="border-t border-white/[0.06] pt-3">
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                Cliente
+              </p>
+              {customer ? (
+                <div className="flex items-center justify-between rounded-lg bg-black/30 px-3 py-2 text-sm">
+                  <span className="text-zinc-200">{customer.display_name}</span>
+                  <button
+                    type="button"
+                    onClick={() => setCustomer(null)}
+                    className="text-xs text-zinc-600 transition hover:text-red-400"
+                  >
+                    Quitar
+                  </button>
+                </div>
+              ) : pickingCustomer ? (
+                <div className="space-y-2">
+                  <input
+                    autoFocus
+                    className={FIELD}
+                    placeholder="Nombre, documento o teléfono"
+                    value={customerTerm}
+                    onChange={(e) => setCustomerTerm(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        setPickingCustomer(false);
+                        setCustomerTerm("");
+                        focusScan();
+                      }
+                    }}
+                  />
+                  {customerHits.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => {
+                        setCustomer(c);
+                        setPickingCustomer(false);
+                        setCustomerTerm("");
+                        focusScan();
+                      }}
+                      className="block w-full rounded bg-black/30 px-3 py-2 text-left text-sm text-zinc-300 transition hover:bg-white/[0.05]"
+                    >
+                      {c.display_name}
+                      {c.document_number ? (
+                        <span className="ml-2 font-mono text-[11px] text-zinc-600">
+                          {c.document_number}
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
+                  <div className="flex gap-3 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPickingCustomer(false);
+                        setCustomerTerm("");
+                        focusScan();
+                      }}
+                      className="text-zinc-600 transition hover:text-zinc-400"
+                    >
+                      Cancelar
+                    </button>
+                    {context.can_manage_customers ? (
+                      <Link
+                        href="/admin/customers"
+                        className="text-zinc-500 underline underline-offset-2 transition hover:text-zinc-300"
+                      >
+                        Nuevo cliente
+                      </Link>
+                    ) : null}
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setPickingCustomer(true)}
+                  className="w-full rounded-lg border border-dashed border-white/[0.12] px-3 py-2 text-sm text-zinc-500 transition hover:border-white/25 hover:text-zinc-300"
+                >
+                  Buscar cliente (opcional)
+                </button>
+              )}
+            </div>
+
+            {/* --- vendedor -------------------------------------------- */}
+            <div className="border-t border-white/[0.06] pt-3">
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                Vendedor
+              </p>
+              {context.can_assign_seller && context.sellers.length ? (
+                <select
+                  value={seller ?? ""}
+                  onChange={(e) => setSeller(e.target.value ? Number(e.target.value) : null)}
+                  className={FIELD}
+                >
+                  {context.sellers.map((sl) => (
+                    <option key={sl.id} value={sl.id}>
+                      {sl.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                // Read-only when the operator may not reassign: offering a
+                // control the backend would refuse is worse than not offering it.
+                <p className="text-sm text-zinc-300">{context.seller.name}</p>
+              )}
+            </div>
+
+            {/* --- descuento ------------------------------------------- */}
+            <div className="space-y-2 border-t border-white/[0.06] pt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                Descuento
+              </p>
+              <input
+                className={FIELD}
+                placeholder="Código promocional"
+                value={couponCode}
+                disabled={manualType !== ""}
+                onChange={(e) => setCouponCode(e.target.value)}
+              />
+              {context.can_apply_discount ? (
+                <>
+                  <div className="flex gap-2">
+                    <select
+                      value={manualType}
+                      disabled={couponCode.trim() !== ""}
+                      onChange={(e) => {
+                        setManualType(e.target.value as "" | "percent" | "amount");
+                        if (!e.target.value) {
+                          setManualValue("");
+                          setManualReason("");
+                        }
+                      }}
+                      className={`${FIELD} flex-1`}
+                    >
+                      <option value="">Sin descuento manual</option>
+                      <option value="percent">Porcentaje</option>
+                      <option value="amount">Monto</option>
+                    </select>
+                    {manualType ? (
+                      <input
+                        type="number"
+                        min={0}
+                        className={`${FIELD} w-28`}
+                        placeholder={manualType === "percent" ? "%" : "S/"}
+                        value={manualValue}
+                        onChange={(e) => setManualValue(e.target.value)}
+                      />
+                    ) : null}
+                  </div>
+                  {manualType ? (
+                    <input
+                      className={FIELD}
+                      placeholder="Motivo del descuento (obligatorio)"
+                      maxLength={200}
+                      value={manualReason}
+                      onChange={(e) => setManualReason(e.target.value)}
+                    />
+                  ) : null}
+                </>
+              ) : null}
+              {previewError ? (
+                <p className="text-xs text-red-400">{previewError}</p>
+              ) : null}
+            </div>
+
             <div className="border-t border-white/[0.06] pt-3">
               <label
                 className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
@@ -536,11 +865,113 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               </select>
             </div>
 
-            <div className="flex items-baseline justify-between border-t border-white/[0.06] pt-3">
-              <span className="text-xs text-zinc-500">
-                {units} unidad{units === 1 ? "" : "es"}
-              </span>
-              <span className="font-display text-2xl text-white">{money(total)}</span>
+            {/* --- efectivo -------------------------------------------- */}
+            {isCash ? (
+              <div className="border-t border-white/[0.06] pt-3">
+                <label
+                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                  htmlFor="pos-received"
+                >
+                  Efectivo recibido
+                </label>
+                <input
+                  id="pos-received"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  className={FIELD}
+                  value={received}
+                  onChange={(e) => setReceived(e.target.value)}
+                />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {/* Calculated from THIS total, not a hardcoded ladder of
+                      amounts that only suits one price range. */}
+                  {cashSuggestions(total).map((amount) => (
+                    <button
+                      key={amount}
+                      type="button"
+                      onClick={() => setReceived(String(amount))}
+                      className="rounded border border-white/[0.08] px-2.5 py-1 text-xs text-zinc-400 transition hover:border-white/25 hover:text-zinc-200"
+                    >
+                      {money(amount)}
+                    </button>
+                  ))}
+                </div>
+                {change !== null && change >= 0 ? (
+                  <p className="mt-2 text-sm text-zinc-400">
+                    Vuelto: <span className="text-white">{money(change)}</span>
+                  </p>
+                ) : received !== "" ? (
+                  <p className="mt-2 text-sm text-amber-400/90">
+                    El efectivo no alcanza para el total.
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <div className="border-t border-white/[0.06] pt-3">
+                <label
+                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                  htmlFor="pos-ref"
+                >
+                  Referencia del pago (opcional)
+                </label>
+                <input
+                  id="pos-ref"
+                  className={FIELD}
+                  maxLength={100}
+                  placeholder="N.º de operación o autorización"
+                  value={paymentReference}
+                  onChange={(e) => setPaymentReference(e.target.value)}
+                />
+              </div>
+            )}
+
+            <div className="space-y-1 border-t border-white/[0.06] pt-3 text-sm">
+              <div className="flex justify-between text-zinc-500">
+                <span>Subtotal</span>
+                <span className="font-mono">{money(subtotal)}</span>
+              </div>
+              {discount > 0 ? (
+                <div className="flex justify-between text-emerald-400/80">
+                  <span>
+                    Descuento
+                    {preview?.discount_source === "coupon" ? " (cupón)" : ""}
+                  </span>
+                  <span className="font-mono">−{money(discount)}</span>
+                </div>
+              ) : null}
+              <div className="flex items-baseline justify-between pt-1">
+                <span className="text-xs text-zinc-500">
+                  {units} unidad{units === 1 ? "" : "es"}
+                </span>
+                <span className="font-display text-2xl text-white">{money(total)}</span>
+              </div>
+              {preview?.commission ? (
+                <p className="pt-1 text-right text-[11px] text-zinc-600">
+                  Comisión estimada: {money(preview.commission.amount)}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="border-t border-white/[0.06] pt-3">
+              <label
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                htmlFor="pos-notes"
+              >
+                Observaciones (opcional)
+              </label>
+              <textarea
+                id="pos-notes"
+                rows={2}
+                maxLength={1000}
+                className={FIELD}
+                placeholder="Nota interna sobre esta venta"
+                value={saleNotes}
+                onChange={(e) => setSaleNotes(e.target.value)}
+              />
+              <p className="mt-1 text-[11px] text-zinc-600">
+                Sobre esta venta, no sobre el cliente. Sólo control interno.
+              </p>
             </div>
 
             <label className="flex items-start gap-2 border-t border-white/[0.06] pt-3 text-xs text-zinc-400">
@@ -559,14 +990,21 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
             <button
               type="button"
-              disabled={charging || lines.length === 0 || branch === null || !terms}
+              disabled={
+                charging ||
+                lines.length === 0 ||
+                branch === null ||
+                !terms ||
+                previewError !== null ||
+                (isCash && (received === "" || Number(received) < total))
+              }
               onClick={() => void charge()}
               className="w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:border-emerald-500/50 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-transparent disabled:text-zinc-600"
             >
               {charging ? "Cobrando…" : "Cobrar"}
             </button>
             <p className="text-center text-[11px] text-zinc-600">
-              El precio y el total los calcula el servidor al cobrar.
+              El precio, el descuento y el total los calcula el servidor.
             </p>
           </div>
         </div>

@@ -493,3 +493,104 @@ class AdminSalesReplenishmentView(APIView):
                     'can_transfer': surplus,
                 })
         return sorted(options, key=lambda o: -o['can_transfer'])[:3]
+
+
+class AdminCommissionsView(APIView):
+    """
+    GET /api/admin/sales/commissions/ — what has been earned, by whom.
+
+    HISTORICAL COMMISSIONS COME FROM THE LEDGER, never from today's rate times
+    yesterday's sales. That distinction is the whole reason `SalesCommission`
+    exists: a seller moved from 3% to 5% is owed 3% on everything sold before
+    the change, and computing the total from the current rate would silently
+    rewrite what the company agreed to pay.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminSalesAnalyticsThrottle]
+
+    def get(self, request):
+        from .models import Membership, SalesCommission
+        from .pos_views import CAP_COMMISSIONS_VIEW
+
+        company, error = _context(request, CAP_COMMISSIONS_VIEW)
+        if error:
+            return error
+
+        branches = _selected_branches(request, company)
+        tz = _company_tz(company)
+        today = _company_today(company)
+
+        try:
+            window = max(1, min(int(request.query_params.get('days', 30)), 365))
+        except (TypeError, ValueError):
+            window = 30
+        since = today - timedelta(days=window - 1)
+        start, _ = _day_bounds(since, tz)
+        _, end = _day_bounds(today, tz)
+
+        rows = (
+            SalesCommission.objects
+            .filter(
+                company=company,
+                status=SalesCommission.STATUS_ACCRUED,
+                created_at__gte=start,
+                created_at__lt=end,
+            )
+            .select_related('order')
+        )
+        branch_ids = {b.pk for b in branches}
+        if branch_ids:
+            rows = rows.filter(order__fulfillment_branch_id__in=branch_ids)
+        else:
+            rows = rows.none()
+
+        by_seller = {}
+        for row in rows:
+            # Keyed by the SNAPSHOT, so a seller whose account was later removed
+            # still appears with what they earned.
+            key = (row.seller_id, row.seller_name_snapshot)
+            entry = by_seller.setdefault(key, {
+                'seller_id': row.seller_id,
+                'seller_name': row.seller_name_snapshot or '—',
+                'sales': 0,
+                'net_amount': Decimal('0.00'),
+                'commission': Decimal('0.00'),
+            })
+            entry['sales'] += 1
+            entry['net_amount'] += row.base_amount
+            entry['commission'] += row.amount
+
+        # The CURRENT rate, shown beside the historical total rather than used
+        # to compute it.
+        current_rates = {
+            m.user_id: str(m.commission_rate_percent)
+            for m in Membership.objects.filter(company=company, is_active=True)
+        }
+
+        results = sorted(
+            (
+                {
+                    **entry,
+                    'net_amount': str(entry['net_amount'].quantize(Decimal('0.01'))),
+                    'commission': str(entry['commission'].quantize(Decimal('0.01'))),
+                    'current_rate_percent': current_rates.get(entry['seller_id']),
+                }
+                for entry in by_seller.values()
+            ),
+            key=lambda r: Decimal(r['commission']),
+            reverse=True,
+        )
+
+        total = sum((Decimal(r['commission']) for r in results), Decimal('0.00'))
+        return Response({
+            'window_days': window,
+            'today': today.isoformat(),
+            'branches': [{'id': b.pk, 'name': b.name} for b in branches],
+            'total_commission': str(total.quantize(Decimal('0.01'))),
+            'note': (
+                'Las comisiones históricas salen del registro de cada venta, no '
+                'de la tasa actual. Cambiar la tasa no reescribe lo ya devengado.'
+            ),
+            'results': results,
+        })

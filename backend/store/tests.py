@@ -17961,6 +17961,11 @@ def _c1_sale(**kwargs):
     """
     kwargs.setdefault('terms_confirmed', True)
     kwargs.setdefault('idempotency_key', f'c1-auto-{next(_c1_key_counter):08d}')
+    # C1.2 made cash sales require the money on the counter. Tests that are not
+    # ABOUT cash should not have to count it out, so the helper pays generously;
+    # the ones that ARE about it pass their own amount and are not routed here.
+    if kwargs.get('payment_method', PaymentMethod.CASH) == PaymentMethod.CASH:
+        kwargs.setdefault('amount_received', Decimal('1000000.00'))
     return _pos.create_pos_sale(**kwargs)
 
 
@@ -18814,6 +18819,8 @@ class C11IdempotencyKeyTest(TestCase):
         self.seller, _ = _p2d_member(self.company, 'c11_seller', ['company.view', _C1_POS])
 
     def _sell(self, **kw):
+        # Paid by card: this class is about the KEY, not about counting cash.
+        kw.setdefault('payment_method', PaymentMethod.CARD)
         return _pos.create_pos_sale(
             actor=self.seller, company=self.company, branch=self.branch,
             items=[{'product': self.product.pk, 'quantity': 1}],
@@ -18892,6 +18899,7 @@ class C11IdempotencyKeyTest(TestCase):
         order_b, created = _pos.create_pos_sale(
             actor=seller_b, company=other, branch=other.default_inventory_branch,
             items=[{'product': other_product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD,
             terms_confirmed=True, idempotency_key=key,
         )
         self.assertTrue(created)
@@ -18919,6 +18927,7 @@ class C11IdempotencyRecoveryTest(TransactionTestCase):
         return _pos.create_pos_sale(
             actor=self.seller, company=self.company, branch=self.branch,
             items=[{'product': self.product.pk, 'quantity': quantity}],
+            payment_method=PaymentMethod.CARD,
             terms_confirmed=True, idempotency_key=key,
         )
 
@@ -18929,11 +18938,40 @@ class C11IdempotencyRecoveryTest(TransactionTestCase):
         Without the nested atomic the recovery path cannot run at all: the
         connection refuses the follow-up query. This pins the shape.
         """
+        import ast
         import inspect
+        import textwrap
 
-        source = inspect.getsource(_pos.create_pos_sale)
-        insert = source.split('except IntegrityError')[0]
-        self.assertIn('with transaction.atomic():', insert.split('try:')[-1])
+        # PARSED, not split on substrings. The first version chopped the source
+        # around `try:` and `except`, which held only while the function's lines
+        # stayed in that order — it broke the moment the body was reorganised,
+        # reporting a defect that was not there.
+        source = textwrap.dedent(inspect.getsource(_pos.create_pos_sale))
+        tree = ast.parse(source)
+
+        handlers = [n for n in ast.walk(tree) if isinstance(n, ast.Try)]
+        wrapped = False
+        for node in handlers:
+            catches_integrity = any(
+                getattr(h.type, 'id', '') == 'IntegrityError' for h in node.handlers
+            )
+            if not catches_integrity:
+                continue
+            # The guarded body must itself open an atomic block — that is the
+            # savepoint the recovery depends on.
+            for inner in ast.walk(ast.Module(body=node.body, type_ignores=[])):
+                if isinstance(inner, ast.With):
+                    for item in inner.items:
+                        call = item.context_expr
+                        if (
+                            isinstance(call, ast.Call)
+                            and getattr(call.func, 'attr', '') == 'atomic'
+                        ):
+                            wrapped = True
+        self.assertTrue(
+            wrapped,
+            'el INSERT debe ir en su propio savepoint dentro del try/except',
+        )
         self.assertNotIn('set_rollback', source)
 
     def test_recovery_returns_the_winning_order(self):
@@ -19282,6 +19320,7 @@ class C11ConsentTest(TestCase):
         )
 
     def _sell(self, **kw):
+        kw.setdefault('payment_method', PaymentMethod.CARD)
         return _pos.create_pos_sale(
             actor=self.seller, company=self.company, branch=self.branch,
             items=[{'product': self.product.pk, 'quantity': 1}],
@@ -19320,3 +19359,762 @@ class C11ConsentTest(TestCase):
         }, format='json')
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+
+# ===========================================================================
+# C1.2 — customers, sellers, commissions, discounts, cash
+# ===========================================================================
+
+from .models import (  # noqa: E402
+    Coupon as _Coupon,
+    DiscountSource,
+    SalesCommission,
+)
+
+_C12_ASSIGN = 'sales.pos.assign_seller'
+_C12_DISCOUNT = 'sales.discounts.apply'
+_C12_COMM_VIEW = 'sales.commissions.view'
+_C12_COMM_MANAGE = 'sales.commissions.manage'
+
+
+def _c12_rate(company, user, percent):
+    m = Membership.objects.get(company=company, user=user)
+    m.commission_rate_percent = Decimal(str(percent))
+    m.save(update_fields=['commission_rate_percent', 'updated_at'])
+    return m
+
+
+class C12SellerTest(TestCase):
+    """§9–14, §71 — the operator and the seller are two different people."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-seller', 'Empresa Seller')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Seller', '100.00')
+        _c1_stock(self.branch, self.product, 20)
+        self.cashier, _ = _p2d_member(self.company, 'c12_cashier', ['company.view', _C1_POS])
+        self.supervisor, _ = _p2d_member(
+            self.company, 'c12_supervisor', ['company.view', _C1_POS, _C12_ASSIGN],
+        )
+        self.colleague, _ = _p2d_member(self.company, 'c12_colleague', ['company.view', _C1_POS])
+
+    def _sell(self, actor, **kw):
+        kw.setdefault('may_assign_seller', False)
+        return _c1_sale(
+            actor=actor, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}], **kw,
+        )
+
+    def test_the_seller_defaults_to_whoever_is_at_the_till(self):
+        """Nobody should have to pick themselves off a list for every sale."""
+        order, _ = self._sell(self.cashier)
+        self.assertEqual(order.sold_by, self.cashier)
+
+    def test_a_supervisor_can_credit_a_colleague(self):
+        """
+        A supervisor ringing up a sale a colleague made is an ordinary shop.
+        Without this, the attribution is lost or staff share logins.
+        """
+        order, _ = self._sell(
+            self.supervisor, seller_id=self.colleague.pk, may_assign_seller=True,
+        )
+        self.assertEqual(order.sold_by, self.colleague)
+
+    def test_a_cashier_cannot_credit_somebody_else(self):
+        """It moves money: without the gate anyone could credit anyone."""
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(self.cashier, seller_id=self.colleague.pk)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_naming_yourself_needs_no_permission(self):
+        order, _ = self._sell(self.cashier, seller_id=self.cashier.pk)
+        self.assertEqual(order.sold_by, self.cashier)
+
+    def test_a_seller_from_another_company_is_not_found(self):
+        other = _p3_company('c12-seller-b', 'Empresa Seller B')
+        outsider, _ = _p2d_member(other, 'c12_outsider', ['company.view', _C1_POS])
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(self.supervisor, seller_id=outsider.pk, may_assign_seller=True)
+
+    def test_an_inactive_membership_cannot_be_credited(self):
+        membership = Membership.objects.get(company=self.company, user=self.colleague)
+        membership.is_active = False
+        membership.save(update_fields=['is_active'])
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(self.supervisor, seller_id=self.colleague.pk, may_assign_seller=True)
+
+    def test_the_seller_name_is_frozen_on_the_order(self):
+        """
+        §14. `sold_by` can become NULL if the account is removed, and a ledger
+        that forgets whose money it was is not a ledger.
+        """
+        self.colleague.first_name = 'Ana'
+        self.colleague.last_name = 'Quispe'
+        self.colleague.save()
+        order, _ = self._sell(
+            self.supervisor, seller_id=self.colleague.pk, may_assign_seller=True,
+        )
+        self.assertEqual(order.seller_name_snapshot, 'Ana Quispe')
+
+        self.colleague.first_name = 'Anabel'
+        self.colleague.save()
+        order.refresh_from_db()
+        self.assertEqual(order.seller_name_snapshot, 'Ana Quispe')
+
+    def test_the_audit_records_both_the_operator_and_the_seller(self):
+        AdminAuditLog.objects.all().delete()
+        self._sell(self.supervisor, seller_id=self.colleague.pk, may_assign_seller=True)
+        entry = AdminAuditLog.objects.filter(action='pos_sale_completed').first()
+        self.assertEqual(entry.actor, self.supervisor)
+        self.assertEqual(entry.metadata['seller_id'], self.colleague.pk)
+        self.assertTrue(entry.metadata['reassigned_seller'])
+
+
+class C12CommissionTest(TestCase):
+    """§15–22, §72–73 — the obligation, frozen at the sale."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-comm', 'Empresa Comisión')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Comisión', '100.00')
+        _c1_stock(self.branch, self.product, 100)
+        self.seller, _ = _p2d_member(
+            self.company, 'c12_comm_seller',
+            ['company.view', _C1_POS, _C12_DISCOUNT],
+        )
+
+    def _sell(self, quantity=10, **kw):
+        kw.setdefault('may_apply_manual_discount', True)
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': quantity}], **kw,
+        )
+
+    def test_commission_is_on_the_net_sale(self):
+        """
+        §72: subtotal 1000, discount 100, rate 5% → base 900, commission 45.00.
+
+        The discount comes off FIRST. Paying a percentage of money the shop
+        never collected would make every discount cost more than it appears to.
+        """
+        _c12_rate(self.company, self.seller, '5.00')
+        order, _ = self._sell(
+            quantity=10,
+            manual_discount_type='amount', manual_discount_value='100',
+            discount_reason='cliente frecuente',
+        )
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(order.total, Decimal('900.00'))
+        self.assertEqual(commission.base_amount, Decimal('900.00'))
+        self.assertEqual(commission.amount, Decimal('45.00'))
+        self.assertEqual(commission.rate_percent, Decimal('5.00'))
+        self.assertEqual(commission.status, SalesCommission.STATUS_ACCRUED)
+
+    def test_commission_after_a_coupon(self):
+        """§73: 100 − 10% coupon = 90; 5% of that is 4.50, not 5.00."""
+        _c12_rate(self.company, self.seller, '5.00')
+        _Coupon.objects.create(company=self.company, code='DIEZ', discount_percent=10)
+        order, _ = self._sell(quantity=1, coupon_code='DIEZ')
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(order.total, Decimal('90.00'))
+        self.assertEqual(commission.amount, Decimal('4.50'))
+
+    def test_a_rate_change_does_not_rewrite_history(self):
+        """
+        §17, §72. The company agreed to pay 5% for those sales. Recomputing
+        them from today's rate would restate a debt after the fact.
+        """
+        _c12_rate(self.company, self.seller, '5.00')
+        order, _ = self._sell(quantity=10)
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(commission.amount, Decimal('50.00'))
+
+        _c12_rate(self.company, self.seller, '8.00')
+        commission.refresh_from_db()
+        self.assertEqual(commission.amount, Decimal('50.00'))
+        self.assertEqual(commission.rate_percent, Decimal('5.00'))
+
+    def test_a_zero_rate_writes_no_row(self):
+        """
+        §22. A ledger lists obligations, and "nothing is owed" is not one. A
+        table of zeros would have to be filtered out of every report.
+        """
+        _c12_rate(self.company, self.seller, '0.00')
+        order, _ = self._sell(quantity=1)
+        self.assertFalse(SalesCommission.objects.filter(order=order).exists())
+
+    def test_the_rate_belongs_to_the_employment_not_the_person(self):
+        """
+        §16. The same human sells for two businesses on different terms, so a
+        rate on `User` could not express the truth.
+        """
+        other = _p3_company('c12-comm-b', 'Empresa Comisión B')
+        Membership.objects.create(
+            user=self.seller, company=other, role='sales', is_active=True,
+            commission_rate_percent=Decimal('9.00'),
+        )
+        _c12_rate(self.company, self.seller, '3.00')
+        self.assertEqual(
+            _pos.commission_rate_for(self.company, self.seller), Decimal('3.00'),
+        )
+        self.assertEqual(_pos.commission_rate_for(other, self.seller), Decimal('9.00'))
+
+    def test_the_seller_name_is_frozen_on_the_commission(self):
+        _c12_rate(self.company, self.seller, '5.00')
+        self.seller.first_name = 'Rosa'
+        self.seller.last_name = 'Mendoza'
+        self.seller.save()
+        order, _ = self._sell(quantity=1)
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(commission.seller_name_snapshot, 'Rosa Mendoza')
+
+    def test_one_commission_per_order(self):
+        from django.db import IntegrityError, transaction
+
+        _c12_rate(self.company, self.seller, '5.00')
+        order, _ = self._sell(quantity=1)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                SalesCommission.objects.create(
+                    company=self.company, order=order, seller=self.seller,
+                    rate_percent=Decimal('5.00'), base_amount=Decimal('1.00'),
+                    amount=Decimal('0.05'),
+                )
+
+    def test_an_online_order_generates_no_commission(self):
+        """§58 — nobody sold it, so nobody is owed for it."""
+        online = _p3_order(self.company)
+        self.assertIsNone(online.sold_by_id)
+        self.assertFalse(SalesCommission.objects.filter(order=online).exists())
+
+    def test_a_failed_sale_leaves_no_commission(self):
+        """
+        §55. The commission is inside the same transaction: a ledger entry for
+        a sale that did not happen is worse than no entry at all.
+        """
+        _c12_rate(self.company, self.seller, '5.00')
+        # Above the 100 units on the shelf, below the per-line cap — so the
+        # failure is the shelf, which is what this test is about.
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            self._sell(quantity=500)
+        self.assertEqual(SalesCommission.objects.count(), 0)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+
+class C12DiscountTest(TestCase):
+    """§29–38, §74–76 — where money comes off, and on whose authority."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-disc', 'Empresa Descuento')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Descuento', '100.00')
+        _c1_stock(self.branch, self.product, 50)
+        self.cashier, _ = _p2d_member(self.company, 'c12_disc_cashier', ['company.view', _C1_POS])
+        self.manager, _ = _p2d_member(
+            self.company, 'c12_disc_manager', ['company.view', _C1_POS, _C12_DISCOUNT],
+        )
+
+    def _sell(self, actor, may_discount=False, **kw):
+        return _c1_sale(
+            actor=actor, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            may_apply_manual_discount=may_discount, **kw,
+        )
+
+    def test_a_coupon_needs_no_special_permission(self):
+        """
+        §33. The company configured that promotion in advance; honouring it is
+        not a decision the cashier is making.
+        """
+        _Coupon.objects.create(company=self.company, code='PROMO', discount_percent=20)
+        order, _ = self._sell(self.cashier, coupon_code='PROMO')
+        self.assertEqual(order.total, Decimal('80.00'))
+        self.assertEqual(order.discount_amount, Decimal('20.00'))
+        self.assertEqual(order.discount_source, DiscountSource.COUPON)
+        self.assertEqual(order.coupon_code, 'PROMO')
+
+    def test_a_manual_discount_without_permission_is_refused(self):
+        """§74 — typing a price is a decision, not part of working a till."""
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(
+                self.cashier, manual_discount_type='percent',
+                manual_discount_value='10', discount_reason='amigo',
+            )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_manual_discount_with_permission_works(self):
+        order, _ = self._sell(
+            self.manager, may_discount=True, manual_discount_type='percent',
+            manual_discount_value='10', discount_reason='producto con detalle',
+        )
+        self.assertEqual(order.discount_amount, Decimal('10.00'))
+        self.assertEqual(order.total, Decimal('90.00'))
+        self.assertEqual(order.discount_source, DiscountSource.MANUAL)
+        self.assertEqual(order.discount_reason, 'producto con detalle')
+        self.assertEqual(order.discount_authorized_by, self.manager)
+
+    def test_a_manual_discount_needs_a_reason(self):
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(
+                self.manager, may_discount=True, manual_discount_type='amount',
+                manual_discount_value='10', discount_reason='',
+            )
+
+    def test_a_discount_cannot_exceed_the_subtotal(self):
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(
+                self.manager, may_discount=True, manual_discount_type='amount',
+                manual_discount_value='500', discount_reason='exagerado',
+            )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_percentage_outside_its_range_is_refused(self):
+        for bad in ('0', '-5', '101'):
+            with self.assertRaises(_pos.DiscountError):
+                self._sell(
+                    self.manager, may_discount=True, manual_discount_type='percent',
+                    manual_discount_value=bad, discount_reason='x',
+                )
+
+    def test_a_coupon_and_a_manual_discount_together_are_refused(self):
+        """
+        §76. Stacking is a business policy with rules — which applies first,
+        whether they compound, what the floor is. Guessing one here would bake
+        an unexamined policy into a till.
+        """
+        _Coupon.objects.create(company=self.company, code='PROMO', discount_percent=10)
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(
+                self.manager, may_discount=True, coupon_code='PROMO',
+                manual_discount_type='percent', manual_discount_value='5',
+                discount_reason='ambos',
+            )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 0,
+        )
+
+    def test_another_companys_coupon_is_not_found(self):
+        """§75 — the same code may exist in two tenants, independently."""
+        other = _p3_company('c12-disc-b', 'Empresa Descuento B')
+        _Coupon.objects.create(company=other, code='AJENO', discount_percent=50)
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(self.cashier, coupon_code='AJENO')
+
+    def test_an_expired_coupon_is_refused(self):
+        _Coupon.objects.create(
+            company=self.company, code='VIEJO', discount_percent=10,
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(self.cashier, coupon_code='VIEJO')
+
+    def test_an_inactive_coupon_is_refused(self):
+        _Coupon.objects.create(
+            company=self.company, code='APAGADO', discount_percent=10, is_active=False,
+        )
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(self.cashier, coupon_code='APAGADO')
+
+    def test_a_discount_does_not_change_what_leaves_the_shelf(self):
+        """§56 — money changed, goods did not. Two sold is two out."""
+        order, _ = _c1_sale(
+            actor=self.manager, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 2}],
+            may_apply_manual_discount=True, manual_discount_type='percent',
+            manual_discount_value='50', discount_reason='promoción presencial',
+        )
+        exit_movement = StockMovement.objects.get(
+            order=order, movement_type=StockMovement.SALE_EXIT,
+        )
+        self.assertEqual(exit_movement.quantity, 2)
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 48,
+        )
+
+    def test_a_manual_discount_is_audited_separately(self):
+        AdminAuditLog.objects.all().delete()
+        self._sell(
+            self.manager, may_discount=True, manual_discount_type='percent',
+            manual_discount_value='10', discount_reason='autorización comercial',
+        )
+        entry = AdminAuditLog.objects.filter(action='pos_manual_discount_applied').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.actor, self.manager)
+        self.assertEqual(entry.metadata['reason'], 'autorización comercial')
+
+
+class C12CashTest(TestCase):
+    """§43–47, §77 — cash, change, and what "not cash" means."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-cash', 'Empresa Efectivo')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Efectivo', '90.00')
+        _c1_stock(self.branch, self.product, 20)
+        self.seller, _ = _p2d_member(self.company, 'c12_cash_seller', ['company.view', _C1_POS])
+
+    def _sell(self, **kw):
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}], **kw,
+        )
+
+    def test_change_is_calculated_by_the_server(self):
+        order, _ = self._sell(payment_method='cash', amount_received='100')
+        self.assertEqual(order.amount_received, Decimal('100.00'))
+        self.assertEqual(order.change_amount, Decimal('10.00'))
+
+    def test_not_enough_cash_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method='cash', amount_received='80')
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 0,
+        )
+
+    def test_cash_is_required_for_a_cash_sale(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method='cash', amount_received=None)
+
+    def test_exact_payment_gives_no_change(self):
+        order, _ = self._sell(payment_method='cash', amount_received='90')
+        self.assertEqual(order.change_amount, Decimal('0.00'))
+
+    def test_a_card_sale_records_no_cash(self):
+        """
+        §46. Writing zero would make "paid the exact amount in cash"
+        indistinguishable from "did not pay in cash".
+        """
+        order, _ = self._sell(payment_method='card')
+        self.assertIsNone(order.amount_received)
+        self.assertIsNone(order.change_amount)
+
+    def test_a_payment_reference_is_stored(self):
+        order, _ = self._sell(payment_method='transfer', payment_reference='OP-4471')
+        self.assertEqual(order.payment_reference, 'OP-4471')
+
+    def test_money_is_decimal_not_float(self):
+        """A third of a cent lost per sale is a ledger that never reconciles."""
+        received, change = _pos.resolve_cash('cash', Decimal('33.33'), '100')
+        self.assertIsInstance(change, Decimal)
+        self.assertEqual(change, Decimal('66.67'))
+
+
+class C12CustomerAndIdempotencyTest(TestCase):
+    """§70, §78 — the customer on the sale, and what makes a sale "the same"."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-cust', 'Empresa Cliente')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Cliente', '100.00')
+        _c1_stock(self.branch, self.product, 50)
+        self.seller, _ = _p2d_member(
+            self.company, 'c12_cust_seller',
+            ['company.view', _C1_POS, _C12_ASSIGN, _C12_DISCOUNT],
+        )
+        self.other_seller, _ = _p2d_member(
+            self.company, 'c12_cust_other', ['company.view', _C1_POS],
+        )
+        self.customer = _p4_customer(
+            self.company, first_name='Ana', last_name='Quispe',
+            phone='+51999111222', email='ana@example.invalid',
+            document_type='dni', document_number='12345678',
+        )
+
+    def _sell(self, **kw):
+        kw.setdefault('may_assign_seller', True)
+        kw.setdefault('may_apply_manual_discount', True)
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}], **kw,
+        )
+
+    def test_a_counter_sale_may_be_anonymous(self):
+        order, _ = self._sell()
+        self.assertIsNone(order.customer_id)
+
+    def test_a_selected_customer_is_snapshotted(self):
+        """
+        §8. `Order.customer` is who they are now; the `customer_*` fields are
+        who they were when they bought.
+        """
+        order, _ = self._sell(customer=self.customer.pk)
+        self.assertEqual(order.customer, self.customer)
+        self.assertEqual(order.customer_name, 'Ana Quispe')
+        self.assertEqual(order.document_number, '12345678')
+
+        self.customer.phone = '+51999000000'
+        self.customer.first_name = 'Anabel'
+        self.customer.save()
+        order.refresh_from_db()
+        self.assertEqual(order.customer_phone, '+51999111222')
+        self.assertEqual(order.customer_name, 'Ana Quispe')
+
+    def test_another_companys_customer_is_not_found(self):
+        other = _p3_company('c12-cust-b', 'Empresa Cliente B')
+        foreign = _p4_customer(other, first_name='Ajeno')
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(customer=foreign.pk)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_an_archived_customer_is_not_selectable(self):
+        self.customer.is_active = False
+        self.customer.save()
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(customer=self.customer.pk)
+
+    # -- idempotency ------------------------------------------------------
+
+    def test_the_same_key_and_the_same_sale_returns_it(self):
+        first, c1 = self._sell(idempotency_key='c12-same-0001', customer=self.customer.pk)
+        second, c2 = self._sell(idempotency_key='c12-same-0001', customer=self.customer.pk)
+        self.assertTrue(c1)
+        self.assertFalse(c2)
+        self.assertEqual(first.pk, second.pk)
+
+    def test_changing_the_seller_makes_it_a_different_sale(self):
+        """
+        §42. Without the seller in the fingerprint, a retry with a different
+        seller would return the earlier order and report success while the
+        commission stayed with the wrong person.
+        """
+        self._sell(idempotency_key='c12-seller-key1', seller_id=self.seller.pk)
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(idempotency_key='c12-seller-key1', seller_id=self.other_seller.pk)
+
+    def test_changing_the_customer_makes_it_a_different_sale(self):
+        other = _p4_customer(self.company, first_name='Otro', last_name='Cliente')
+        self._sell(idempotency_key='c12-cust-key1', customer=self.customer.pk)
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(idempotency_key='c12-cust-key1', customer=other.pk)
+
+    def test_changing_the_discount_makes_it_a_different_sale(self):
+        self._sell(idempotency_key='c12-disc-key1')
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(
+                idempotency_key='c12-disc-key1', manual_discount_type='percent',
+                manual_discount_value='10', discount_reason='cambio',
+            )
+
+    def test_changing_the_coupon_makes_it_a_different_sale(self):
+        _Coupon.objects.create(company=self.company, code='C12A', discount_percent=5)
+        _Coupon.objects.create(company=self.company, code='C12B', discount_percent=15)
+        self._sell(idempotency_key='c12-coup-key1', coupon_code='C12A')
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(idempotency_key='c12-coup-key1', coupon_code='C12B')
+
+    def test_changing_the_notes_makes_it_a_different_sale(self):
+        self._sell(idempotency_key='c12-note-key1', sale_notes='primera')
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(idempotency_key='c12-note-key1', sale_notes='segunda')
+
+    def test_optional_fields_are_stored(self):
+        order, _ = self._sell(
+            sale_notes='Cliente pidió factura después.',
+            external_reference='ORD-EXT-99',
+            payment_method='transfer', payment_reference='OP-123',
+        )
+        self.assertEqual(order.sale_notes, 'Cliente pidió factura después.')
+        self.assertEqual(order.external_reference, 'ORD-EXT-99')
+        self.assertEqual(order.payment_reference, 'OP-123')
+
+
+class C12ApiTest(TestCase):
+    """§40, §79 — the endpoints, and what a caller cannot reach through them."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c12-api-a', 'Empresa API A')
+        self.b = _p3_company('c12-api-b', 'Empresa API B')
+        self.pa = _c1_product(self.a, 'Producto API A', '100.00')
+        self.pb = _c1_product(self.b, 'Producto API B', '100.00')
+        _c1_stock(self.a.default_inventory_branch, self.pa, 50)
+        _c1_stock(self.b.default_inventory_branch, self.pb, 50)
+
+        self.cashier, _ = _p2d_member(self.a, 'c12_api_cashier', ['company.view', _C1_POS])
+        self.admin, _ = _p2d_member(
+            self.a, 'c12_api_admin',
+            ['company.view', _C1_POS, _C12_ASSIGN, _C12_DISCOUNT,
+             _C12_COMM_VIEW, _C12_COMM_MANAGE],
+        )
+        self.customer_b = _p4_customer(self.b, first_name='Ajeno')
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _body(self, **kw):
+        body = {
+            'branch': self.a.default_inventory_branch.pk,
+            'items': [{'product': self.pa.pk, 'quantity': 1}],
+            'payment_method': 'card',
+        }
+        body.update(kw)
+        return body
+
+    # -- preview ----------------------------------------------------------
+
+    def test_the_preview_prices_without_writing_anything(self):
+        res = self._as(self.cashier).post(
+            '/api/admin/pos/preview/', self._body(), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(res.data['total']), Decimal('100.00'))
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_the_preview_applies_a_coupon(self):
+        _Coupon.objects.create(company=self.a, code='PRE10', discount_percent=10)
+        res = self._as(self.cashier).post(
+            '/api/admin/pos/preview/', self._body(coupon_code='PRE10'), format='json',
+        )
+        self.assertEqual(Decimal(res.data['discount']), Decimal('10.00'))
+        self.assertEqual(Decimal(res.data['total']), Decimal('90.00'))
+        self.assertEqual(res.data['discount_source'], 'coupon')
+
+    def test_the_preview_refuses_what_the_sale_would_refuse(self):
+        """A preview that showed a total the charge then declined is worse than
+        no preview."""
+        res = self._as(self.cashier).post(
+            '/api/admin/pos/preview/',
+            self._body(manual_discount_type='percent', manual_discount_value='10',
+                       discount_reason='sin permiso'),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_the_preview_hides_commission_without_permission(self):
+        _c12_rate(self.a, self.cashier, '5.00')
+        res = self._as(self.cashier).post(
+            '/api/admin/pos/preview/', self._body(), format='json',
+        )
+        self.assertIsNone(res.data['commission'])
+
+        res = self._as(self.admin).post(
+            '/api/admin/pos/preview/', self._body(), format='json',
+        )
+        self.assertIsNotNone(res.data['commission'])
+
+    # -- context ----------------------------------------------------------
+
+    def test_the_context_reports_what_this_operator_may_do(self):
+        cashier = self._as(self.cashier).get('/api/admin/pos/context/').data
+        self.assertFalse(cashier['can_assign_seller'])
+        self.assertFalse(cashier['can_apply_discount'])
+        # A list of colleagues is staffing information.
+        self.assertEqual(cashier['sellers'], [])
+
+        admin = self._as(self.admin).get('/api/admin/pos/context/').data
+        self.assertTrue(admin['can_assign_seller'])
+        self.assertTrue(admin['can_apply_discount'])
+        self.assertTrue(admin['sellers'])
+
+    # -- cross tenant -----------------------------------------------------
+
+    def test_a_foreign_customer_seller_coupon_or_product_is_refused(self):
+        client = self._as(self.admin)
+        seller_b, _ = _p2d_member(self.b, 'c12_seller_b', ['company.view', _C1_POS])
+        _Coupon.objects.create(company=self.b, code='AJENO', discount_percent=50)
+
+        for label, body in (
+            ('customer', self._body(customer=self.customer_b.pk)),
+            ('seller', self._body(seller=seller_b.pk)),
+            ('coupon', self._body(coupon_code='AJENO')),
+            ('product', self._body(items=[{'product': self.pb.pk, 'quantity': 1}])),
+            ('branch', self._body(branch=self.b.default_inventory_branch.pk)),
+        ):
+            res = client.post(
+                '/api/admin/pos/sales/',
+                {**body, 'idempotency_key': f'cross-{label}-key', 'terms_confirmed': True},
+                format='json',
+            )
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN,
+                 status.HTTP_404_NOT_FOUND),
+                label,
+            )
+            self.assertLess(res.status_code, 500, label)
+        self.assertEqual(Order.objects.count(), 0)
+
+    # -- commissions ------------------------------------------------------
+
+    def test_commissions_require_their_own_capability(self):
+        for path in ('/api/admin/sales/commissions/',
+                     '/api/admin/sales/commission-settings/'):
+            self.assertEqual(
+                self._as(self.cashier).get(path).status_code,
+                status.HTTP_403_FORBIDDEN, path,
+            )
+            self.assertEqual(
+                self._as(self.admin).get(path).status_code, status.HTTP_200_OK, path,
+            )
+
+    def test_an_admin_configures_a_rate(self):
+        membership = Membership.objects.get(company=self.a, user=self.cashier)
+        res = self._as(self.admin).patch(
+            f'/api/admin/sales/commission-settings/{membership.pk}/',
+            {'commission_rate_percent': '7.50'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        membership.refresh_from_db()
+        self.assertEqual(membership.commission_rate_percent, Decimal('7.50'))
+
+        entry = AdminAuditLog.objects.filter(action='commission_rate_changed').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.metadata['to'], '7.50')
+
+    def test_a_rate_outside_its_range_is_refused(self):
+        membership = Membership.objects.get(company=self.a, user=self.cashier)
+        for bad in ('-1', '101', 'abc'):
+            res = self._as(self.admin).patch(
+                f'/api/admin/sales/commission-settings/{membership.pk}/',
+                {'commission_rate_percent': bad}, format='json',
+            )
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, bad)
+
+    def test_another_companys_membership_is_not_configurable(self):
+        seller_b, _ = _p2d_member(self.b, 'c12_conf_b', ['company.view'])
+        membership_b = Membership.objects.get(company=self.b, user=seller_b)
+        res = self._as(self.admin).patch(
+            f'/api/admin/sales/commission-settings/{membership_b.pk}/',
+            {'commission_rate_percent': '99'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        membership_b.refresh_from_db()
+        self.assertEqual(membership_b.commission_rate_percent, Decimal('0.00'))
+
+    def test_the_commission_report_reads_the_ledger_not_the_current_rate(self):
+        """
+        §27, §64. A seller moved from 5% to 20% is owed 5% on what they already
+        sold; recomputing from today's rate would restate a settled debt.
+        """
+        _c12_rate(self.a, self.admin, '5.00')
+        _c1_sale(
+            actor=self.admin, company=self.a, branch=self.a.default_inventory_branch,
+            items=[{'product': self.pa.pk, 'quantity': 10}],
+        )
+        _c12_rate(self.a, self.admin, '20.00')
+
+        res = self._as(self.admin).get('/api/admin/sales/commissions/')
+        row = res.data['results'][0]
+        self.assertEqual(Decimal(row['commission']), Decimal('50.00'))
+        self.assertEqual(row['current_rate_percent'], '20.00')
+
+    def test_anonymous_is_refused_everywhere(self):
+        for path in ('/api/admin/pos/preview/', '/api/admin/sales/commissions/',
+                     '/api/admin/sales/commission-settings/'):
+            res = APIClient().get(path)
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN,
+                 status.HTTP_405_METHOD_NOT_ALLOWED),
+                path,
+            )
