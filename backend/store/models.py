@@ -337,6 +337,31 @@ class Order(models.Model):
     accepted_terms = models.BooleanField(default=False)
     accepted_warranty_policy = models.BooleanField(default=False)
 
+    # --- M5: durable checkout idempotency (native clients) -------------------
+    #
+    # WHY THIS IS A COLUMN AND NOT A CACHE.
+    #
+    # A double tap, a retried request or a timeout must not create two orders
+    # and two payment sessions. A disabled button improves the odds and
+    # guarantees nothing: the second request may already be in flight, and a
+    # cache that can be evicted or that lives in one process is not a guarantee
+    # either. The only thing that holds under concurrency is a uniqueness
+    # constraint the database enforces.
+    #
+    # NULL for every browser order, and that is deliberate rather than a gap:
+    # the web checkout has no client request key and is not being changed to
+    # acquire one. The partial constraint below therefore only binds rows that
+    # actually carry a key.
+    idempotency_key = models.CharField(max_length=100, blank=True, null=True, db_index=True)
+
+    # SHA-256 of the canonical request payload, so a replay of the same key with
+    # DIFFERENT contents can be refused (409) instead of silently answering with
+    # the first order. Returning the earlier order there would tell a client its
+    # new basket was accepted when it was not.
+    #
+    # A hash, not the payload: nothing about the buyer is stored twice.
+    idempotency_fingerprint = models.CharField(max_length=64, blank=True)
+
     class Meta:
         # Every admin list, dashboard KPI and report starts by narrowing to one
         # company and then filters by date or status — these match that shape.
@@ -345,6 +370,16 @@ class Order(models.Model):
             models.Index(fields=['company', 'paid_at']),
             models.Index(fields=['company', 'status']),
             models.Index(fields=['company', 'fulfillment_status']),
+        ]
+        constraints = [
+            # Scoped to company AND user, not to the key alone: two customers
+            # may generate the same client key, and a global constraint would
+            # make one of them fail on the other's checkout.
+            models.UniqueConstraint(
+                fields=['company', 'user', 'idempotency_key'],
+                condition=models.Q(idempotency_key__isnull=False),
+                name='unique_checkout_idempotency_per_customer',
+            ),
         ]
 
     def __str__(self):

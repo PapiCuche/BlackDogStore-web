@@ -68,6 +68,61 @@ _NOT_FOUND = 'Empresa no encontrada o sin acceso.'
 # Public storefront configuration
 # ---------------------------------------------------------------------------
 
+def build_storefront_config_payload(company) -> dict:
+    """
+    The PUBLIC configuration of one storefront.
+
+    Extracted in M5 so the Host-resolved web view and the slug-resolved
+    `/api/v1/storefront/<slug>/config/` return byte-identical bodies. Two
+    builders would drift, and the drift would be a shop whose app shows one
+    phone number and whose website shows another.
+
+    Everything here is commercial identity a customer is meant to read: the name
+    the business trades under, its legal name and tax id — both of which appear
+    on every boleta and factura it issues — its public contact channels and its
+    published policies.
+
+    NOTHING OPERATIONAL. `order_notification_email`, branch configuration,
+    payment credentials, capabilities and internal notes are not in this payload
+    and must not be added to it: this is the one response the platform serves to
+    anyone who asks.
+    """
+    identity = company_identity(company)
+    branding = company_branding(company)
+    settings_row = get_company_settings(company)
+
+    return {
+        'company': {
+            'name': identity.name,
+            'slug': company.slug,
+            'legal_name': identity.legal_name,
+            'tax_id': identity.tax_id,
+        },
+        'branding': {
+            'logo_url': branding.logo_url,
+            'colors': branding.colors,
+            'css_variables': branding.css_variables(),
+        },
+        'contact': {
+            'email': identity.contact_email,
+            'phone': identity.phone,
+            'whatsapp_number': identity.whatsapp_number,
+            'whatsapp_link': identity.whatsapp_link,
+            'website_url': identity.website_url,
+            'facebook_url': settings_row.facebook_url if settings_row else '',
+            'instagram_url': settings_row.instagram_url if settings_row else '',
+            'address': identity.legal_address,
+            'city': identity.city,
+        },
+        'policies': {
+            'warranty_text': identity.warranty_policy_text,
+            'warranty_url': identity.warranty_policy_url,
+            'terms_url': settings_row.terms_url if settings_row else '',
+            'privacy_url': settings_row.privacy_url if settings_row else '',
+        },
+    }
+
+
 class StorefrontConfigView(APIView):
     """
     GET /api/storefront/config/ — branding and public contact for this storefront.
@@ -94,40 +149,7 @@ class StorefrontConfigView(APIView):
                 {'detail': 'Tienda no encontrada.'}, status=status.HTTP_404_NOT_FOUND,
             )
 
-        identity = company_identity(company)
-        branding = company_branding(company)
-        settings_row = get_company_settings(company)
-
-        payload = {
-            'company': {
-                'name': identity.name,
-                'slug': company.slug,
-                'legal_name': identity.legal_name,
-                'tax_id': identity.tax_id,
-            },
-            'branding': {
-                'logo_url': branding.logo_url,
-                'colors': branding.colors,
-                'css_variables': branding.css_variables(),
-            },
-            'contact': {
-                'email': identity.contact_email,
-                'phone': identity.phone,
-                'whatsapp_number': identity.whatsapp_number,
-                'whatsapp_link': identity.whatsapp_link,
-                'website_url': identity.website_url,
-                'facebook_url': settings_row.facebook_url if settings_row else '',
-                'instagram_url': settings_row.instagram_url if settings_row else '',
-                'address': identity.legal_address,
-                'city': identity.city,
-            },
-            'policies': {
-                'warranty_text': identity.warranty_policy_text,
-                'warranty_url': identity.warranty_policy_url,
-                'terms_url': settings_row.terms_url if settings_row else '',
-                'privacy_url': settings_row.privacy_url if settings_row else '',
-            },
-        }
+        payload = build_storefront_config_payload(company)
         response = Response(payload)
         response['Vary'] = 'Host'
         return response

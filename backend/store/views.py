@@ -17,6 +17,7 @@ from .models import (
     BranchStock, Category, Product, Order, OrderItem, CartItem, Review, Coupon,
     UserProfile, assert_items_match_order,
 )
+from . import checkout_services as checkout
 from .company_settings import build_identity_snapshot
 from .inventory_services import record_sale_stock_movements
 from .tenancy import (
@@ -174,32 +175,40 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class CreateCheckoutSessionView(APIView):
+    """
+    The BROWSER checkout. Anonymous, session cart, tenant from the Host.
+
+    ⚠️  `AllowAny` IS DELIBERATE AND STAYS. This storefront takes guest orders
+    and has done since before accounts existed; requiring a login here would
+    turn away every buyer who does not want one. The native surface has a
+    different rule (`/api/v1/customer/<slug>/checkout/` requires a session)
+    because an app knows who is holding it — that is a difference between the
+    two audiences, not a policy this view should adopt.
+
+    M5 — the commercial reasoning moved to `checkout_services`. What is left
+    here is what is genuinely browser-specific: reading the session cart and
+    resolving the tenant from the Host. Every figure — prices, stock, coupon,
+    total — is now computed by the same code the app uses, so the two can no
+    longer disagree about what something costs.
+    """
+
     permission_classes = [permissions.AllowAny]
     throttle_classes = [CheckoutThrottle]
 
     def post(self, request):
-        secret_key = settings.STRIPE_SECRET_KEY
-        if not secret_key:
-            return Response(
-                {'detail': 'Stripe no está configurado. Define STRIPE_SECRET_KEY.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        stripe.api_key = secret_key
+        try:
+            checkout.require_stripe_configured()
+        except checkout.CheckoutError as exc:
+            return Response(exc.as_payload(), status=exc.status_code)
 
-        # Validate all commercial input fields (Phase 4.0)
         checkout_ser = CheckoutInputSerializer(data=request.data)
         if not checkout_ser.is_valid():
             return Response(checkout_ser.errors, status=status.HTTP_400_BAD_REQUEST)
-
         validated = checkout_ser.validated_data
         session_key = validated['session_key']
-        customer_name = validated['customer_name']
-        customer_email = validated['customer_email']
-        coupon_code = validated.get('coupon_code', '').upper().strip()
 
-        # Phase 2C — the checkout's tenant comes from the STOREFRONT, never from
-        # the request body. A `company` field in the payload is not consulted
-        # anywhere in this flow.
+        # The checkout's tenant comes from the STOREFRONT, never from the
+        # request body. A `company` field in the payload is not consulted here.
         storefront_company = resolve_storefront_company(request)
         if storefront_company is None:
             return Response(
@@ -207,193 +216,65 @@ class CreateCheckoutSessionView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # PHASE 2D — WHICH BRANCH SELLS THIS ORDER, decided ONCE, here.
-        #
-        # Resolved from the company's configuration, never from the request: the
-        # customer has no branch picker and must not acquire one by editing a
-        # payload. Stamped on the order so stock validation now, the webhook's
-        # sale exits later and the Kardex all refer to the same shelf.
-        #
-        # No branch means no sale. A company that has not said where it ships
-        # from cannot take an online order, and saying so is better than
-        # shipping from a shop that does not know it sold anything.
-        fulfillment_branch = company_fulfillment_branch(storefront_company)
-        if fulfillment_branch is None:
-            return Response(
-                {
-                    'detail': 'La tienda no tiene una sucursal de despacho configurada. '
-                              'Inténtelo más tarde.',
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Load cart scoped to session AND storefront, so a cart holding another
-        # tenant's products simply is not visible to this checkout.
-        cart_items = list(
-            storefront_cart_items(request, session_key).select_related('product')
-        )
-        if not cart_items:
-            return Response(
-                {'detail': 'El carrito está vacío.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Stock is checked against the FULFILLMENT BRANCH, never against
-        # Product.inventory. Buying 5 must fail when the shipping branch holds
-        # 2, even if the company as a whole holds 20 across other shops.
-        branch_stock = {
-            row.product_id: row.quantity
-            for row in BranchStock.objects.filter(
-                branch=fulfillment_branch,
-                product_id__in=[i.product_id for i in cart_items],
-            )
-        }
-
-        stock_errors = []
-        subtotal = Decimal('0.00')
-        for item in cart_items:
-            if not item.product.is_active:
-                stock_errors.append(f'{item.product.name} ya no está disponible.')
-                continue
-            if item.quantity <= 0:
-                stock_errors.append(f'Cantidad inválida para {item.product.name}.')
-                continue
-            available = branch_stock.get(item.product_id, 0)
-            if available < item.quantity:
-                stock_errors.append(
-                    f'Stock insuficiente para {item.product.name}. '
-                    f'Disponible: {available}, solicitado: {item.quantity}.'
-                )
-                continue
-            subtotal += item.product.price * item.quantity
-
-        if stock_errors:
-            return Response(
-                {'detail': 'Problemas con el carrito.', 'errors': stock_errors},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Validate and apply coupon (from backend, ignoring any frontend discount)
-        discount_multiplier = Decimal('1.0')
-        discount_amount = Decimal('0.00')
-        applied_coupon = None
-        if coupon_code:
-            coupon = storefront_coupon(request, coupon_code)
-            if coupon is None:
-                return Response(
-                    {'detail': 'Cupón no válido o inactivo.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if coupon.expires_at and coupon.expires_at < timezone.now():
-                return Response(
-                    {'detail': 'El cupón ha expirado.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            discount_multiplier = (
-                (Decimal('100') - Decimal(str(coupon.discount_percent))) / Decimal('100')
-            )
-            discount_amount = (subtotal * (1 - discount_multiplier)).quantize(Decimal('0.01'))
-            applied_coupon = coupon
-
-        total = (subtotal - discount_amount).quantize(Decimal('0.01'))
-
-        # Create order inside a transaction — cart NOT deleted, inventory NOT decremented
-        with transaction.atomic():
-            order = Order.objects.create(
-                company=storefront_company,
-                fulfillment_branch=fulfillment_branch,
-                # PHASE 3 — freeze WHO IS SELLING, right now.
-                #
-                # Every document this order ever produces reads its identity from
-                # here. Without the snapshot, a business that is later renamed or
-                # re-registers would silently rewrite what a receipt from months
-                # ago says it was — including the tax id on it.
-                company_snapshot=build_identity_snapshot(
-                    storefront_company, fulfillment_branch,
-                ),
-                user=request.user if request.user.is_authenticated else None,
-                customer_name=customer_name,
-                customer_email=customer_email,
-                total=total,
-                discount_amount=discount_amount,
-                coupon_code=applied_coupon.code if applied_coupon else '',
-                cart_session_key=session_key,
-                status=Order.Status.PENDING_PAYMENT,
-                paid=False,
-                # Phase 4.0: commercial fields (backend-validated, never from unvalidated request.data)
-                customer_phone=validated['customer_phone'],
-                document_type=validated['document_type'],
-                document_number=validated['document_number'],
-                delivery_method=validated['delivery_method'],
-                address_line=validated.get('address_line', ''),
-                city=validated.get('city', ''),
-                district=validated.get('district', ''),
-                reference=validated.get('reference', ''),
-                notes=validated.get('notes', ''),
-                receipt_type=validated['receipt_type'],
-                accepted_terms=validated['accepted_terms'],
-                accepted_warranty_policy=validated['accepted_warranty_policy'],
-            )
-            # Belt and braces: the cart queryset already guarantees this, but the
-            # invariant is asserted before writing rather than trusted.
-            assert_items_match_order(order, [item.product for item in cart_items])
-
-            # PHASE 4 — attach this sale to a CRM record.
-            #
-            # Best-effort BY DESIGN. `link_order_to_customer` swallows its own
-            # failures and returns None, leaving `order.customer` null, because a
-            # problem in the CRM must never cost a sale (§49). The order keeps
-            # every snapshot field it needs to be linked by hand afterwards.
-            #
-            # Matching is deterministic only — the account, or the document
-            # checkout just validated. Nothing is merged on a resemblance.
-            link_order_to_customer(
-                order,
-                actor=request.user if request.user.is_authenticated else None,
-            )
-
-            for item in cart_items:
-                OrderItem.objects.create(
-                    order=order,
-                    product=item.product,
-                    quantity=item.quantity,
-                    price=item.product.price,
-                )
-
-        # Create Stripe checkout session
-        line_items = []
-        for item in order.items.select_related('product').all():
-            unit_amount = int(item.price * discount_multiplier * 100)
-            line_items.append({
-                'price_data': {
-                    'currency': settings.STRIPE_CURRENCY,
-                    'product_data': {'name': item.product.name},
-                    'unit_amount': unit_amount,
-                },
-                'quantity': item.quantity,
-            })
-
-        domain = settings.STRIPE_DOMAIN
         try:
-            stripe_session = stripe.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=line_items,
-                mode='payment',
-                success_url=f"{domain}/checkout/success?session_id={{CHECKOUT_SESSION_ID}}",
-                cancel_url=f"{domain}/checkout?cancelled=true",
-                customer_email=customer_email or None,
-                # Informational only. The webhook CHECKS this against
-                # Order.company; it never resolves the tenant from it.
-                metadata={
-                    'order_id': str(order.id),
-                    'company_id': str(order.company_id),
-                    'branch_id': str(order.fulfillment_branch_id or ''),
-                },
+            branch = checkout.resolve_fulfillment_branch(storefront_company)
+
+            # Loaded scoped to session AND storefront, so a cart holding another
+            # tenant's products simply is not visible to this checkout.
+            cart_items = list(
+                storefront_cart_items(request, session_key).select_related('product')
+            )
+            if not cart_items:
+                raise checkout.CheckoutError('El carrito está vacío.')
+
+            lines = [
+                checkout.CheckoutLine(product=item.product, quantity=item.quantity)
+                for item in cart_items
+            ]
+            subtotal = checkout.validate_lines_and_subtotal(branch, lines)
+            pricing = checkout.price_checkout(
+                storefront_company, subtotal, validated.get('coupon_code', ''),
+            )
+
+            actor = request.user if request.user.is_authenticated else None
+            order = checkout.create_pending_order(
+                company=storefront_company,
+                branch=branch,
+                lines=lines,
+                pricing=pricing,
+                details=checkout.CustomerDetails(
+                    name=validated['customer_name'],
+                    email=validated['customer_email'],
+                    phone=validated['customer_phone'],
+                    document_type=validated['document_type'],
+                    document_number=validated['document_number'],
+                    delivery_method=validated['delivery_method'],
+                    receipt_type=validated['receipt_type'],
+                    accepted_terms=validated['accepted_terms'],
+                    accepted_warranty_policy=validated['accepted_warranty_policy'],
+                    address_line=validated.get('address_line', ''),
+                    city=validated.get('city', ''),
+                    district=validated.get('district', ''),
+                    reference=validated.get('reference', ''),
+                    notes=validated.get('notes', ''),
+                ),
+                actor=actor,
+                order_user=actor,
+                cart_session_key=session_key,
+                # No idempotency key: the browser contract has none and is not
+                # being changed to acquire one.
+                idempotency=None,
+            )
+        except checkout.CheckoutError as exc:
+            return Response(exc.as_payload(), status=exc.status_code)
+
+        line_items = checkout.build_stripe_line_items(order, pricing.discount_multiplier)
+        try:
+            stripe_session = checkout.create_stripe_session(
+                order, line_items, customer_email=validated['customer_email'],
             )
         except stripe.StripeError as e:
-            order.status = Order.Status.FAILED
-            order.payment_error = str(e)
-            order.save(update_fields=['status', 'payment_error'])
+            checkout.mark_stripe_failure(order, e)
             return Response(
                 {'detail': 'Error al crear la sesión de Stripe. Intenta de nuevo.'},
                 status=status.HTTP_502_BAD_GATEWAY,
