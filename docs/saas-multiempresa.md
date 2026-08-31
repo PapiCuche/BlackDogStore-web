@@ -2007,6 +2007,162 @@ existiera, y hay tests de regresión que lo demuestran.
 
 ---
 
+## 8-duodevicies. Autenticación nativa para clientes móviles (`/api/v1/auth/`)
+
+**Estado: IMPLEMENTADO (núcleo de sesión, BR-001A).** Sin migraciones. Aditiva.
+
+### El problema
+
+La autenticación web lee un JWT desde una cookie HttpOnly y aplica CSRF. Ambas
+cosas existen porque **el navegador adjunta cookies a peticiones que el usuario
+no inició**. Una app nativa no tiene ese comportamiento: guarda un token y lo
+envía deliberadamente, así que CSRF no protege de nada y la cookie sobra.
+
+Fusionar los dos mecanismos habría significado que la superficie web empieza a
+aceptar `Authorization: Bearer`. Ese es exactamente el cambio que nadie quiere
+hacer por accidente, así que van separados.
+
+### Endpoints
+
+| Método | Ruta | Auth |
+|---|---|---|
+| `POST` | `/api/v1/auth/login/` | Ninguna. Throttle `login` (5/min) |
+| `POST` | `/api/v1/auth/refresh/` | Ninguna. El refresh token es la credencial |
+| `POST` | `/api/v1/auth/logout/` | Ninguna. Best-effort |
+| `GET` | `/api/v1/auth/me/` | `V1BearerAuthentication` + `IsAuthenticated` |
+
+Tokens en el **cuerpo**, nunca en cookies. Hay test de que ninguna respuesta
+emite `Set-Cookie`.
+
+### `V1BearerAuthentication` — nunca global
+
+**No está en `DEFAULT_AUTHENTICATION_CLASSES` y no debe añadirse ahí.** Añadirla
+abriría en silencio `/api/admin/`, `/api/auth/me/` y todas las vistas privadas
+web a un token emitido para el contrato móvil.
+
+Cada vista privada v1 la declara explícitamente, así que habilitar Bearer en un
+endpoint es una línea visible en un diff. Hay tests de que un Bearer válido —
+incluso de un superadmin — devuelve 401/403 en la superficie legacy.
+
+### Login por email, y por qué es delicado
+
+La UI móvil pide correo. El login web pide usuario, porque `USERNAME_FIELD` es
+`username`. Se creó un contrato nativo propio en vez de forzar al usuario a
+recordar un username que le generó un formulario.
+
+**`email` NO es unique en esta base de datos.** `AUTH_USER_MODEL` es el `User`
+estándar de Django, cuya columna `email` no tiene constraint; el registro valida
+duplicados en el serializer, pero esa comprobación tiene una race y no dice nada
+de filas creadas antes, por `createsuperuser` o desde el admin.
+
+**No se añadió una migración unique.** Fallaría en cualquier instalación que ya
+tenga un duplicado, y se descubriría en producción durante el deploy. La
+ambigüedad se resuelve en la vista:
+
+| Coincidencias por email | Resultado |
+|---|---|
+| 0 | 401 genérico |
+| 1 | se comprueba la contraseña |
+| >1 | **401 genérico** + warning en logs, sin adivinar |
+
+Elegir "la primera" dejaría entrar como otra persona a quien registrara un
+correo duplicado.
+
+### Sin enumeración de cuentas
+
+Email desconocido, contraseña incorrecta, cuenta inactiva y email duplicado
+devuelven **el mismo 401 con el mismo cuerpo**. Cuando no hay usuario se
+verifica igualmente contra un hash dummy, para que el tiempo de respuesta no
+conteste la pregunta que el mensaje se niega a contestar.
+
+### Refresh con rotación
+
+`ROTATE_REFRESH_TOKENS` y `BLACKLIST_AFTER_ROTATION` ya estaban activos en el
+proyecto. El token enviado queda muerto al responder; el cliente debe **persistir
+el nuevo refresh ANTES** de usar el nuevo access, o un crash entre medias lo deja
+con una credencial en blacklist.
+
+Un usuario desactivado no puede extender su sesión aunque tuviera un refresh
+válido: la desactivación surte efecto en el siguiente refresh, no cuando el token
+caduque.
+
+### Logout best-effort
+
+Siempre 200. Sin refresh, con uno caducado, malformado o ya en blacklist: 200.
+No exige un access token vivo — justo cuando la sesión expira es cuando el
+usuario pulsa "cerrar sesión", y exigirlo lo haría imposible.
+
+La respuesta uniforme también evita que esto sea un oráculo sobre qué refresh
+tokens siguen vivos.
+
+### `available_companies` — relaciones verificadas, no reclamos del cliente
+
+Esta fue la decisión menos obvia de la fase.
+
+La migración 0015 **deliberadamente no creó Membership para clientes**: un
+comprador no es staff del tenant, y convertirlo en miembro habría sido una
+escalada de privilegios silenciosa. Esa decisión es correcta y no se revisa.
+
+Pero significa que las memberships por sí solas responden la pregunta equivocada
+para una app cuyo público **entero** son compradores: un cliente recibiría una
+lista vacía y la app concluiría que no tiene empresa.
+
+Así que se reportan las dos relaciones, **etiquetadas**, porque no son lo mismo:
+
+| `relation` | Origen | Significa |
+|---|---|---|
+| `member` | `Membership` activa, empresa activa | Es staff |
+| `customer` | `Customer` activo, empresa activa | Compra aquí |
+
+Si alguien es ambas cosas en la misma empresa, gana `member`.
+
+**No es autorización.** Es una constatación de hechos ya presentes en la base de
+datos, calculada desde las filas del propio usuario autenticado y **nunca** desde
+nada que el cliente enviara. Toda API privada futura debe revalidar membership
+por su cuenta: esta lista es lo que la app puede **mostrar y seleccionar**, jamás
+una concesión que pueda presentar como prueba.
+
+`is_superuser` se ignora a propósito. Un administrador de plataforma no recibe
+todos los tenants en un teléfono; si algún día hace falta será una función
+explícita y auditada, no el efecto colateral de un booleano.
+
+### `is_email_verified`
+
+Esta instalación **no tiene columna de verificación**. El registro crea la cuenta
+con `is_active=False` y `VerifyEmailView` la pone en `True`: verificar y activar
+son el mismo hecho. Por eso el campo siempre vale `true` para quien logra
+autenticarse — un usuario inactivo no obtiene token.
+
+Se reporta igualmente porque el modelo de sesión móvil tiene el campo y porque
+BR-001B podría separar los dos conceptos.
+
+### Fuera de scope — BR-001B
+
+**No** hay registro, verificación de correo, reenvío, reset ni cambio de
+contraseña nativos. Siguen siendo solo web. Hay tests que fijan que
+`/api/v1/auth/register/`, `/api/v1/auth/password-reset/` y compañía devuelven 404,
+para que un cliente móvil no presente un formulario que este contrato no puede
+atender.
+
+### Sin cambios en la web
+
+`CookieJWTAuthentication`, CSRF, `/api/auth/login|refresh|logout|me/`, el admin y
+`DEFAULT_AUTHENTICATION_CLASSES` están intactos. Hay tests de regresión: el login
+web sigue autenticando por username, sigue devolviendo sus JWT en cookies y no en
+el cuerpo, y su cookie **no** abre la superficie nativa.
+
+### Estado de los requerimientos de Mobile
+
+| ID | Estado |
+|---|---|
+| BR-001A núcleo de sesión nativa | **IMPLEMENTADO** |
+| BR-001 completo | **PARCIAL** — falta el ciclo de vida de cuenta (BR-001B) |
+| BR-002 | **PARCIAL** — catálogo público sí; autorización de datos privados, pendiente |
+| BR-007 | **PARCIAL ampliado** — catálogo + auth; superficie privada de negocio, pendiente |
+| BR-003 · BR-005 · BR-006 · BR-008 | PENDIENTE |
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

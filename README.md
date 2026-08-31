@@ -237,6 +237,41 @@ todavía.
 
 Detalle en `docs/saas-multiempresa.md` § 8-septendecies.
 
+### API v1 — autenticación nativa para clientes móviles
+
+Contrato **separado** del web. `/api/auth/*` no cambia.
+
+| Método | Endpoint | Auth | Notas |
+|--------|----------|------|-------|
+| POST | `/api/v1/auth/login/` | Ninguna · 5/min | `{email, password}` → tokens en el **cuerpo** |
+| POST | `/api/v1/auth/refresh/` | Ninguna | `{refresh}` → access + refresh **rotado** |
+| POST | `/api/v1/auth/logout/` | Ninguna | Best-effort, siempre 200 |
+| GET | `/api/v1/auth/me/` | **Bearer v1** | Identidad + empresas verificadas |
+
+La web autentica por cookie HttpOnly + CSRF, porque el navegador adjunta cookies
+a peticiones que el usuario no inició. Una app nativa guarda su token y lo envía
+a propósito, así que usa `Authorization: Bearer` y no necesita CSRF.
+
+**`V1BearerAuthentication` NUNCA es global.** No está en
+`DEFAULT_AUTHENTICATION_CLASSES` y no debe añadirse: eso abriría `/api/admin/`,
+`/api/auth/me/` y todas las vistas privadas web a un token del contrato móvil.
+Solo las vistas privadas v1 la declaran, con tests que lo verifican.
+
+**Login por email.** `email` no es unique en esta DB, así que 0 coincidencias, 1
+con contraseña incorrecta, cuenta inactiva y >1 coincidencias devuelven **el
+mismo 401**, y sin usuario se verifica igual contra un hash dummy para no filtrar
+por tiempo. No se añadió constraint unique: fallaría en cualquier instalación con
+duplicados, durante el deploy.
+
+**`available_companies`** se calcula desde `Membership` activa **o** `Customer`
+activo del usuario autenticado, con la empresa activa, etiquetando cuál es. No es
+autorización: toda API privada debe revalidar por su cuenta.
+
+**Fuera de scope (BR-001B):** registro, verificación, reset y cambio de
+contraseña nativos. Devuelven 404 a propósito.
+
+Detalle en `docs/saas-multiempresa.md` § 8-duodevicies.
+
 ### Reglas de contraseña (registro)
 
 - Mínimo 8 caracteres (Django `MinimumLengthValidator`)
