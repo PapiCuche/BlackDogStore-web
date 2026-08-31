@@ -16751,3 +16751,420 @@ class P0SchemaDriftCheckTest(TestCase):
             side_effect=Exception('connection refused'),
         ):
             self.assertEqual(check_pending_migrations(None), [])
+
+
+# =============================================================================
+# BR-002 / BR-007 — versioned PUBLIC catalogue for native clients: /api/v1/
+# =============================================================================
+#
+# The tenant is named in the PATH here, not derived from the Host, because a
+# mobile app reaches one shared API host and has no Host to be identified by.
+# That makes the slug a client-supplied value, so the whole point of these
+# tests is to pin down what it can and cannot do: it SELECTS a public shop
+# window, and it authorizes nothing.
+
+
+def _v1(company_slug, resource='products', suffix=''):
+    return f'/api/v1/storefront/{company_slug}/{resource}/{suffix}'
+
+
+class V1PublicCatalogIsolationTest(TestCase):
+    """Two tenants, the same slugs, one shared API host."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'v1-a', tax_id='20777100001')
+        self.b = _saas_company('Empresa B', 'v1-b', tax_id='20777100002')
+
+        self.cat_a = _cat(self.a, 'iPhone', 'iphone')
+        self.cat_b = _cat(self.b, 'iPhone', 'iphone')
+        self.prod_a = _prod(self.a, 'iPhone 15 A', 'iphone-15', category=self.cat_a)
+        self.prod_b = _prod(self.b, 'iPhone 15 B', 'iphone-15', category=self.cat_b)
+        self.client = APIClient()
+
+    # --- lists ---------------------------------------------------------------
+
+    def test_tenant_a_lists_only_its_own_products(self):
+        names = {p['name'] for p in self.client.get(_v1('v1-a')).json()}
+        self.assertIn('iPhone 15 A', names)
+        self.assertNotIn('iPhone 15 B', names)
+
+    def test_tenant_b_lists_only_its_own_products(self):
+        names = {p['name'] for p in self.client.get(_v1('v1-b')).json()}
+        self.assertIn('iPhone 15 B', names)
+        self.assertNotIn('iPhone 15 A', names)
+
+    def test_tenant_a_lists_only_its_own_categories(self):
+        rows = self.client.get(_v1('v1-a', 'categories')).json()
+        self.assertTrue(rows)
+        self.assertEqual({c['id'] for c in rows}, {self.cat_a.id})
+
+    def test_categories_of_two_tenants_never_overlap(self):
+        ids_a = {c['id'] for c in self.client.get(_v1('v1-a', 'categories')).json()}
+        ids_b = {c['id'] for c in self.client.get(_v1('v1-b', 'categories')).json()}
+        self.assertFalse(ids_a & ids_b)
+
+    # --- detail --------------------------------------------------------------
+
+    def test_the_same_slug_resolves_per_tenant(self):
+        # The whole reason `unique_product_slug_per_company` exists: "iphone-15"
+        # is a different product in each company, and the PATH decides which.
+        a = self.client.get(_v1('v1-a', 'products', 'iphone-15/')).json()
+        b = self.client.get(_v1('v1-b', 'products', 'iphone-15/')).json()
+        self.assertEqual(a['name'], 'iPhone 15 A')
+        self.assertEqual(b['name'], 'iPhone 15 B')
+
+    def test_a_slug_only_tenant_b_owns_is_404_under_tenant_a(self):
+        _prod(self.b, 'Exclusivo B', 'solo-de-b', category=self.cat_b)
+        self.assertEqual(self.client.get(_v1('v1-a', 'products', 'solo-de-b/')).status_code, 404)
+        self.assertEqual(self.client.get(_v1('v1-b', 'products', 'solo-de-b/')).status_code, 200)
+
+    def test_a_numeric_id_from_another_tenant_is_not_an_address(self):
+        # Lookup is by slug, so a leaked primary key is not even well-formed here.
+        self.assertEqual(
+            self.client.get(_v1('v1-a', 'products', f'{self.prod_b.id}/')).status_code, 404,
+        )
+
+    def test_inactive_products_are_not_exposed(self):
+        _prod(self.a, 'Retirado', 'retirado', category=self.cat_a, is_active=False)
+        slugs = {p['slug'] for p in self.client.get(_v1('v1-a')).json()}
+        self.assertNotIn('retirado', slugs)
+        self.assertEqual(self.client.get(_v1('v1-a', 'products', 'retirado/')).status_code, 404)
+
+    # --- filters cannot widen the scope --------------------------------------
+
+    def test_a_category_slug_shared_by_both_filters_within_the_path_tenant(self):
+        rows = self.client.get(_v1('v1-a') + '?category=iphone').json()
+        self.assertEqual({p['name'] for p in rows}, {'iPhone 15 A'})
+
+    def test_filtering_by_a_category_only_tenant_b_owns_returns_nothing(self):
+        cat = _cat(self.b, 'Solo B', 'solo-b')
+        _prod(self.b, 'Producto B2', 'producto-b2', category=cat)
+        rows = self.client.get(_v1('v1-a') + '?category=solo-b').json()
+        self.assertEqual(rows, [])
+
+    def test_search_cannot_reach_another_tenant(self):
+        rows = self.client.get(_v1('v1-a') + '?search=iPhone').json()
+        self.assertEqual({p['name'] for p in rows}, {'iPhone 15 A'})
+
+    def test_search_for_a_name_only_tenant_b_owns_returns_nothing(self):
+        _prod(self.b, 'Palabra Irrepetible', 'irrepetible', category=self.cat_b)
+        self.assertEqual(self.client.get(_v1('v1-a') + '?search=Irrepetible').json(), [])
+
+    def test_ordering_is_allowlisted_and_stays_scoped(self):
+        _prod(self.a, 'Barato A', 'barato-a', category=self.cat_a, price='10.00')
+        rows = self.client.get(_v1('v1-a') + '?ordering=price').json()
+        self.assertEqual([p['slug'] for p in rows][0], 'barato-a')
+        self.assertNotIn('iPhone 15 B', {p['name'] for p in rows})
+
+    def test_an_unknown_ordering_key_is_ignored_rather_than_applied(self):
+        # Without the allowlist this would sort by an arbitrary column, which is
+        # a way to infer values the serializer never returns.
+        rows = self.client.get(_v1('v1-a') + '?ordering=company_id').json()
+        self.assertEqual({p['name'] for p in rows}, {'iPhone 15 A'})
+
+    def test_in_stock_filter_stays_scoped(self):
+        rows = self.client.get(_v1('v1-a') + '?in_stock=true').json()
+        self.assertNotIn('iPhone 15 B', {p['name'] for p in rows})
+
+
+class V1TenantSelectorAuthorityTest(TestCase):
+    """The path names the tenant. Nothing else may override it."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'sel-a', tax_id='20777200001')
+        self.b = _saas_company('Empresa B', 'sel-b', tax_id='20777200002')
+        _prod(self.a, 'Producto A', 'producto-a')
+        _prod(self.b, 'Producto B', 'producto-b')
+        self.client = APIClient()
+
+    def test_a_company_query_parameter_cannot_change_the_tenant(self):
+        rows = self.client.get(_v1('sel-a') + f'?company={self.b.id}').json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_a_company_slug_query_parameter_cannot_change_the_tenant(self):
+        rows = self.client.get(_v1('sel-a') + '?company_slug=sel-b').json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_an_invented_tenant_header_cannot_change_the_tenant(self):
+        rows = self.client.get(_v1('sel-a'), HTTP_X_COMPANY_SLUG='sel-b').json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_the_host_cannot_override_the_path(self):
+        # The web storefront resolves by Host. This surface must NOT, or the same
+        # URL would answer differently depending on which domain reached it.
+        with override_settings(ALLOWED_HOSTS=['*'], DEFAULT_STOREFRONT_COMPANY_SLUG='sel-b'):
+            rows = self.client.get(_v1('sel-a'), HTTP_HOST='sel-b.example.com').json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_the_default_storefront_setting_cannot_override_the_path(self):
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='sel-b'):
+            rows = self.client.get(_v1('sel-a')).json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_the_slug_is_case_insensitive(self):
+        self.assertEqual(self.client.get(_v1('SEL-A')).status_code, 200)
+
+
+class V1UnresolvableTenantTest(TestCase):
+    """Fail-safe: nothing resolves, nothing is served, nothing is revealed."""
+
+    def setUp(self):
+        cache.clear()
+        self.active = _saas_company('Activa', 'fs-activa', tax_id='20777300001')
+        self.inactive = _saas_company(
+            'Inactiva', 'fs-inactiva', tax_id='20777300002', is_active=False,
+        )
+        _prod(self.active, 'Visible', 'visible')
+        _prod(self.inactive, 'Oculto', 'oculto')
+        self.client = APIClient()
+
+    def test_an_unknown_company_is_404(self):
+        self.assertEqual(self.client.get(_v1('no-existe-en-absoluto')).status_code, 404)
+
+    def test_an_inactive_company_is_404(self):
+        self.assertEqual(self.client.get(_v1('fs-inactiva')).status_code, 404)
+
+    def test_an_inactive_company_never_leaks_its_catalogue(self):
+        body = self.client.get(_v1('fs-inactiva')).content.decode()
+        self.assertNotIn('Oculto', body)
+        self.assertNotIn('oculto', body)
+
+    def test_unknown_and_inactive_are_INDISTINGUISHABLE(self):
+        # A 403 for "inactive" and a 404 for "unknown" would answer, to anyone
+        # willing to iterate the namespace, which companies exist.
+        unknown = self.client.get(_v1('no-existe-en-absoluto'))
+        inactive = self.client.get(_v1('fs-inactiva'))
+        self.assertEqual(unknown.status_code, inactive.status_code)
+        self.assertEqual(unknown.json(), inactive.json())
+
+    def test_the_404_body_names_no_company(self):
+        body = self.client.get(_v1('fs-inactiva')).content.decode()
+        self.assertNotIn('fs-inactiva', body)
+        self.assertNotIn('Inactiva', body)
+
+    def test_categories_fail_safe_the_same_way(self):
+        self.assertEqual(self.client.get(_v1('fs-inactiva', 'categories')).status_code, 404)
+        self.assertEqual(self.client.get(_v1('no-existe', 'categories')).status_code, 404)
+
+    def test_detail_of_an_unknown_tenant_is_404(self):
+        self.assertEqual(
+            self.client.get(_v1('no-existe', 'products', 'visible/')).status_code, 404,
+        )
+
+    def test_there_is_no_first_company_fallback(self):
+        # The failure this exists to prevent: an unresolved tenant quietly
+        # serving whichever company the database happened to return first.
+        body = self.client.get(_v1('no-existe')).content.decode()
+        self.assertNotIn('Visible', body)
+
+
+class V1PublicContractTest(TestCase):
+    """Shape, exposure and the fact that this surface is genuinely public."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Contrato', 'contrato', tax_id='20777400001')
+        self.category = _cat(self.company, 'Mac', 'mac')
+        self.product = _prod(
+            self.company, 'MacBook Air', 'macbook-air', category=self.category, price='4500.00',
+        )
+        self.client = APIClient()
+
+    def test_product_fields_are_exactly_the_agreed_contract(self):
+        row = self.client.get(_v1('contrato')).json()[0]
+        self.assertEqual(
+            set(row),
+            {
+                'id', 'name', 'slug', 'description', 'price',
+                'inventory', 'category', 'image_url', 'average_rating', 'review_count',
+            },
+        )
+
+    def test_category_fields_are_exactly_the_agreed_contract(self):
+        row = self.client.get(_v1('contrato', 'categories')).json()[0]
+        self.assertEqual(set(row), {'id', 'name', 'slug'})
+
+    def test_no_internal_field_is_exposed(self):
+        body = self.client.get(_v1('contrato')).content.decode()
+        for leaked in ('company', 'tax_id', 'legal_name', 'cost', 'branch', 'stripe'):
+            self.assertNotIn(leaked, body.lower())
+
+    def test_the_list_is_a_raw_array_not_a_paginated_envelope(self):
+        # Matches the legacy surface, which the mobile client already maps.
+        self.assertIsInstance(self.client.get(_v1('contrato')).json(), list)
+
+    def test_inventory_reports_sellable_units_of_the_fulfillment_branch(self):
+        self.assertEqual(self.client.get(_v1('contrato')).json()[0]['inventory'], 10)
+
+    def test_a_company_with_no_fulfillment_branch_reports_zero_not_the_aggregate(self):
+        from .models import Branch
+        Branch.objects.filter(company=self.company).update(is_active=False)
+        self.assertEqual(self.client.get(_v1('contrato')).json()[0]['inventory'], 0)
+
+    def test_the_endpoint_needs_no_authentication(self):
+        self.assertEqual(self.client.get(_v1('contrato')).status_code, 200)
+
+    def test_the_endpoint_ignores_a_session_cookie(self):
+        # Authentication is switched off on this surface, so a logged-in browser
+        # and an anonymous app must receive byte-identical catalogues.
+        anonymous = self.client.get(_v1('contrato')).json()
+        user = _saas_user('cliente-v1')
+        self.client.force_authenticate(user=user)
+        authenticated = self.client.get(_v1('contrato')).json()
+        self.client.force_authenticate(user=None)
+        self.assertEqual(anonymous, authenticated)
+
+    def test_the_surface_is_read_only(self):
+        for method in ('post', 'put', 'patch', 'delete'):
+            response = getattr(self.client, method)(_v1('contrato'))
+            self.assertIn(response.status_code, (401, 403, 405))
+
+    def test_the_detail_endpoint_is_read_only(self):
+        for method in ('post', 'put', 'patch', 'delete'):
+            response = getattr(self.client, method)(_v1('contrato', 'products', 'macbook-air/'))
+            self.assertIn(response.status_code, (401, 403, 405))
+
+
+class V1IsAdditiveTest(TestCase):
+    """Regression: `/api/` behaves exactly as it did before v1 existed."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Aditiva', 'aditiva', tax_id='20777500001')
+        self.category = _cat(self.company, 'Mac', 'mac-aditiva')
+        _prod(self.company, 'MacBook Pro', 'macbook-pro-aditiva', category=self.category)
+        self.client = APIClient()
+
+    def test_the_legacy_catalogue_still_resolves_by_host_setting(self):
+        with _storefront_of(self.company):
+            rows = self.client.get('/api/products/').json()
+        self.assertEqual({p['slug'] for p in rows}, {'macbook-pro-aditiva'})
+
+    def test_the_legacy_catalogue_still_returns_a_raw_array(self):
+        with _storefront_of(self.company):
+            self.assertIsInstance(self.client.get('/api/products/').json(), list)
+
+    def test_the_legacy_categories_endpoint_is_unchanged(self):
+        with _storefront_of(self.company):
+            self.assertEqual(self.client.get('/api/categories/').status_code, 200)
+
+    def test_v1_and_legacy_agree_on_the_same_tenant(self):
+        with _storefront_of(self.company):
+            legacy = self.client.get('/api/products/').json()
+        versioned = self.client.get(_v1('aditiva')).json()
+        self.assertEqual(
+            {p['slug'] for p in legacy}, {p['slug'] for p in versioned},
+        )
+
+    def test_v1_does_not_appear_under_the_legacy_prefix(self):
+        self.assertEqual(self.client.get('/api/storefront/aditiva/products/').status_code, 404)
+
+    def test_the_legacy_surface_still_ignores_a_path_tenant(self):
+        # Proves the two resolvers are genuinely separate code paths.
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=''):
+            self.assertEqual(self.client.get('/api/products/').json(), [])
+
+
+class V1DoesNotTouchAuthenticationTest(TestCase):
+    """BR-001 is still API_PENDING, and this phase must not have moved it."""
+
+    def test_the_project_default_authentication_is_still_cookie_jwt(self):
+        from django.conf import settings
+        self.assertEqual(
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_no_bearer_authentication_class_is_installed_globally(self):
+        from django.conf import settings
+        classes = ' '.join(settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'])
+        self.assertNotIn('JWTAuthentication', classes.replace('CookieJWTAuthentication', ''))
+        self.assertNotIn('TokenAuthentication', classes)
+
+    def test_v1_declares_no_authentication_of_its_own(self):
+        from .v1_views import V1StorefrontProductViewSet
+        self.assertEqual(V1StorefrontProductViewSet.authentication_classes, [])
+
+    def test_there_is_no_v1_auth_endpoint_yet(self):
+        client = APIClient()
+        for path in ('/api/v1/auth/login/', '/api/v1/auth/refresh/', '/api/v1/auth/logout/'):
+            self.assertEqual(client.get(path).status_code, 404)
+
+    def test_there_is_no_v1_private_surface_yet(self):
+        client = APIClient()
+        for path in ('/api/v1/orders/', '/api/v1/me/', '/api/v1/repairs/'):
+            self.assertEqual(client.get(path).status_code, 404)
+
+    def test_a_bearer_token_grants_nothing_on_the_public_surface(self):
+        company = _saas_company('Bearer', 'bearer-nada', tax_id='20777600001')
+        _prod(company, 'Producto', 'producto-bearer')
+        client = APIClient()
+        anonymous = client.get(_v1('bearer-nada')).json()
+        with_header = client.get(_v1('bearer-nada'), HTTP_AUTHORIZATION='Bearer inventado').json()
+        self.assertEqual(anonymous, with_header)
+
+
+class V1PublicResolverUnitTest(TestCase):
+    """`resolve_public_storefront_company` in isolation — the security seam."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Resolver', 'resolver-ok', tax_id='20777700001')
+        _saas_company('Apagada', 'resolver-off', tax_id='20777700002', is_active=False)
+
+    def test_it_resolves_an_active_company(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertEqual(resolve_public_storefront_company('resolver-ok'), self.company)
+
+    def test_it_normalizes_case_and_surrounding_whitespace(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertEqual(resolve_public_storefront_company('  RESOLVER-OK '), self.company)
+
+    def test_it_refuses_an_inactive_company(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertIsNone(resolve_public_storefront_company('resolver-off'))
+
+    def test_it_refuses_blank_and_non_string_input(self):
+        from .tenancy import resolve_public_storefront_company
+        for value in ('', '   ', None, 42, [], {'slug': 'resolver-ok'}):
+            self.assertIsNone(resolve_public_storefront_company(value))
+
+    def test_it_refuses_an_absurdly_long_slug(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertIsNone(resolve_public_storefront_company('x' * 5000))
+
+    def test_it_never_falls_back_to_another_company(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertIsNone(resolve_public_storefront_company('no-existe'))
+
+
+class V1SharedScopingHelperTest(TestCase):
+    """The refactor must leave the web storefront byte-identical."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Compartida', 'compartida', tax_id='20777800001')
+        self.category = _cat(self.company, 'Mac', 'mac-compartida')
+        _prod(self.company, 'Producto', 'producto-compartido', category=self.category)
+        self.client = APIClient()
+
+    def test_the_host_path_and_the_slug_path_produce_the_same_queryset(self):
+        from .tenancy import company_storefront_products, storefront_products
+        from django.test import RequestFactory
+        request = RequestFactory().get('/api/products/')
+        with _storefront_of(self.company):
+            by_host = list(storefront_products(request).values_list('id', flat=True))
+        by_company = list(company_storefront_products(self.company).values_list('id', flat=True))
+        self.assertEqual(by_host, by_company)
+
+    def test_the_shared_helper_annotates_sellable_stock(self):
+        from .tenancy import company_storefront_products
+        product = company_storefront_products(self.company).first()
+        self.assertEqual(product.available_stock, 10)
+
+    def test_a_none_company_yields_an_empty_queryset_not_everything(self):
+        from .tenancy import company_storefront_categories, company_storefront_products
+        self.assertEqual(company_storefront_products(None).count(), 0)
+        self.assertEqual(company_storefront_categories(None).count(), 0)
