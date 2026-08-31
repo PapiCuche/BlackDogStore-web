@@ -16754,6 +16754,1167 @@ class P0SchemaDriftCheckTest(TestCase):
             self.assertEqual(check_pending_migrations(None), [])
 
 
+# =============================================================================
+# BR-002 / BR-007 — versioned PUBLIC catalogue for native clients: /api/v1/
+# =============================================================================
+#
+# The tenant is named in the PATH here, not derived from the Host, because a
+# mobile app reaches one shared API host and has no Host to be identified by.
+# That makes the slug a client-supplied value, so the whole point of these
+# tests is to pin down what it can and cannot do: it SELECTS a public shop
+# window, and it authorizes nothing.
+
+
+def _v1(company_slug, resource='products', suffix=''):
+    return f'/api/v1/storefront/{company_slug}/{resource}/{suffix}'
+
+
+class V1PublicCatalogIsolationTest(TestCase):
+    """Two tenants, the same slugs, one shared API host."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'v1-a', tax_id='20777100001')
+        self.b = _saas_company('Empresa B', 'v1-b', tax_id='20777100002')
+
+        self.cat_a = _cat(self.a, 'iPhone', 'iphone')
+        self.cat_b = _cat(self.b, 'iPhone', 'iphone')
+        self.prod_a = _prod(self.a, 'iPhone 15 A', 'iphone-15', category=self.cat_a)
+        self.prod_b = _prod(self.b, 'iPhone 15 B', 'iphone-15', category=self.cat_b)
+        self.client = APIClient()
+
+    # --- lists ---------------------------------------------------------------
+
+    def test_tenant_a_lists_only_its_own_products(self):
+        names = {p['name'] for p in self.client.get(_v1('v1-a')).json()}
+        self.assertIn('iPhone 15 A', names)
+        self.assertNotIn('iPhone 15 B', names)
+
+    def test_tenant_b_lists_only_its_own_products(self):
+        names = {p['name'] for p in self.client.get(_v1('v1-b')).json()}
+        self.assertIn('iPhone 15 B', names)
+        self.assertNotIn('iPhone 15 A', names)
+
+    def test_tenant_a_lists_only_its_own_categories(self):
+        rows = self.client.get(_v1('v1-a', 'categories')).json()
+        self.assertTrue(rows)
+        self.assertEqual({c['id'] for c in rows}, {self.cat_a.id})
+
+    def test_categories_of_two_tenants_never_overlap(self):
+        ids_a = {c['id'] for c in self.client.get(_v1('v1-a', 'categories')).json()}
+        ids_b = {c['id'] for c in self.client.get(_v1('v1-b', 'categories')).json()}
+        self.assertFalse(ids_a & ids_b)
+
+    # --- detail --------------------------------------------------------------
+
+    def test_the_same_slug_resolves_per_tenant(self):
+        # The whole reason `unique_product_slug_per_company` exists: "iphone-15"
+        # is a different product in each company, and the PATH decides which.
+        a = self.client.get(_v1('v1-a', 'products', 'iphone-15/')).json()
+        b = self.client.get(_v1('v1-b', 'products', 'iphone-15/')).json()
+        self.assertEqual(a['name'], 'iPhone 15 A')
+        self.assertEqual(b['name'], 'iPhone 15 B')
+
+    def test_a_slug_only_tenant_b_owns_is_404_under_tenant_a(self):
+        _prod(self.b, 'Exclusivo B', 'solo-de-b', category=self.cat_b)
+        self.assertEqual(self.client.get(_v1('v1-a', 'products', 'solo-de-b/')).status_code, 404)
+        self.assertEqual(self.client.get(_v1('v1-b', 'products', 'solo-de-b/')).status_code, 200)
+
+    def test_a_numeric_id_from_another_tenant_is_not_an_address(self):
+        # Lookup is by slug, so a leaked primary key is not even well-formed here.
+        self.assertEqual(
+            self.client.get(_v1('v1-a', 'products', f'{self.prod_b.id}/')).status_code, 404,
+        )
+
+    def test_inactive_products_are_not_exposed(self):
+        _prod(self.a, 'Retirado', 'retirado', category=self.cat_a, is_active=False)
+        slugs = {p['slug'] for p in self.client.get(_v1('v1-a')).json()}
+        self.assertNotIn('retirado', slugs)
+        self.assertEqual(self.client.get(_v1('v1-a', 'products', 'retirado/')).status_code, 404)
+
+    # --- filters cannot widen the scope --------------------------------------
+
+    def test_a_category_slug_shared_by_both_filters_within_the_path_tenant(self):
+        rows = self.client.get(_v1('v1-a') + '?category=iphone').json()
+        self.assertEqual({p['name'] for p in rows}, {'iPhone 15 A'})
+
+    def test_filtering_by_a_category_only_tenant_b_owns_returns_nothing(self):
+        cat = _cat(self.b, 'Solo B', 'solo-b')
+        _prod(self.b, 'Producto B2', 'producto-b2', category=cat)
+        rows = self.client.get(_v1('v1-a') + '?category=solo-b').json()
+        self.assertEqual(rows, [])
+
+    def test_search_cannot_reach_another_tenant(self):
+        rows = self.client.get(_v1('v1-a') + '?search=iPhone').json()
+        self.assertEqual({p['name'] for p in rows}, {'iPhone 15 A'})
+
+    def test_search_for_a_name_only_tenant_b_owns_returns_nothing(self):
+        _prod(self.b, 'Palabra Irrepetible', 'irrepetible', category=self.cat_b)
+        self.assertEqual(self.client.get(_v1('v1-a') + '?search=Irrepetible').json(), [])
+
+    def test_ordering_is_allowlisted_and_stays_scoped(self):
+        _prod(self.a, 'Barato A', 'barato-a', category=self.cat_a, price='10.00')
+        rows = self.client.get(_v1('v1-a') + '?ordering=price').json()
+        self.assertEqual([p['slug'] for p in rows][0], 'barato-a')
+        self.assertNotIn('iPhone 15 B', {p['name'] for p in rows})
+
+    def test_an_unknown_ordering_key_is_ignored_rather_than_applied(self):
+        # Without the allowlist this would sort by an arbitrary column, which is
+        # a way to infer values the serializer never returns.
+        rows = self.client.get(_v1('v1-a') + '?ordering=company_id').json()
+        self.assertEqual({p['name'] for p in rows}, {'iPhone 15 A'})
+
+    def test_in_stock_filter_stays_scoped(self):
+        rows = self.client.get(_v1('v1-a') + '?in_stock=true').json()
+        self.assertNotIn('iPhone 15 B', {p['name'] for p in rows})
+
+
+class V1TenantSelectorAuthorityTest(TestCase):
+    """The path names the tenant. Nothing else may override it."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'sel-a', tax_id='20777200001')
+        self.b = _saas_company('Empresa B', 'sel-b', tax_id='20777200002')
+        _prod(self.a, 'Producto A', 'producto-a')
+        _prod(self.b, 'Producto B', 'producto-b')
+        self.client = APIClient()
+
+    def test_a_company_query_parameter_cannot_change_the_tenant(self):
+        rows = self.client.get(_v1('sel-a') + f'?company={self.b.id}').json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_a_company_slug_query_parameter_cannot_change_the_tenant(self):
+        rows = self.client.get(_v1('sel-a') + '?company_slug=sel-b').json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_an_invented_tenant_header_cannot_change_the_tenant(self):
+        rows = self.client.get(_v1('sel-a'), HTTP_X_COMPANY_SLUG='sel-b').json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_the_host_cannot_override_the_path(self):
+        # The web storefront resolves by Host. This surface must NOT, or the same
+        # URL would answer differently depending on which domain reached it.
+        with override_settings(ALLOWED_HOSTS=['*'], DEFAULT_STOREFRONT_COMPANY_SLUG='sel-b'):
+            rows = self.client.get(_v1('sel-a'), HTTP_HOST='sel-b.example.com').json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_the_default_storefront_setting_cannot_override_the_path(self):
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='sel-b'):
+            rows = self.client.get(_v1('sel-a')).json()
+        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
+
+    def test_the_slug_is_case_insensitive(self):
+        self.assertEqual(self.client.get(_v1('SEL-A')).status_code, 200)
+
+
+class V1UnresolvableTenantTest(TestCase):
+    """Fail-safe: nothing resolves, nothing is served, nothing is revealed."""
+
+    def setUp(self):
+        cache.clear()
+        self.active = _saas_company('Activa', 'fs-activa', tax_id='20777300001')
+        self.inactive = _saas_company(
+            'Inactiva', 'fs-inactiva', tax_id='20777300002', is_active=False,
+        )
+        _prod(self.active, 'Visible', 'visible')
+        _prod(self.inactive, 'Oculto', 'oculto')
+        self.client = APIClient()
+
+    def test_an_unknown_company_is_404(self):
+        self.assertEqual(self.client.get(_v1('no-existe-en-absoluto')).status_code, 404)
+
+    def test_an_inactive_company_is_404(self):
+        self.assertEqual(self.client.get(_v1('fs-inactiva')).status_code, 404)
+
+    def test_an_inactive_company_never_leaks_its_catalogue(self):
+        body = self.client.get(_v1('fs-inactiva')).content.decode()
+        self.assertNotIn('Oculto', body)
+        self.assertNotIn('oculto', body)
+
+    def test_unknown_and_inactive_are_INDISTINGUISHABLE(self):
+        # A 403 for "inactive" and a 404 for "unknown" would answer, to anyone
+        # willing to iterate the namespace, which companies exist.
+        unknown = self.client.get(_v1('no-existe-en-absoluto'))
+        inactive = self.client.get(_v1('fs-inactiva'))
+        self.assertEqual(unknown.status_code, inactive.status_code)
+        self.assertEqual(unknown.json(), inactive.json())
+
+    def test_the_404_body_names_no_company(self):
+        body = self.client.get(_v1('fs-inactiva')).content.decode()
+        self.assertNotIn('fs-inactiva', body)
+        self.assertNotIn('Inactiva', body)
+
+    def test_categories_fail_safe_the_same_way(self):
+        self.assertEqual(self.client.get(_v1('fs-inactiva', 'categories')).status_code, 404)
+        self.assertEqual(self.client.get(_v1('no-existe', 'categories')).status_code, 404)
+
+    def test_detail_of_an_unknown_tenant_is_404(self):
+        self.assertEqual(
+            self.client.get(_v1('no-existe', 'products', 'visible/')).status_code, 404,
+        )
+
+    def test_there_is_no_first_company_fallback(self):
+        # The failure this exists to prevent: an unresolved tenant quietly
+        # serving whichever company the database happened to return first.
+        body = self.client.get(_v1('no-existe')).content.decode()
+        self.assertNotIn('Visible', body)
+
+
+class V1PublicContractTest(TestCase):
+    """Shape, exposure and the fact that this surface is genuinely public."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Contrato', 'contrato', tax_id='20777400001')
+        self.category = _cat(self.company, 'Mac', 'mac')
+        self.product = _prod(
+            self.company, 'MacBook Air', 'macbook-air', category=self.category, price='4500.00',
+        )
+        self.client = APIClient()
+
+    def test_product_fields_are_exactly_the_agreed_contract(self):
+        row = self.client.get(_v1('contrato')).json()[0]
+        self.assertEqual(
+            set(row),
+            {
+                'id', 'name', 'slug', 'description', 'price',
+                'inventory', 'category', 'image_url', 'average_rating', 'review_count',
+            },
+        )
+
+    def test_category_fields_are_exactly_the_agreed_contract(self):
+        row = self.client.get(_v1('contrato', 'categories')).json()[0]
+        self.assertEqual(set(row), {'id', 'name', 'slug'})
+
+    def test_no_internal_field_is_exposed(self):
+        body = self.client.get(_v1('contrato')).content.decode()
+        for leaked in ('company', 'tax_id', 'legal_name', 'cost', 'branch', 'stripe'):
+            self.assertNotIn(leaked, body.lower())
+
+    def test_the_list_is_a_raw_array_not_a_paginated_envelope(self):
+        # Matches the legacy surface, which the mobile client already maps.
+        self.assertIsInstance(self.client.get(_v1('contrato')).json(), list)
+
+    def test_inventory_reports_sellable_units_of_the_fulfillment_branch(self):
+        self.assertEqual(self.client.get(_v1('contrato')).json()[0]['inventory'], 10)
+
+    def test_a_company_with_no_fulfillment_branch_reports_zero_not_the_aggregate(self):
+        from .models import Branch
+        Branch.objects.filter(company=self.company).update(is_active=False)
+        self.assertEqual(self.client.get(_v1('contrato')).json()[0]['inventory'], 0)
+
+    def test_the_endpoint_needs_no_authentication(self):
+        self.assertEqual(self.client.get(_v1('contrato')).status_code, 200)
+
+    def test_the_endpoint_ignores_a_session_cookie(self):
+        # Authentication is switched off on this surface, so a logged-in browser
+        # and an anonymous app must receive byte-identical catalogues.
+        anonymous = self.client.get(_v1('contrato')).json()
+        user = _saas_user('cliente-v1')
+        self.client.force_authenticate(user=user)
+        authenticated = self.client.get(_v1('contrato')).json()
+        self.client.force_authenticate(user=None)
+        self.assertEqual(anonymous, authenticated)
+
+    def test_the_surface_is_read_only(self):
+        for method in ('post', 'put', 'patch', 'delete'):
+            response = getattr(self.client, method)(_v1('contrato'))
+            self.assertIn(response.status_code, (401, 403, 405))
+
+    def test_the_detail_endpoint_is_read_only(self):
+        for method in ('post', 'put', 'patch', 'delete'):
+            response = getattr(self.client, method)(_v1('contrato', 'products', 'macbook-air/'))
+            self.assertIn(response.status_code, (401, 403, 405))
+
+
+class V1IsAdditiveTest(TestCase):
+    """Regression: `/api/` behaves exactly as it did before v1 existed."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Aditiva', 'aditiva', tax_id='20777500001')
+        self.category = _cat(self.company, 'Mac', 'mac-aditiva')
+        _prod(self.company, 'MacBook Pro', 'macbook-pro-aditiva', category=self.category)
+        self.client = APIClient()
+
+    def test_the_legacy_catalogue_still_resolves_by_host_setting(self):
+        with _storefront_of(self.company):
+            rows = self.client.get('/api/products/').json()
+        self.assertEqual({p['slug'] for p in rows}, {'macbook-pro-aditiva'})
+
+    def test_the_legacy_catalogue_still_returns_a_raw_array(self):
+        with _storefront_of(self.company):
+            self.assertIsInstance(self.client.get('/api/products/').json(), list)
+
+    def test_the_legacy_categories_endpoint_is_unchanged(self):
+        with _storefront_of(self.company):
+            self.assertEqual(self.client.get('/api/categories/').status_code, 200)
+
+    def test_v1_and_legacy_agree_on_the_same_tenant(self):
+        with _storefront_of(self.company):
+            legacy = self.client.get('/api/products/').json()
+        versioned = self.client.get(_v1('aditiva')).json()
+        self.assertEqual(
+            {p['slug'] for p in legacy}, {p['slug'] for p in versioned},
+        )
+
+    def test_v1_does_not_appear_under_the_legacy_prefix(self):
+        self.assertEqual(self.client.get('/api/storefront/aditiva/products/').status_code, 404)
+
+    def test_the_legacy_surface_still_ignores_a_path_tenant(self):
+        # Proves the two resolvers are genuinely separate code paths.
+        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=''):
+            self.assertEqual(self.client.get('/api/products/').json(), [])
+
+
+class V1DoesNotTouchAuthenticationTest(TestCase):
+    """
+    The WEB authentication contract is untouched, and Bearer is never global.
+
+    Written when `/api/v1/` held only the catalogue and BR-001 was entirely
+    pending. BR-001A has since added the native session core, so the assertions
+    about `/api/v1/auth/*` were re-pointed; everything about the LEGACY surface
+    and about `DEFAULT_AUTHENTICATION_CLASSES` still holds and still matters.
+    """
+
+    def test_the_project_default_authentication_is_still_cookie_jwt(self):
+        from django.conf import settings
+        self.assertEqual(
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_no_bearer_authentication_class_is_installed_globally(self):
+        from django.conf import settings
+        classes = ' '.join(settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'])
+        self.assertNotIn('JWTAuthentication', classes.replace('CookieJWTAuthentication', ''))
+        self.assertNotIn('TokenAuthentication', classes)
+
+    def test_v1_declares_no_authentication_of_its_own(self):
+        from .v1_views import V1StorefrontProductViewSet
+        self.assertEqual(V1StorefrontProductViewSet.authentication_classes, [])
+
+    def test_the_v1_auth_endpoints_now_EXIST(self):
+        # Written in the catalogue phase to assert these were 404, and it failed
+        # the moment BR-001A shipped them — which is precisely what it was for.
+        # Re-pointed rather than deleted: the claim it protects is "auth does not
+        # appear by accident", and that is still worth asserting, now in the
+        # affirmative. What must still be absent is covered by
+        # V1AccountLifecycleIsOutOfScopeTest.
+        client = APIClient()
+        for path in ('/api/v1/auth/login/', '/api/v1/auth/refresh/', '/api/v1/auth/logout/'):
+            self.assertNotEqual(client.post(path, {}, format='json').status_code, 404)
+        self.assertNotEqual(client.get('/api/v1/auth/me/').status_code, 404)
+
+    def test_there_is_no_v1_private_surface_yet(self):
+        client = APIClient()
+        for path in ('/api/v1/orders/', '/api/v1/me/', '/api/v1/repairs/'):
+            self.assertEqual(client.get(path).status_code, 404)
+
+    def test_a_bearer_token_grants_nothing_on_the_public_surface(self):
+        company = _saas_company('Bearer', 'bearer-nada', tax_id='20777600001')
+        _prod(company, 'Producto', 'producto-bearer')
+        client = APIClient()
+        anonymous = client.get(_v1('bearer-nada')).json()
+        with_header = client.get(_v1('bearer-nada'), HTTP_AUTHORIZATION='Bearer inventado').json()
+        self.assertEqual(anonymous, with_header)
+
+
+class V1PublicResolverUnitTest(TestCase):
+    """`resolve_public_storefront_company` in isolation — the security seam."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Resolver', 'resolver-ok', tax_id='20777700001')
+        _saas_company('Apagada', 'resolver-off', tax_id='20777700002', is_active=False)
+
+    def test_it_resolves_an_active_company(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertEqual(resolve_public_storefront_company('resolver-ok'), self.company)
+
+    def test_it_normalizes_case_and_surrounding_whitespace(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertEqual(resolve_public_storefront_company('  RESOLVER-OK '), self.company)
+
+    def test_it_refuses_an_inactive_company(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertIsNone(resolve_public_storefront_company('resolver-off'))
+
+    def test_it_refuses_blank_and_non_string_input(self):
+        from .tenancy import resolve_public_storefront_company
+        for value in ('', '   ', None, 42, [], {'slug': 'resolver-ok'}):
+            self.assertIsNone(resolve_public_storefront_company(value))
+
+    def test_it_refuses_an_absurdly_long_slug(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertIsNone(resolve_public_storefront_company('x' * 5000))
+
+    def test_it_never_falls_back_to_another_company(self):
+        from .tenancy import resolve_public_storefront_company
+        self.assertIsNone(resolve_public_storefront_company('no-existe'))
+
+
+class V1SharedScopingHelperTest(TestCase):
+    """The refactor must leave the web storefront byte-identical."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Compartida', 'compartida', tax_id='20777800001')
+        self.category = _cat(self.company, 'Mac', 'mac-compartida')
+        _prod(self.company, 'Producto', 'producto-compartido', category=self.category)
+        self.client = APIClient()
+
+    def test_the_host_path_and_the_slug_path_produce_the_same_queryset(self):
+        from .tenancy import company_storefront_products, storefront_products
+        from django.test import RequestFactory
+        request = RequestFactory().get('/api/products/')
+        with _storefront_of(self.company):
+            by_host = list(storefront_products(request).values_list('id', flat=True))
+        by_company = list(company_storefront_products(self.company).values_list('id', flat=True))
+        self.assertEqual(by_host, by_company)
+
+    def test_the_shared_helper_annotates_sellable_stock(self):
+        from .tenancy import company_storefront_products
+        product = company_storefront_products(self.company).first()
+        self.assertEqual(product.available_stock, 10)
+
+    def test_a_none_company_yields_an_empty_queryset_not_everything(self):
+        from .tenancy import company_storefront_categories, company_storefront_products
+        self.assertEqual(company_storefront_products(None).count(), 0)
+        self.assertEqual(company_storefront_categories(None).count(), 0)
+
+
+# =============================================================================
+# BR-001A — native session core: /api/v1/auth/
+# =============================================================================
+#
+# Two authentication contracts now coexist. The web one reads an HttpOnly cookie
+# and enforces CSRF; the native one reads `Authorization: Bearer` and does not.
+# Most of what follows exists to pin down that they stay apart: a token minted
+# for the app must not open a single legacy endpoint, and the web must keep
+# behaving exactly as it did.
+
+from .models import Customer as _V1Customer  # noqa: E402
+from .v1_authentication import V1BearerAuthentication  # noqa: E402
+
+V1_LOGIN = '/api/v1/auth/login/'
+V1_REFRESH = '/api/v1/auth/refresh/'
+V1_LOGOUT = '/api/v1/auth/logout/'
+V1_ME = '/api/v1/auth/me/'
+
+
+def _v1_user(username='cliente-v1', email='cliente@example.com', password='Pass123!', **extra):
+    return User.objects.create_user(
+        username=username, email=email, password=password, **extra,
+    )
+
+
+def _bearer(client, token):
+    client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+    return client
+
+
+def _v1_customer(company, user, **extra):
+    """A CRM record for `user` at `company`. `Customer.clean()` requires a name."""
+    extra.setdefault('first_name', 'Cliente')
+    return _V1Customer.objects.create(company=company, user=user, **extra)
+
+
+class V1LoginTest(TestCase):
+    """Signing in with an email, and every way it must refuse to."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password, first_name='Carlos')
+        self.client = APIClient()
+
+    def test_valid_credentials_return_tokens(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('access', response.json())
+        self.assertIn('refresh', response.json())
+
+    def test_response_reports_the_access_lifetime(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        # 30 minutes, from SIMPLE_JWT. The client schedules its refresh on this.
+        self.assertEqual(response.json()['expires_in'], 1800)
+
+    def test_response_carries_the_user_identity(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        user = response.json()['user']
+        self.assertEqual(user['email'], 'cliente@example.com')
+        self.assertEqual(user['first_name'], 'Carlos')
+        self.assertEqual(user['role'], 'customer')
+        self.assertTrue(user['is_email_verified'])
+
+    def test_email_matching_is_case_insensitive(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'CLIENTE@Example.COM', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_surrounding_whitespace_in_the_email_is_ignored(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': '  cliente@example.com  ', 'password': self.password},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_wrong_password_is_401(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': 'incorrecta'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_unknown_email_is_401(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'nadie@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_unknown_email_and_wrong_password_are_INDISTINGUISHABLE(self):
+        # Otherwise a login form answers "does this person have an account here?"
+        # to anyone willing to ask.
+        unknown = self.client.post(
+            V1_LOGIN, {'email': 'nadie@example.com', 'password': 'x'}, format='json',
+        )
+        wrong = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': 'x'}, format='json',
+        )
+
+        self.assertEqual(unknown.status_code, wrong.status_code)
+        self.assertEqual(unknown.json(), wrong.json())
+
+    def test_an_inactive_user_cannot_sign_in(self):
+        # In this installation an inactive account is either deactivated OR
+        # never email-verified — registration creates it inactive.
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_an_inactive_user_is_indistinguishable_from_a_wrong_password(self):
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+
+        inactive = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+        wrong = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': 'x'}, format='json',
+        )
+
+        self.assertEqual(inactive.json(), wrong.json())
+
+    def test_DUPLICATE_emails_refuse_rather_than_guess(self):
+        # `email` carries NO unique constraint on Django's stock User model, and
+        # the registration check has a race. Picking "the first match" would let
+        # whoever registered a duplicate address sign in as someone else.
+        _v1_user(username='otro', email='cliente@example.com', password=self.password)
+
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_a_duplicate_email_looks_like_any_other_failure(self):
+        _v1_user(username='otro', email='cliente@example.com', password=self.password)
+
+        duplicate = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+        unknown = self.client.post(
+            V1_LOGIN, {'email': 'nadie@example.com', 'password': 'x'}, format='json',
+        )
+
+        self.assertEqual(duplicate.json(), unknown.json())
+
+    def test_a_malformed_email_is_rejected_as_validation(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'no-es-un-email', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_missing_password_is_rejected(self):
+        response = self.client.post(V1_LOGIN, {'email': 'cliente@example.com'}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_login_sets_NO_cookies(self):
+        # The whole point of a native contract: the app holds its own tokens.
+        # A cookie here would be a second, invisible copy of a credential.
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(len(response.cookies), 0)
+
+    def test_the_response_leaks_no_secret(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+        body = response.content.decode()
+
+        self.assertNotIn(self.password, body)
+        self.assertNotIn('password', body)
+        self.assertNotIn('is_superuser', body)
+        self.assertNotIn('is_staff', body)
+
+    def test_the_user_object_carries_no_token(self):
+        response = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(
+            set(response.json()['user']),
+            {'id', 'username', 'email', 'first_name', 'last_name', 'role', 'is_email_verified'},
+        )
+
+    def test_login_is_throttled_at_five_per_minute(self):
+        # Reuses the existing `login` scope rather than inventing a second
+        # budget: two endpoints with independent counters would double the
+        # attempts an attacker gets per minute.
+        for _ in range(5):
+            self.client.post(
+                V1_LOGIN, {'email': 'cliente@example.com', 'password': 'x'}, format='json',
+            )
+        blocked = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': 'x'}, format='json',
+        )
+
+        self.assertEqual(blocked.status_code, 429)
+
+
+class V1RefreshTest(TestCase):
+    """Rotation, blacklisting, and refusing to explain itself."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password)
+        self.client = APIClient()
+        login = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        )
+        self.refresh = login.json()['refresh']
+
+    def test_a_valid_refresh_returns_a_new_access_token(self):
+        response = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('access', response.json())
+
+    def test_the_refresh_token_ROTATES(self):
+        response = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertIn('refresh', response.json())
+        self.assertNotEqual(response.json()['refresh'], self.refresh)
+
+    def test_the_OLD_refresh_token_stops_working_after_rotation(self):
+        # BLACKLIST_AFTER_ROTATION. A stolen refresh token is worth one use, and
+        # using it locks out the thief or the owner — whichever moves second.
+        self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        replay = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(replay.status_code, 401)
+
+    def test_the_rotated_token_works(self):
+        rotated = self.client.post(
+            V1_REFRESH, {'refresh': self.refresh}, format='json',
+        ).json()['refresh']
+
+        again = self.client.post(V1_REFRESH, {'refresh': rotated}, format='json')
+
+        self.assertEqual(again.status_code, 200)
+
+    def test_a_malformed_token_is_401_not_500(self):
+        # A 500 here would hand a stack trace to an anonymous caller.
+        response = self.client.post(V1_REFRESH, {'refresh': 'no-es-un-jwt'}, format='json')
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_an_access_token_is_not_accepted_as_a_refresh_token(self):
+        access = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()['access']
+
+        response = self.client.post(V1_REFRESH, {'refresh': access}, format='json')
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_a_deactivated_user_cannot_extend_their_session(self):
+        # Being switched off must take effect on the next refresh, not whenever
+        # the refresh token happens to expire.
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+
+        response = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_refresh_sets_no_cookies(self):
+        response = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(len(response.cookies), 0)
+
+    def test_refresh_needs_no_csrf_token(self):
+        # No cookie is involved, so there is no cross-site request to forge.
+        enforcing = APIClient(enforce_csrf_checks=True)
+        response = enforcing.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_every_failure_answers_the_same(self):
+        malformed = self.client.post(V1_REFRESH, {'refresh': 'basura'}, format='json')
+        self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+        blacklisted = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(malformed.json(), blacklisted.json())
+
+
+class V1MeTest(TestCase):
+    """Reading your own identity — the cold-start call."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password, first_name='Carlos')
+        self.client = APIClient()
+        self.access = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()['access']
+
+    def test_a_valid_bearer_token_returns_the_profile(self):
+        response = _bearer(self.client, self.access).get(V1_ME)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['user']['email'], 'cliente@example.com')
+
+    def test_no_credentials_is_401(self):
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_a_malformed_bearer_token_is_401(self):
+        self.assertEqual(_bearer(self.client, 'basura').get(V1_ME).status_code, 401)
+
+    def test_an_empty_bearer_header_is_401(self):
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer')
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_a_token_containing_spaces_is_401(self):
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer una cosa rara')
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_another_scheme_is_not_accepted(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.access}')
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_a_refresh_token_is_not_an_access_token(self):
+        refresh = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()['refresh']
+
+        self.assertEqual(_bearer(self.client, refresh).get(V1_ME).status_code, 401)
+
+    def test_a_user_deactivated_after_signing_in_is_401(self):
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+
+        self.assertEqual(_bearer(self.client, self.access).get(V1_ME).status_code, 401)
+
+    def test_a_deleted_user_is_401_not_500(self):
+        self.user.delete()
+
+        self.assertEqual(_bearer(self.client, self.access).get(V1_ME).status_code, 401)
+
+    def test_the_failure_never_says_WHY(self):
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+        inactive = _bearer(APIClient(), self.access).get(V1_ME)
+        malformed = _bearer(APIClient(), 'basura').get(V1_ME)
+
+        self.assertEqual(inactive.json(), malformed.json())
+
+    def test_me_sets_no_cookies(self):
+        response = _bearer(self.client, self.access).get(V1_ME)
+
+        self.assertEqual(len(response.cookies), 0)
+
+
+class V1CompanyContextTest(TestCase):
+    """`available_companies` — server-verified relations, never client claims."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password)
+        self.a = _saas_company('Empresa A', 'ctx-a', tax_id='20778000001')
+        self.b = _saas_company('Empresa B', 'ctx-b', tax_id='20778000002')
+        self.client = APIClient()
+
+    def _login(self):
+        return self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()
+
+    def _slugs(self, payload):
+        return {row['slug'] for row in payload['available_companies']}
+
+    def test_a_user_with_nothing_gets_an_empty_list(self):
+        # Fail-safe: no relation is not "all companies", it is none.
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_an_active_membership_appears_as_member(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+
+        rows = self._login()['available_companies']
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['slug'], 'ctx-a')
+        self.assertEqual(rows[0]['relation'], 'member')
+
+    def test_a_CUSTOMER_record_appears_too(self):
+        # Migration 0015 deliberately gave customers no Membership: a shopper is
+        # not staff. Memberships alone would therefore return nothing for the
+        # mobile app's entire audience.
+        _v1_customer(self.a, self.user)
+
+        rows = self._login()['available_companies']
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['relation'], 'customer')
+
+    def test_being_staff_AND_customer_reports_member(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+        _v1_customer(self.a, self.user)
+
+        rows = self._login()['available_companies']
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['relation'], 'member')
+
+    def test_an_INACTIVE_membership_is_excluded(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales', is_active=False)
+
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_a_membership_of_an_INACTIVE_company_is_excluded(self):
+        self.a.is_active = False
+        self.a.save(update_fields=['is_active'])
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_an_ARCHIVED_customer_record_is_excluded(self):
+        _v1_customer(self.a, self.user, is_active=False)
+
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_ANOTHER_users_relations_never_appear(self):
+        other = _v1_user(username='ajeno', email='ajeno@example.com')
+        Membership.objects.create(user=other, company=self.b, role='admin')
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+
+        self.assertEqual(self._slugs(self._login()), {'ctx-a'})
+
+    def test_several_relations_are_all_reported(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+        _v1_customer(self.b, self.user)
+
+        self.assertEqual(self._slugs(self._login()), {'ctx-a', 'ctx-b'})
+
+    def test_a_SUPERUSER_does_not_receive_every_company(self):
+        # A platform administrator does not silently get every tenant on a
+        # phone. If that is ever wanted it will be an explicit, audited feature.
+        self.user.is_superuser = True
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_superuser', 'is_staff'])
+
+        self.assertEqual(self._login()['available_companies'], [])
+
+    def test_a_company_sent_BY_THE_CLIENT_is_never_echoed_back(self):
+        response = self.client.post(
+            V1_LOGIN,
+            {'email': 'cliente@example.com', 'password': self.password, 'company': 'ctx-b'},
+            format='json',
+        )
+
+        self.assertEqual(response.json()['available_companies'], [])
+
+    def test_a_company_HEADER_grants_nothing(self):
+        response = self.client.post(
+            V1_LOGIN,
+            {'email': 'cliente@example.com', 'password': self.password},
+            format='json',
+            HTTP_X_COMPANY_SLUG='ctx-b',
+        )
+
+        self.assertEqual(response.json()['available_companies'], [])
+
+    def test_me_reports_the_same_context_as_login(self):
+        Membership.objects.create(user=self.user, company=self.a, role='sales')
+        payload = self._login()
+
+        me = _bearer(APIClient(), payload['access']).get(V1_ME).json()
+
+        self.assertEqual(me['available_companies'], payload['available_companies'])
+        self.assertEqual(me['user'], payload['user'])
+
+    def test_the_context_carries_no_internal_company_data(self):
+        Membership.objects.create(user=self.user, company=self.a, role='admin')
+        body = str(self._login()['available_companies'])
+
+        for internal in ('tax_id', 'legal_name', 'id', 'capabilit'):
+            self.assertNotIn(internal, body)
+
+
+class V1LogoutTest(TestCase):
+    """Best effort, always 200, never an oracle."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password)
+        self.client = APIClient()
+        payload = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()
+        self.refresh = payload['refresh']
+        self.access = payload['access']
+
+    def test_a_valid_refresh_token_is_blacklisted(self):
+        self.assertEqual(
+            self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json').status_code, 200,
+        )
+
+        replay = self.client.post(V1_REFRESH, {'refresh': self.refresh}, format='json')
+        self.assertEqual(replay.status_code, 401)
+
+    def test_logging_out_twice_is_not_an_error(self):
+        self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        again = self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(again.status_code, 200)
+
+    def test_a_malformed_token_still_answers_200(self):
+        # The client has already cleared its own credentials. Failing here would
+        # leave the app unable to finish a sign-out it has already committed to.
+        response = self.client.post(V1_LOGOUT, {'refresh': 'basura'}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_no_refresh_token_at_all_still_answers_200(self):
+        self.assertEqual(self.client.post(V1_LOGOUT, {}, format='json').status_code, 200)
+
+    def test_logout_does_NOT_require_a_live_access_token(self):
+        # Precisely when a session has expired is when a user reaches for
+        # "sign out". Requiring a valid access token would make it impossible.
+        response = APIClient().post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_logout_needs_no_csrf(self):
+        enforcing = APIClient(enforce_csrf_checks=True)
+
+        response = enforcing.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_logout_sets_no_cookies(self):
+        response = self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+
+        self.assertEqual(len(response.cookies), 0)
+
+    def test_it_is_not_an_oracle_about_token_state(self):
+        # A live token, a dead token and a nonsense token answer identically, so
+        # this cannot be used to probe which refresh tokens are still valid.
+        valid = self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+        dead = self.client.post(V1_LOGOUT, {'refresh': self.refresh}, format='json')
+        nonsense = self.client.post(V1_LOGOUT, {'refresh': 'basura'}, format='json')
+
+        self.assertEqual(valid.json(), dead.json())
+        self.assertEqual(valid.json(), nonsense.json())
+
+
+class V1BearerIsScopedTest(TestCase):
+    """
+    THE ISOLATION BOUNDARY.
+
+    A token minted for the app must open the native surface and nothing else.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(password=self.password)
+        self.user.is_staff = True
+        self.user.is_superuser = True
+        self.user.save(update_fields=['is_staff', 'is_superuser'])
+        profile, _ = UserProfile.objects.get_or_create(user=self.user)
+        profile.role = UserProfile.ROLE_SUPERADMIN
+        profile.save(update_fields=['role'])
+        self.client = APIClient()
+        self.access = self.client.post(
+            V1_LOGIN, {'email': 'cliente@example.com', 'password': self.password}, format='json',
+        ).json()['access']
+
+    def test_the_token_opens_the_native_surface(self):
+        self.assertEqual(_bearer(APIClient(), self.access).get(V1_ME).status_code, 200)
+
+    def test_the_token_does_NOT_open_the_legacy_admin_surface(self):
+        # Even for a superadmin. The legacy surface authenticates by cookie, and
+        # a Bearer header means nothing to it.
+        response = _bearer(APIClient(), self.access).get('/api/admin/users/')
+
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_the_token_does_NOT_open_the_legacy_profile_endpoint(self):
+        response = _bearer(APIClient(), self.access).get('/api/auth/me/')
+
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_the_token_does_NOT_open_legacy_orders(self):
+        response = _bearer(APIClient(), self.access).get('/api/orders/')
+
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_the_project_default_authentication_is_UNCHANGED(self):
+        from django.conf import settings
+
+        self.assertEqual(
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_the_bearer_class_is_not_installed_globally(self):
+        from django.conf import settings
+
+        joined = ' '.join(settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'])
+        self.assertNotIn('V1Bearer', joined)
+
+    def test_only_the_private_v1_view_declares_it(self):
+        from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
+
+        self.assertEqual(V1MeView.authentication_classes, [V1BearerAuthentication])
+        # The public ones authenticate nobody: they mint or destroy sessions.
+        self.assertEqual(V1LoginView.authentication_classes, [])
+        self.assertEqual(V1RefreshView.authentication_classes, [])
+        self.assertEqual(V1LogoutView.authentication_classes, [])
+
+    def test_a_bearer_token_does_not_change_the_public_catalogue(self):
+        company = _saas_company('Aislada', 'aislada-v1', tax_id='20778100001')
+        _prod(company, 'Producto', 'producto-aislado')
+        path = '/api/v1/storefront/aislada-v1/products/'
+
+        anonymous = APIClient().get(path).json()
+        with_token = _bearer(APIClient(), self.access).get(path).json()
+
+        self.assertEqual(anonymous, with_token)
+
+
+class V1DoesNotDisturbWebAuthTest(TestCase):
+    """Regression: the web contract behaves exactly as it did before."""
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'Pass123!'
+        self.user = _v1_user(username='web-user', email='web@example.com', password=self.password)
+        self.client = APIClient()
+
+    def test_web_login_still_authenticates_by_USERNAME(self):
+        response = self.client.post(
+            '/api/auth/login/', {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_web_login_still_returns_its_tokens_in_COOKIES_not_the_body(self):
+        response = self.client.post(
+            '/api/auth/login/', {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertNotIn('access', response.json())
+        self.assertNotIn('refresh', response.json())
+        self.assertIn('blackdog_access', response.cookies)
+
+    def test_the_web_cookie_still_opens_the_web_profile_endpoint(self):
+        self.client.post(
+            '/api/auth/login/', {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(self.client.get('/api/auth/me/').status_code, 200)
+
+    def test_the_web_cookie_does_NOT_open_the_native_surface(self):
+        # The two contracts are separate in both directions.
+        self.client.post(
+            '/api/auth/login/', {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(self.client.get(V1_ME).status_code, 401)
+
+    def test_the_native_login_does_not_accept_a_username(self):
+        response = self.client.post(
+            V1_LOGIN, {'username': 'web-user', 'password': self.password}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_web_csrf_enforcement_is_untouched(self):
+        from .authentication import enforce_csrf  # noqa: F401
+        from .authentication import CookieJWTAuthentication
+
+        # Still the cookie class, still enforcing CSRF inside authenticate().
+        self.assertTrue(hasattr(CookieJWTAuthentication, 'enforce_csrf'))
+
+
+class V1AccountLifecycleIsOutOfScopeTest(TestCase):
+    """BR-001B. These endpoints must not silently appear to exist."""
+
+    def test_there_is_no_native_registration_endpoint(self):
+        self.assertEqual(APIClient().post('/api/v1/auth/register/').status_code, 404)
+
+    def test_there_is_no_native_password_reset_endpoint(self):
+        client = APIClient()
+        for path in (
+            '/api/v1/auth/password-reset/',
+            '/api/v1/auth/password-reset/confirm/',
+            '/api/v1/auth/change-password/',
+        ):
+            self.assertEqual(client.post(path).status_code, 404)
+
+    def test_there_is_no_native_email_verification_endpoint(self):
+        client = APIClient()
+        for path in ('/api/v1/auth/verify-email/', '/api/v1/auth/resend-verification/'):
+            self.assertEqual(client.post(path).status_code, 404)
+
+    def test_there_is_still_no_private_v1_business_surface(self):
+        client = APIClient()
+        for path in ('/api/v1/orders/', '/api/v1/repairs/', '/api/v1/me/'):
+            self.assertEqual(client.get(path).status_code, 404)
+
+
 # ===========================================================================
 # Commercial Phase C1 — POS, barcodes, forecasting
 # ===========================================================================
@@ -17635,421 +18796,6 @@ class C1PosConcurrencyTest(TransactionTestCase):
         self.assertIn('_locked_branch_stocks', source)
         self.assertNotIn('BranchStock.objects.update', inspect.getsource(_pos))
         self.assertNotIn('Product.objects.update', inspect.getsource(_pos))
-# =============================================================================
-# BR-002 / BR-007 — versioned PUBLIC catalogue for native clients: /api/v1/
-# =============================================================================
-#
-# The tenant is named in the PATH here, not derived from the Host, because a
-# mobile app reaches one shared API host and has no Host to be identified by.
-# That makes the slug a client-supplied value, so the whole point of these
-# tests is to pin down what it can and cannot do: it SELECTS a public shop
-# window, and it authorizes nothing.
-
-
-def _v1(company_slug, resource='products', suffix=''):
-    return f'/api/v1/storefront/{company_slug}/{resource}/{suffix}'
-
-
-class V1PublicCatalogIsolationTest(TestCase):
-    """Two tenants, the same slugs, one shared API host."""
-
-    def setUp(self):
-        cache.clear()
-        self.a = _saas_company('Empresa A', 'v1-a', tax_id='20777100001')
-        self.b = _saas_company('Empresa B', 'v1-b', tax_id='20777100002')
-
-        self.cat_a = _cat(self.a, 'iPhone', 'iphone')
-        self.cat_b = _cat(self.b, 'iPhone', 'iphone')
-        self.prod_a = _prod(self.a, 'iPhone 15 A', 'iphone-15', category=self.cat_a)
-        self.prod_b = _prod(self.b, 'iPhone 15 B', 'iphone-15', category=self.cat_b)
-        self.client = APIClient()
-
-    # --- lists ---------------------------------------------------------------
-
-    def test_tenant_a_lists_only_its_own_products(self):
-        names = {p['name'] for p in self.client.get(_v1('v1-a')).json()}
-        self.assertIn('iPhone 15 A', names)
-        self.assertNotIn('iPhone 15 B', names)
-
-    def test_tenant_b_lists_only_its_own_products(self):
-        names = {p['name'] for p in self.client.get(_v1('v1-b')).json()}
-        self.assertIn('iPhone 15 B', names)
-        self.assertNotIn('iPhone 15 A', names)
-
-    def test_tenant_a_lists_only_its_own_categories(self):
-        rows = self.client.get(_v1('v1-a', 'categories')).json()
-        self.assertTrue(rows)
-        self.assertEqual({c['id'] for c in rows}, {self.cat_a.id})
-
-    def test_categories_of_two_tenants_never_overlap(self):
-        ids_a = {c['id'] for c in self.client.get(_v1('v1-a', 'categories')).json()}
-        ids_b = {c['id'] for c in self.client.get(_v1('v1-b', 'categories')).json()}
-        self.assertFalse(ids_a & ids_b)
-
-    # --- detail --------------------------------------------------------------
-
-    def test_the_same_slug_resolves_per_tenant(self):
-        # The whole reason `unique_product_slug_per_company` exists: "iphone-15"
-        # is a different product in each company, and the PATH decides which.
-        a = self.client.get(_v1('v1-a', 'products', 'iphone-15/')).json()
-        b = self.client.get(_v1('v1-b', 'products', 'iphone-15/')).json()
-        self.assertEqual(a['name'], 'iPhone 15 A')
-        self.assertEqual(b['name'], 'iPhone 15 B')
-
-    def test_a_slug_only_tenant_b_owns_is_404_under_tenant_a(self):
-        _prod(self.b, 'Exclusivo B', 'solo-de-b', category=self.cat_b)
-        self.assertEqual(self.client.get(_v1('v1-a', 'products', 'solo-de-b/')).status_code, 404)
-        self.assertEqual(self.client.get(_v1('v1-b', 'products', 'solo-de-b/')).status_code, 200)
-
-    def test_a_numeric_id_from_another_tenant_is_not_an_address(self):
-        # Lookup is by slug, so a leaked primary key is not even well-formed here.
-        self.assertEqual(
-            self.client.get(_v1('v1-a', 'products', f'{self.prod_b.id}/')).status_code, 404,
-        )
-
-    def test_inactive_products_are_not_exposed(self):
-        _prod(self.a, 'Retirado', 'retirado', category=self.cat_a, is_active=False)
-        slugs = {p['slug'] for p in self.client.get(_v1('v1-a')).json()}
-        self.assertNotIn('retirado', slugs)
-        self.assertEqual(self.client.get(_v1('v1-a', 'products', 'retirado/')).status_code, 404)
-
-    # --- filters cannot widen the scope --------------------------------------
-
-    def test_a_category_slug_shared_by_both_filters_within_the_path_tenant(self):
-        rows = self.client.get(_v1('v1-a') + '?category=iphone').json()
-        self.assertEqual({p['name'] for p in rows}, {'iPhone 15 A'})
-
-    def test_filtering_by_a_category_only_tenant_b_owns_returns_nothing(self):
-        cat = _cat(self.b, 'Solo B', 'solo-b')
-        _prod(self.b, 'Producto B2', 'producto-b2', category=cat)
-        rows = self.client.get(_v1('v1-a') + '?category=solo-b').json()
-        self.assertEqual(rows, [])
-
-    def test_search_cannot_reach_another_tenant(self):
-        rows = self.client.get(_v1('v1-a') + '?search=iPhone').json()
-        self.assertEqual({p['name'] for p in rows}, {'iPhone 15 A'})
-
-    def test_search_for_a_name_only_tenant_b_owns_returns_nothing(self):
-        _prod(self.b, 'Palabra Irrepetible', 'irrepetible', category=self.cat_b)
-        self.assertEqual(self.client.get(_v1('v1-a') + '?search=Irrepetible').json(), [])
-
-    def test_ordering_is_allowlisted_and_stays_scoped(self):
-        _prod(self.a, 'Barato A', 'barato-a', category=self.cat_a, price='10.00')
-        rows = self.client.get(_v1('v1-a') + '?ordering=price').json()
-        self.assertEqual([p['slug'] for p in rows][0], 'barato-a')
-        self.assertNotIn('iPhone 15 B', {p['name'] for p in rows})
-
-    def test_an_unknown_ordering_key_is_ignored_rather_than_applied(self):
-        # Without the allowlist this would sort by an arbitrary column, which is
-        # a way to infer values the serializer never returns.
-        rows = self.client.get(_v1('v1-a') + '?ordering=company_id').json()
-        self.assertEqual({p['name'] for p in rows}, {'iPhone 15 A'})
-
-    def test_in_stock_filter_stays_scoped(self):
-        rows = self.client.get(_v1('v1-a') + '?in_stock=true').json()
-        self.assertNotIn('iPhone 15 B', {p['name'] for p in rows})
-
-
-class V1TenantSelectorAuthorityTest(TestCase):
-    """The path names the tenant. Nothing else may override it."""
-
-    def setUp(self):
-        cache.clear()
-        self.a = _saas_company('Empresa A', 'sel-a', tax_id='20777200001')
-        self.b = _saas_company('Empresa B', 'sel-b', tax_id='20777200002')
-        _prod(self.a, 'Producto A', 'producto-a')
-        _prod(self.b, 'Producto B', 'producto-b')
-        self.client = APIClient()
-
-    def test_a_company_query_parameter_cannot_change_the_tenant(self):
-        rows = self.client.get(_v1('sel-a') + f'?company={self.b.id}').json()
-        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
-
-    def test_a_company_slug_query_parameter_cannot_change_the_tenant(self):
-        rows = self.client.get(_v1('sel-a') + '?company_slug=sel-b').json()
-        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
-
-    def test_an_invented_tenant_header_cannot_change_the_tenant(self):
-        rows = self.client.get(_v1('sel-a'), HTTP_X_COMPANY_SLUG='sel-b').json()
-        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
-
-    def test_the_host_cannot_override_the_path(self):
-        # The web storefront resolves by Host. This surface must NOT, or the same
-        # URL would answer differently depending on which domain reached it.
-        with override_settings(ALLOWED_HOSTS=['*'], DEFAULT_STOREFRONT_COMPANY_SLUG='sel-b'):
-            rows = self.client.get(_v1('sel-a'), HTTP_HOST='sel-b.example.com').json()
-        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
-
-    def test_the_default_storefront_setting_cannot_override_the_path(self):
-        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='sel-b'):
-            rows = self.client.get(_v1('sel-a')).json()
-        self.assertEqual({p['name'] for p in rows}, {'Producto A'})
-
-    def test_the_slug_is_case_insensitive(self):
-        self.assertEqual(self.client.get(_v1('SEL-A')).status_code, 200)
-
-
-class V1UnresolvableTenantTest(TestCase):
-    """Fail-safe: nothing resolves, nothing is served, nothing is revealed."""
-
-    def setUp(self):
-        cache.clear()
-        self.active = _saas_company('Activa', 'fs-activa', tax_id='20777300001')
-        self.inactive = _saas_company(
-            'Inactiva', 'fs-inactiva', tax_id='20777300002', is_active=False,
-        )
-        _prod(self.active, 'Visible', 'visible')
-        _prod(self.inactive, 'Oculto', 'oculto')
-        self.client = APIClient()
-
-    def test_an_unknown_company_is_404(self):
-        self.assertEqual(self.client.get(_v1('no-existe-en-absoluto')).status_code, 404)
-
-    def test_an_inactive_company_is_404(self):
-        self.assertEqual(self.client.get(_v1('fs-inactiva')).status_code, 404)
-
-    def test_an_inactive_company_never_leaks_its_catalogue(self):
-        body = self.client.get(_v1('fs-inactiva')).content.decode()
-        self.assertNotIn('Oculto', body)
-        self.assertNotIn('oculto', body)
-
-    def test_unknown_and_inactive_are_INDISTINGUISHABLE(self):
-        # A 403 for "inactive" and a 404 for "unknown" would answer, to anyone
-        # willing to iterate the namespace, which companies exist.
-        unknown = self.client.get(_v1('no-existe-en-absoluto'))
-        inactive = self.client.get(_v1('fs-inactiva'))
-        self.assertEqual(unknown.status_code, inactive.status_code)
-        self.assertEqual(unknown.json(), inactive.json())
-
-    def test_the_404_body_names_no_company(self):
-        body = self.client.get(_v1('fs-inactiva')).content.decode()
-        self.assertNotIn('fs-inactiva', body)
-        self.assertNotIn('Inactiva', body)
-
-    def test_categories_fail_safe_the_same_way(self):
-        self.assertEqual(self.client.get(_v1('fs-inactiva', 'categories')).status_code, 404)
-        self.assertEqual(self.client.get(_v1('no-existe', 'categories')).status_code, 404)
-
-    def test_detail_of_an_unknown_tenant_is_404(self):
-        self.assertEqual(
-            self.client.get(_v1('no-existe', 'products', 'visible/')).status_code, 404,
-        )
-
-    def test_there_is_no_first_company_fallback(self):
-        # The failure this exists to prevent: an unresolved tenant quietly
-        # serving whichever company the database happened to return first.
-        body = self.client.get(_v1('no-existe')).content.decode()
-        self.assertNotIn('Visible', body)
-
-
-class V1PublicContractTest(TestCase):
-    """Shape, exposure and the fact that this surface is genuinely public."""
-
-    def setUp(self):
-        cache.clear()
-        self.company = _saas_company('Contrato', 'contrato', tax_id='20777400001')
-        self.category = _cat(self.company, 'Mac', 'mac')
-        self.product = _prod(
-            self.company, 'MacBook Air', 'macbook-air', category=self.category, price='4500.00',
-        )
-        self.client = APIClient()
-
-    def test_product_fields_are_exactly_the_agreed_contract(self):
-        row = self.client.get(_v1('contrato')).json()[0]
-        self.assertEqual(
-            set(row),
-            {
-                'id', 'name', 'slug', 'description', 'price',
-                'inventory', 'category', 'image_url', 'average_rating', 'review_count',
-            },
-        )
-
-    def test_category_fields_are_exactly_the_agreed_contract(self):
-        row = self.client.get(_v1('contrato', 'categories')).json()[0]
-        self.assertEqual(set(row), {'id', 'name', 'slug'})
-
-    def test_no_internal_field_is_exposed(self):
-        body = self.client.get(_v1('contrato')).content.decode()
-        for leaked in ('company', 'tax_id', 'legal_name', 'cost', 'branch', 'stripe'):
-            self.assertNotIn(leaked, body.lower())
-
-    def test_the_list_is_a_raw_array_not_a_paginated_envelope(self):
-        # Matches the legacy surface, which the mobile client already maps.
-        self.assertIsInstance(self.client.get(_v1('contrato')).json(), list)
-
-    def test_inventory_reports_sellable_units_of_the_fulfillment_branch(self):
-        self.assertEqual(self.client.get(_v1('contrato')).json()[0]['inventory'], 10)
-
-    def test_a_company_with_no_fulfillment_branch_reports_zero_not_the_aggregate(self):
-        from .models import Branch
-        Branch.objects.filter(company=self.company).update(is_active=False)
-        self.assertEqual(self.client.get(_v1('contrato')).json()[0]['inventory'], 0)
-
-    def test_the_endpoint_needs_no_authentication(self):
-        self.assertEqual(self.client.get(_v1('contrato')).status_code, 200)
-
-    def test_the_endpoint_ignores_a_session_cookie(self):
-        # Authentication is switched off on this surface, so a logged-in browser
-        # and an anonymous app must receive byte-identical catalogues.
-        anonymous = self.client.get(_v1('contrato')).json()
-        user = _saas_user('cliente-v1')
-        self.client.force_authenticate(user=user)
-        authenticated = self.client.get(_v1('contrato')).json()
-        self.client.force_authenticate(user=None)
-        self.assertEqual(anonymous, authenticated)
-
-    def test_the_surface_is_read_only(self):
-        for method in ('post', 'put', 'patch', 'delete'):
-            response = getattr(self.client, method)(_v1('contrato'))
-            self.assertIn(response.status_code, (401, 403, 405))
-
-    def test_the_detail_endpoint_is_read_only(self):
-        for method in ('post', 'put', 'patch', 'delete'):
-            response = getattr(self.client, method)(_v1('contrato', 'products', 'macbook-air/'))
-            self.assertIn(response.status_code, (401, 403, 405))
-
-
-class V1IsAdditiveTest(TestCase):
-    """Regression: `/api/` behaves exactly as it did before v1 existed."""
-
-    def setUp(self):
-        cache.clear()
-        self.company = _saas_company('Aditiva', 'aditiva', tax_id='20777500001')
-        self.category = _cat(self.company, 'Mac', 'mac-aditiva')
-        _prod(self.company, 'MacBook Pro', 'macbook-pro-aditiva', category=self.category)
-        self.client = APIClient()
-
-    def test_the_legacy_catalogue_still_resolves_by_host_setting(self):
-        with _storefront_of(self.company):
-            rows = self.client.get('/api/products/').json()
-        self.assertEqual({p['slug'] for p in rows}, {'macbook-pro-aditiva'})
-
-    def test_the_legacy_catalogue_still_returns_a_raw_array(self):
-        with _storefront_of(self.company):
-            self.assertIsInstance(self.client.get('/api/products/').json(), list)
-
-    def test_the_legacy_categories_endpoint_is_unchanged(self):
-        with _storefront_of(self.company):
-            self.assertEqual(self.client.get('/api/categories/').status_code, 200)
-
-    def test_v1_and_legacy_agree_on_the_same_tenant(self):
-        with _storefront_of(self.company):
-            legacy = self.client.get('/api/products/').json()
-        versioned = self.client.get(_v1('aditiva')).json()
-        self.assertEqual(
-            {p['slug'] for p in legacy}, {p['slug'] for p in versioned},
-        )
-
-    def test_v1_does_not_appear_under_the_legacy_prefix(self):
-        self.assertEqual(self.client.get('/api/storefront/aditiva/products/').status_code, 404)
-
-    def test_the_legacy_surface_still_ignores_a_path_tenant(self):
-        # Proves the two resolvers are genuinely separate code paths.
-        with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG=''):
-            self.assertEqual(self.client.get('/api/products/').json(), [])
-
-
-class V1DoesNotTouchAuthenticationTest(TestCase):
-    """BR-001 is still API_PENDING, and this phase must not have moved it."""
-
-    def test_the_project_default_authentication_is_still_cookie_jwt(self):
-        from django.conf import settings
-        self.assertEqual(
-            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
-            ('store.authentication.CookieJWTAuthentication',),
-        )
-
-    def test_no_bearer_authentication_class_is_installed_globally(self):
-        from django.conf import settings
-        classes = ' '.join(settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'])
-        self.assertNotIn('JWTAuthentication', classes.replace('CookieJWTAuthentication', ''))
-        self.assertNotIn('TokenAuthentication', classes)
-
-    def test_v1_declares_no_authentication_of_its_own(self):
-        from .v1_views import V1StorefrontProductViewSet
-        self.assertEqual(V1StorefrontProductViewSet.authentication_classes, [])
-
-    def test_there_is_no_v1_auth_endpoint_yet(self):
-        client = APIClient()
-        for path in ('/api/v1/auth/login/', '/api/v1/auth/refresh/', '/api/v1/auth/logout/'):
-            self.assertEqual(client.get(path).status_code, 404)
-
-    def test_there_is_no_v1_private_surface_yet(self):
-        client = APIClient()
-        for path in ('/api/v1/orders/', '/api/v1/me/', '/api/v1/repairs/'):
-            self.assertEqual(client.get(path).status_code, 404)
-
-    def test_a_bearer_token_grants_nothing_on_the_public_surface(self):
-        company = _saas_company('Bearer', 'bearer-nada', tax_id='20777600001')
-        _prod(company, 'Producto', 'producto-bearer')
-        client = APIClient()
-        anonymous = client.get(_v1('bearer-nada')).json()
-        with_header = client.get(_v1('bearer-nada'), HTTP_AUTHORIZATION='Bearer inventado').json()
-        self.assertEqual(anonymous, with_header)
-
-
-class V1PublicResolverUnitTest(TestCase):
-    """`resolve_public_storefront_company` in isolation — the security seam."""
-
-    def setUp(self):
-        cache.clear()
-        self.company = _saas_company('Resolver', 'resolver-ok', tax_id='20777700001')
-        _saas_company('Apagada', 'resolver-off', tax_id='20777700002', is_active=False)
-
-    def test_it_resolves_an_active_company(self):
-        from .tenancy import resolve_public_storefront_company
-        self.assertEqual(resolve_public_storefront_company('resolver-ok'), self.company)
-
-    def test_it_normalizes_case_and_surrounding_whitespace(self):
-        from .tenancy import resolve_public_storefront_company
-        self.assertEqual(resolve_public_storefront_company('  RESOLVER-OK '), self.company)
-
-    def test_it_refuses_an_inactive_company(self):
-        from .tenancy import resolve_public_storefront_company
-        self.assertIsNone(resolve_public_storefront_company('resolver-off'))
-
-    def test_it_refuses_blank_and_non_string_input(self):
-        from .tenancy import resolve_public_storefront_company
-        for value in ('', '   ', None, 42, [], {'slug': 'resolver-ok'}):
-            self.assertIsNone(resolve_public_storefront_company(value))
-
-    def test_it_refuses_an_absurdly_long_slug(self):
-        from .tenancy import resolve_public_storefront_company
-        self.assertIsNone(resolve_public_storefront_company('x' * 5000))
-
-    def test_it_never_falls_back_to_another_company(self):
-        from .tenancy import resolve_public_storefront_company
-        self.assertIsNone(resolve_public_storefront_company('no-existe'))
-
-
-class V1SharedScopingHelperTest(TestCase):
-    """The refactor must leave the web storefront byte-identical."""
-
-    def setUp(self):
-        cache.clear()
-        self.company = _saas_company('Compartida', 'compartida', tax_id='20777800001')
-        self.category = _cat(self.company, 'Mac', 'mac-compartida')
-        _prod(self.company, 'Producto', 'producto-compartido', category=self.category)
-        self.client = APIClient()
-
-    def test_the_host_path_and_the_slug_path_produce_the_same_queryset(self):
-        from .tenancy import company_storefront_products, storefront_products
-        from django.test import RequestFactory
-        request = RequestFactory().get('/api/products/')
-        with _storefront_of(self.company):
-            by_host = list(storefront_products(request).values_list('id', flat=True))
-        by_company = list(company_storefront_products(self.company).values_list('id', flat=True))
-        self.assertEqual(by_host, by_company)
-
-    def test_the_shared_helper_annotates_sellable_stock(self):
-        from .tenancy import company_storefront_products
-        product = company_storefront_products(self.company).first()
-        self.assertEqual(product.available_stock, 10)
-
-    def test_a_none_company_yields_an_empty_queryset_not_everything(self):
-        from .tenancy import company_storefront_categories, company_storefront_products
-        self.assertEqual(company_storefront_products(None).count(), 0)
-        self.assertEqual(company_storefront_categories(None).count(), 0)
 
 
 # ===========================================================================

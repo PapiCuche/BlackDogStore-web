@@ -708,6 +708,85 @@ def company_storefront_categories(company):
     return Category.objects.filter(company=company)
 
 
+RELATION_MEMBER = 'member'      # staff of the company
+RELATION_CUSTOMER = 'customer'  # buys from the company
+
+
+def verified_company_relations(user):
+    """
+    Every company this AUTHENTICATED user has a server-verified relation with.
+
+    WHY THIS IS NOT JUST MEMBERSHIPS
+
+    Migration 0015 deliberately gave customers no `Membership`: a shopper is not
+    staff, and turning buyers into company members the day multi-tenant
+    permissions went live would have been a quiet privilege escalation. That
+    decision is correct and this function does not revisit it.
+
+    But it means memberships alone answer the wrong question for a mobile app
+    whose entire audience is shoppers. A customer signing in would get an empty
+    list, and the app would conclude it has no company at all.
+
+    So both relations are reported, and LABELLED, because they are not the same
+    thing and the client must never flatten them:
+
+      member    → `Membership`, active, company active. This person is staff.
+      customer  → active `Customer` CRM row of an active company. An ARCHIVED
+                  customer is excluded: the business has closed that file, and a
+                  relation the company considers over is not one to advertise.
+
+    WHAT THIS IS NOT
+
+    Not authorization. It is a statement of fact about relations that already
+    exist in the database, computed from the authenticated user's own rows and
+    nothing the client sent. A private endpoint must still re-check membership
+    for itself: this list is what the app may DISPLAY and SELECT from, never a
+    grant it may present back as proof.
+
+    `is_superuser` is deliberately ignored. A platform administrator does not
+    silently receive every tenant on a phone; if that is ever needed it will be
+    an explicit, audited feature rather than a side effect of a boolean.
+
+    Returns a list of dicts ordered by name, one entry per company, with
+    `member` winning when a user is both staff and customer of the same company.
+    """
+    from .models import Customer
+
+    if user is None or not user.is_authenticated:
+        return []
+
+    relations: dict[int, dict] = {}
+
+    for membership in (
+        Membership.objects
+        .filter(user=user, is_active=True, company__is_active=True)
+        .select_related('company')
+    ):
+        company = membership.company
+        relations[company.pk] = {
+            'slug': company.slug,
+            'name': company.name,
+            'relation': RELATION_MEMBER,
+        }
+
+    for record in (
+        Customer.objects
+        .filter(user=user, is_active=True, company__is_active=True)
+        .select_related('company')
+    ):
+        company = record.company
+        # Staff wins: being both is not a demotion.
+        if company.pk in relations:
+            continue
+        relations[company.pk] = {
+            'slug': company.slug,
+            'name': company.name,
+            'relation': RELATION_CUSTOMER,
+        }
+
+    return sorted(relations.values(), key=lambda row: row['name'])
+
+
 def resolve_public_storefront_company(slug) -> Company | None:
     """
     Resolve the tenant NAMED BY THE CLIENT for a public catalogue request.
