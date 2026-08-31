@@ -759,9 +759,18 @@ restar lo que nadie había registrado*.
 - **Efectivo y vuelto los calcula el servidor**, y en tarjeta simplemente no
   existen en lugar de figurar como cero.
 
+- **Combos que se aplican solos.** Configura «iPhone + funda + vidrio a S/ 3000»
+  y la caja lo detecta en cuanto el carrito califica: nadie pulsa nada. El pedido
+  sigue llevando los tres artículos reales y salen tres unidades de tres
+  estantes — la promoción sólo cambia el dinero, nunca el stock.
+- **Nunca se ofrece un combo que el estante no puede completar**, y un combo que
+  costara más que sus partes simplemente no se aplica.
+- **Lo cobrado no se reescribe.** Editar, renombrar o apagar una promoción no
+  cambia lo que dice una venta anterior.
+
 Pantallas: `/admin/sales` (facturación, canales, más vendidos, reposición),
-`/admin/sales/pos` (la caja) y `/admin/sales/commissions` (devengado por vendedor
-y porcentajes del equipo).
+`/admin/sales/pos` (la caja), `/admin/sales/commissions` (devengado por vendedor)
+y `/admin/sales/promotions` (combos automáticos y códigos de descuento).
 
 > **No hay margen ni utilidad, a propósito.** La plataforma no registra cuánto
 > costó nada, así que cualquier cifra de rentabilidad sería inventada. Se

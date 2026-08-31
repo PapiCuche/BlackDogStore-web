@@ -45,12 +45,14 @@ import {
 import {
   PosConflictError,
   PosStockError,
+  fetchCombos,
   fetchCustomers,
   fetchPosContext,
   posLookup,
   posPreview,
   posSale,
   posSearch,
+  type ComboOffer,
   type CustomerRow,
   type PosContext,
   type PosPreview,
@@ -144,6 +146,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   // charge, rather than a number it computed itself and hoped matched.
   const [preview, setPreview] = useState<PosPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  // Combos this branch can actually complete right now.
+  const [combos, setCombos] = useState<ComboOffer[]>([]);
 
   const scanRef = useRef<HTMLInputElement | null>(null);
   // Held across renders and across retries: the same basket keeps one key.
@@ -173,6 +177,24 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       cancelled = true;
     };
   }, [companyId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (branch === null) {
+        setCombos([]);
+        return;
+      }
+      void (async () => {
+        const offers = await fetchCombos(companyId, branch);
+        if (!cancelled) setCombos(offers);
+      })();
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [branch, companyId, done]);
 
   const focusScan = useCallback(() => {
     // Only when nothing else is deliberately focused — stealing the caret out
@@ -582,6 +604,58 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               />
             </div>
 
+            {combos.length && lines.length === 0 ? (
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                  Combos disponibles
+                </p>
+                {combos.map((combo) => (
+                  <button
+                    key={combo.id}
+                    type="button"
+                    disabled={combo.available_sets < 1}
+                    onClick={() => {
+                      // Adds the REAL components. The same promotion engine
+                      // then detects them — there is no second discount path.
+                      setLines(
+                        combo.components.map((c) => ({
+                          product: c.product_id,
+                          name: c.product_name,
+                          price: c.price,
+                          quantity: c.quantity,
+                          available: c.available,
+                        })),
+                      );
+                      focusScan();
+                    }}
+                    className="flex w-full items-center justify-between rounded-lg border border-white/[0.08] px-4 py-3 text-left text-sm transition hover:border-white/25 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <span>
+                      <span className="text-zinc-200">{combo.name}</span>
+                      <span className="block text-[11px] text-zinc-600">
+                        {combo.components
+                          .map((c) => `${c.quantity}× ${c.product_name}`)
+                          .join(" + ")}
+                      </span>
+                    </span>
+                    <span className="text-right">
+                      <span className="block font-mono text-zinc-300">
+                        {money(combo.combo_amount)}
+                      </span>
+                      <span className="block text-[11px] text-emerald-400/80">
+                        ahorro {money(combo.discount_amount)}
+                      </span>
+                      {combo.available_sets < 1 ? (
+                        <span className="block text-[11px] text-red-400/80">
+                          sin stock para completarlo
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
             {found.length ? (
               <div className="overflow-hidden rounded-xl border border-white/[0.06]">
                 {found.map((p) => (
@@ -791,11 +865,17 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
                 Descuento
               </p>
+              {preview?.promotions?.length ? (
+                <p className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">
+                  Una promoción automática ya está aplicada. No se combina con
+                  códigos ni descuentos manuales.
+                </p>
+              ) : null}
               <input
                 className={FIELD}
                 placeholder="Código promocional"
                 value={couponCode}
-                disabled={manualType !== ""}
+                disabled={manualType !== "" || Boolean(preview?.promotions?.length)}
                 onChange={(e) => setCouponCode(e.target.value)}
               />
               {context.can_apply_discount ? (
@@ -931,15 +1011,27 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 <span>Subtotal</span>
                 <span className="font-mono">{money(subtotal)}</span>
               </div>
-              {discount > 0 ? (
-                <div className="flex justify-between text-emerald-400/80">
-                  <span>
-                    Descuento
-                    {preview?.discount_source === "coupon" ? " (cupón)" : ""}
-                  </span>
-                  <span className="font-mono">−{money(discount)}</span>
-                </div>
-              ) : null}
+              {/* A promotion is NAMED, because an unexplained reduction on a
+                  till display is something an operator cannot answer for. */}
+              {preview?.promotions?.length
+                ? preview.promotions.map((p) => (
+                    <div key={p.id} className="flex justify-between text-emerald-400/80">
+                      <span>
+                        ✓ {p.name}
+                        {p.applications > 1 ? ` ×${p.applications}` : ""}
+                      </span>
+                      <span className="font-mono">−{money(p.discount_amount)}</span>
+                    </div>
+                  ))
+                : discount > 0 ? (
+                    <div className="flex justify-between text-emerald-400/80">
+                      <span>
+                        Descuento
+                        {preview?.discount_source === "coupon" ? " (cupón)" : ""}
+                      </span>
+                      <span className="font-mono">−{money(discount)}</span>
+                    </div>
+                  ) : null}
               <div className="flex items-baseline justify-between pt-1">
                 <span className="text-xs text-zinc-500">
                   {units} unidad{units === 1 ? "" : "es"}

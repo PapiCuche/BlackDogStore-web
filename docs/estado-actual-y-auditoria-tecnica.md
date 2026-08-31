@@ -1022,6 +1022,18 @@ Esquema local alineado con el código     SÍ (0033)
 Migraciones pendientes                   0
 500 en peticiones válidas                0
 Series / correlativos internos           IMPLEMENTADO
+Promociones automáticas / combos         IMPLEMENTADO
+Snapshot de promoción aplicada           IMPLEMENTADO
+Atajo de combos en POS                   IMPLEMENTADO
+Administración de cupones                IMPLEMENTADO
+Analítica de promociones                 IMPLEMENTADO
+Elegibilidad de vendedor                 IMPLEMENTADO
+Huella de idempotencia canónica          IMPLEMENTADO
+Reparación de histórico de descuentos    IMPLEMENTADO
+Carga masiva de productos (Excel)        PENDIENTE
+Carga masiva de inventario (Excel)       PENDIENTE
+Apilado promoción + cupón                PENDIENTE
+Promociones en e-commerce                PENDIENTE
 POS interno                              IMPLEMENTADO
 Cliente en POS                           IMPLEMENTADO
 Vendedor / operador separados            IMPLEMENTADO

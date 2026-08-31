@@ -157,6 +157,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
   },
   { id: "sales.quotes", group: "sales", label: "Cotizaciones", description: "Cotizaciones a clientes.", status: "pending" },
   {
+    id: "sales.promotions",
+    group: "sales",
+    label: "Promociones",
+    description: "Combos automáticos y códigos de descuento.",
+    href: "/admin/sales/promotions",
+    // Phase C1.3: giving product away is its own authority — deliberately NOT
+    // implied by `products.manage`.
+    requiredCapabilities: ["sales.promotions.view"],
+    status: "implemented",
+  },
+  {
     id: "sales.commissions",
     group: "sales",
     label: "Comisiones",

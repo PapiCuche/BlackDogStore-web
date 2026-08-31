@@ -59,6 +59,18 @@ class PosValidationError(PosError):
     """The request is malformed or asks for something that does not exist here."""
 
 
+class PosPermissionError(PosError):
+    """
+    The request is well-formed; this caller is not allowed to make it.
+
+    Separate from `PosValidationError` because the two mean opposite things to
+    whoever is reading the response. A 400 says "you typed something wrong" and
+    sends an operator looking for a typo that is not there; a 403 says "ask
+    somebody with the authority". Collapsing them wasted the reader's time and
+    hid a permission model behind what looked like a form error.
+    """
+
+
 class PosIdempotencyConflict(PosError):
     """This idempotency key was already used for a DIFFERENT sale."""
 
@@ -162,56 +174,93 @@ def normalize_items(raw_items) -> list[dict]:
 
 
 def request_fingerprint(
-    *, company, branch, customer, payment_method, items,
-    seller=None, discount=None, payment_reference='', external_reference='',
-    sale_notes='',
+    *, company, branch, customer_id, seller_id, payment_method, items,
+    coupon_code='', manual_discount_type='', manual_discount_value=None,
+    discount_reason='', amount_received=None, payment_reference='',
+    external_reference='', sale_notes='', terms_confirmed=False,
 ) -> str:
     """
-    A short, stable hash of WHAT this sale is.
+    A hash of WHAT THE OPERATOR ASKED FOR — never of what the system worked out.
 
-    The idempotency key alone is not enough. A key says "this is the same
-    attempt"; it cannot say whether the attempt is the same SALE. Without the
-    fingerprint, a client that reused a key — a stale tab, a bug, a copied
-    request — would be handed somebody else's completed order and told it
-    succeeded.
+    THE DISTINCTION THAT MATTERS
+    ----------------------------
+    The first version hashed the RESOLVED discount: the amount, the coupon's
+    percentage, the source. It looked more precise and it was wrong, because
+    those are properties of the catalogue at the instant of computation, not of
+    the request.
 
-    Prices are excluded on purpose: the server decides those, so including them
-    would make the fingerprint depend on a value the client does not control and
-    turn an ordinary price change into a spurious conflict.
+    Consider a till that charges, loses the response, and retries ninety seconds
+    later. In between, somebody edits the promotion, or the coupon expires, or a
+    price changes. The intent is identical — same basket, same customer, same
+    key — but the resolved discount is not, so the fingerprints disagree and the
+    retry is refused as a conflict. The operator, who did nothing wrong, is told
+    their sale collided with itself.
 
-    Everything that materially changes the sale IS included — the seller who
-    gets credited, the discount that was actually resolved, and the references
-    typed alongside it. Leaving any of them out would let a retry with different
-    contents be answered with the earlier order.
+    Worse in the other direction: a retry AFTER an admin lowered a discount
+    would resolve to a different amount and be rejected, when the correct answer
+    is the sale that already exists at the price already charged.
+
+    So this hashes only inputs the caller controls and typed:
+
+        company · branch · customer · seller · payment method
+        items (product + quantity, ordered)
+        coupon CODE as typed · manual discount type and value · reason
+        cash tendered · references · notes · the terms confirmation
+
+    And deliberately NOT:
+
+        Product.price          the catalogue can change between attempts
+        discount_amount        derived from prices and promotion state
+        coupon.discount_percent
+        promotion results      promotions are edited by admins mid-day
+        commission amount      derived from all of the above
+
+    A retry of a completed sale therefore returns that sale, at the money that
+    was actually charged, no matter what has been reconfigured since.
     """
-    discount = discount or {}
     payload = {
         'company': int(getattr(company, 'pk', company)),
         'branch': int(getattr(branch, 'pk', branch)),
-        'customer': int(getattr(customer, 'pk', customer)) if customer else None,
-        # WHO IS CREDITED is part of what the sale IS. Without it, retrying a
-        # request with the seller changed would return the earlier order and
-        # report success while the commission stayed with the wrong person.
-        'seller': int(getattr(seller, 'pk', seller)) if seller else None,
+        'customer': int(customer_id) if customer_id not in (None, '') else None,
+        'seller': int(seller_id) if seller_id not in (None, '') else None,
         'payment_method': str(payment_method),
         'items': [
             {'p': int(i['product']), 'q': int(i['quantity'])}
             for i in items
         ],
-        # The RESOLVED discount, not the raw request: what actually came off,
-        # from where, and why. A retry that changes the coupon changes the sale.
-        'discount': {
-            'source': str(discount.get('source', '')),
-            'amount': str(discount.get('amount', '')),
-            'code': str(discount.get('coupon_code', '')),
-            'reason': str(discount.get('reason', '')),
-        },
-        'payment_reference': str(payment_reference or ''),
-        'external_reference': str(external_reference or ''),
-        'sale_notes': str(sale_notes or ''),
+        # The code AS TYPED, normalised for case and spacing only. Whether it
+        # resolves, and to what, is the system's answer rather than the ask.
+        'coupon': (coupon_code or '').strip().upper(),
+        'manual_type': (manual_discount_type or '').strip(),
+        'manual_value': _normalized_number(manual_discount_value),
+        'reason': ' '.join((discount_reason or '').split()),
+        # §7: cash tendered is part of the request. Without it, a retry that
+        # hands over a different note would be answered with the earlier sale
+        # and the change would be wrong.
+        'amount_received': _normalized_number(amount_received),
+        'payment_reference': (payment_reference or '').strip(),
+        'external_reference': (external_reference or '').strip(),
+        'sale_notes': ' '.join((sale_notes or '').split()),
+        'terms': bool(terms_confirmed),
     }
     blob = json.dumps(payload, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(blob.encode('utf-8')).hexdigest()
+
+
+def _normalized_number(value) -> str:
+    """
+    A stable decimal string, so `100`, `100.0` and `'100.00'` hash alike.
+
+    Without this the fingerprint would depend on how the client happened to
+    serialise a number, and a retry from a different code path would look like a
+    different sale.
+    """
+    if value in (None, ''):
+        return ''
+    try:
+        return str(Decimal(str(value)).quantize(CENT, rounding=ROUND_HALF_UP))
+    except (InvalidOperation, TypeError, ValueError):
+        return str(value)
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +275,14 @@ CENT = Decimal('0.01')
 
 class DiscountError(PosValidationError):
     """The requested discount is not one this caller may apply."""
+
+
+def _checked_text(value, limit: int, label: str) -> str:
+    """Trim the edges, refuse anything longer than the column can hold."""
+    text = (value or '').strip()
+    if len(text) > limit:
+        raise PosValidationError(f'{label} supera {limit} caracteres.')
+    return text
 
 
 def _money(value) -> Decimal:
@@ -285,7 +342,7 @@ def resolve_discount(
 
     # --- manual ----------------------------------------------------------
     if not may_apply_manual:
-        raise DiscountError(
+        raise PosPermissionError(
             'No tienes permiso para aplicar descuentos manuales.'
         )
     reason = (reason or '').strip()
@@ -454,7 +511,48 @@ def resolve_pos_products(company, items) -> dict[int, Product]:
     return found
 
 
-def resolve_pos_seller(company, operator, requested_seller_id, *, may_assign: bool):
+def eligible_pos_sellers(company, branch=None):
+    """
+    Who may be credited with a counter sale — the single definition.
+
+    THREE CONDITIONS, and none of them is "their role is called sales":
+
+      1. an ACTIVE membership of this company, and an active account;
+      2. `sales.pos.use` RESOLVED through the real capability machinery, so a
+         custom role that grants it counts and a role merely NAMED "Ventas"
+         does not;
+      3. access to the branch the sale happened in, when one is given.
+
+    The first version accepted any active membership, which meant a sale could
+    be credited — and a commission paid — to a stock clerk, a technician, or
+    anyone who had never been allowed near a till. Commission is money, so the
+    bar to receive it has to be the same bar as doing the work.
+
+    Returns memberships, not users, because the caller usually wants the rate
+    and the name alongside.
+    """
+    from .tenancy import has_capability, has_branch_access
+
+    rows = (
+        Membership.objects
+        .filter(company=company, is_active=True, user__is_active=True)
+        .select_related('user')
+        .order_by('user__first_name', 'user__username')
+    )
+    out = []
+    for membership in rows:
+        if not has_capability(membership.user, company, 'sales.pos.use'):
+            continue
+        if branch is not None and not has_branch_access(membership.user, branch):
+            # Crediting a sale in Centro to somebody who only works Cayma would
+            # pay commission for work they were never in a position to do.
+            continue
+        out.append(membership)
+    return out
+
+
+def resolve_pos_seller(company, operator, requested_seller_id, *, may_assign: bool,
+                       branch=None):
     """
     Who the sale is CREDITED to, which is not always who rang it up.
 
@@ -483,22 +581,24 @@ def resolve_pos_seller(company, operator, requested_seller_id, *, may_assign: bo
         return operator
 
     if not may_assign:
-        raise PosValidationError(
+        raise PosPermissionError(
             'No tienes permiso para atribuir la venta a otro vendedor.'
         )
 
-    # Resolved by walking DOWN from this company's active memberships. A seller
-    # from another tenant is not rejected by a check somebody could delete — it
-    # is simply not in the set being searched, so the answer is the same as for
-    # a user that does not exist.
-    membership = (
-        Membership.objects
-        .filter(company=company, user_id=seller_id, is_active=True)
-        .select_related('user')
-        .first()
+    # Resolved by walking DOWN from the ELIGIBLE set. A seller from another
+    # tenant, an inactive one, one without `sales.pos.use`, or one with no
+    # access to this branch is not rejected by a check somebody could delete —
+    # they are simply not in the set being searched, so the answer is the same
+    # as for a user that does not exist.
+    membership = next(
+        (m for m in eligible_pos_sellers(company, branch) if m.user_id == seller_id),
+        None,
     )
-    if membership is None or not membership.user.is_active:
-        raise PosValidationError('Vendedor no encontrado en esta empresa.')
+    if membership is None:
+        raise PosValidationError(
+            'Vendedor no encontrado, sin permiso de venta, o sin acceso a esta '
+            'sucursal.'
+        )
     return membership.user
 
 
@@ -589,21 +689,53 @@ def build_pos_sale(
     products = resolve_pos_products(company, items)
     customer = resolve_pos_customer(company, customer)
     seller = resolve_pos_seller(
-        company, operator, seller_id, may_assign=may_assign_seller,
+        company, operator, seller_id, may_assign=may_assign_seller, branch=branch,
     )
 
-    subtotal = sum(
+    subtotal = _money(sum(
         (Decimal(str(products[e['product']].price)) * e['quantity'] for e in items),
         Decimal('0.00'),
+    ))
+
+    # AUTOMATIC PROMOTIONS FIRST, because nobody asked for them and they cost
+    # the operator no decision. The company configured the rule; the basket
+    # either qualifies or it does not.
+    from . import promotion_services
+
+    prices = {pid: Decimal(str(p.price)) for pid, p in products.items()}
+    promo = promotion_services.evaluate(company, branch, items, prices)
+
+    asked_for_other_discount = bool(
+        (coupon_code or '').strip()
+        or (manual_discount_type or '').strip()
+        or manual_discount_value not in (None, '')
     )
-    discount = resolve_discount(
-        company, _money(subtotal),
-        coupon_code=coupon_code,
-        manual_type=manual_discount_type,
-        manual_value=manual_discount_value,
-        reason=discount_reason,
-        may_apply_manual=may_apply_manual_discount,
-    )
+
+    if promo['discount'] > 0:
+        if asked_for_other_discount:
+            # NO STACKING in v1, and the refusal is explicit rather than a
+            # silent choice of one. Which promotion wins, whether they compound,
+            # and what the floor is are business rules nobody has written down —
+            # picking one here would bake an unexamined policy into a till.
+            raise PosValidationError(
+                'La promoción automática no se combina con otros descuentos. '
+                'Quita el código o el descuento manual.'
+            )
+        discount = {
+            'source': DiscountSource.PROMOTION,
+            'amount': promo['discount'],
+            'coupon': None, 'coupon_code': '', 'reason': '',
+        }
+    else:
+        discount = resolve_discount(
+            company, subtotal,
+            coupon_code=coupon_code,
+            manual_type=manual_discount_type,
+            manual_value=manual_discount_value,
+            reason=discount_reason,
+            may_apply_manual=may_apply_manual_discount,
+        )
+
     totals = calculate_pos_totals(company, products, items, discount=discount)
     commission = calculate_commission(
         commission_rate_for(company, seller),
@@ -623,6 +755,7 @@ def build_pos_sale(
         'customer': customer,
         'seller': seller,
         'discount': discount,
+        'promotions': promo,
         'commission': commission,
         'amount_received': received,
         'change_amount': change,
@@ -687,14 +820,56 @@ def create_pos_sale(
 
     idempotency_key = validate_idempotency_key(idempotency_key)
 
-    payment_reference = (payment_reference or '').strip()[:MAX_REFERENCE]
-    external_reference = (external_reference or '').strip()[:MAX_REFERENCE]
-    sale_notes = (sale_notes or '').strip()
-    if len(sale_notes) > MAX_NOTES:
-        raise PosValidationError(f'Las observaciones superan {MAX_NOTES} caracteres.')
+    # NOT truncated. Silently shortening an authorisation code stores something
+    # that no longer matches the bank's record, and the operator is never told.
+    # Same principle as the idempotency key: refuse, do not repair.
+    payment_reference = _checked_text(
+        payment_reference, MAX_REFERENCE, 'La referencia del pago',
+    )
+    external_reference = _checked_text(
+        external_reference, MAX_REFERENCE, 'La referencia externa',
+    )
+    sale_notes = _checked_text(sale_notes, MAX_NOTES, 'Las observaciones')
+
+    # NORMALISE, then FINGERPRINT, then look for an existing sale — all before
+    # resolving a single price.
+    #
+    # Order matters here. Pricing first would make the fingerprint depend on the
+    # catalogue's state at this instant, so a retry after somebody edited a
+    # promotion would hash differently and be refused as a conflict. Hashing the
+    # INTENT first means a retry finds its own sale regardless of what has been
+    # reconfigured since — and, when it does, no prices are looked up, no
+    # promotion is evaluated and no permission is re-checked, because none of
+    # that can change what was already charged.
+    normalized_items = normalize_items(items)
+
+    fingerprint = request_fingerprint(
+        company=company, branch=branch,
+        customer_id=customer, seller_id=seller_id,
+        payment_method=payment_method, items=normalized_items,
+        coupon_code=coupon_code,
+        manual_discount_type=manual_discount_type,
+        manual_discount_value=manual_discount_value,
+        discount_reason=discount_reason,
+        amount_received=amount_received,
+        payment_reference=payment_reference,
+        external_reference=external_reference,
+        sale_notes=sale_notes,
+        terms_confirmed=terms_confirmed,
+    )
+
+    # Same key + same request → hand back what was already created.
+    # Same key + other request → refuse. Returning the earlier order would tell
+    #                            the caller their new basket was sold when it
+    #                            was not.
+    existing = _existing_for_key(company, idempotency_key)
+    if existing is not None:
+        if existing.pos_request_fingerprint == fingerprint:
+            return existing, False
+        raise PosIdempotencyConflict(existing)
 
     priced = build_pos_sale(
-        operator=actor, company=company, branch=branch, items=items,
+        operator=actor, company=company, branch=branch, items=normalized_items,
         customer=customer, seller_id=seller_id, payment_method=payment_method,
         coupon_code=coupon_code, manual_discount_type=manual_discount_type,
         manual_discount_value=manual_discount_value, discount_reason=discount_reason,
@@ -702,25 +877,6 @@ def create_pos_sale(
         may_assign_seller=may_assign_seller,
         may_apply_manual_discount=may_apply_manual_discount,
     )
-
-    fingerprint = request_fingerprint(
-        company=company, branch=branch, customer=priced['customer'],
-        payment_method=payment_method, items=priced['items'],
-        seller=priced['seller'], discount=priced['discount'],
-        payment_reference=payment_reference,
-        external_reference=external_reference, sale_notes=sale_notes,
-    )
-
-    # IDEMPOTENCY, checked before doing any work.
-    #
-    # Same key + same sale  → hand back what was already created.
-    # Same key + other sale → refuse. Returning the earlier order would tell the
-    #                         caller their new basket was sold when it was not.
-    existing = _existing_for_key(company, idempotency_key)
-    if existing is not None:
-        if existing.pos_request_fingerprint == fingerprint:
-            return existing, False
-        raise PosIdempotencyConflict(existing)
 
     now = timezone.now()
     seller = priced['seller']
@@ -791,6 +947,13 @@ def create_pos_sale(
     # transaction. Nothing was captured, so nothing needs repairing.
     inventory_services.record_sale_stock_movements(order, actor=actor, strict=True)
 
+    # THE PROMOTION SNAPSHOT, written before the commission so a failure
+    # anywhere still unwinds all three together.
+    if priced['promotions']['discount'] > 0:
+        from . import promotion_services
+
+        promotion_services.freeze(order, priced['promotions'])
+
     # THE COMMISSION IS WRITTEN ONLY WHEN THERE IS SOMETHING TO OWE.
     #
     # A seller on 0% produces no row. The ledger lists obligations, and "nothing
@@ -824,6 +987,9 @@ def create_pos_sale(
             'subtotal': str(priced['subtotal']),
             'discount': str(priced['discount_amount']),
             'discount_source': discount['source'],
+            'promotions': [
+                a['promotion'].pk for a in priced['promotions']['applied']
+            ],
             'total': str(priced['total']),
             'customer_id': priced['customer'].pk if priced['customer'] else None,
             # WHO RANG IT UP versus WHO IS CREDITED. Recording both is the point

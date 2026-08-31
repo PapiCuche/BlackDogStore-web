@@ -185,17 +185,14 @@ class AdminPosContextView(APIView):
         """
         if not has_capability(request.user, company, CAP_ASSIGN_SELLER):
             return []
-        from .models import Membership
-
+        # ELIGIBLE sellers only. Offering a stock clerk here would let a
+        # supervisor pay commission to somebody who is not allowed to sell.
         return [
             {
                 'id': m.user_id,
                 'name': pos_services.seller_display_name(m.user) or m.user.get_username(),
             }
-            for m in Membership.objects
-            .filter(company=company, is_active=True, user__is_active=True)
-            .select_related('user')
-            .order_by('user__first_name', 'user__username')[:200]
+            for m in pos_services.eligible_pos_sellers(company)[:200]
         ]
 
 
@@ -340,6 +337,10 @@ class AdminPosSaleView(APIView):
                 },
                 status=status.HTTP_409_CONFLICT,
             )
+        except pos_services.PosPermissionError as exc:
+            # 403, not 400: the request is fine, the caller is not allowed to
+            # make it. A 400 would send an operator hunting for a typo.
+            return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
         except pos_services.PosValidationError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except inventory_services.InsufficientStockError as exc:
@@ -642,6 +643,8 @@ class AdminPosPreviewView(APIView):
                     request.user, company, CAP_DISCOUNTS,
                 ),
             )
+        except pos_services.PosPermissionError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
         except pos_services.PosValidationError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -652,6 +655,18 @@ class AdminPosPreviewView(APIView):
             'discount': str(priced['discount_amount']),
             'discount_source': priced['discount']['source'],
             'coupon_code': priced['discount']['coupon_code'],
+            # What fired on its own, so the till can name it on screen rather
+            # than showing an unexplained reduction.
+            'promotions': [
+                {
+                    'id': a['promotion'].pk,
+                    'name': a['promotion'].name,
+                    'applications': a['applications'],
+                    'regular_amount': str(a['regular_amount']),
+                    'discount_amount': str(a['discount_amount']),
+                }
+                for a in priced['promotions']['applied']
+            ],
             'total': str(priced['total']),
             'seller': {
                 'id': seller.pk if seller else None,

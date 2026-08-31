@@ -2833,6 +2833,154 @@ la superficie de cliente, con test.
 
 ---
 
+## 8-vicies. Promociones automáticas y hardening comercial (Fase C1.3)
+
+Migraciones **0038** (reparación de histórico), **0039** (promociones) y **0040**
+(capacidades).
+
+### La huella de idempotencia hasheaba lo que no debía
+
+C1.1 introdujo la huella; C1.2 la amplió; ambas incluían el descuento **ya
+resuelto**. Eso parecía más preciso y era el error:
+
+```
+11:04:32  la caja cobra, la respuesta se pierde
+11:04:40  un administrador edita el combo
+11:06:01  la caja reintenta con la MISMA clave
+          → el descuento resuelto ahora es otro
+          → la huella no coincide
+          → 409: "esta clave ya se usó para otra venta"
+```
+
+Al operador se le decía que su propia venta chocaba consigo misma, por algo que
+hizo otra persona en otra pantalla. Y en el sentido contrario era peor: un
+reintento después de **bajar** un descuento se rechazaba, cuando la respuesta
+correcta es la venta que ya existe al precio ya cobrado.
+
+La huella describe ahora **la intención**: empresa, sucursal, cliente, vendedor,
+método de pago, artículos y cantidades, el código de cupón *tal como se tecleó*,
+el tipo y valor del descuento manual, el motivo, el efectivo entregado, las
+referencias, las observaciones y la confirmación de condiciones.
+
+Y deliberadamente **no**: `Product.price`, el `discount_amount` calculado, el
+porcentaje vigente del cupón, el resultado de las promociones ni el importe de la
+comisión. Todos ellos cambian cuando alguien edita algo, y un reintento no puede
+depender de eso.
+
+El orden también cambió: **normalizar → hashear → buscar la venta → sólo entonces
+resolver precios**. Un reintento se responde sin consultar un precio, sin evaluar
+una promoción y sin revalidar un permiso, porque nada de eso puede cambiar lo que
+ya se cobró.
+
+### Quién puede cobrar una comisión
+
+La versión anterior aceptaba cualquier membresía activa como vendedor. Eso
+significaba que una venta —y su comisión— podía acreditarse a un almacenero, a un
+técnico, o a cualquiera que nunca hubiera estado autorizado a tocar una caja.
+
+`eligible_pos_sellers()` es ahora la única definición, y exige tres cosas:
+
+1. membresía activa y cuenta activa;
+2. `sales.pos.use` **resuelto por el motor real de capacidades** — un rol
+   personalizado que la conceda cuenta, y uno que sólo se *llame* «Ventas» no;
+3. acceso a la sucursal de esa venta.
+
+La tercera importa: acreditar una venta de Centro a quien sólo trabaja Cayma
+pagaría comisión por un trabajo que esa persona no estaba en posición de hacer.
+
+### El histórico de descuentos estaba mal etiquetado
+
+La migración 0036 afirmó en su propio comentario que `discount_source = none`
+«es lo que era todo pedido histórico». Era falso, y sobre datos que la plataforma
+ya tenía: `coupon_code` y `discount_amount` existen desde mucho antes, y el
+checkout aplica cupones desde la Fase 1.
+
+El dinero nunca estuvo mal —totales, importes y códigos quedaron intactos—. Lo
+que estuvo mal fue la etiqueta, que es exactamente lo que una pantalla de
+reportes lee para decir **por qué** una venta salió más barata.
+
+```
+coupon_code != '' Y descuento > 0   →  coupon
+descuento == 0                      →  none
+descuento > 0 Y coupon_code == ''    →  SE DEJA EN none, y se cuenta
+```
+
+El tercer caso es el interesante. Podría venir de un ajuste manual antiguo, de
+una corrección de datos, o de un camino de código que ya no existe. Etiquetarlo
+`manual` inventaría una decisión, y `discount_authorized_by` quedaría vacío —
+insinuando que alguien lo autorizó sin dejar rastro de quién. Un `none` honesto
+más un contador impreso es mejor que una ficción verosímil.
+
+### Un combo no es un producto
+
+La tentación es crear un `Product` llamado «Combo iPhone + funda + vidrio» con su
+propio precio. Es un error caro: ese producto necesitaría stock propio, que no
+existe. Venderlo obligaría a descontar otros tres artículos por algún camino
+hecho a medida, el Kardex mostraría la venta de algo que nunca estuvo en un
+estante, y cada reporte de inventario tendría que aprender qué productos son
+reales y cuáles no.
+
+Así que **un combo sólo cambia el dinero**:
+
+```
+Venta:  1 iPhone + 1 funda + 1 vidrio
+        3 OrderItems reales
+        3 SALE_EXIT de 3 estantes reales
+        1 AppliedPromotion que explica por qué se cobró menos
+```
+
+### El motor: determinista, no óptimo
+
+Dos promociones pueden querer la misma unidad. Elegir la combinación que más
+ahorra al cliente es un problema de empaquetado —NP-hard— y, peor, **inestable**:
+añadir un cable al carrito podría reordenar todos los descuentos, lo que es
+imposible de explicarle a quien está pagando.
+
+```
+ordenar por prioridad DESC, luego id ASC
+cada promoción consume las unidades que necesita
+una unidad consumida ya no está disponible para la siguiente
+```
+
+Aburrido a propósito. El resultado es siempre el mismo para el mismo carrito, el
+administrador controla el desenlace con la prioridad, y la razón de que una
+promoción no se aplicara siempre es «algo por encima se llevó las unidades».
+
+Un combo cuyo precio supere al de sus partes **no se aplica**: cobrar más por
+comprar junto sería indefensible, y casi con certeza es un error de configuración.
+
+### Alcance por sucursal, cerrado por defecto
+
+`branch_scope` es explícito (`ALL` / `SELECTED`) en vez de inferirse de una tabla
+vacía. «Sin filas significa en todas» convertiría borrar la última sucursal en una
+ampliación silenciosa del alcance — la misma trampa que `branch_access_mode`
+evita desde la Fase 2D. `SELECTED` con cero filas no aplica en ninguna parte.
+
+### El snapshot, otra vez
+
+`AppliedPromotion` congela nombre, tipo, número de aplicaciones, importe regular,
+descuento y componentes con sus precios. El combo de marzo se edita en abril, se
+renombra en mayo y se apaga en junio; el recibo de marzo tiene que seguir diciendo
+qué se le cobró a quien compró en marzo. La FK es PROTECT: una promoción aplicada
+es parte del registro y no se borra por debajo de él.
+
+### Sin apilar, y dicho en voz alta
+
+Una promoción automática no se combina con un cupón ni con un descuento manual.
+Apilar es una política de negocio con reglas —cuál se aplica primero, si componen,
+cuál es el suelo— y elegir una aquí la metería en una caja registradora sin que
+nadie la haya examinado. Se rechaza con un mensaje, no se resuelve en silencio.
+
+### Autoridad propia
+
+`sales.promotions.manage` **no** está implicada por `products.manage`. Editar una
+etiqueta de precio y decidir que tres artículos juntos cuestan menos que sus
+partes son decisiones comerciales distintas, y un negocio debe poder conceder una
+sin la otra. Tampoco se dan al preset de Ventas: una promoción se dispara sola, y
+lo que la empresa está regalando es información de gestión.
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

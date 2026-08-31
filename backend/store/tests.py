@@ -18829,16 +18829,16 @@ class C1PosSaleTest(TestCase):
         a = _c1_product(self.company, 'Segundo', '10.00')
         _c1_stock(self.branch, a, 5)
         one = _pos.request_fingerprint(
-            company=self.company, branch=self.branch, customer=None,
-            payment_method='cash',
+            company=self.company, branch=self.branch,
+            customer_id=None, seller_id=None, payment_method='cash',
             items=_pos.normalize_items([
                 {'product': self.product.pk, 'quantity': 1},
                 {'product': a.pk, 'quantity': 1},
             ]),
         )
         two = _pos.request_fingerprint(
-            company=self.company, branch=self.branch, customer=None,
-            payment_method='cash',
+            company=self.company, branch=self.branch,
+            customer_id=None, seller_id=None, payment_method='cash',
             items=_pos.normalize_items([
                 {'product': a.pk, 'quantity': 1},
                 {'product': self.product.pk, 'quantity': 1},
@@ -20046,7 +20046,7 @@ class C12SellerTest(TestCase):
 
     def test_a_cashier_cannot_credit_somebody_else(self):
         """It moves money: without the gate anyone could credit anyone."""
-        with self.assertRaises(_pos.PosValidationError):
+        with self.assertRaises(_pos.PosPermissionError):
             self._sell(self.cashier, seller_id=self.colleague.pk)
         self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
 
@@ -20260,8 +20260,14 @@ class C12DiscountTest(TestCase):
         self.assertEqual(order.coupon_code, 'PROMO')
 
     def test_a_manual_discount_without_permission_is_refused(self):
-        """§74 — typing a price is a decision, not part of working a till."""
-        with self.assertRaises(_pos.DiscountError):
+        """
+        §74 — typing a price is a decision, not part of working a till.
+
+        A PERMISSION error, not a validation one: the request is well-formed,
+        this caller may simply not make it. C1.3 split the two so the endpoint
+        can answer 403 instead of sending an operator hunting for a typo.
+        """
+        with self.assertRaises(_pos.PosPermissionError):
             self._sell(
                 self.cashier, manual_discount_type='percent',
                 manual_discount_value='10', discount_reason='amigo',
@@ -20611,7 +20617,8 @@ class C12ApiTest(TestCase):
                        discount_reason='sin permiso'),
             format='json',
         )
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        # 403: the basket is fine, this cashier may not discount it.
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_the_preview_hides_commission_without_permission(self):
         _c12_rate(self.a, self.cashier, '5.00')
@@ -20740,4 +20747,984 @@ class C12ApiTest(TestCase):
                 (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN,
                  status.HTTP_405_METHOD_NOT_ALLOWED),
                 path,
+            )
+
+
+# ===========================================================================
+# C1.3 — hardening: intent fingerprint, seller eligibility, discount history
+# ===========================================================================
+
+class C13FingerprintTest(TestCase):
+    """
+    §6–7 — the fingerprint hashes the REQUEST, not what the catalogue made of it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-fp', 'Empresa Huella')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Huella', '100.00')
+        _c1_stock(self.branch, self.product, 50)
+        self.seller, _ = _p2d_member(
+            self.company, 'c13_fp_seller',
+            ['company.view', _C1_POS, _C12_DISCOUNT],
+        )
+
+    def _fp(self, **kw):
+        base = dict(
+            company=self.company, branch=self.branch,
+            customer_id=None, seller_id=None, payment_method='card',
+            items=[{'product': self.product.pk, 'quantity': 1}],
+        )
+        base.update(kw)
+        return _pos.request_fingerprint(**base)
+
+    def test_a_price_change_does_not_change_the_fingerprint(self):
+        """
+        THE DEFECT THIS FIXES. The old fingerprint hashed the RESOLVED discount,
+        so a retry after any catalogue edit hashed differently and was refused
+        as a conflict — telling an operator their own sale collided with itself.
+        """
+        before = self._fp()
+        self.product.price = Decimal('999.00')
+        self.product.save()
+        self.assertEqual(before, self._fp())
+
+    def test_editing_a_coupon_does_not_change_the_fingerprint(self):
+        coupon = _Coupon.objects.create(
+            company=self.company, code='FPC', discount_percent=10,
+        )
+        before = self._fp(coupon_code='FPC')
+        coupon.discount_percent = 40
+        coupon.save()
+        self.assertEqual(before, self._fp(coupon_code='FPC'))
+
+        # And deactivating it entirely still does not.
+        coupon.is_active = False
+        coupon.save()
+        self.assertEqual(before, self._fp(coupon_code='FPC'))
+
+    def test_the_coupon_code_is_normalised_but_still_significant(self):
+        self.assertEqual(self._fp(coupon_code='promo'), self._fp(coupon_code=' PROMO '))
+        self.assertNotEqual(self._fp(coupon_code='PROMO'), self._fp(coupon_code='OTRO'))
+
+    def test_numbers_hash_the_same_however_they_were_serialised(self):
+        """
+        `100`, `100.0` and `'100.00'` are one amount. Without normalising, a
+        retry from a different client path would look like a different sale.
+        """
+        self.assertEqual(self._fp(amount_received=100), self._fp(amount_received='100.00'))
+        self.assertEqual(
+            self._fp(manual_discount_value=10), self._fp(manual_discount_value='10.0'),
+        )
+
+    def test_the_cash_tendered_is_part_of_the_request(self):
+        """
+        §7. Without it, a retry handing over a different note would be answered
+        with the earlier sale and the change would be wrong.
+        """
+        self.assertNotEqual(
+            self._fp(amount_received='100'), self._fp(amount_received='200'),
+        )
+
+    def test_every_typed_field_is_significant(self):
+        baseline = self._fp()
+        for field, value in (
+            ('customer_id', 7), ('seller_id', 9), ('payment_method', 'cash'),
+            ('coupon_code', 'X10'), ('manual_discount_type', 'percent'),
+            ('manual_discount_value', '5'), ('discount_reason', 'motivo'),
+            ('amount_received', '500'), ('payment_reference', 'OP-1'),
+            ('external_reference', 'EXT-1'), ('sale_notes', 'nota'),
+            ('terms_confirmed', True),
+        ):
+            self.assertNotEqual(baseline, self._fp(**{field: value}), field)
+
+    def test_it_hashes_no_derived_money(self):
+        """
+        Structural: the payload must not name a computed amount. Those change
+        when an admin edits a promotion, and a retry must not depend on that.
+        """
+        import inspect
+
+        source = inspect.getsource(_pos.request_fingerprint)
+        payload = source.split('payload = {')[1].split('}')[0]
+        for derived in ('discount_amount', 'discount_percent', 'commission',
+                        'subtotal', 'total', "'price'"):
+            self.assertNotIn(derived, payload, derived)
+
+    def test_a_retry_after_a_price_change_returns_the_original_sale(self):
+        """End to end: the money already charged is what comes back."""
+        first, created = _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD, idempotency_key='c13-retry-0001',
+        )
+        self.assertTrue(created)
+        self.assertEqual(first.total, Decimal('100.00'))
+
+        self.product.price = Decimal('500.00')
+        self.product.save()
+
+        second, created_again = _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD, idempotency_key='c13-retry-0001',
+        )
+        self.assertFalse(created_again)
+        self.assertEqual(second.pk, first.pk)
+        self.assertEqual(second.total, Decimal('100.00'))
+
+    def test_a_retry_is_answered_without_re_pricing(self):
+        """
+        §6: the existing sale is found BEFORE anything is resolved, so a retry
+        cannot fail on a coupon that expired or a permission that was revoked
+        in the meantime.
+        """
+        import inspect
+
+        source = inspect.getsource(_pos.create_pos_sale)
+        fingerprint_at = source.index('fingerprint = request_fingerprint')
+        lookup_at = source.index('_existing_for_key(company, idempotency_key)')
+        priced_at = source.index('priced = build_pos_sale')
+        self.assertLess(fingerprint_at, lookup_at)
+        self.assertLess(lookup_at, priced_at, 'se resuelven precios antes de mirar la clave')
+
+
+class C13SellerEligibilityTest(TestCase):
+    """§10–12 — who may be credited with a sale, and paid for it."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-elig', 'Empresa Elegible')
+        self.branch = self.company.default_inventory_branch
+        self.other_branch = Branch.objects.create(company=self.company, name='Sucursal 2')
+        self.product = _c1_product(self.company, 'Producto Elegible', '100.00')
+        _c1_stock(self.branch, self.product, 30)
+
+        self.supervisor, _ = _p2d_member(
+            self.company, 'c13_supervisor', ['company.view', _C1_POS, _C12_ASSIGN],
+        )
+        self.seller, _ = _p2d_member(self.company, 'c13_seller', ['company.view', _C1_POS])
+        # Stock clerk: active membership, no POS capability.
+        self.clerk, _ = _p2d_member(
+            self.company, 'c13_clerk', ['company.view', 'inventory.view', 'inventory.adjust'],
+        )
+
+    def test_a_stock_clerk_is_not_an_eligible_seller(self):
+        """
+        THE DEFECT THIS FIXES. Any active membership used to qualify, so a sale —
+        and a commission — could be credited to somebody never allowed near a
+        till. Commission is money; the bar to receive it is the bar to do the
+        work.
+        """
+        eligible = {m.user_id for m in _pos.eligible_pos_sellers(self.company)}
+        self.assertIn(self.seller.pk, eligible)
+        self.assertIn(self.supervisor.pk, eligible)
+        self.assertNotIn(self.clerk.pk, eligible)
+
+    def test_crediting_a_stock_clerk_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _c1_sale(
+                actor=self.supervisor, company=self.company, branch=self.branch,
+                items=[{'product': self.product.pk, 'quantity': 1}],
+                payment_method=PaymentMethod.CARD,
+                seller_id=self.clerk.pk, may_assign_seller=True,
+            )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_eligibility_reads_real_capabilities_not_the_role_name(self):
+        """
+        A custom role that grants `sales.pos.use` counts; a role merely NAMED
+        "Ventas" does not. Checking `membership.role == 'sales'` would get both
+        answers wrong.
+        """
+        named, membership = _p2d_member(
+            self.company, 'c13_named_only', ['company.view'],
+        )
+        membership.role = 'sales'
+        membership.save(update_fields=['role'])
+        eligible = {m.user_id for m in _pos.eligible_pos_sellers(self.company)}
+        self.assertNotIn(named.pk, eligible)
+
+    def test_a_seller_without_access_to_that_branch_is_refused(self):
+        """
+        §11. Crediting a sale in one shop to somebody who only works another
+        would pay commission for work they were never in a position to do.
+        """
+        restricted, _ = _p2d_member(
+            self.company, 'c13_restricted', ['company.view', _C1_POS],
+            mode='selected', branches=[self.other_branch],
+        )
+        eligible_here = {
+            m.user_id for m in _pos.eligible_pos_sellers(self.company, self.branch)
+        }
+        self.assertNotIn(restricted.pk, eligible_here)
+
+        eligible_there = {
+            m.user_id for m in _pos.eligible_pos_sellers(self.company, self.other_branch)
+        }
+        self.assertIn(restricted.pk, eligible_there)
+
+        with self.assertRaises(_pos.PosValidationError):
+            _c1_sale(
+                actor=self.supervisor, company=self.company, branch=self.branch,
+                items=[{'product': self.product.pk, 'quantity': 1}],
+                payment_method=PaymentMethod.CARD,
+                seller_id=restricted.pk, may_assign_seller=True,
+            )
+
+    def test_another_companys_member_is_never_eligible(self):
+        other = _p3_company('c13-elig-b', 'Empresa Elegible B')
+        outsider, _ = _p2d_member(other, 'c13_outsider', ['company.view', _C1_POS])
+        eligible = {m.user_id for m in _pos.eligible_pos_sellers(self.company)}
+        self.assertNotIn(outsider.pk, eligible)
+
+    def test_the_context_offers_only_eligible_sellers(self):
+        client = APIClient()
+        client.force_authenticate(user=self.supervisor)
+        res = client.get('/api/admin/pos/context/')
+        offered = {s['id'] for s in res.data['sellers']}
+        self.assertIn(self.seller.pk, offered)
+        self.assertNotIn(self.clerk.pk, offered)
+
+    def test_reassigning_without_permission_answers_403(self):
+        client = APIClient()
+        client.force_authenticate(user=self.seller)
+        res = client.post('/api/admin/pos/sales/', {
+            'branch': self.branch.pk,
+            'items': [{'product': self.product.pk, 'quantity': 1}],
+            'payment_method': 'card',
+            'seller': self.supervisor.pk,
+            'terms_confirmed': True,
+            'idempotency_key': 'c13-forbidden-key',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class C13ReferenceValidationTest(TestCase):
+    """§8 — references are refused when too long, never silently shortened."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-ref', 'Empresa Referencia')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Ref', '100.00')
+        _c1_stock(self.branch, self.product, 20)
+        self.seller, _ = _p2d_member(self.company, 'c13_ref_seller', ['company.view', _C1_POS])
+
+    def _sell(self, **kw):
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD, **kw,
+        )
+
+    def test_an_overlong_payment_reference_is_refused(self):
+        """
+        Truncating an authorisation code stores something that no longer matches
+        the bank's record, and nobody is told.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_reference='X' * 200)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_an_overlong_external_reference_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(external_reference='Y' * 200)
+
+    def test_overlong_notes_are_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(sale_notes='Z' * 2000)
+
+    def test_a_reference_at_the_limit_is_stored_whole(self):
+        exact = 'A' * 100
+        order, _ = self._sell(payment_reference=exact)
+        self.assertEqual(order.payment_reference, exact)
+
+
+class C13DiscountHistoryTest(TestCase):
+    """§5 — repairing what migration 0036 mislabelled."""
+
+    def _module(self):
+        import importlib
+
+        return importlib.import_module(
+            'store.migrations.0038_backfill_historical_discount_source'
+        )
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-hist', 'Empresa Histórica')
+
+    def test_a_coupon_order_mislabelled_as_none_is_repaired(self):
+        """
+        0036 set every historical order to `none`, including the ones that came
+        through checkout with a real coupon. The money was right; the label said
+        the sale had no discount at all.
+        """
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.NONE,
+            discount_amount=Decimal('10.00'),
+            coupon_code='VERANO',
+        )
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.COUPON)
+
+    def test_a_discount_with_no_coupon_is_left_alone(self):
+        """
+        Labelling it `manual` would invent a decision, and
+        `discount_authorized_by` would be empty — implying somebody authorised
+        it while leaving no trace of who. An honest `none` plus a count beats a
+        plausible fiction.
+        """
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.NONE,
+            discount_amount=Decimal('25.00'),
+            coupon_code='',
+        )
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.NONE)
+
+    def test_an_order_with_no_discount_stays_none(self):
+        order = _p3_order(self.company)
+        self.assertEqual(order.discount_source, DiscountSource.NONE)
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.NONE)
+
+    def test_the_money_is_never_touched(self):
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.NONE,
+            discount_amount=Decimal('10.00'),
+            coupon_code='VERANO',
+            total=Decimal('90.00'),
+        )
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.total, Decimal('90.00'))
+        self.assertEqual(order.discount_amount, Decimal('10.00'))
+        self.assertEqual(order.coupon_code, 'VERANO')
+
+    def test_repairing_twice_changes_nothing_the_second_time(self):
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.NONE,
+            discount_amount=Decimal('10.00'), coupon_code='VERANO',
+        )
+        module = self._module()
+        module.repair(django_apps, None)
+        module.repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.COUPON)
+
+    def test_a_c12_manual_discount_is_not_relabelled(self):
+        """Rows written by C1.2 code are correct by construction."""
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.MANUAL,
+            discount_amount=Decimal('10.00'), coupon_code='',
+        )
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.MANUAL)
+
+
+# ===========================================================================
+# C1.3 — automatic promotions and combos
+# ===========================================================================
+
+from . import promotion_services as _promo  # noqa: E402
+from .models import (  # noqa: E402
+    AppliedPromotion,
+    Promotion,
+    PromotionBranch,
+    PromotionItem,
+)
+
+_C13_PROMO_VIEW = 'sales.promotions.view'
+_C13_PROMO_MANAGE = 'sales.promotions.manage'
+
+
+def _c13_combo(company, products, *, fixed_price=None, percent=None, **kw):
+    """A combo of `products` (list of (product, qty))."""
+    promotion = Promotion.objects.create(
+        company=company,
+        name=kw.pop('name', f'Combo {company.slug} {Promotion.objects.count()}'),
+        promotion_type=(
+            Promotion.BUNDLE_FIXED_PRICE if fixed_price is not None
+            else Promotion.BUNDLE_PERCENT
+        ),
+        fixed_price=Decimal(str(fixed_price)) if fixed_price is not None else None,
+        discount_percent=Decimal(str(percent)) if percent is not None else None,
+        **kw,
+    )
+    for product, qty in products:
+        PromotionItem.objects.create(promotion=promotion, product=product, quantity=qty)
+    return promotion
+
+
+class C13PromotionEngineTest(TestCase):
+    """§42–46, §53 — the arithmetic and the consumption rules."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-eng', 'Empresa Motor')
+        self.branch = self.company.default_inventory_branch
+        self.phone = _c1_product(self.company, 'Teléfono', '3000.00')
+        self.case = _c1_product(self.company, 'Funda', '100.00')
+        self.glass = _c1_product(self.company, 'Vidrio', '50.00')
+        for p in (self.phone, self.case, self.glass):
+            _c1_stock(self.branch, p, 50)
+        self.prices = {
+            p.pk: Decimal(str(p.price)) for p in (self.phone, self.case, self.glass)
+        }
+
+    def _basket(self, *pairs):
+        return [{'product': p.pk, 'quantity': q} for p, q in pairs]
+
+    def test_a_fixed_price_combo_discounts_the_difference(self):
+        """§42: 3000 + 100 + 50 = 3150 regular; combo at 3000 saves 150."""
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            fixed_price='3000.00',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1), (self.glass, 1)),
+            self.prices,
+        )
+        self.assertEqual(result['discount'], Decimal('150.00'))
+        entry = result['applied'][0]
+        self.assertEqual(entry['applications'], 1)
+        self.assertEqual(entry['regular_amount'], Decimal('3150.00'))
+
+    def test_a_percentage_combo_discounts_that_share(self):
+        """§43: 10% of 3150."""
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            percent='10.00',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1), (self.glass, 1)),
+            self.prices,
+        )
+        self.assertEqual(result['discount'], Decimal('315.00'))
+
+    def test_an_incomplete_basket_gets_nothing(self):
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            fixed_price='3000.00',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1)),
+            self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+        self.assertEqual(result['discount'], Decimal('0.00'))
+
+    def test_it_applies_as_many_times_as_the_basket_allows(self):
+        """§44: two cables and one charger required, four and two present."""
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 4), (self.glass, 2)),
+            self.prices,
+        )
+        self.assertEqual(result['applied'][0]['applications'], 2)
+        # Regular per set: 2×100 + 50 = 250. Combo 200 → 50 saved, twice.
+        self.assertEqual(result['discount'], Decimal('100.00'))
+
+    def test_the_scarcest_component_bounds_the_count(self):
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 4), (self.glass, 1)),
+            self.prices,
+        )
+        self.assertEqual(result['applied'][0]['applications'], 1)
+
+    def test_a_max_applications_ceiling_is_respected(self):
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='100.00', max_applications_per_order=2,
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 5), (self.glass, 5)),
+            self.prices,
+        )
+        self.assertEqual(result['applied'][0]['applications'], 2)
+
+    def test_leftover_units_stay_at_the_normal_price(self):
+        """
+        §53. A combo needing one of each, against a basket with a spare case —
+        the spare is not discounted, and the combo's own maths is unaffected.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 2), (self.glass, 1)),
+            self.prices,
+        )
+        entry = result['applied'][0]
+        self.assertEqual(entry['applications'], 1)
+        self.assertEqual(entry['regular_amount'], Decimal('150.00'))
+        self.assertEqual(result['discount'], Decimal('50.00'))
+
+    def test_a_combo_priced_above_its_parts_does_not_fire(self):
+        """Charging MORE for buying together would be indefensible."""
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='9999.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_priority_decides_who_takes_the_units(self):
+        """
+        §46. Deterministic, not optimal: the higher priority consumes first and
+        the other finds nothing left. An admin controls the outcome.
+        """
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='100.00', priority=1, name='Baja',
+        )
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='50.00', priority=99, name='Alta',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(len(result['applied']), 1)
+        self.assertEqual(result['applied'][0]['promotion'].name, 'Alta')
+        self.assertEqual(result['discount'], Decimal('100.00'))  # 150 − 50
+
+    def test_the_same_basket_always_gives_the_same_answer(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00', name='A')
+        _c13_combo(self.company, [(self.case, 1), (self.phone, 1)], fixed_price='2900.00', name='B')
+        basket = self._basket((self.case, 1), (self.glass, 1), (self.phone, 1))
+        first = _promo.evaluate(self.company, self.branch, basket, self.prices)
+        second = _promo.evaluate(self.company, self.branch, basket, self.prices)
+        self.assertEqual(
+            [a['promotion'].pk for a in first['applied']],
+            [a['promotion'].pk for a in second['applied']],
+        )
+        self.assertEqual(first['discount'], second['discount'])
+
+    def test_an_inactive_promotion_does_not_fire(self):
+        promotion = _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+        )
+        promotion.is_active = False
+        promotion.save()
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_a_future_promotion_does_not_fire_yet(self):
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+            starts_at=timezone.now() + timedelta(days=7),
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_an_expired_promotion_stops(self):
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+            starts_at=timezone.now() - timedelta(days=30),
+            ends_at=timezone.now() - timedelta(days=1),
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_branch_scope_selected_with_no_branches_fires_nowhere(self):
+        """
+        §39, fail-closed. "No rows means everywhere" would turn deleting the
+        last branch into a silent widening of scope.
+        """
+        promotion = _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+        self.assertFalse(promotion.applies_to_branch(self.branch))
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_branch_scope_selected_fires_only_where_listed(self):
+        other = Branch.objects.create(company=self.company, name='Sucursal 2')
+        promotion = _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+        PromotionBranch.objects.create(promotion=promotion, branch=other)
+        self.assertFalse(promotion.applies_to_branch(self.branch))
+        self.assertTrue(promotion.applies_to_branch(other))
+
+    def test_another_companys_promotion_never_applies(self):
+        other = _p3_company('c13-eng-b', 'Empresa Motor B')
+        other_case = _c1_product(other, 'Funda Ajena', '100.00')
+        other_glass = _c1_product(other, 'Vidrio Ajeno', '50.00')
+        _c13_combo(other, [(other_case, 1), (other_glass, 1)], fixed_price='100.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+
+class C13PromotionSaleTest(TestCase):
+    """§41, §47–48, §55–57 — what a promotion does to a real sale."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-sale', 'Empresa Venta')
+        self.branch = self.company.default_inventory_branch
+        self.phone = _c1_product(self.company, 'Teléfono V', '3000.00')
+        self.case = _c1_product(self.company, 'Funda V', '100.00')
+        self.glass = _c1_product(self.company, 'Vidrio V', '50.00')
+        for p in (self.phone, self.case, self.glass):
+            _c1_stock(self.branch, p, 20)
+        self.seller, _ = _p2d_member(
+            self.company, 'c13_sale_seller',
+            ['company.view', _C1_POS, _C12_DISCOUNT],
+        )
+        self.promotion = _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            fixed_price='3000.00', name='Combo Protección',
+        )
+
+    def _sell(self, **kw):
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[
+                {'product': self.phone.pk, 'quantity': 1},
+                {'product': self.case.pk, 'quantity': 1},
+                {'product': self.glass.pk, 'quantity': 1},
+            ],
+            payment_method=PaymentMethod.CARD, **kw,
+        )
+
+    def test_a_qualifying_basket_is_discounted_without_anyone_asking(self):
+        """§49 — the company configured the rule; nobody presses a button."""
+        order, _ = self._sell()
+        self.assertEqual(order.discount_amount, Decimal('150.00'))
+        self.assertEqual(order.total, Decimal('3000.00'))
+        self.assertEqual(order.discount_source, DiscountSource.PROMOTION)
+
+    def test_the_order_contains_the_real_articles_not_a_combo_product(self):
+        """
+        §41, the decision the whole design rests on. A combo `Product` would
+        need stock that does not exist, and the Kardex would record a sale of
+        something that was never on a shelf.
+        """
+        order, _ = self._sell()
+        sold = {i.product_id for i in order.items.all()}
+        self.assertEqual(sold, {self.phone.pk, self.case.pk, self.glass.pk})
+
+        exits = StockMovement.objects.filter(
+            order=order, movement_type=StockMovement.SALE_EXIT,
+        )
+        self.assertEqual(exits.count(), 3)
+        for product in (self.phone, self.case, self.glass):
+            self.assertEqual(
+                BranchStock.objects.get(branch=self.branch, product=product).quantity, 19,
+            )
+
+    def test_the_promotion_is_snapshotted_on_the_sale(self):
+        order, _ = self._sell()
+        applied = AppliedPromotion.objects.get(order=order)
+        self.assertEqual(applied.promotion_name_snapshot, 'Combo Protección')
+        self.assertEqual(applied.applications, 1)
+        self.assertEqual(applied.regular_amount, Decimal('3150.00'))
+        self.assertEqual(applied.discount_amount, Decimal('150.00'))
+        self.assertEqual(len(applied.metadata['components']), 3)
+
+    def test_editing_the_promotion_does_not_rewrite_the_sale(self):
+        """
+        §47, §57. March's receipt must keep saying what March's customer paid,
+        however the combo is renamed, repriced or switched off afterwards.
+        """
+        order, _ = self._sell()
+        self.promotion.name = 'Otro nombre'
+        self.promotion.fixed_price = Decimal('1.00')
+        self.promotion.is_active = False
+        self.promotion.save()
+
+        order.refresh_from_db()
+        applied = AppliedPromotion.objects.get(order=order)
+        self.assertEqual(order.total, Decimal('3000.00'))
+        self.assertEqual(applied.promotion_name_snapshot, 'Combo Protección')
+        self.assertEqual(applied.discount_amount, Decimal('150.00'))
+
+    def test_an_applied_promotion_cannot_be_deleted(self):
+        """It is part of the record of what a customer was charged."""
+        from django.db.models import ProtectedError
+
+        self._sell()
+        with self.assertRaises(ProtectedError):
+            self.promotion.delete()
+
+    def test_a_promotion_does_not_combine_with_a_coupon(self):
+        """
+        §48. Stacking is a policy with rules nobody has written down; picking
+        one here would bake it into a till unexamined.
+        """
+        _Coupon.objects.create(company=self.company, code='EXTRA', discount_percent=10)
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(coupon_code='EXTRA')
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 0,
+        )
+
+    def test_a_promotion_does_not_combine_with_a_manual_discount(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(
+                may_apply_manual_discount=True, manual_discount_type='percent',
+                manual_discount_value='5', discount_reason='extra',
+            )
+
+    def test_commission_is_paid_on_the_discounted_total(self):
+        """§55: 3150 − 150 = 3000; 5% of that is 150.00."""
+        _c12_rate(self.company, self.seller, '5.00')
+        order, _ = self._sell()
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(commission.base_amount, Decimal('3000.00'))
+        self.assertEqual(commission.amount, Decimal('150.00'))
+
+    def test_a_failed_sale_leaves_no_promotion_snapshot(self):
+        """The snapshot is inside the same transaction as everything else."""
+        _c1_stock(self.branch, self.glass, 0)
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            self._sell()
+        self.assertEqual(AppliedPromotion.objects.count(), 0)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_retry_returns_the_original_price_after_the_promotion_changed(self):
+        """
+        §56–57 together: the fingerprint hashes intent, so the retry finds its
+        own sale; the snapshot means it is returned at the money charged then.
+        """
+        first, created = self._sell(idempotency_key='c13-promo-retry-01')
+        self.assertTrue(created)
+        self.assertEqual(first.total, Decimal('3000.00'))
+
+        self.promotion.fixed_price = Decimal('1.00')
+        self.promotion.save()
+
+        second, created_again = self._sell(idempotency_key='c13-promo-retry-01')
+        self.assertFalse(created_again)
+        self.assertEqual(second.pk, first.pk)
+        self.assertEqual(second.total, Decimal('3000.00'))
+        self.assertEqual(AppliedPromotion.objects.filter(order=first).count(), 1)
+
+    def test_combo_availability_is_bounded_by_the_scarcest_component(self):
+        """§52 — never offer a combo the shelf cannot complete."""
+        _c1_stock(self.branch, self.glass, 2)
+        combos = _promo.combo_availability(self.company, self.branch)
+        self.assertEqual(combos[0]['available_sets'], 2)
+
+        _c1_stock(self.branch, self.glass, 0)
+        combos = _promo.combo_availability(self.company, self.branch)
+        self.assertEqual(combos[0]['available_sets'], 0)
+
+
+class C13PromotionApiTest(TestCase):
+    """§58–66, §80 — administration, authority and tenant isolation."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c13-api-a', 'Empresa Promo A')
+        self.b = _p3_company('c13-api-b', 'Empresa Promo B')
+        self.pa1 = _c1_product(self.a, 'A Uno', '100.00')
+        self.pa2 = _c1_product(self.a, 'A Dos', '50.00')
+        self.pb1 = _c1_product(self.b, 'B Uno', '100.00')
+
+        self.admin, _ = _p2d_member(
+            self.a, 'c13_promo_admin',
+            ['company.view', _C13_PROMO_VIEW, _C13_PROMO_MANAGE],
+        )
+        self.viewer, _ = _p2d_member(self.a, 'c13_promo_viewer', ['company.view', _C13_PROMO_VIEW])
+        self.seller, _ = _p2d_member(self.a, 'c13_promo_seller', ['company.view', _C1_POS])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _body(self, **kw):
+        body = {
+            'name': 'Combo API',
+            'promotion_type': 'bundle_fixed_price',
+            'fixed_price': '120.00',
+            'items': [
+                {'product': self.pa1.pk, 'quantity': 1},
+                {'product': self.pa2.pk, 'quantity': 1},
+            ],
+        }
+        body.update(kw)
+        return body
+
+    def test_an_admin_creates_a_combo(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/', self._body(), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(res.data['items']), 2)
+        self.assertEqual(Promotion.objects.filter(company=self.a).count(), 1)
+
+    def test_a_viewer_cannot_create(self):
+        res = self._as(self.viewer).post(
+            '/api/admin/sales/promotions/', self._body(), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_seller_cannot_even_read(self):
+        """
+        §62. A promotion fires automatically — a salesperson does not need to
+        read the rules to benefit from them, and what the company gives away is
+        management information.
+        """
+        res = self._as(self.seller).get('/api/admin/sales/promotions/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_combo_needs_at_least_two_products(self):
+        """§60 — a bundle of one is a price change wearing a costume."""
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/',
+            self._body(items=[{'product': self.pa1.pk, 'quantity': 1}]),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_another_companys_product_cannot_be_put_in_a_combo(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/',
+            self._body(items=[
+                {'product': self.pa1.pk, 'quantity': 1},
+                {'product': self.pb1.pk, 'quantity': 1},
+            ]),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Promotion.objects.count(), 0)
+
+    def test_another_companys_branch_cannot_be_scoped(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/',
+            self._body(branch_scope='selected',
+                       branches=[self.b.default_inventory_branch.pk]),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_duplicate_product_in_one_combo_is_refused(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/',
+            self._body(items=[
+                {'product': self.pa1.pk, 'quantity': 1},
+                {'product': self.pa1.pk, 'quantity': 2},
+            ]),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_another_companys_promotion_is_not_reachable(self):
+        foreign = _c13_combo(
+            self.b, [(self.pb1, 1), (_c1_product(self.b, 'B Dos', '10.00'), 1)],
+            fixed_price='50.00',
+        )
+        client = self._as(self.admin)
+        self.assertEqual(
+            client.get(f'/api/admin/sales/promotions/{foreign.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        res = client.patch(
+            f'/api/admin/sales/promotions/{foreign.pk}/',
+            {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        foreign.refresh_from_db()
+        self.assertTrue(foreign.is_active)
+
+    def test_there_is_no_delete(self):
+        promotion = _c13_combo(
+            self.a, [(self.pa1, 1), (self.pa2, 1)], fixed_price='120.00',
+        )
+        res = self._as(self.admin).delete(f'/api/admin/sales/promotions/{promotion.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_the_list_reports_how_much_has_been_given_away(self):
+        """§65 — usage, never "profitability": the platform has no cost data."""
+        res = self._as(self.admin).get('/api/admin/sales/promotions/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        blob = json.dumps(res.data).lower()
+        for forbidden in ('margen', 'margin', 'utilidad', 'profit', 'roi'):
+            self.assertNotIn(forbidden, blob)
+
+    # -- coupons ----------------------------------------------------------
+
+    def test_an_admin_creates_a_coupon(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/coupons/',
+            {'code': 'verano', 'discount_percent': 15}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['code'], 'VERANO')
+
+    def test_a_duplicate_coupon_code_in_one_company_is_refused(self):
+        _Coupon.objects.create(company=self.a, code='VERANO', discount_percent=10)
+        res = self._as(self.admin).post(
+            '/api/admin/sales/coupons/',
+            {'code': 'VERANO', 'discount_percent': 20}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+
+    def test_the_same_code_may_exist_in_two_companies(self):
+        _Coupon.objects.create(company=self.b, code='VERANO', discount_percent=10)
+        res = self._as(self.admin).post(
+            '/api/admin/sales/coupons/',
+            {'code': 'VERANO', 'discount_percent': 20}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(_Coupon.objects.filter(code='VERANO').count(), 2)
+
+    def test_another_companys_coupon_is_not_editable(self):
+        foreign = _Coupon.objects.create(company=self.b, code='AJENO', discount_percent=10)
+        res = self._as(self.admin).patch(
+            f'/api/admin/sales/coupons/{foreign.pk}/',
+            {'discount_percent': 99}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.discount_percent, 10)
+
+    def test_anonymous_is_refused(self):
+        for path in ('/api/admin/sales/promotions/', '/api/admin/sales/coupons/',
+                     '/api/admin/pos/combos/'):
+            res = APIClient().get(path)
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN), path,
             )

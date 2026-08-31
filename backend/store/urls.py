@@ -51,6 +51,12 @@ from .sales_analytics_views import (
     AdminSalesDashboardView,
     AdminSalesReplenishmentView,
 )
+from .promotion_views import (
+    AdminCouponView,
+    AdminPosCombosView,
+    AdminPromotionDetailView,
+    AdminPromotionListView,
+)
 from .customer_views import (
     AdminCustomerDetailView,
     AdminCustomerListView,
@@ -176,6 +182,12 @@ urlpatterns = [
     path('admin/pos/preview/', AdminPosPreviewView.as_view(), name='admin-pos-preview'),
     path('admin/sales/dashboard/', AdminSalesDashboardView.as_view(), name='admin-sales-dashboard'),
     path('admin/sales/commissions/', AdminCommissionsView.as_view(), name='admin-sales-commissions'),
+    # --- Commercial Phase C1.3: promotions, combos and coupon administration ---
+    path('admin/sales/promotions/', AdminPromotionListView.as_view(), name='admin-promotions'),
+    path('admin/sales/promotions/<int:pk>/', AdminPromotionDetailView.as_view(), name='admin-promotion-detail'),
+    path('admin/sales/coupons/', AdminCouponView.as_view(), name='admin-coupons'),
+    path('admin/sales/coupons/<int:pk>/', AdminCouponView.as_view(), name='admin-coupon-detail'),
+    path('admin/pos/combos/', AdminPosCombosView.as_view(), name='admin-pos-combos'),
     path('admin/sales/commission-settings/', AdminCommissionSettingsView.as_view(), name='admin-commission-settings'),
     path('admin/sales/commission-settings/<int:pk>/', AdminCommissionSettingsView.as_view(), name='admin-commission-setting-detail'),
     path('admin/sales/replenishment/', AdminSalesReplenishmentView.as_view(), name='admin-sales-replenishment'),

@@ -9,6 +9,74 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase Comercial C1.3 — Hardening C1.2 + promociones automáticas y combos
+
+**Estado: IMPLEMENTADO PARCIALMENTE.** Migraciones **0038, 0039, 0040**.
+
+Dos entregas: cerrar los hallazgos de la auditoría de C1.2, y añadir promociones
+automáticas. **La carga masiva por Excel NO se implementó** — ver el apartado
+final.
+
+### Hardening C1.2
+
+- **El histórico de descuentos estaba mal etiquetado.** La migración 0036 puso
+  `discount_source = none` en todos los pedidos anteriores, afirmando que
+  ninguno había tenido descuento. Pero `coupon_code` y `discount_amount` existen
+  desde antes y el checkout aplica cupones desde la Fase 1, así que cada pedido
+  con cupón quedó marcado como si no lo hubiera tenido. La 0038 lo repara. Un
+  descuento **sin** código se deja en `none` a propósito: llamarlo `manual`
+  inventaría una autorización que nadie dio, y `discount_authorized_by` quedaría
+  vacío. Se cuentan y se reportan.
+- **La huella de idempotencia dependía del catálogo.** Hasheaba el descuento ya
+  *resuelto*, así que un reintento noventa segundos después —tras editar una
+  promoción o vencer un cupón— hasheaba distinto y se rechazaba por conflicto: al
+  operador se le decía que su propia venta chocaba consigo misma. Ahora hashea
+  sólo lo que el operador tecleó, y el reintento se resuelve **antes** de mirar
+  un solo precio.
+- **El efectivo entra en la huella** (§7): sin él, un reintento entregando otro
+  billete devolvía la venta anterior y el vuelto salía mal.
+- **Las referencias ya no se truncan.** Recortar un código de autorización guarda
+  algo que ya no coincide con el registro del banco, sin avisar. Ahora se rechaza.
+- **403 ≠ 400.** Falta de permiso para descontar o para atribuir la venta
+  responde 403. Un 400 mandaba al operador a buscar un error de tecleo inexistente.
+- **Elegibilidad del vendedor.** Antes valía cualquier membresía activa, así que
+  se podía acreditar una venta —y pagar comisión— a un almacenero o a un técnico.
+  Ahora hace falta `sales.pos.use` resuelto por el motor real de capacidades, y
+  acceso a la sucursal de esa venta.
+
+### Promociones automáticas y combos
+
+- **`Promotion` + `PromotionItem` + `PromotionBranch` + `AppliedPromotion`.**
+- **Un combo NO es un producto.** No existe un `Product` "Combo iPhone": no
+  tendría stock. La venta lleva los tres artículos reales, salen tres
+  `SALE_EXIT` de tres estantes reales, y la promoción sólo cambia el dinero.
+- **Motor determinista** en `promotion_services.py`: `prioridad DESC, id ASC`,
+  cada promoción consume unidades y una unidad ya usada no se reutiliza.
+- **Se aplica sola.** El operador no pulsa nada: la empresa ya configuró la regla.
+- **Atajo de combos en el POS**, con disponibilidad calculada desde el
+  componente más escaso — nunca se ofrece un combo que el estante no completa.
+- **Snapshot congelado**: editar, renombrar o desactivar una promoción no
+  reescribe una venta pasada.
+- **Sin apilar** con cupón ni descuento manual: apilar es una política de negocio
+  con reglas que nadie ha escrito.
+- **Administración** en `/admin/sales/promotions`, con la pestaña de códigos que
+  da a `Coupon` la UI tenant-aware que nunca tuvo.
+- Cuatro capabilities nuevas, todas **ACTIVE**.
+
+### NO implementado en esta fase
+- **Carga masiva de productos por Excel.**
+- **Carga masiva de inventario por Excel.**
+
+La auditoría de los dos archivos adjuntos **sí** se hizo y se entrega, porque es
+el trabajo previo que esa fase necesita. Lo que no se hizo es el importador. Un
+importador a medias que escribe stock es peor que ninguno: el stock es
+irreversible sin un movimiento compensatorio, y la mitad del diseño que pide el
+prompt —preview/apply con hash, mapeo configurable, reconciliación contra el
+Kardex, bloqueo determinista y atomicidad— sólo aporta seguridad si está
+completo.
+
+---
+
 ## Fase Comercial C1.2 — Venta enriquecida: cliente, vendedor, comisiones y descuentos
 
 **Estado: IMPLEMENTADO.** Migraciones **0036, 0037**.

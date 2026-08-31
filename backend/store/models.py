@@ -58,6 +58,8 @@ class DiscountSource(models.TextChoices):
     NONE = 'none', 'Sin descuento'
     COUPON = 'coupon', 'Código promocional'
     MANUAL = 'manual', 'Descuento manual'
+    # C1.3: fired by the basket itself, with nobody typing anything.
+    PROMOTION = 'promotion', 'Promoción automática'
 
 
 class PaymentMethod(models.TextChoices):
@@ -2898,3 +2900,276 @@ class SalesCommission(models.Model):
             self.company_id = self.order.company_id
         self.clean()
         return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Commercial Phase C1.3 — automatic promotions and combos
+# ---------------------------------------------------------------------------
+
+class Promotion(models.Model):
+    """
+    A discount the business configured in advance, applied AUTOMATICALLY.
+
+    PROMOTION VERSUS COUPON, and why both exist
+    -------------------------------------------
+    A `Coupon` is activated by somebody typing a CODE. A `Promotion` fires on
+    its own the moment a basket qualifies. They are the same idea — the shop
+    decided in advance to charge less — arriving through opposite doors, and
+    collapsing them would mean either every promotion needs a code somebody must
+    remember, or every coupon fires without being asked for.
+
+    A COMBO IS NOT A PRODUCT, and this is the decision that shapes everything
+    -------------------------------------------------------------------------
+    The tempting design is a `Product` called "Combo iPhone + case + glass" with
+    its own price. It is wrong, and expensively so: that product would need its
+    own stock, which does not exist. Selling one would have to decrement three
+    other articles through some bespoke path, the Kardex would show a sale of a
+    thing that was never on a shelf, and every stock report would have to learn
+    which products are real.
+
+    So a combo changes ONLY the money. The order still contains the three real
+    articles, three real `SALE_EXIT` movements still leave three real shelves,
+    and the promotion records that the customer paid less for buying them
+    together.
+    """
+
+    BUNDLE_FIXED_PRICE = 'bundle_fixed_price'
+    BUNDLE_PERCENT = 'bundle_percent'
+    TYPE_CHOICES = [
+        (BUNDLE_FIXED_PRICE, 'Combo a precio fijo'),
+        (BUNDLE_PERCENT, 'Combo con porcentaje de descuento'),
+    ]
+
+    SCOPE_ALL = 'all'
+    SCOPE_SELECTED = 'selected'
+    SCOPE_CHOICES = [
+        (SCOPE_ALL, 'Todas las sucursales'),
+        (SCOPE_SELECTED, 'Sucursales seleccionadas'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='promotions',
+    )
+    name = models.CharField(max_length=150)
+    promotion_type = models.CharField(max_length=24, choices=TYPE_CHOICES)
+
+    # Higher wins. Two promotions that both want the same unit are resolved by
+    # this and then by id — deterministic, explainable, and under the admin's
+    # control. See `promotion_services` for why not global optimisation.
+    priority = models.IntegerField(default=0, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+
+    # EXPLICIT, never inferred from an empty table. "No rows means everywhere"
+    # would turn deleting the last branch row into a silent widening of scope —
+    # the same fail-open trap `Membership.branch_access_mode` avoids.
+    branch_scope = models.CharField(
+        max_length=10, choices=SCOPE_CHOICES, default=SCOPE_ALL,
+    )
+
+    # The benefit. Exactly one is meaningful per type.
+    fixed_price = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    discount_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+    )
+
+    # Null means no ceiling: a basket with six qualifying sets gets six.
+    max_applications_per_order = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='promotions_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-priority', 'name']
+        indexes = [
+            models.Index(fields=['company', 'is_active', 'priority']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'name'], name='unique_promotion_name_per_company',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(discount_percent__isnull=True)
+                | (models.Q(discount_percent__gt=Decimal('0.00'))
+                   & models.Q(discount_percent__lte=Decimal('100.00'))),
+                name='promotion_percent_within_range',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(fixed_price__isnull=True)
+                | models.Q(fixed_price__gte=Decimal('0.00')),
+                name='promotion_fixed_price_not_negative',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.name} ({self.company.name})'
+
+    def is_live(self, at=None) -> bool:
+        """Active and inside its window. Not branch-aware — see `applies_to`."""
+        if not self.is_active:
+            return False
+        at = at or timezone.now()
+        if self.starts_at and at < self.starts_at:
+            return False
+        if self.ends_at and at > self.ends_at:
+            return False
+        return True
+
+    def applies_to_branch(self, branch) -> bool:
+        if self.branch_scope == self.SCOPE_ALL:
+            return True
+        if branch is None:
+            return False
+        # SELECTED with no rows applies NOWHERE. Fail closed: a promotion whose
+        # branch list was emptied should stop, not spread.
+        return self.branches.filter(branch=branch).exists()
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.starts_at and self.ends_at and self.starts_at >= self.ends_at:
+            errors['ends_at'] = ['La fecha de fin debe ser posterior a la de inicio.']
+
+        if self.promotion_type == self.BUNDLE_FIXED_PRICE:
+            if self.fixed_price is None:
+                errors['fixed_price'] = ['Indica el precio del combo.']
+        elif self.promotion_type == self.BUNDLE_PERCENT:
+            if self.discount_percent is None:
+                errors['discount_percent'] = ['Indica el porcentaje de descuento.']
+            elif not (Decimal('0') < self.discount_percent <= Decimal('100')):
+                errors['discount_percent'] = ['Debe estar entre 0 y 100.']
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class PromotionBranch(models.Model):
+    """One branch a SELECTED-scope promotion runs in."""
+
+    promotion = models.ForeignKey(
+        Promotion, on_delete=models.CASCADE, related_name='branches',
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.CASCADE, related_name='promotions',
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['promotion', 'branch'], name='unique_promotion_branch',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.promotion.name} @ {self.branch.name}'
+
+
+class PromotionItem(models.Model):
+    """
+    One component of a combo: an article and how many of it are required.
+
+    The set of these IS the qualifying condition. A basket qualifies once for
+    every complete set it contains.
+    """
+
+    promotion = models.ForeignKey(
+        Promotion, on_delete=models.CASCADE, related_name='items',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name='promotion_items',
+    )
+    quantity = models.PositiveSmallIntegerField(default=1)
+
+    class Meta:
+        ordering = ['pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['promotion', 'product'], name='unique_promotion_item',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gte=1),
+                name='promotion_item_quantity_positive',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.quantity}× {self.product.name}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.promotion_id and self.product_id:
+            if self.product.company_id != self.promotion.company_id:
+                raise ValidationError(
+                    {'product': 'El producto no pertenece a la empresa de la promoción.'}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class AppliedPromotion(models.Model):
+    """
+    What a promotion actually did to one sale, frozen.
+
+    A sale is NEVER re-priced from a live `Promotion`. The combo that was
+    running in March gets edited in April, renamed in May and switched off in
+    June; March's receipt must keep saying what March's customer was charged and
+    why. So the name, the type, the count and both amounts are snapshots, and
+    the FK to `Promotion` is PROTECT — a promotion that has been applied is part
+    of the record and cannot be deleted out from under it.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='applied_promotions',
+    )
+    order = models.ForeignKey(
+        Order, on_delete=models.PROTECT, related_name='applied_promotions',
+    )
+    promotion = models.ForeignKey(
+        Promotion, on_delete=models.PROTECT, related_name='applications',
+    )
+    promotion_name_snapshot = models.CharField(max_length=150)
+    promotion_type_snapshot = models.CharField(max_length=24)
+
+    applications = models.PositiveSmallIntegerField(default=1)
+    # What the components would have cost separately, and what came off.
+    regular_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    # The components and unit prices at the moment of sale, so the line can be
+    # explained years later without joining anything that may have changed.
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['pk']
+        indexes = [
+            models.Index(fields=['company', 'promotion', 'created_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['order', 'promotion'], name='unique_applied_promotion_per_order',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(discount_amount__gte=Decimal('0.00')),
+                name='applied_promotion_discount_not_negative',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.promotion_name_snapshot} ×{self.applications} (#{self.order_id})'

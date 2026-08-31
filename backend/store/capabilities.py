@@ -145,6 +145,17 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('sales.commissions.manage', 'sales', 'Configurar comisiones',
          'Definir el porcentaje de comisión de cada miembro del equipo.',
          STATUS_ACTIVE),
+    # PHASE C1.3 — configuring a promotion is giving product away, and that is
+    # NOT implied by `products.manage`. Being allowed to edit a price tag and
+    # being allowed to decide that three articles together cost less than their
+    # parts are different commercial authorities, and a shop should be able to
+    # grant one without the other.
+    _cap('sales.promotions.view', 'sales', 'Ver promociones',
+         'Consultar promociones automáticas, combos y códigos de descuento.',
+         STATUS_ACTIVE),
+    _cap('sales.promotions.manage', 'sales', 'Administrar promociones',
+         'Crear, editar y archivar promociones, combos y códigos.',
+         STATUS_ACTIVE),
 
     # --- cross-cutting (module exists; endpoints still legacy-authorised) ---
     _cap('reports.view', 'reports', 'Ver reportes',

@@ -952,10 +952,20 @@ export async function fetchReplenishment(
 
 export type PosSeller = { id: number; name: string };
 
+export type AppliedPromotionPreview = {
+  id: number;
+  name: string;
+  applications: number;
+  regular_amount: string;
+  discount_amount: string;
+};
+
 export type PosPreview = {
   subtotal: string;
   discount: string;
-  discount_source: "none" | "coupon" | "manual";
+  discount_source: "none" | "coupon" | "manual" | "promotion";
+  /** Fired by the basket itself — nobody typed anything. */
+  promotions: AppliedPromotionPreview[];
   coupon_code: string;
   total: string;
   seller: { id: number | null; name: string };
@@ -1063,4 +1073,158 @@ export function updateCommissionRate(
     { commission_rate_percent: rate },
     "No se pudo guardar el porcentaje.",
   );
+}
+
+// ---------------------------------------------------------------------------
+// Commercial Phase C1.3 — promotions, combos and coupons
+// ---------------------------------------------------------------------------
+
+export type PromotionItemRow = {
+  product: number;
+  product_name: string;
+  price: string;
+  quantity: number;
+};
+
+export type PromotionRow = {
+  id: number;
+  name: string;
+  promotion_type: "bundle_fixed_price" | "bundle_percent";
+  promotion_type_label: string;
+  priority: number;
+  is_active: boolean;
+  /** Active AND inside its window — what the till actually sees. */
+  is_live: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+  branch_scope: "all" | "selected";
+  branches: { id: number; name: string }[];
+  fixed_price: string | null;
+  discount_percent: string | null;
+  max_applications_per_order: number | null;
+  items: PromotionItemRow[];
+  stats: {
+    orders?: number;
+    applications?: number;
+    discount_given?: string;
+    regular_value?: string;
+  };
+};
+
+export type PromotionList = {
+  can_manage: boolean;
+  branches: PosBranch[];
+  results: PromotionRow[];
+};
+
+export type CouponRow = {
+  id: number;
+  code: string;
+  discount_percent: number;
+  is_active: boolean;
+  expires_at: string | null;
+  is_expired: boolean;
+};
+
+export type ComboOffer = {
+  id: number;
+  name: string;
+  promotion_type: string;
+  components: {
+    product_id: number;
+    product_name: string;
+    quantity: number;
+    available: number;
+    price: string;
+  }[];
+  regular_amount: string;
+  discount_amount: string;
+  combo_amount: string;
+  /** How many complete sets the shelf can supply right now. */
+  available_sets: number;
+};
+
+export async function fetchPromotions(companyId: number | null): Promise<PromotionList> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/promotions/${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron cargar las promociones."));
+  return res.json();
+}
+
+export type PromotionWrite = Partial<{
+  name: string;
+  promotion_type: string;
+  fixed_price: string | null;
+  discount_percent: string | null;
+  priority: number;
+  is_active: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+  branch_scope: string;
+  branches: number[];
+  max_applications_per_order: number | null;
+  items: { product: number; quantity: number }[];
+}>;
+
+export function createPromotion(
+  companyId: number | null,
+  data: PromotionWrite,
+): Promise<PromotionRow> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/promotions/${qs}`, data, "No se pudo crear la promoción.", "POST",
+  );
+}
+
+export function updatePromotion(
+  id: number,
+  companyId: number | null,
+  data: PromotionWrite,
+): Promise<PromotionRow> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/promotions/${id}/${qs}`, data, "No se pudo guardar la promoción.",
+  );
+}
+
+export async function fetchCoupons(
+  companyId: number | null,
+): Promise<{ can_manage: boolean; results: CouponRow[] }> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/coupons/${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron cargar los códigos."));
+  return res.json();
+}
+
+export function createCoupon(
+  companyId: number | null,
+  data: { code: string; discount_percent: number; expires_at?: string | null },
+): Promise<CouponRow> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/coupons/${qs}`, data, "No se pudo crear el código.", "POST",
+  );
+}
+
+export function updateCoupon(
+  id: number,
+  companyId: number | null,
+  data: Partial<{ is_active: boolean; discount_percent: number; expires_at: string | null }>,
+): Promise<CouponRow> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/coupons/${id}/${qs}`, data, "No se pudo guardar el código.",
+  );
+}
+
+/** Combos the current branch can actually complete, for the POS shortcut. */
+export async function fetchCombos(
+  companyId: number | null,
+  branchId: number,
+): Promise<ComboOffer[]> {
+  const qs = new URLSearchParams({ branch: String(branchId) });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/combos/?${qs}`);
+  if (!res.ok) return [];
+  return (await res.json()).results ?? [];
 }
