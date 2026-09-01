@@ -3742,23 +3742,33 @@ class RepairStatusCode(models.TextChoices):
     integration are written against these strings. Separating the code from the
     label is the whole of DEC-014: presentation adapts, semantics does not.
 
-    ONLY WHAT M8 CAN HONESTLY SUPPORT
-    ---------------------------------
-    Four states. `APPROVED`, `REJECTED`, `IN_REPAIR`, `WAITING_PARTS`,
-    `REPAIRED`, `QUALITY_CONTROL`, `READY_FOR_PICKUP`, `DELIVERED` and
-    `WARRANTY` are all real states of a real repair shop and none of them means
-    anything yet: approval needs a quote, repair needs parts and execution,
-    quality control needs a checklist, warranty needs a completed repair to
-    warrant. Shipping the words without the modules would let an order be moved
-    into a state no code can act on — a status that lies.
+    ONLY WHAT THE CODE CAN HONESTLY SUPPORT
+    ---------------------------------------
+    M8 shipped four. M9 added `APPROVED` and `REJECTED`, because it built the
+    thing that gives them meaning: a quote a customer can decide on. That is the
+    rule, and it has not changed — a state arrives with its module.
 
-    They arrive with the phases that give them meaning. `WAITING_APPROVAL` is
-    the deliberate edge: it is where M8 stops and M9 continues.
+    `IN_REPAIR`, `WAITING_PARTS`, `REPAIRED`, `QUALITY_CONTROL`,
+    `READY_FOR_PICKUP`, `DELIVERED` and `WARRANTY` are all real states of a real
+    repair shop and none of them means anything yet: repair needs parts and
+    execution, quality control needs a checklist, warranty needs a completed
+    repair to warrant. Shipping the words without the modules would let an order
+    be moved into a state no code can act on — a status that lies.
+
+    `APPROVED` is now the deliberate edge: it is where M9 stops.
+
+    NEITHER `APPROVED` NOR `REJECTED` IS REACHABLE BY MOVING AN ORDER. They are
+    the recorded outcome of a customer deciding on a published quote, and
+    `service_services` refuses to set them any other way. `WAITING_APPROVAL` is
+    the same: from M9 it means "a frozen, published quote is waiting", and only
+    publishing one can produce it.
     """
 
     RECEIVED = 'received', 'Recibido'
     DIAGNOSING = 'diagnosing', 'En diagnóstico'
     WAITING_APPROVAL = 'waiting_approval', 'Esperando aprobación'
+    APPROVED = 'approved', 'Aprobado'
+    REJECTED = 'rejected', 'Rechazado'
     CANCELLED = 'cancelled', 'Cancelado'
 
 
@@ -4093,3 +4103,534 @@ class TechnicianAssignment(models.Model):
         if self.repair_order_id and self.company_id:
             if self.repair_order.company_id != self.company_id:
                 raise ValidationError({'repair_order': ['La orden no pertenece a esta empresa.']})
+
+
+# ===========================================================================
+# BR-005B — DIAGNOSIS, VERSIONED QUOTES AND CUSTOMER APPROVAL (M9)
+# ===========================================================================
+#
+# M8 could receive a device and move it as far as "esperando aprobación", and
+# that state meant only "somebody pressed a button". M9 gives it a meaning it
+# can be held to: a concrete quote, frozen, published, still inside its validity
+# window, waiting for a decision that belongs to the customer.
+#
+# THREE THINGS THIS MODULE IS NOT
+# -------------------------------
+#   · A QUOTE IS NOT AN ORDER. Nothing is sold, no cart exists, no Stripe
+#     session is created and no `Order` row is written. A repair that is later
+#     paid for is a decision with commercial consequences, not a foreign key.
+#   · APPROVAL IS NOT PAYMENT. A customer saying "go ahead" is authorising work,
+#     not settling an amount. Confusing the two would let a shop believe it had
+#     been paid because somebody tapped a button.
+#   · QUOTING A PART IS NOT RESERVING ONE. No `StockMovement`, no reservation,
+#     no `PartUsage`. The line may point at a `Product` for reference; the stock
+#     consequences belong to the phase that actually consumes parts.
+#
+# WHAT IS FROZEN, AND WHY
+# -----------------------
+# A quote that has been sent is evidence. The customer approved ONE REVISION at
+# one set of prices, not "whatever the order costs today". So a sent quote and
+# its lines stop being writable, and a change of mind produces a NEW revision
+# rather than an edit — the same rule `RepairStatusHistory` follows.
+
+
+class RepairDiagnostic(models.Model):
+    """
+    What a technician found, and what they recommend doing about it.
+
+    VERSIONED, because a diagnosis that backed a quote somebody has already
+    received cannot be quietly rewritten. While it is a DRAFT it is the
+    technician's working note and freely editable; the moment a quote built on
+    it is published it is FINALIZED, and a later change of understanding becomes
+    revision 2 rather than an edit to revision 1.
+
+    `root_cause` IS NOT REQUIRED. A technician often knows a laptop does not
+    charge long before they know why, and forcing a field turns "I do not know
+    yet" into a guess written down as fact. `recommended_action` is required,
+    because that is the part a quote is built from.
+
+    NO EVIDENCE FIELDS. Photographs are the natural companion to a diagnosis and
+    there is still no storage provider decided (DEC-016) — no `FileField`
+    anywhere in this backend, and a base64 column would be a storage decision
+    taken by accident. A structural test fails if one appears.
+    """
+
+    STATUS_DRAFT = 'draft'
+    STATUS_FINALIZED = 'finalized'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, 'Borrador'),
+        (STATUS_FINALIZED, 'Finalizado'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='repair_diagnostics',
+    )
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.PROTECT, related_name='diagnostics',
+    )
+    # Allocated by the domain service under a lock, never sent by a client.
+    revision = models.PositiveIntegerField()
+
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True,
+    )
+
+    # What is wrong, in the technician's words. Required: a diagnosis with no
+    # description is not a diagnosis.
+    description = models.TextField(max_length=4000)
+    # Why it is wrong. Optional on purpose — see the class docstring.
+    root_cause = models.TextField(max_length=2000, blank=True)
+    # What should be done. Required: this is what the quote is priced from.
+    recommended_action = models.TextField(max_length=4000)
+
+    # INTERNAL. Never serialised to the customer surface, in any state.
+    internal_notes = models.TextField(max_length=2000, blank=True)
+
+    # The authenticated actor, always. Not a `technician_id` from a payload:
+    # "I am recording this" is the only claim M9 supports, and recording a
+    # diagnosis in somebody else's name is a business decision nobody has made.
+    diagnosed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_diagnostics',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    finalized_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-revision', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['repair_order', 'revision'],
+                name='unique_diagnostic_revision_per_order',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['repair_order', 'revision']),
+        ]
+
+    def __str__(self):
+        return f'Diagnóstico #{self.revision} · orden {self.repair_order_id}'
+
+    @property
+    def is_finalized(self) -> bool:
+        return self.status == self.STATUS_FINALIZED
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.repair_order_id and self.company_id:
+            if self.repair_order.company_id != self.company_id:
+                errors['repair_order'] = ['La orden no pertenece a esta empresa.']
+        if not (self.description or '').strip():
+            errors['description'] = ['Describe lo que encontraste.']
+        if not (self.recommended_action or '').strip():
+            errors['recommended_action'] = ['Indica la acción recomendada.']
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        # FROZEN ONCE FINALIZED. `update_fields` is how the service stamps the
+        # transition itself, so the guard reads the DATABASE's opinion of the
+        # row rather than this instance's — an instance can be told anything.
+        if self.pk is not None:
+            stored_status = (
+                RepairDiagnostic.objects.filter(pk=self.pk)
+                .values_list('status', flat=True).first()
+            )
+            if stored_status == self.STATUS_FINALIZED:
+                raise ValidationError(
+                    'Un diagnóstico finalizado no se puede modificar. '
+                    'Crea una revisión nueva.'
+                )
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class RepairQuote(models.Model):
+    """
+    What the shop proposes to do, and what it will cost. One revision of it.
+
+    THE CUSTOMER APPROVES A REVISION, NOT AN ORDER. `revision` exists because a
+    first quote gets rejected and a second one gets approved, and both have to
+    survive: "you agreed to this" is only answerable if the thing they agreed to
+    still exists, unedited, next to the one they refused.
+
+    MONEY IS FROZEN HERE. `unit_price` on a line is copied at composition time
+    and never re-read from `Product`, so a price change tomorrow cannot rewrite
+    what somebody was quoted yesterday. The optional `Product` link is a
+    reference for a later phase, not the authority for a historical price.
+
+    TAX IS ZERO, AND THAT IS RECORDED RATHER THAN COMPUTED. This platform models
+    no tax at all — no rate, no regime, no configuration, nothing on
+    `CompanySettings` and no field on `SalesNote`. Inventing an 18% IGV because
+    the pilot is Peruvian would be writing one country's tax law into a SaaS
+    schema. The column exists so a quote already sent keeps whatever it carried
+    when tax arrives; nothing computes it, and no client can set it.
+
+    NO PAYMENT FIELDS. Approval authorises work. It settles nothing.
+    """
+
+    STATUS_DRAFT = 'draft'
+    STATUS_SENT = 'sent'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CANCELLED = 'cancelled'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, 'Borrador'),
+        (STATUS_SENT, 'Enviada'),
+        (STATUS_APPROVED, 'Aprobada'),
+        (STATUS_REJECTED, 'Rechazada'),
+        (STATUS_CANCELLED, 'Anulada'),
+    ]
+
+    #: Once a quote leaves DRAFT it is evidence. Nothing below may be edited.
+    EDITABLE_STATUSES = frozenset({STATUS_DRAFT})
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='repair_quotes',
+    )
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.PROTECT, related_name='quotes',
+    )
+    # PROTECT: the diagnosis a quote was built from cannot disappear from
+    # underneath it. That pairing is most of what makes a quote defensible.
+    diagnostic = models.ForeignKey(
+        RepairDiagnostic, on_delete=models.PROTECT, related_name='quotes',
+        null=True, blank=True,
+    )
+    revision = models.PositiveIntegerField()
+
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True,
+    )
+
+    # Frozen from `CompanySettings` when the quote is created. Never from a
+    # client: a currency chosen by the caller is a price in a unit nobody agreed.
+    currency = models.CharField(max_length=3)
+
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    discount_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal('0.00'),
+    )
+    tax_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal('0.00'),
+    )
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+
+    # After this instant the quote may still be READ — hiding it would make a
+    # customer think it never existed — but it can no longer be approved.
+    valid_until = models.DateTimeField(null=True, blank=True)
+
+    # Written for the customer, and the only free text they see.
+    customer_notes = models.TextField(max_length=2000, blank=True)
+    # INTERNAL. Never leaves the internal surface.
+    internal_notes = models.TextField(max_length=2000, blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_quotes_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-revision', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['repair_order', 'revision'],
+                name='unique_quote_revision_per_order',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(discount_amount__gte=Decimal('0.00')),
+                name='repair_quote_discount_non_negative',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(total__gte=Decimal('0.00')),
+                name='repair_quote_total_non_negative',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['repair_order', 'revision']),
+            models.Index(fields=['company', 'sent_at']),
+        ]
+
+    def __str__(self):
+        return f'Cotización #{self.revision} · orden {self.repair_order_id}'
+
+    @property
+    def is_editable(self) -> bool:
+        return self.status in self.EDITABLE_STATUSES
+
+    @property
+    def is_expired(self) -> bool:
+        """
+        DERIVED, never stored, and never written during a read.
+
+        There is no scheduler in this project, and adding one so a row could
+        change its own status is a lot of infrastructure for a comparison. A GET
+        that mutated the database to "keep the state fresh" would also make
+        reading a quote a write — which is how a report ends up changing what it
+        reports on.
+        """
+        if self.valid_until is None:
+            return False
+        return timezone.now() > self.valid_until
+
+    @property
+    def can_be_decided(self) -> bool:
+        """Whether a customer may still act on it."""
+        return self.status == self.STATUS_SENT and not self.is_expired
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.repair_order_id and self.company_id:
+            if self.repair_order.company_id != self.company_id:
+                errors['repair_order'] = ['La orden no pertenece a esta empresa.']
+        if self.diagnostic_id and self.repair_order_id:
+            if self.diagnostic.repair_order_id != self.repair_order_id:
+                errors['diagnostic'] = ['El diagnóstico es de otra orden.']
+        if self.discount_amount is not None and self.subtotal is not None:
+            if self.discount_amount > self.subtotal:
+                errors['discount_amount'] = [
+                    'El descuento no puede superar el subtotal.'
+                ]
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            stored_status = (
+                RepairQuote.objects.filter(pk=self.pk)
+                .values_list('status', flat=True).first()
+            )
+            # A quote that has left DRAFT is evidence. The domain service moves
+            # its status and stamps its timestamps through `update_fields`, and
+            # those transitions are allowed; editing its CONTENT is not.
+            if stored_status is not None and stored_status != self.STATUS_DRAFT:
+                allowed = set(kwargs.get('update_fields') or [])
+                content = {
+                    'subtotal', 'discount_amount', 'tax_amount', 'total',
+                    'currency', 'customer_notes', 'valid_until', 'diagnostic',
+                    'diagnostic_id', 'revision', 'repair_order', 'repair_order_id',
+                }
+                if not allowed or (allowed & content):
+                    raise ValidationError(
+                        'Una cotización enviada no se puede modificar. '
+                        'Crea una revisión nueva.'
+                    )
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class RepairQuoteItem(models.Model):
+    """
+    One line of a quote: labour, a part, or a service.
+
+    `line_total` IS COMPUTED BY THE SERVER, always, from quantity × unit_price.
+    An internal user composing a quote legitimately chooses both of those — that
+    is what writing a quote is — but the multiplication is not theirs to send.
+
+    THE `Product` LINK IS A REFERENCE, NOT A PRICE. `description` and
+    `unit_price` are copied at composition time and never re-read, so a
+    catalogue change tomorrow cannot alter what a customer was quoted. Linking
+    a product also does NOT touch stock: no movement, no reservation. Quoting a
+    part is not taking one off a shelf.
+    """
+
+    TYPE_LABOR = 'labor'
+    TYPE_PART = 'part'
+    TYPE_SERVICE = 'service'
+    TYPE_CHOICES = [
+        (TYPE_LABOR, 'Mano de obra'),
+        (TYPE_PART, 'Repuesto'),
+        (TYPE_SERVICE, 'Servicio'),
+    ]
+
+    quote = models.ForeignKey(
+        RepairQuote, on_delete=models.CASCADE, related_name='items',
+    )
+    item_type = models.CharField(max_length=16, choices=TYPE_CHOICES, default=TYPE_LABOR)
+
+    description = models.CharField(max_length=300)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    line_total = models.DecimalField(max_digits=12, decimal_places=2)
+
+    # Optional, and PROTECT so a quoted product cannot be deleted out from under
+    # a historical quote.
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='repair_quote_items',
+    )
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sort_order', 'pk']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=Decimal('0.00')),
+                name='repair_quote_item_quantity_positive',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(unit_price__gte=Decimal('0.00')),
+                name='repair_quote_item_price_non_negative',
+            ),
+        ]
+        indexes = [models.Index(fields=['quote', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.description} × {self.quantity}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if not (self.description or '').strip():
+            errors['description'] = ['Describe la línea.']
+        if self.product_id and self.quote_id:
+            if self.product.company_id != self.quote.company_id:
+                errors['product'] = ['El producto no pertenece a esta empresa.']
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        # A line belongs to its quote's state. Once the quote has been sent its
+        # lines are evidence, and evidence does not get edited.
+        if self.quote_id:
+            quote_status = (
+                RepairQuote.objects.filter(pk=self.quote_id)
+                .values_list('status', flat=True).first()
+            )
+            if quote_status is not None and quote_status != RepairQuote.STATUS_DRAFT:
+                raise ValidationError(
+                    'No se puede modificar la línea de una cotización enviada.'
+                )
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        quote_status = (
+            RepairQuote.objects.filter(pk=self.quote_id)
+            .values_list('status', flat=True).first()
+        )
+        if quote_status is not None and quote_status != RepairQuote.STATUS_DRAFT:
+            raise ValidationError(
+                'No se puede borrar la línea de una cotización enviada.'
+            )
+        return super().delete(*args, **kwargs)
+
+
+class RepairQuoteDecision(models.Model):
+    """
+    The customer's answer. One per quote, ever.
+
+    A ONE-TO-ONE, and the database is what enforces it. Two taps on a slow
+    connection, two devices, or a retry after a timeout must not be able to
+    produce two answers to one question — and a uniqueness rule implemented in
+    Python is a rule that a race can walk straight through.
+
+    `channel` IS THE SERVER'S. A decision made through the authenticated
+    customer surface is `customer_account`, full stop. A future endpoint may let
+    a receptionist record "the customer approved by phone", and that will be a
+    different endpoint with different authority — not a string in a body that
+    anyone can set to whatever makes the record look better.
+
+    `quoted_total` AND `currency` ARE SNAPSHOTS. The quote is already frozen, so
+    they are belt and braces; but a decision that could not state what was
+    agreed, on its own, would be a poor piece of evidence.
+    """
+
+    DECISION_APPROVE = 'approve'
+    DECISION_REJECT = 'reject'
+    DECISION_CHOICES = [
+        (DECISION_APPROVE, 'Aprobada'),
+        (DECISION_REJECT, 'Rechazada'),
+    ]
+
+    CHANNEL_CUSTOMER_ACCOUNT = 'customer_account'
+    CHANNEL_CHOICES = [
+        (CHANNEL_CUSTOMER_ACCOUNT, 'Cuenta del cliente'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='repair_quote_decisions',
+    )
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.PROTECT, related_name='quote_decisions',
+    )
+    quote = models.OneToOneField(
+        RepairQuote, on_delete=models.PROTECT, related_name='decision',
+    )
+    customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name='repair_quote_decisions',
+    )
+    # The login that acted. SET_NULL so deleting an account does not delete the
+    # record of a decision the business acted on.
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_quote_decisions',
+    )
+
+    decision = models.CharField(max_length=16, choices=DECISION_CHOICES)
+    channel = models.CharField(
+        max_length=32, choices=CHANNEL_CHOICES, default=CHANNEL_CUSTOMER_ACCOUNT,
+    )
+
+    # Customer → company. Optional, never echoed to a public timeline: free text
+    # from a customer is not something a future visibility policy should be able
+    # to publish by accident.
+    reason = models.TextField(max_length=1000, blank=True)
+
+    quoted_total = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3)
+
+    # Resolved through `client_ip.get_client_ip()` — the platform's single
+    # authority on who the caller is (P0-B). Never `X-Forwarded-For` read by
+    # hand: the leftmost entry of that header is the one an attacker writes.
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+
+    decided_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-decided_at', '-pk']
+        indexes = [
+            models.Index(fields=['company', 'decided_at']),
+            models.Index(fields=['repair_order']),
+        ]
+
+    def __str__(self):
+        return f'{self.get_decision_display()} · cotización {self.quote_id}'
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            raise ValidationError('Una decisión del cliente no se puede modificar.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('Una decisión del cliente no se puede borrar.')
