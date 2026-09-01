@@ -25,6 +25,21 @@ STRIPE_SECRET_KEY=sk_test_xxx  # clave de test Stripe
 STRIPE_WEBHOOK_SECRET=whsec_xxx
 STRIPE_CURRENCY=pen             # Soles peruanos — NO cambiar a usd
 STRIPE_DOMAIN=http://localhost:3000
+
+### Hosts de imágenes remotas — obligatorio en producción (Fase 0.3 / P0-A)
+
+```
+NEXT_PUBLIC_IMAGE_HOSTS=cdn.tudominio.com,*.cloudfront.net
+```
+
+`next/image` sólo optimiza imágenes de los dominios listados aquí. **Si la
+variable está vacía no se permite ningún host remoto** — sólo `localhost` en
+desarrollo.
+
+Antes esto era `hostname: "**"` en `next.config.ts`, es decir cualquier host de
+internet, lo que convertía `/_next/image` en un proxy abierto: cualquiera podía
+hacer que el servidor descargara cualquier URL. Si tras desplegar no cargan las
+imágenes de producto, es esta variable la que falta.
 ```
 
 Para producción, genera un SECRET_KEY real:
@@ -799,6 +814,75 @@ Membership Invitation Flow               PENDIENTE
 IMEI/Serial                              PENDIENTE
 ```
 
+### Punto de venta y reposición inteligente (Fase Comercial C1)
+
+El mostrador entra al sistema. Antes, un negocio con tienda física vendía fuera
+de la plataforma, así que el stock del panel era el que quedaba *después de
+restar lo que nadie había registrado*.
+
+```
+   ONLINE ──┐
+            ├──► Order ──► SALE_EXIT ──► BranchStock ──► pronóstico
+   POS ─────┘
+```
+
+- **Una sola venta, dos canales.** Una venta de mostrador es un `Order` normal:
+  aparece en el historial, en los reportes y puede emitir su nota interna.
+- **Lector de código de barras USB o Bluetooth**, del tipo que se comporta como
+  un teclado. Sin drivers ni SDK. Todo funciona igual tecleando el código.
+- **Varios códigos por artículo**: el EAN del fabricante, un UPC y la etiqueta
+  propia de la tienda conviven. Se guardan como texto, así que
+  `0123456789012` no se convierte en `123456789012`.
+- **Todo o nada.** Si un artículo de la cesta no está, la venta entera se
+  rechaza: no se cobra, no se mueve stock y no queda pedido a medias.
+- **Un doble clic no cobra dos veces.** Cada cesta lleva su clave —obligatoria—
+  y su huella; un reintento devuelve la misma venta, y la misma clave con otra
+  cesta se rechaza en vez de confundirlas.
+- **Las condiciones las confirma quien vende**, marcándolo antes de cobrar. El
+  sistema no da por hecho que entregar el producto equivale a haberlas
+  explicado.
+- **Cada empresa cuenta sus días en su propia zona horaria**, así que la venta
+  de las diez de la noche cae en el día que le corresponde.
+- **El stock sale de la sucursal donde se vende**, nunca de otra. Si hay
+  unidades en otra tienda el sistema lo dice — pero moverlas es una
+  transferencia, y esa es una decisión con papeleo.
+- **Pronóstico de demanda explicable**: `0.50·avg7 + 0.30·avg30 + 0.20·avg90`,
+  sobre las ventas reales de estante. Los días sin venta cuentan como cero, que
+  es donde casi todo el mundo se equivoca.
+- **Sin historial suficiente, el sistema lo dice** en vez de inventar una fecha.
+  Las alertas de "sin stock" y "bajo mínimo" siguen funcionando igual.
+- **Punto de reposición y cantidad sugerida** por sucursal, con el plazo de
+  entrega que configure el negocio. Sugiere; no compra nada.
+
+- **Cliente, vendedor y comisión en cada venta.** El POS registra a quién se le
+  vendió, a quién se le acredita —que no siempre es quien cobra— y cuánto genera
+  de comisión, congelado en el momento: cambiar un porcentaje mañana no reescribe
+  lo de ayer.
+- **Descuentos con reglas.** Un cupón que la empresa configuró lo aplica
+  cualquiera; teclear un descuento a mano necesita permiso, motivo y queda
+  firmado. Los dos juntos se rechazan: apilar promociones es una política que el
+  negocio debe decidir, no la caja.
+- **Efectivo y vuelto los calcula el servidor**, y en tarjeta simplemente no
+  existen en lugar de figurar como cero.
+
+- **Combos que se aplican solos.** Configura «iPhone + funda + vidrio a S/ 3000»
+  y la caja lo detecta en cuanto el carrito califica: nadie pulsa nada. El pedido
+  sigue llevando los tres artículos reales y salen tres unidades de tres
+  estantes — la promoción sólo cambia el dinero, nunca el stock.
+- **Nunca se ofrece un combo que el estante no puede completar**, y un combo que
+  costara más que sus partes simplemente no se aplica.
+- **Lo cobrado no se reescribe.** Editar, renombrar o apagar una promoción no
+  cambia lo que dice una venta anterior.
+
+Pantallas: `/admin/sales` (facturación, canales, más vendidos, reposición),
+`/admin/sales/pos` (la caja), `/admin/sales/commissions` (devengado por vendedor)
+y `/admin/sales/promotions` (combos automáticos y códigos de descuento).
+
+> **No hay margen ni utilidad, a propósito.** La plataforma no registra cuánto
+> costó nada, así que cualquier cifra de rentabilidad sería inventada. Se
+> muestra facturación, que sí se sabe. Caja, arqueo y devoluciones son la
+> siguiente fase comercial.
+
 ### Actualizar una instalación existente
 
 El código y la base de datos tienen que ir a la par. Si la base se queda por
@@ -982,7 +1066,30 @@ Company
 
 Panel: `/admin/inventory`, `/admin/inventory/movements`,
 `/admin/inventory/transfers`, `/admin/inventory/counts`,
-`/admin/inventory/replenishment`, `/admin/inventory/reports`.
+`/admin/inventory/replenishment`, `/admin/inventory/reports`,
+`/admin/inventory/import`.
+
+### Carga masiva desde Excel (C1.4)
+
+`/admin/products/import` y `/admin/inventory/import`. Siempre en dos pasos:
+previsualizar y aplicar. La previsualización no escribe nada de negocio; el
+archivo no se almacena (sólo su SHA256 y las filas normalizadas).
+
+En el importador de inventario, **una celda de cantidad vacía no es un cero**:
+esa fila se omite y el stock queda como estaba. Un cero escrito sí baja el stock
+a cero. Todo cambio pasa por `inventory_services` y genera Kardex.
+
+El formato de 18 columnas del POS del propietario y su export de inventario de 5
+columnas se reconocen solos, por la **forma** del archivo (firma de encabezados),
+no por la empresa: cualquier inquilino con el mismo export queda cubierto.
+
+Límites y garantías (C1.5): un archivo de más de **5000 filas de datos se rechaza
+entero** —no se recorta—, los códigos distinguen mayúsculas de minúsculas igual
+que en el POS, un código de barras desactivado **sigue ocupando su código**, y la
+«carga inicial» se vuelve a validar en el momento de aplicar: si el stock dejó de
+estar en cero, falla toda la operación en lugar de convertirse en una corrección.
+El historial de importaciones muestra sólo el tipo de trabajo cuya capacidad
+tienes.
 
 **Migración:** con una sola sucursal activa por empresa se resuelve sola. Con
 varias y ninguna indicada, la migración **falla ruidosamente** y pide

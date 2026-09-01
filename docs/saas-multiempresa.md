@@ -1886,6 +1886,235 @@ era, en realidad, un agujero que no llegó a abrirse porque fallaba antes.
 
 ---
 
+## 8-septendecies. Punto de venta e inteligencia de stock (Fase Comercial C1)
+
+Migraciones **0034** (esquema) y **0035** (capacidades). Primera fase que sirve
+al mostrador además de a la web.
+
+### Un solo núcleo de ventas
+
+```
+   ONLINE ──┐
+            ├──► Order ──► OrderItem ──► inventory_services ──► SALE_EXIT ──► BranchStock
+   POS ─────┘                                                        │
+                                                    ┌────────────────┴────────────────┐
+                                              analítica                         reposición
+```
+
+Una venta de mostrador es un `Order`, igual que una de la web. La alternativa
+—un modelo `PosSale` aparte— habría duplicado cada reporte, cada movimiento de
+stock, cada documento interno y cada historial de cliente, con la obligación
+permanente de conciliarlos. Un negocio que vende el mismo cable por los dos
+canales ha hecho una venta en ambos casos.
+
+Lo que cambia no es el registro, es el momento:
+
+| | ONLINE | POS |
+|---|---|---|
+| Cuándo se cobra | fuera, antes del webhook | aquí, ahora |
+| Cuándo baja el stock | después del pago | en la misma transacción |
+| Si falta stock | se anota y se salta el ítem | **se rechaza la venta entera** |
+
+La asimetría es deliberada. Online el dinero ya está capturado, así que negarse
+dejaría un pedido pagado que nunca descontó nada. En el mostrador no se ha
+cobrado todavía, así que vender lo que no hay es exactamente el fallo a evitar.
+
+Ambos caminos comparten el mismo cuerpo en `record_sale_stock_movements`, con un
+parámetro `strict`. Dos copias habrían divergido, y la que divergiera sería la
+que nadie estaba mirando.
+
+### Modo estricto: validar todo antes de escribir nada
+
+En POS se bloquean **todas** las filas de `BranchStock` implicadas por adelantado
+—en el único orden que usa el módulo, `(branch_id, product_id)`— y se comprueban
+todas las cantidades antes de mover una sola unidad.
+
+Sin eso, una venta de dos líneas cuyo segundo artículo falta descontaría el
+primero, lanzaría, y desharía todo: correcto, pero manteniendo un lock que
+siempre iba a soltar, y mostrando al operador el stock del primer producto
+parpadeando mientras el error nombra al segundo.
+
+### Idempotencia: clave más huella
+
+Un doble clic, un timeout o un reintento de red no pueden cobrar dos veces.
+
+La clave la genera el navegador **antes** de enviar, así que un reintento lleva
+la misma. Pero la clave sola no basta: dice «es el mismo intento», no «es la
+misma venta». La huella —SHA-256 de empresa, sucursal, cliente, medio de pago y
+la lista ordenada de productos y cantidades— dice lo segundo.
+
+| | Resultado |
+|---|---|
+| Misma clave, misma cesta | devuelve la venta ya hecha, `created=false` |
+| Misma clave, otra cesta | **409** |
+
+Sin la huella, una clave reutilizada por una pestaña vieja o un bug devolvería la
+venta de otra cesta y afirmaría que ésta se cobró.
+
+Los precios quedan fuera de la huella a propósito: los decide el servidor, así
+que incluirlos ataría la huella a un valor que el cliente no controla y
+convertiría un cambio de precio en un conflicto espurio.
+
+### Agrupar líneas repetidas no es orden, es corrección
+
+`record_sale_stock_movements` es idempotente por `(order, product)`: dada una
+segunda `OrderItem` del mismo producto, escribiría la salida de la primera y
+**saltaría** la segunda. Vendería dos unidades descontando una.
+
+Por eso `normalize_items` fusiona líneas antes de tocar nada. El invariante que
+protege de un webhook reenviado no puede convertirse en una fuga de stock por
+culpa de una cesta de mostrador.
+
+### El código de barras es texto
+
+`0123456789012` y `123456789012` son artículos distintos. Un `int()` los fusiona
+en silencio y el ceros-a-la-izquierda deja de escanear para siempre. Tampoco se
+pasa a mayúsculas: Code128 puede llevar minúsculas que el lector reproduce fiel.
+
+Lo único que se recorta es el espacio envolvente —sobre todo el CR/LF que el
+lector envía en lugar de Enter, que si se guardara haría que ningún escaneo
+futuro volviera a coincidir. Los caracteres de control se **rechazan**, no se
+reparan: significan que llegó algo inesperado, y arreglarlo en silencio guarda un
+código que nadie puede volver a leer.
+
+`UNIQUE(company, code)`: dos tiendas que venden el mismo cable escanean el mismo
+EAN y ninguna ve el catálogo de la otra.
+
+### Pronóstico de demanda v1
+
+```
+forecast_diario = 0.50·avg7 + 0.30·avg30 + 0.20·avg90
+```
+
+Explicable a propósito. No es machine learning, no se llama «IA» en ningún sitio
+del producto, y cualquier número que muestra se puede rehacer a mano. Un tendero
+que discrepe de una sugerencia tiene que poder averiguar por qué; un modelo que
+sólo afirma un número no permite discutir.
+
+El peso mayor en 7 días reacciona a lo que se está vendiendo ahora; los 90 días
+impiden que una tarde buena domine el resultado.
+
+**La demanda son ventas, no mermas.** Sale exclusivamente de
+`StockMovement.SALE_EXIT`. El stock también se va por salidas manuales, roturas,
+correcciones, servicio técnico y transferencias — todas bajan la existencia y
+ninguna es un cliente queriendo el artículo. Contar una rotura como demanda
+encarga un reemplazo de algo que nadie compró.
+
+**Los días sin ventas cuentan como cero**, y es el error más común del género:
+
+```
+lunes 2 · martes 0 · miércoles 0 · jueves 2   →   1/día
+```
+
+Promediando sólo los días con venta salen 2/día, y ese error se hereda hacia
+abajo: la cobertura se reduce a la mitad, el punto de reposición se dobla, y el
+sistema manda comprar el doble de lo necesario.
+
+**Un producto nuevo no se rellena con ceros inventados.** Uno que entró hace
+cinco días tiene cinco días de historia, no noventa. Rellenar los ochenta y cinco
+anteriores dividiría sus ventas reales por dieciocho y presentaría un éxito
+reciente como un artículo parado.
+
+### Cuándo el sistema dice que no sabe
+
+| Condición | Resultado |
+|---|---|
+| < 14 días de historia, o < 3 días con venta | `insufficient_data` |
+| ≥ 14 días y ≥ 3 con venta | confianza `low` |
+| ≥ 30 días y ≥ 6 con venta | confianza `medium` |
+| ≥ 60 días y ≥ 12 con venta | confianza `high` |
+
+Sin pronóstico válido **no se muestra** cobertura, ni fecha estimada de quiebre,
+ni punto de reposición. Las alertas físicas —sin stock, bajo mínimo— siguen
+funcionando: no saber cuánto se vende no impide ver que el estante está vacío.
+
+Con demanda cero la cobertura **no es infinita**: la pantalla dice «sin consumo
+reciente», que es lo que realmente sabe.
+
+### Reposición
+
+```
+punto_reposicion = ceil(forecast_diario × lead_time_days + safety_stock)
+sugerido         = max(target − stock, punto_reposicion − stock, 0)
+```
+
+Cuatro números con cuatro trabajos distintos, y juntar dos cualesquiera es como
+una pantalla de reposición empieza a dar consejos que nadie sabe explicar:
+
+| Campo | Para qué |
+|---|---|
+| `minimum_stock` | umbral a partir del cual un operador quiere **verlo** |
+| `target_stock` | cuánto tener después de reponer |
+| `safety_stock` | colchón que usa la **aritmética** |
+| `lead_time_days` | cuánto tarda de verdad en llegar |
+
+`safety_stock` no reutiliza `minimum_stock` justamente porque uno es un umbral
+visual que el tendero pone a ojo y el otro entra en una fórmula. Que fueran el
+mismo campo significaría que cambiar una alerta cambia en silencio lo que el
+sistema manda comprar.
+
+**`lead_time_days = 0` es "sin configurar", no "llega al instante".** Sin él no
+se calcula punto de reposición: un plazo inventado da un número seguro y
+equivocado, que es peor que decir que falta el dato.
+
+### Riesgo, en orden de severidad
+
+```
+OUT_OF_STOCK  → stock 0
+CRITICAL      → cobertura ≤ lead time: se acaba antes de que llegue el pedido
+REORDER       → stock ≤ punto de reposición
+LOW           → stock ≤ mínimo
+INSUFFICIENT  → sin historial para juzgar
+OK            → el resto
+```
+
+### Transferencia antes que compra
+
+Antes de sugerir comprar fuera, se mira si las unidades ya están en la empresa.
+El excedente de una sucursal es conservador:
+
+```
+reserva  = max(target, minimum, safety)
+excedente = max(stock − reserva, 0)
+```
+
+Una sucursal sólo cede lo que sobra de su propio umbral más alto. Vaciar una
+tienda para llenar otra no es una solución, es la misma escasez en otro barrio.
+
+Es una **sugerencia**: no abre transferencia, no reserva nada, y sólo se muestran
+sucursales que el usuario tiene permiso de ver.
+
+### Tres autoridades, no una
+
+| Capacidad | Permite |
+|---|---|
+| `sales.pos.use` | operar la caja: buscar un artículo y cobrar |
+| `sales.analytics.view` | ver lo que factura el negocio |
+| `inventory.reports` | ver la aritmética de reposición detrás de los números |
+
+Quien cobra un cable necesita la primera y ninguna de las otras. Juntarlas
+significaría que un eventual en el mostrador lee la facturación de la empresa,
+que no es un permiso que nadie pidió conceder.
+
+**Vender no requiere `inventory.adjust`.** Un vendedor consume stock *vendiendo*;
+eso no es un ajuste manual, y dar `inventory.adjust` a cada cajero les dejaría
+reescribir el Kardex.
+
+`sales.orders.*` sigue AVAILABLE y no ACTIVE: su puente RBAC legacy sigue en pie,
+y cambiar la etiqueta sin quitarlo sería una mentira contada por un campo de
+estado.
+
+### Lo que no hay, y por qué
+
+**Sin margen, sin utilidad, sin ROI.** La plataforma no registra el costo de
+nada, así que cualquier cifra de rentabilidad sería inventada. Se reporta
+facturación, que sí se sabe.
+
+**Sin caja ni arqueo.** `payment_method` registra lo que el operador dice haber
+recibido; no procesa un pago, no abre un turno y no cuadra una gaveta. Está
+modelado de forma que C2 no tenga que migrarlo.
+
+**Sin SUNAT.** La nota de venta sigue siendo el documento interno de la Fase 2E.
 ## 8-septendecies. API pública versionada para clientes nativos (`/api/v1/`)
 
 **Estado: IMPLEMENTADO (solo catálogo público).** Sin migraciones. Aditiva.
@@ -2007,6 +2236,143 @@ existiera, y hay tests de regresión que lo demuestran.
 
 ---
 
+## 8-duodevicies. Hardening del POS y del pronóstico (Fase C1.1)
+
+Sin migraciones. Siete correcciones sobre C1, todas de la misma familia: un
+valor que se daba por bueno sin comprobarlo.
+
+### La clave de idempotencia era opcional
+
+Y opcional significaba que el camino sin protección seguía abierto. Ahora es
+obligatoria, y sobre todo **no se trunca**:
+
+```python
+str(value)[:64]        # dos claves de 80 caracteres → una sola
+```
+
+Ese recorte parece defensivo y es lo contrario: dos claves distintas que
+comparten sus primeros 64 caracteres se convierten en la misma, y la segunda
+venta recibe el pedido de la primera con un «listo». Una clave demasiado larga
+se rechaza.
+
+### La recuperación de la colisión no podía ejecutarse
+
+```python
+with transaction.atomic():       # ← toda la venta
+    try:
+        order.save()             # ← IntegrityError aquí
+    except IntegrityError:
+        existing = ...query...   # ← TransactionManagementError
+```
+
+Un `IntegrityError` marca la transacción entera para rollback: la conexión
+rechaza cualquier consulta posterior hasta que el bloque se deshace. El código
+de recuperación era inalcanzable — habría lanzado una excepción distinta y más
+confusa que la que intentaba manejar.
+
+El INSERT va ahora en su propio `atomic` anidado, que es un savepoint: el fallo
+retrocede hasta él, la transacción externa sigue viva, y la lectura posterior es
+una lectura de verdad.
+
+Y sólo la colisión de **esta** clave se trata como reintento. Si el
+`IntegrityError` vino de otro constraint se re-lanza: tragárselo convertiría un
+defecto real en una venta que no ocurre sin que nada lo explique.
+
+### El pronóstico borraba días cero reales
+
+El error más caro de los siete, porque producía números confiados y equivocados.
+
+```
+BranchStock creado hace 30 días
+primera venta hace 3 días
+2 unidades vendidas
+```
+
+`_history_start` empezaba la ventana en la primera venta, así que leía **3 días
+de historia** con 2 unidades — 0,67/día — cuando la verdad son **30 días** con 27
+en cero: 0,067/día. Diez veces la demanda real, y todo lo que cuelga de ella se
+iba detrás: la cobertura se dividía por diez, el punto de reposición se
+multiplicaba, y el sistema mandaba comprar stock que nadie iba a vender.
+
+La regla ahora distingue las dos equivocaciones opuestas:
+
+| | |
+|---|---|
+| Empezar antes de que el artículo existiera | inventa ceros |
+| Empezar en la primera venta | **borra ceros reales** |
+
+`tracked_since` —cuándo la sucursal empezó a llevarlo— manda siempre que se
+conozca. `first_observed` queda sólo como respaldo, y ahí es la respuesta
+honesta: sin fecha de alta, el primer movimiento es lo más temprano que se sabe.
+
+El mismo defecto entraba por otra puerta en «más vendidos», donde la cobertura
+agregada llamaba al pronóstico sin `tracked_since`. Ahora deriva la fecha del
+`BranchStock` más antiguo visible.
+
+### La sucursal fuente no se protegía a sí misma
+
+```
+Fuente: stock 20 · target 10 · mínimo 5 · safety 2 · punto de reposición 18
+```
+
+El excedente reservaba `max(target, mínimo, safety)` = 10, así que ofrecía **10
+unidades** para transferir. Pero esa tienda está 2 por encima de su propio punto
+de reposición: ceder diez la deja muy por debajo del nivel al que debería estar
+reponiéndose ella. La transferencia resolvía una escasez abriendo otra en una
+sucursal que nadie estaba mirando.
+
+Ahora la fuente se mide con la misma aritmética que el destino —su demanda, su
+lead time, su punto de reposición— y en ese ejemplo ofrece **2**. Sin pronóstico
+válido o sin lead time configurado, la reserva cae a sus umbrales configurados;
+**nunca a un punto de reposición de cero**. Falta de información es motivo para
+guardar stock, no para regalarlo.
+
+### El día del tenant no era el día del servidor
+
+`paid_at__date__gte` y `TruncDate('paid_at')` se resuelven en la zona horaria de
+la **conexión**. Para una empresa a catorce horas del servidor eso significa que
+la tarde de ventas se archiva en el día siguiente: «hoy» en el panel es un día
+que aún no ha empezado, y cada promedio diario del pronóstico se desplaza una
+jornada entera de demanda.
+
+Las métricas de C1 construyen ahora los límites en la zona de la empresa y
+comparan timestamps crudos:
+
+```python
+start = datetime.combine(day, time.min, tzinfo=tenant_tz)
+qs.filter(paid_at__gte=start, paid_at__lt=end)
+```
+
+Más correcto y además más rápido: un rango sobre una columna indexada, en lugar
+de una conversión de fecha por fila que el índice no puede servir.
+
+Una empresa sin zona configurada hereda la de la plataforma. Una zona
+**almacenada** que dejó de resolver —un cambio de tzdata— tampoco tumba el
+panel: se usa la de plataforma y los números siguen calculándose.
+
+### El POS afirmaba un consentimiento que nadie dio
+
+```python
+accepted_terms=True             # automático, en toda venta
+accepted_warranty_policy=True
+```
+
+El razonamiento era que entregar el artículo implica aceptación. No lo implica:
+nadie le había dicho nada al cliente, y el pedido quedaba con un registro
+diciendo que había aceptado condiciones que nunca vio.
+
+Ahora la persona en el mostrador confirma explícitamente que informó las
+condiciones y la política de garantía, y sin esa confirmación el backend
+responde 400. Lo que queda grabado es una afirmación que alguien hizo de verdad,
+y la auditoría ya dice quién. Una firma falsa habría sido peor que no registrar
+nada.
+
+### Convivencia con el catálogo móvil
+
+`origin/master` incorporó `/api/v1/` mientras C1 estaba en revisión. Se fusionó
+en la rama con tres conflictos —`CHANGELOG.md`, `docs/saas-multiempresa.md` y
+`tests.py`—, todos resueltos **conservando ambos lados**. Ninguna de las dos
+líneas de trabajo perdió tests, funciones ni documentación.
 ## 8-duodevicies. Autenticación nativa para clientes móviles (`/api/v1/auth/`)
 
 **Estado: IMPLEMENTADO (núcleo de sesión, BR-001A).** Sin migraciones. Aditiva.
@@ -2163,6 +2529,155 @@ el cuerpo, y su cookie **no** abre la superficie nativa.
 
 ---
 
+## 8-undevicies. Venta enriquecida y comisiones (Fase Comercial C1.2)
+
+Migraciones **0036** (esquema) y **0037** (capacidades).
+
+### Operador y vendedor son dos personas
+
+```
+OPERADOR   request.user       quien trabajó la caja · firma la auditoría
+VENDEDOR   Order.sold_by      a quién se acredita la venta · cobra la comisión
+```
+
+Normalmente coinciden, y por eso el vendedor viene preseleccionado: nadie debería
+elegirse a sí mismo en una lista para cada venta. Pero un supervisor registrando
+la venta que hizo un compañero es una tienda normal, y fingir lo contrario deja
+dos opciones malas: perder la atribución, o que el personal comparta usuario.
+
+Reasignar está detrás de `sales.pos.assign_seller` porque **mueve dinero**: sin
+esa puerta, cualquiera podría acreditar cualquier comisión a cualquiera,
+incluido a sí mismo.
+
+### La comisión pertenece al empleo
+
+`Membership.commission_rate_percent`, no `User.commission_rate`.
+
+Un mismo humano puede vender para dos empresas con tratos distintos —3% aquí, 5%
+allá—, así que una tasa en `User` no podría expresar la verdad. Tampoco va en el
+rol: dos vendedores de una misma tienda suelen estar en condiciones distintas, y
+atarlo al rol obligaría a crear un rol por tarifa.
+
+Cero es el valor por defecto y significa exactamente eso: esta persona no cobra
+comisión. No es «sin configurar».
+
+### `SalesCommission` es una tabla, y esa es la decisión
+
+Tres columnas en `Order` habrían sido menos código hoy y una migración mañana.
+
+Una comisión no es una propiedad de la venta: es una **obligación con vida
+propia**. Se devenga ahora, puede anularse cuando el producto vuelve, y algún día
+se liquida en lote junto a docenas más. Nada de eso cabe colgando del pedido que
+la originó.
+
+**Todo se congela al vender** — tasa, base e importe:
+
+```
+venta de ayer     tasa 3%   →   comisión al 3%, para siempre
+hoy pasa a 5%     →   las de mañana al 5%; las de ayer no se tocan
+```
+
+La empresa acordó pagar 3% por aquellas ventas. Recalcularlas desde la tasa
+actual reescribiría una deuda a posteriori, y un informe que lo hiciera estaría
+mintiendo con aritmética.
+
+`seller_name_snapshot` existe por lo mismo: `sold_by` puede quedar en NULL si se
+elimina la cuenta, y un ledger que olvida de quién era el dinero no es un ledger.
+
+**No se escribe fila con tasa 0.** Un ledger lista obligaciones, y «no se debe
+nada» no es una. Una tabla de ceros habría que filtrarla en cada informe que la
+lea.
+
+### La comisión va sobre la venta neta
+
+```
+base   = subtotal − descuento
+importe = base × tasa / 100
+```
+
+El descuento se resta **primero**. Una tienda que regaló el 10% no cobró ese
+dinero, y pagar un porcentaje de él haría que cada descuento costara más de lo
+que aparenta. Decimal en todo el camino, cuantizado al céntimo: un tercio de
+céntimo perdido por venta es un ledger que no cuadra nunca.
+
+### Dos fuentes de descuento, y sólo una a la vez
+
+| Fuente | Permiso | Por qué |
+|---|---|---|
+| Cupón | ninguno extra | la empresa configuró esa promoción de antemano |
+| Manual | `sales.discounts.apply` | teclear un precio es una decisión |
+
+Un cupón válido lo aplica cualquiera con `sales.pos.use`: honrar una promoción
+que el negocio ya definió no es una decisión del cajero. Un descuento manual sí
+lo es, así que lleva **permiso, motivo obligatorio y autor registrado**, más su
+propia entrada de auditoría.
+
+**No se apilan.** Pedir los dos devuelve 400. Apilar promociones es una política
+de negocio con reglas —cuál se aplica primero, si componen, cuál es el suelo— y
+adivinar una aquí habría metido una política sin examinar dentro de una caja
+registradora.
+
+`discount_source` guarda de dónde vino el dinero descontado, separado del
+`discount_amount` que dice cuánto: uno es el hecho, el otro la razón, y un
+auditor pregunta por los dos.
+
+### El total lo calcula el servidor, incluido el preview
+
+`POST /api/admin/pos/preview/` corre **la misma** resolución y **la misma**
+aritmética que la venta, y no escribe nada: ni pedido, ni stock, ni clave de
+idempotencia consumida.
+
+Recalcular el porcentaje del cupón en el navegador significaría que el número que
+el operador lee en voz alta lo produce un código distinto del que después cobra —
+y el cliente está delante cuando los dos no coinciden.
+
+El preview **no** valida el efectivo, y la venta sí. La primera versión lo
+validaba en ambos, lo que exigía contar el dinero antes de poder ver el total:
+justo al revés de para qué sirve un preview.
+
+### Efectivo y vuelto
+
+```
+vuelto = recibido − total        (calculado en el servidor)
+```
+
+Para tarjeta, transferencia y online los dos campos quedan en **NULL**. Escribir
+cero haría indistinguible «pagó justo en efectivo» de «no pagó en efectivo», y
+esa diferencia importa cuando alguien cuadra una caja.
+
+Las sugerencias de billete se calculan desde el total, no desde una escalera fija:
+una lista pensada para un teléfono no sirve para un cable.
+
+### Idempotencia ampliada
+
+La huella de C1.1 ahora incluye el vendedor, el descuento **resuelto**, y las
+referencias y observaciones escritas al lado. Sin el vendedor dentro, un
+reintento con otro vendedor devolvería el pedido anterior y diría que salió bien
+mientras la comisión se quedaba con la persona equivocada.
+
+| | Resultado |
+|---|---|
+| Misma clave, misma venta | devuelve la venta, `created=false` |
+| Misma clave, otro vendedor / cupón / cliente / nota | **409** |
+
+### Campos con nombre, no un JSON
+
+`payment_reference`, `external_reference` y `sale_notes` son columnas concretas.
+Un blob libre se convierte en el sitio donde cae todo y donde nada se puede
+validar, reportar ni borrar.
+
+`sale_notes` es sobre **esta venta**; `Customer.notes` es el expediente
+permanente de la persona. No son lo mismo y no deben mezclarse. Ninguna de las
+dos sale por una API pública.
+
+### Lo que no se hizo, y por qué
+
+**Pagos mixtos** (efectivo + tarjeta) necesitan `Payment` y `PaymentAllocation`,
+que es un dominio, no un campo. **Liquidación de comisiones** necesita un flujo
+que realmente pague; por eso el estado inicial es `accrued` y no existe `paid` —
+inventarlo sería afirmar que hay un pago donde no lo hay. **Devoluciones**
+deberán anular la comisión con un movimiento compensatorio, nunca borrando la
+fila. Todo ello es C2.
 ## 8-undevicies. Superficie de cliente y contexto de acceso (`/api/v1/customer/`)
 
 **Estado: IMPLEMENTADO (pedidos de cliente).** Sin migraciones. Aditiva.
@@ -2318,6 +2833,154 @@ la superficie de cliente, con test.
 
 ---
 
+## 8-vicies. Promociones automáticas y hardening comercial (Fase C1.3)
+
+Migraciones **0038** (reparación de histórico), **0039** (promociones) y **0040**
+(capacidades).
+
+### La huella de idempotencia hasheaba lo que no debía
+
+C1.1 introdujo la huella; C1.2 la amplió; ambas incluían el descuento **ya
+resuelto**. Eso parecía más preciso y era el error:
+
+```
+11:04:32  la caja cobra, la respuesta se pierde
+11:04:40  un administrador edita el combo
+11:06:01  la caja reintenta con la MISMA clave
+          → el descuento resuelto ahora es otro
+          → la huella no coincide
+          → 409: "esta clave ya se usó para otra venta"
+```
+
+Al operador se le decía que su propia venta chocaba consigo misma, por algo que
+hizo otra persona en otra pantalla. Y en el sentido contrario era peor: un
+reintento después de **bajar** un descuento se rechazaba, cuando la respuesta
+correcta es la venta que ya existe al precio ya cobrado.
+
+La huella describe ahora **la intención**: empresa, sucursal, cliente, vendedor,
+método de pago, artículos y cantidades, el código de cupón *tal como se tecleó*,
+el tipo y valor del descuento manual, el motivo, el efectivo entregado, las
+referencias, las observaciones y la confirmación de condiciones.
+
+Y deliberadamente **no**: `Product.price`, el `discount_amount` calculado, el
+porcentaje vigente del cupón, el resultado de las promociones ni el importe de la
+comisión. Todos ellos cambian cuando alguien edita algo, y un reintento no puede
+depender de eso.
+
+El orden también cambió: **normalizar → hashear → buscar la venta → sólo entonces
+resolver precios**. Un reintento se responde sin consultar un precio, sin evaluar
+una promoción y sin revalidar un permiso, porque nada de eso puede cambiar lo que
+ya se cobró.
+
+### Quién puede cobrar una comisión
+
+La versión anterior aceptaba cualquier membresía activa como vendedor. Eso
+significaba que una venta —y su comisión— podía acreditarse a un almacenero, a un
+técnico, o a cualquiera que nunca hubiera estado autorizado a tocar una caja.
+
+`eligible_pos_sellers()` es ahora la única definición, y exige tres cosas:
+
+1. membresía activa y cuenta activa;
+2. `sales.pos.use` **resuelto por el motor real de capacidades** — un rol
+   personalizado que la conceda cuenta, y uno que sólo se *llame* «Ventas» no;
+3. acceso a la sucursal de esa venta.
+
+La tercera importa: acreditar una venta de Centro a quien sólo trabaja Cayma
+pagaría comisión por un trabajo que esa persona no estaba en posición de hacer.
+
+### El histórico de descuentos estaba mal etiquetado
+
+La migración 0036 afirmó en su propio comentario que `discount_source = none`
+«es lo que era todo pedido histórico». Era falso, y sobre datos que la plataforma
+ya tenía: `coupon_code` y `discount_amount` existen desde mucho antes, y el
+checkout aplica cupones desde la Fase 1.
+
+El dinero nunca estuvo mal —totales, importes y códigos quedaron intactos—. Lo
+que estuvo mal fue la etiqueta, que es exactamente lo que una pantalla de
+reportes lee para decir **por qué** una venta salió más barata.
+
+```
+coupon_code != '' Y descuento > 0   →  coupon
+descuento == 0                      →  none
+descuento > 0 Y coupon_code == ''    →  SE DEJA EN none, y se cuenta
+```
+
+El tercer caso es el interesante. Podría venir de un ajuste manual antiguo, de
+una corrección de datos, o de un camino de código que ya no existe. Etiquetarlo
+`manual` inventaría una decisión, y `discount_authorized_by` quedaría vacío —
+insinuando que alguien lo autorizó sin dejar rastro de quién. Un `none` honesto
+más un contador impreso es mejor que una ficción verosímil.
+
+### Un combo no es un producto
+
+La tentación es crear un `Product` llamado «Combo iPhone + funda + vidrio» con su
+propio precio. Es un error caro: ese producto necesitaría stock propio, que no
+existe. Venderlo obligaría a descontar otros tres artículos por algún camino
+hecho a medida, el Kardex mostraría la venta de algo que nunca estuvo en un
+estante, y cada reporte de inventario tendría que aprender qué productos son
+reales y cuáles no.
+
+Así que **un combo sólo cambia el dinero**:
+
+```
+Venta:  1 iPhone + 1 funda + 1 vidrio
+        3 OrderItems reales
+        3 SALE_EXIT de 3 estantes reales
+        1 AppliedPromotion que explica por qué se cobró menos
+```
+
+### El motor: determinista, no óptimo
+
+Dos promociones pueden querer la misma unidad. Elegir la combinación que más
+ahorra al cliente es un problema de empaquetado —NP-hard— y, peor, **inestable**:
+añadir un cable al carrito podría reordenar todos los descuentos, lo que es
+imposible de explicarle a quien está pagando.
+
+```
+ordenar por prioridad DESC, luego id ASC
+cada promoción consume las unidades que necesita
+una unidad consumida ya no está disponible para la siguiente
+```
+
+Aburrido a propósito. El resultado es siempre el mismo para el mismo carrito, el
+administrador controla el desenlace con la prioridad, y la razón de que una
+promoción no se aplicara siempre es «algo por encima se llevó las unidades».
+
+Un combo cuyo precio supere al de sus partes **no se aplica**: cobrar más por
+comprar junto sería indefensible, y casi con certeza es un error de configuración.
+
+### Alcance por sucursal, cerrado por defecto
+
+`branch_scope` es explícito (`ALL` / `SELECTED`) en vez de inferirse de una tabla
+vacía. «Sin filas significa en todas» convertiría borrar la última sucursal en una
+ampliación silenciosa del alcance — la misma trampa que `branch_access_mode`
+evita desde la Fase 2D. `SELECTED` con cero filas no aplica en ninguna parte.
+
+### El snapshot, otra vez
+
+`AppliedPromotion` congela nombre, tipo, número de aplicaciones, importe regular,
+descuento y componentes con sus precios. El combo de marzo se edita en abril, se
+renombra en mayo y se apaga en junio; el recibo de marzo tiene que seguir diciendo
+qué se le cobró a quien compró en marzo. La FK es PROTECT: una promoción aplicada
+es parte del registro y no se borra por debajo de él.
+
+### Sin apilar, y dicho en voz alta
+
+Una promoción automática no se combina con un cupón ni con un descuento manual.
+Apilar es una política de negocio con reglas —cuál se aplica primero, si componen,
+cuál es el suelo— y elegir una aquí la metería en una caja registradora sin que
+nadie la haya examinado. Se rechaza con un mensaje, no se resuelve en silencio.
+
+### Autoridad propia
+
+`sales.promotions.manage` **no** está implicada por `products.manage`. Editar una
+etiqueta de precio y decidir que tres artículos juntos cuestan menos que sus
+partes son decisiones comerciales distintas, y un negocio debe poder conceder una
+sin la otra. Tampoco se dan al preset de Ventas: una promoción se dispara sola, y
+lo que la empresa está regalando es información de gestión.
+
+---
+
 ## 8-vicies. Checkout nativo autenticado y configuración pública por slug
 
 **Estado: IMPLEMENTADO.** Migración **0034**. Aditiva.
@@ -2417,6 +3080,106 @@ Empresa desconocida e inactiva devuelven el mismo 404 que el catálogo.
 
 ---
 
+## 8-unvicies. Carga masiva desde Excel (Fase C1.4)
+
+**Estado: IMPLEMENTADO.** Migración **0042**.
+
+### Por qué un importador es tres tablas y no un manejador de subida
+
+La forma obvia es: recibir el archivo, recorrerlo, escribir. Aquí está mal por
+una razón concreta de lo que se escribe. Un producto mal importado se corrige
+editándolo. Un **stock** mal importado no: se convierte en movimientos de Kardex,
+y el Kardex es un registro de hechos físicos que sólo crece. «Deshacerlo»
+significa emitir movimientos compensatorios que también son historia permanente.
+El momento de detectar el error es **antes** de escribir.
+
+De ahí: `BulkImportJob` (la subida), `BulkImportRow` (cada fila ya normalizada) e
+`ImportMappingProfile` (qué columna era cuál). Previsualizar no toca ninguna tabla
+de negocio; aplicar lee del staging, no del navegador.
+
+### Vacío ≠ cero
+
+| En el Excel | Significa | Efecto |
+|---|---|---|
+| celda vacía | «no conté esto» | stock intacto, fila OMITIR |
+| `0` escrito | «no queda ninguno» | corrección negativa hasta cero |
+
+El archivo real del propietario tiene 696 filas y la columna de cantidad
+**completamente vacía** — es el catálogo impreso esperando un conteo. Leer vacío
+como cero da de baja la tienda entera en una sola operación.
+
+### Objetivo, no diferencia — DEC-IMP-001
+
+El número es el stock **contado**. El movimiento es `objetivo − actual`, calculado
+bajo lock **en el momento de aplicar**. La diferencia de la previsualización es
+informativa: si la caja vendió dos unidades mientras alguien revisaba la pantalla,
+aplicar el `+5` previsualizado dejaría la tienda permanentemente corta y un Kardex
+que dice que todo cuadra.
+
+### Reconocimiento por firma de encabezados — DEC-IMP-002
+
+Los presets se resuelven por un hash de la fila de encabezados normalizada, no por
+la empresa. Un `if company.slug == 'black-dog-store'` no es una funcionalidad: es
+un cliente soldado a la plataforma, y la rama que sólo corre para un cliente es la
+rama que las pruebas de nadie más cubren.
+
+La firma **no** es el SHA256 del archivo: los datos cambian en cada subida, la
+forma no. Hashear el archivo no reconocería nada dos veces.
+
+### Los dos formatos auditados
+
+| | Productos | Inventario |
+|---|---|---|
+| SHA256 | `b14bca62…6b6d534` | `83bb2a69…30150a0` |
+| Hojas | 5 (1 de datos + 4 vocabularios) | 1 (`Worksheet`) |
+| Fila de encabezados | **2** (la 1 es un banner combinado) | 1 |
+| Columnas | 18 | 5 |
+| Filas de datos | **0** (plantilla en blanco) | **696** |
+| Rareza | `errorStyle="error"` inválido de Google Sheets | `CODIGO EAN` guardado como número |
+
+Los 18 encabezados: `Código de barras · Código · Unidad de medida · Nombre · Peso ·
+Código SUNAT · Descripción · Precio costo · Afectación · Compra · Venta ·
+Almacenable · Stock mínimo · Marca · Stock inicial - ALMACEN 1 - 11416 ·
+Area - black dog octavio - 817 · Precio venta - 11834 · SUCURSAL 1 - 11357`.
+
+De esos, se importan cuatro (código de barras, código, nombre, descripción) más el
+precio. `Código SUNAT` y `Afectación` son tributarios y esta plataforma no emite
+comprobantes electrónicos; `Precio costo` no tiene dónde ir porque el catálogo no
+registra costos; y `Stock inicial` **no** se importa aquí, porque el inventario
+tiene su propio importador con su propia previsualización.
+
+### Lo que el archivo llama EAN no es un EAN
+
+Los 692 códigos son la serie `310000000001…310000000696` con cuatro huecos, y sólo
+67 pasan el dígito de control —exactamente lo que produce el azar—. Son una serie
+interna, no códigos de barras de comercio. Por eso la simbología sólo se nombra
+cuando el dígito de control lo confirma; si no, `unknown`. Y por eso **nunca** se
+repone un cero inicial perdido: adivinar un dígito cambia de qué producto se habla.
+
+`CODIGO` sí es un identificador estable —696 filas, 696 valores distintos, ninguno
+vacío— y se registra como `ProductBarcode` con simbología `internal` en vez de
+añadir otra columna a `Product`.
+
+### Seguridad del lector
+
+Sólo `.xlsx`; 10 MB comprimidos; tope de entradas, de tamaño expandido y de ratio
+de compresión; `vbaProject.bin` es un rechazo; 5000 filas por trabajo. Las
+fórmulas no se evalúan **ni se leen de la caché**: el valor guardado lo calculó la
+máquina que grabó el archivo por última vez, posiblemente desde filas que no están
+en esta subida.
+
+El saneado de `dataValidation` es incondicional cuando el archivo trae alguno, y
+no un plan B: openpyxl en modo lectura analiza las hojas **de forma perezosa**, así
+que el error aparece en mitad del bucle del llamador y un `try` alrededor de la
+apertura nunca se ejecuta.
+
+### Deuda
+
+Importación parcial; CSV; compras a proveedor; importar promociones; reversión
+automática de una importación ya aplicada; retención/limpieza de `BulkImportRow`.
+
+---
+
 ## 8-unvicies. Superficie interna y pedidos de venta (`/api/v1/internal/`)
 
 **Estado: IMPLEMENTADO (contexto + pedidos de venta).** Sin migraciones. Aditiva.
@@ -2512,6 +3275,80 @@ no hay permisos falsos para funciones ausentes.
 | Inventario interno v1 | **RESUELTO** (§ 8-duovicies) |
 | BR-005 servicio técnico | **PARCIAL** — núcleo (§ 8-tervicies) |
 | BR-001B | PENDIENTE |
+
+---
+
+## 8-duovicies. Hardening de la carga masiva (Fase C1.5)
+
+**Estado: IMPLEMENTADO.** Sin migraciones.
+
+### Dos modos de lectura, y confundirlos parte un archivo por la mitad
+
+| Modo | Para qué | Pasarse del límite |
+|---|---|---|
+| `SAMPLE` | «¿qué pinta tiene este archivo?» | parar antes **es** el objetivo |
+| `FULL_IMPORT` | «lee esto para poder aplicarlo» | **rechazo total**, 400 |
+
+El defecto era que el preview usaba el comportamiento del primero: 5001 filas
+daban 5000 preparadas, cero errores y un trabajo aplicable. `FULL_IMPORT` lee una
+fila **más** que el límite sólo para detectar el exceso, y no crea trabajo alguno.
+
+Las filas vacías finales se recortan **antes** de aplicar el límite: son un
+artefacto del formato de la plantilla, no datos.
+
+### Identidad de códigos — DEC-IMP-003
+
+`normalize_barcode()` recorta y nada más. Un código de barras es una cadena de
+símbolos, no un número, y Code128 lleva mayúsculas y minúsculas significativas.
+El POS resuelve un escaneo con `code=` exacto; **el importador ahora también**.
+Antes indexaba en mayúsculas, de modo que fusionaba dos artículos que la caja
+distingue: dos semánticas de identidad, una de más.
+
+### Propiedad vs escaneo — DEC-IMP-004
+
+`ProductBarcode` es único por `(company, code)` **sin condición sobre
+`is_active`**. De ahí dos preguntas distintas:
+
+| Pregunta | Alcance | Quién la hace |
+|---|---|---|
+| ¿alguien ya ocupa este código? | todos, activos e inactivos | el importador |
+| ¿esto resuelve en caja? | sólo activos | el POS |
+
+Cargar sólo los activos dejaba al preview ciego justo ante las filas que iban a
+fallar al escribir. Un código retirado identifica a su producto con aviso, no se
+reactiva y no se duplica; si es de otro producto, error de fila.
+
+### El preview es lo que se aprobó
+
+Aplicar exige que cada fila resuelva **al mismo producto** que el preview
+registró. Si no, aborta todo. La versión anterior re-resolvía y actualizaba lo
+que hubiera aparecido: correcto cuando es el mismo artículo, y un renombrado de un
+producto ajeno cuando no. Los datos no distinguen los dos casos.
+
+### INITIAL se revalida bajo locks — DEC-IMP-005
+
+Orden en `apply_stock`: **tomar todos los locks** en orden `(branch_id,
+product_id)` → **revalidar el conjunto** → **escribir**. Para `INITIAL` la
+precondición (stock cero, sin Kardex) se vuelve a exigir ahí, no sólo en el
+preview. Si cambió, falla entero: **no se degrada a corrección**, porque eso
+cambiaría la afirmación sobre de dónde salieron las unidades.
+
+Stock presente sin ningún Kardex también se rechaza: es un estado que este sistema
+no produce, y `INITIAL` estaría inventándole un origen.
+
+### Enteros exactos
+
+`int(float(...))` pierde precisión por encima de 2⁵³ y devuelve una cuenta
+equivocada sin error. El stock se parsea como entero exacto y se valida contra el
+techo de la columna.
+
+### Autorización del historial
+
+Cada tipo de importación exige su capacidad y **filtra la consulta por ella**.
+Sin `?type` se ve lo que se tiene, nunca la unión. Sin ninguna de las dos: 403.
+El detalle resuelve **primero la empresa** y luego busca dentro de ella, para que
+un id ajeno responda 404 igual que uno inexistente — antes la diferencia entre
+403 y 404 permitía enumerar trabajos de otros inquilinos.
 
 ---
 
@@ -2945,6 +3782,26 @@ cookie + CSRF. M8 **no descuenta repuestos** y no vincula `RepairOrder` a
    una variable de entorno. Documentado en `.env.example`, pero configurarlo
    todavía es tocar código. No se cambió aquí porque no hizo falta y habría sido
    ampliar el alcance de una fase de estabilización.
+
+### Deuda que deja la Fase Comercial C1
+
+54. **PENDIENTE — caja, arqueo y turnos.** `payment_method` registra el medio;
+   no hay apertura, cierre, retiros ni diferencias. Es Comercial C2.
+55. **PENDIENTE — devoluciones y anulaciones.** No se improvisan: una devolución
+   correcta es un movimiento compensatorio, nunca borrar un `SALE_EXIT` ni
+   sumar stock a mano. Sin el dominio completo, no se implementa a medias.
+56. **PENDIENTE — descuentos manuales en POS.** Reutilizar `Coupon` habría
+   forzado su semántica; inventar un campo de descuento sin política de
+   autorización habría sido peor.
+57. **PENDIENTE — costo real y rentabilidad.** Sin costo registrado no hay
+   margen honesto que mostrar.
+58. **PENDIENTE — compras y proveedores.** La reposición dice «repón N»; no
+   compra. Las órdenes de compra son C2/C3.
+59. **PENDIENTE — pronóstico estacional.** El v1 es un promedio ponderado
+   explicable. Estacionalidad y promociones necesitan más historia de la que
+   cualquier instalación tiene hoy.
+60. **PENDIENTE — cerrar el puente RBAC de `sales.orders.*`.** Sigue en pie, y
+   por eso esas capacidades siguen honestamente marcadas AVAILABLE.
 
 ---
 

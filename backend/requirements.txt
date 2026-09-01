@@ -1,7 +1,15 @@
 # Core framework — LTS release (security support until April 2028)
 # Requires Python 3.10-3.13 officially; also works on 3.14 (no breaking changes)
 # Compatible with Docker python:3.12-slim and local Python 3.14
-Django==5.2.15
+#
+# 5.2.17 — security only. 5.2.16 fixed CVE-2026-48588 (cache middleware leaking
+# private responses), CVE-2026-53877 (GDALRaster heap over-read) and
+# CVE-2026-53878 (DomainNameValidator accepting newlines, enabling header
+# injection); 5.2.17 fixed CVE-2026-15830. Of those, only the validator one
+# reaches this project — no cache middleware and no GIS — but the pin is to the
+# highest patch because staying one release behind on an LTS line to dodge a CVE
+# that "does not apply today" is how it applies tomorrow.
+Django==5.2.17
 djangorestframework==3.17.1
 
 # JWT authentication
@@ -19,8 +27,12 @@ django-cors-headers==4.9.0
 # Stripe payments SDK
 stripe==15.2.1
 
-# Image processing (used by Django for ImageField validation and admin thumbnails)
-Pillow==12.2.0
+# Image processing. Django imports it for ImageField validation; this project
+# has NO ImageField and NO FileField (product images are URLField), and nothing
+# under backend/ imports PIL. So the thirteen CVEs fixed in 12.3.0 have no
+# reachable surface here — the pin is raised anyway because it costs nothing and
+# the day someone adds an upload is not the day to discover this was stale.
+Pillow==12.3.0
 
 # WSGI server for production (replaces runserver)
 gunicorn==26.0.0
@@ -28,3 +40,20 @@ gunicorn==26.0.0
 # PDF generation — internal purchase receipts (Phase 4.2)
 # Pure Python, no system dependencies (unlike WeasyPrint which needs libpango/libcairo).
 reportlab==4.4.1
+
+# Spreadsheet reading — bulk product and inventory import (Phase C1.4).
+#
+# This was MISSING. It was installed in the development environment and the
+# whole import subsystem imports it, so everything worked locally while a clean
+# deploy would have installed requirements.txt and then raised ModuleNotFoundError
+# the first time anyone opened the bulk import screen. A dependency that only
+# exists on the machine where it was written is not a dependency, it is an
+# accident that has not happened yet.
+openpyxl==3.1.5
+
+# Transitive of Django (SQL formatting), pinned explicitly because 0.5.5 carries
+# four advisories — CVE-2026-54284, CVE-2026-59893, CVE-2026-59894 and
+# CVE-2026-71491, all fixed in 0.6.0. Django does not pin it tightly, so without
+# this line a fresh install resolves to whatever is current and the fix is not
+# guaranteed.
+sqlparse==0.6.0

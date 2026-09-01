@@ -112,3 +112,18 @@ class AdminCustomersThrottle(UserRateThrottle):
 class AdminCustomerWriteThrottle(UserRateThrottle):
     """Creating, editing and archiving customers."""
     scope = 'admin_customer_write'
+
+
+class AdminPosThrottle(UserRateThrottle):
+    """POS lookups and searches — a scanner fires these in bursts."""
+    scope = 'admin_pos'
+
+
+class AdminPosSaleThrottle(UserRateThrottle):
+    """Completing a counter sale."""
+    scope = 'admin_pos_sale'
+
+
+class AdminSalesAnalyticsThrottle(UserRateThrottle):
+    """Commercial dashboard and replenishment report."""
+    scope = 'admin_sales_analytics'

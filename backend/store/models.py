@@ -1,6 +1,9 @@
 import hashlib
+import re
 import secrets
 from datetime import timedelta
+
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
@@ -30,6 +33,51 @@ class DocumentType(models.TextChoices):
     DNI = 'dni', 'DNI'
     RUC = 'ruc', 'RUC'
     CE = 'ce', 'Carnet de Extranjería'
+
+
+class SalesChannel(models.TextChoices):
+    """
+    Where a sale happened. Module level because analytics, the POS service and
+    the storefront all reason about it, and none of them should import another.
+    """
+
+    ONLINE = 'online', 'Tienda online'
+    POS = 'pos', 'Punto de venta'
+
+
+class DiscountSource(models.TextChoices):
+    """
+    Why money came off a sale.
+
+    Kept apart from the AMOUNT on purpose: `discount_amount` is what the
+    customer did not pay, and this is the reason it was allowed. A promotion the
+    company configured in advance and a decision somebody made at the counter
+    are different events, and only the second one needs a name attached to it.
+    """
+
+    NONE = 'none', 'Sin descuento'
+    COUPON = 'coupon', 'Código promocional'
+    MANUAL = 'manual', 'Descuento manual'
+    # C1.3: fired by the basket itself, with nobody typing anything.
+    PROMOTION = 'promotion', 'Promoción automática'
+
+
+class PaymentMethod(models.TextChoices):
+    """
+    How the money arrived.
+
+    `STRIPE` is what every historical order used. The rest are what a person at
+    a counter reports having received — this records the fact, it does not
+    process a payment. A card terminal integration, a cash drawer and a till
+    reconciliation are a different phase, and this field is shaped so that phase
+    does not have to migrate it.
+    """
+
+    STRIPE = 'stripe', 'Stripe (online)'
+    CASH = 'cash', 'Efectivo'
+    CARD = 'card', 'Tarjeta'
+    TRANSFER = 'transfer', 'Transferencia'
+    OTHER = 'other', 'Otro'
 
 
 class Category(models.Model):
@@ -274,6 +322,81 @@ class Order(models.Model):
         'store.Customer', on_delete=models.PROTECT,
         null=True, blank=True, related_name='orders',
     )
+    # --- Commercial Phase C1 -------------------------------------------
+    #
+    # ONE sales core, two channels. The alternative — a separate PosSale model —
+    # would have meant every report, every stock movement, every internal
+    # document and every customer history had to be computed twice and then
+    # reconciled. A shop that sells the same article over the counter and online
+    # has made one sale either way.
+    sales_channel = models.CharField(
+        max_length=16, choices=SalesChannel.choices,
+        default=SalesChannel.ONLINE, db_index=True,
+    )
+    payment_method = models.CharField(
+        max_length=16, choices=PaymentMethod.choices,
+        default=PaymentMethod.STRIPE, db_index=True,
+    )
+    # Who rang it up. Null for every online order and for history — nobody sold
+    # those. NEVER consulted for permissions: recording who did something is not
+    # the same as deciding who may.
+    sold_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='pos_sales',
+    )
+    # POS IDEMPOTENCY — the reason a double click cannot charge twice.
+    #
+    # The key is minted by the browser before the request leaves, so a retry
+    # after a timeout carries the SAME key as the attempt whose answer was lost.
+    # The fingerprint is what makes the key trustworthy: it pins what the key
+    # was used for, so a key reused with different contents is refused instead
+    # of silently returning somebody else's sale.
+    pos_idempotency_key = models.CharField(max_length=64, blank=True, default='')
+    pos_request_fingerprint = models.CharField(max_length=64, blank=True, default='')
+
+    # --- Commercial Phase C1.2: the enriched sale -------------------------
+    #
+    # WHO GETS CREDITED, frozen as text. `sold_by` can become NULL if the
+    # account is ever removed, and a commission ledger that forgets whose it
+    # was is not a ledger. Never consulted for permissions — a name is not an
+    # authority.
+    seller_name_snapshot = models.CharField(max_length=150, blank=True, default='')
+
+    # WHERE THE DISCOUNT CAME FROM. `discount_amount` already records how much
+    # money came off; this records why, which is what an auditor asks second.
+    discount_source = models.CharField(
+        max_length=10, choices=DiscountSource.choices,
+        default=DiscountSource.NONE, db_index=True,
+    )
+    discount_reason = models.CharField(max_length=200, blank=True, default='')
+    # Who authorised a MANUAL discount. Coupons need nobody: the company
+    # configured the promotion in advance, so applying one is not a decision.
+    discount_authorized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='authorized_discounts',
+    )
+
+    # CASH. Null for card, transfer and online — those have no change to give,
+    # and inventing a zero would make "paid exactly" indistinguishable from
+    # "not cash".
+    amount_received = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    change_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    # An operation number, an authorisation code, a bank reference. Short text
+    # a human typed off a terminal — never a credential.
+    payment_reference = models.CharField(max_length=100, blank=True, default='')
+
+    # NAMED FIELDS, not a JSON catch-all. A free-form blob becomes the place
+    # everything lands and nothing can be validated, reported on, or removed.
+    external_reference = models.CharField(max_length=100, blank=True, default='')
+    # About THIS sale, not about the customer — `Customer.notes` is the
+    # standing file on a person and outlives every order. Internal control
+    # only; no public surface returns it.
+    sale_notes = models.TextField(max_length=1000, blank=True, default='')
+
     # SNAPSHOT OF THE BUYER, frozen at the sale. NOT redundant with `customer`
     # above, and not to be re-derived from it: when a client changes their phone
     # number or moves, last year's order must keep saying what it said when it
@@ -370,8 +493,34 @@ class Order(models.Model):
             models.Index(fields=['company', 'paid_at']),
             models.Index(fields=['company', 'status']),
             models.Index(fields=['company', 'fulfillment_status']),
+            # C1: analytics slice by channel, and the POS history by seller.
+            models.Index(fields=['company', 'sales_channel', 'paid_at']),
+            models.Index(fields=['company', 'sold_by', 'paid_at']),
         ]
+        # TWO idempotency guarantees, deliberately NOT unified.
+        #
+        # They look alike and they are not. The POS key is typed by a till
+        # operator's browser and is unique per COMPANY, because a shop floor has
+        # one sequence of sales no matter who rings them up. The checkout key
+        # comes from a native client and is unique per company AND USER, because
+        # two customers picking the same client-generated key must not collide —
+        # scoping that one to the company alone would make one customer's
+        # checkout fail on a stranger's.
+        #
+        # Merging them into one "generic idempotency" column would have to pick
+        # one of those two scopes and would be wrong for the other surface.
         constraints = [
+            # ONE sale per idempotency key per company.
+            #
+            # Conditional on the key being present, because the column is blank
+            # for every online order and for all history — and in SQL a plain
+            # unique over a column that is usually '' would make the second
+            # online order collide with the first.
+            models.UniqueConstraint(
+                fields=['company', 'pos_idempotency_key'],
+                condition=~models.Q(pos_idempotency_key=''),
+                name='unique_pos_idempotency_key_per_company',
+            ),
             # Scoped to company AND user, not to the key alone: two customers
             # may generate the same client key, and a global constraint would
             # make one of them fail on the other's checkout.
@@ -1059,6 +1208,21 @@ class Membership(models.Model):
         db_index=True,
     )
     is_active = models.BooleanField(default=True, db_index=True)
+    # --- Commercial Phase C1.2 -------------------------------------------
+    #
+    # COMMISSION BELONGS TO THE EMPLOYMENT, NOT TO THE PERSON.
+    #
+    # One human can sell for two businesses on different terms — 3% here, 5%
+    # there — so a rate on `User` could not express the truth. It is not on
+    # `role` either: two salespeople in one shop are routinely on different
+    # deals, and tying the rate to a role would force a new role per rate.
+    #
+    # Zero is the default and means exactly that: this person earns no
+    # commission. It is not "unconfigured" — see `SalesCommission`, which is
+    # simply not written when the rate is zero.
+    commission_rate_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal('0.00'),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1069,6 +1233,11 @@ class Membership(models.Model):
             # companies, but never twice to the same one.
             models.UniqueConstraint(
                 fields=['user', 'company'], name='unique_membership_per_user_company',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(commission_rate_percent__gte=Decimal('0.00'))
+                & models.Q(commission_rate_percent__lte=Decimal('100.00')),
+                name='membership_commission_rate_within_range',
             ),
         ]
         indexes = [
@@ -1445,6 +1614,25 @@ class BranchStock(models.Model):
     quantity = models.PositiveIntegerField(default=0)
     minimum_stock = models.PositiveIntegerField(default=0)
     target_stock = models.PositiveIntegerField(default=0)
+    # --- Commercial Phase C1: replenishment configuration ----------------
+    #
+    # FOUR NUMBERS, FOUR DISTINCT JOBS. Collapsing any two of them is how a
+    # replenishment screen starts giving advice nobody can explain:
+    #
+    #   minimum_stock  the line below which an operator wants to SEE the product
+    #   target_stock   how much to hold after restocking
+    #   safety_stock   the buffer the ARITHMETIC keeps against demand variance
+    #   lead_time_days how long a resupply actually takes to arrive
+    #
+    # `safety_stock` is deliberately not `minimum_stock` reused: one is a display
+    # threshold a shopkeeper sets by feel, the other is an input to a formula.
+    # Making them the same field means changing an alert silently changes what
+    # the system tells you to buy.
+    safety_stock = models.PositiveIntegerField(default=0)
+    # ZERO MEANS UNCONFIGURED, not "arrives instantly". No reorder point is
+    # computed without it: a made-up lead time produces a confident number that
+    # is wrong, which is worse than saying the setting is missing.
+    lead_time_days = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2508,6 +2696,875 @@ class Customer(models.Model):
         self.clean()
         return super().save(*args, **kwargs)
 
+
+# ---------------------------------------------------------------------------
+# Commercial Phase C1 — barcodes
+# ---------------------------------------------------------------------------
+
+_BARCODE_ALLOWED = re.compile(r'^[\x21-\x7E]{4,64}$')
+
+
+def normalize_barcode(value: str) -> str:
+    """
+    Trim the outside, keep everything else exactly as scanned.
+
+    NOT uppercased and NOT cast to an integer, and both of those are the point.
+
+    A barcode is a STRING of symbols, not a number. `0123456789012` and
+    `123456789012` are different articles, and an int cast silently merges them.
+    Code128 can carry mixed case that a scanner reproduces faithfully, so
+    upper-casing would make two distinct codes collide.
+
+    What is stripped is the wrapping whitespace a keyboard-wedge scanner adds
+    around the payload — most importantly the trailing CR/LF it sends instead of
+    Enter, which would otherwise become part of the stored code and never match
+    again.
+    """
+    return (value or '').strip()
+
+
+def validate_barcode(value):
+    """
+    Printable ASCII, 4 to 64 characters.
+
+    Control characters are refused rather than stripped: a code containing one
+    means the scanner or the form sent something unexpected, and silently
+    repairing it would store a code that no future scan reproduces.
+    """
+    from django.core.exceptions import ValidationError
+
+    if not _BARCODE_ALLOWED.fullmatch(str(value or '')):
+        raise ValidationError(
+            'El código debe tener entre 4 y 64 caracteres imprimibles, sin espacios '
+            'ni caracteres de control.'
+        )
+
+
+class ProductBarcode(models.Model):
+    """
+    A scannable code that identifies one product inside one company.
+
+    WHY A TABLE AND NOT `Product.barcode`
+    -------------------------------------
+    One article routinely carries several codes: the manufacturer's EAN, a
+    distributor's UPC, and the shop's own internal label stuck over both. A
+    single field forces a choice between them, and whichever loses stops
+    scanning — which the person at the counter experiences as "the system does
+    not have this product".
+
+    WHY `company` IS DUPLICATED HERE
+    --------------------------------
+    It is reachable through `product.company`, and it is stored anyway so that
+    the uniqueness constraint and every lookup are expressed directly in this
+    table. A scan is untrusted input arriving at speed; resolving it must be one
+    indexed query scoped to the caller's company, not a join that some future
+    refactor could widen. `clean()` keeps the two in agreement.
+    """
+
+    EAN13 = 'ean13'
+    EAN8 = 'ean8'
+    UPCA = 'upca'
+    CODE128 = 'code128'
+    CODE39 = 'code39'
+    INTERNAL = 'internal'
+    UNKNOWN = 'unknown'
+    SYMBOLOGY_CHOICES = [
+        (EAN13, 'EAN-13'),
+        (EAN8, 'EAN-8'),
+        (UPCA, 'UPC-A'),
+        (CODE128, 'Code 128'),
+        (CODE39, 'Code 39'),
+        (INTERNAL, 'Código interno'),
+        (UNKNOWN, 'Sin especificar'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='product_barcodes',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='barcodes',
+    )
+    code = models.CharField(max_length=64, validators=[validate_barcode])
+    # Informational only. A keyboard-wedge scanner sends the digits and nothing
+    # else, so nothing may DEPEND on this being right — lookup is by code alone.
+    symbology = models.CharField(
+        max_length=16, choices=SYMBOLOGY_CHOICES, default=UNKNOWN,
+    )
+    is_primary = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-is_primary', 'code']
+        indexes = [
+            models.Index(fields=['company', 'code']),
+            models.Index(fields=['product', 'is_active']),
+        ]
+        constraints = [
+            # A code identifies ONE article inside a company. Across companies it
+            # may repeat freely: two shops selling the same manufacturer's cable
+            # scan the same EAN, and neither can see the other's catalogue.
+            models.UniqueConstraint(
+                fields=['company', 'code'],
+                name='unique_barcode_per_company',
+            ),
+            # At most one primary per product. Conditional, because "not primary"
+            # is the normal state and must not be constrained at all.
+            models.UniqueConstraint(
+                fields=['product'],
+                condition=models.Q(is_primary=True),
+                name='unique_primary_barcode_per_product',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.code} → {self.product.name}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        self.code = normalize_barcode(self.code)
+        validate_barcode(self.code)
+
+        if self.product_id and self.company_id:
+            if self.product.company_id != self.company_id:
+                raise ValidationError(
+                    {'product': 'El producto no pertenece a esta empresa.'}
+                )
+
+    def save(self, *args, **kwargs):
+        # The company is DERIVED from the product rather than accepted, so the
+        # two cannot disagree even if a caller passes the wrong one.
+        if self.product_id and not self.company_id:
+            self.company_id = self.product.company_id
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Commercial Phase C1.2 — sales commissions
+# ---------------------------------------------------------------------------
+
+class SalesCommission(models.Model):
+    """
+    What a company owes a seller for one sale.
+
+    WHY ITS OWN TABLE RATHER THAN THREE COLUMNS ON `Order`
+    ------------------------------------------------------
+    Columns would have been less code today and a migration later. A commission
+    is not a property of a sale, it is an OBLIGATION with a life of its own: it
+    is accrued now, it may be voided when the goods come back, and eventually it
+    is settled and paid in a batch alongside dozens of others. None of that fits
+    in three fields hanging off the order it happened to originate from.
+
+    The row is written only when there is something to owe. A seller on 0% does
+    not generate a row of zeros — a ledger should list obligations, and "nothing
+    is owed" is not one. That also keeps the table meaningful to count.
+
+    EVERYTHING IS FROZEN AT THE SALE
+    --------------------------------
+    The rate, the base and the amount are all snapshots. When somebody is moved
+    from 3% to 5%, last month's sales stay at 3%: the company agreed to pay 3%
+    for those, and recomputing them from today's rate would rewrite a debt after
+    the fact. `seller_name_snapshot` exists for the same reason — the ledger must
+    still name whose money it is after an account is deleted.
+    """
+
+    STATUS_ACCRUED = 'accrued'
+    STATUS_VOIDED = 'voided'
+    STATUS_CHOICES = [
+        # ACCRUED: earned and owed. Deliberately NOT called "pending", which
+        # would imply a payment process that does not exist yet.
+        (STATUS_ACCRUED, 'Devengada'),
+        # VOIDED: the sale came back. Written by a future returns flow; nothing
+        # in this phase sets it, and pretending otherwise would be a fiction.
+        (STATUS_VOIDED, 'Anulada'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='sales_commissions',
+    )
+    order = models.OneToOneField(
+        Order, on_delete=models.PROTECT, related_name='sales_commission',
+    )
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='sales_commissions',
+    )
+    seller_name_snapshot = models.CharField(max_length=150, blank=True, default='')
+
+    rate_percent = models.DecimalField(max_digits=5, decimal_places=2)
+    # The NET sale — what the customer actually paid for goods. Commission is
+    # not owed on money the shop never received, so the discount comes off
+    # before the rate is applied.
+    base_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+    status = models.CharField(
+        max_length=12, choices=STATUS_CHOICES, default=STATUS_ACCRUED,
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['company', 'seller', 'created_at']),
+            models.Index(fields=['company', 'status']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(rate_percent__gte=Decimal('0.00'))
+                & models.Q(rate_percent__lte=Decimal('100.00')),
+                name='commission_rate_within_range',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gte=Decimal('0.00')),
+                name='commission_amount_not_negative',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(base_amount__gte=Decimal('0.00')),
+                name='commission_base_not_negative',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.seller_name_snapshot or "?"} — {self.amount} (#{self.order_id})'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.order_id and self.company_id:
+            if self.order.company_id != self.company_id:
+                raise ValidationError(
+                    {'order': 'El pedido no pertenece a esta empresa.'}
+                )
+
+    def save(self, *args, **kwargs):
+        if self.order_id and not self.company_id:
+            self.company_id = self.order.company_id
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Commercial Phase C1.3 — automatic promotions and combos
+# ---------------------------------------------------------------------------
+
+class Promotion(models.Model):
+    """
+    A discount the business configured in advance, applied AUTOMATICALLY.
+
+    PROMOTION VERSUS COUPON, and why both exist
+    -------------------------------------------
+    A `Coupon` is activated by somebody typing a CODE. A `Promotion` fires on
+    its own the moment a basket qualifies. They are the same idea — the shop
+    decided in advance to charge less — arriving through opposite doors, and
+    collapsing them would mean either every promotion needs a code somebody must
+    remember, or every coupon fires without being asked for.
+
+    A COMBO IS NOT A PRODUCT, and this is the decision that shapes everything
+    -------------------------------------------------------------------------
+    The tempting design is a `Product` called "Combo iPhone + case + glass" with
+    its own price. It is wrong, and expensively so: that product would need its
+    own stock, which does not exist. Selling one would have to decrement three
+    other articles through some bespoke path, the Kardex would show a sale of a
+    thing that was never on a shelf, and every stock report would have to learn
+    which products are real.
+
+    So a combo changes ONLY the money. The order still contains the three real
+    articles, three real `SALE_EXIT` movements still leave three real shelves,
+    and the promotion records that the customer paid less for buying them
+    together.
+    """
+
+    BUNDLE_FIXED_PRICE = 'bundle_fixed_price'
+    BUNDLE_PERCENT = 'bundle_percent'
+    TYPE_CHOICES = [
+        (BUNDLE_FIXED_PRICE, 'Combo a precio fijo'),
+        (BUNDLE_PERCENT, 'Combo con porcentaje de descuento'),
+    ]
+
+    SCOPE_ALL = 'all'
+    SCOPE_SELECTED = 'selected'
+    SCOPE_CHOICES = [
+        (SCOPE_ALL, 'Todas las sucursales'),
+        (SCOPE_SELECTED, 'Sucursales seleccionadas'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='promotions',
+    )
+    name = models.CharField(max_length=150)
+    promotion_type = models.CharField(max_length=24, choices=TYPE_CHOICES)
+
+    # Higher wins. Two promotions that both want the same unit are resolved by
+    # this and then by id — deterministic, explainable, and under the admin's
+    # control. See `promotion_services` for why not global optimisation.
+    priority = models.IntegerField(default=0, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+
+    # EXPLICIT, never inferred from an empty table. "No rows means everywhere"
+    # would turn deleting the last branch row into a silent widening of scope —
+    # the same fail-open trap `Membership.branch_access_mode` avoids.
+    branch_scope = models.CharField(
+        max_length=10, choices=SCOPE_CHOICES, default=SCOPE_ALL,
+    )
+
+    # The benefit. Exactly one is meaningful per type.
+    fixed_price = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    discount_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+    )
+
+    # Null means no ceiling: a basket with six qualifying sets gets six.
+    max_applications_per_order = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='promotions_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-priority', 'name']
+        indexes = [
+            models.Index(fields=['company', 'is_active', 'priority']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'name'], name='unique_promotion_name_per_company',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(discount_percent__isnull=True)
+                | (models.Q(discount_percent__gt=Decimal('0.00'))
+                   & models.Q(discount_percent__lte=Decimal('100.00'))),
+                name='promotion_percent_within_range',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(fixed_price__isnull=True)
+                | models.Q(fixed_price__gte=Decimal('0.00')),
+                name='promotion_fixed_price_not_negative',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.name} ({self.company.name})'
+
+    def is_live(self, at=None) -> bool:
+        """Active and inside its window. Not branch-aware — see `applies_to`."""
+        if not self.is_active:
+            return False
+        at = at or timezone.now()
+        if self.starts_at and at < self.starts_at:
+            return False
+        if self.ends_at and at > self.ends_at:
+            return False
+        return True
+
+    def applies_to_branch(self, branch) -> bool:
+        if self.branch_scope == self.SCOPE_ALL:
+            return True
+        if branch is None:
+            return False
+        # SELECTED with no rows applies NOWHERE. Fail closed: a promotion whose
+        # branch list was emptied should stop, not spread.
+        return self.branches.filter(branch=branch).exists()
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.starts_at and self.ends_at and self.starts_at >= self.ends_at:
+            errors['ends_at'] = ['La fecha de fin debe ser posterior a la de inicio.']
+
+        if self.promotion_type == self.BUNDLE_FIXED_PRICE:
+            if self.fixed_price is None:
+                errors['fixed_price'] = ['Indica el precio del combo.']
+        elif self.promotion_type == self.BUNDLE_PERCENT:
+            if self.discount_percent is None:
+                errors['discount_percent'] = ['Indica el porcentaje de descuento.']
+            elif not (Decimal('0') < self.discount_percent <= Decimal('100')):
+                errors['discount_percent'] = ['Debe estar entre 0 y 100.']
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class PromotionBranch(models.Model):
+    """One branch a SELECTED-scope promotion runs in."""
+
+    promotion = models.ForeignKey(
+        Promotion, on_delete=models.CASCADE, related_name='branches',
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.CASCADE, related_name='promotions',
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['promotion', 'branch'], name='unique_promotion_branch',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.promotion.name} @ {self.branch.name}'
+
+    def clean(self):
+        """
+        INVARIANT: `branch.company == promotion.company`.
+
+        The API checks this before it ever builds one of these, walking DOWN
+        from the company so a foreign branch is simply not in the candidate set.
+        This is the second lock on the same door: a shell, a data fix or a
+        future endpoint that skips that check would otherwise attach another
+        tenant's branch to this tenant's promotion — and because
+        `applies_to_branch()` reads exactly this table, the effect would be a
+        discount firing in a shop that belongs to someone else.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.promotion_id and self.branch_id:
+            if self.branch.company_id != self.promotion.company_id:
+                raise ValidationError(
+                    {'branch': 'La sucursal no pertenece a la empresa de la promoción.'}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    @staticmethod
+    def assert_all_match_promotion(rows):
+        """
+        Set-level check for bulk paths.
+
+        `bulk_create()` does NOT call `save()` and therefore does NOT call
+        `clean()` — so the guarantee above evaporates for exactly the code that
+        writes many rows at once, which is the code that writes these. Any
+        authorised bulk path calls this first.
+
+        Resolved with one query over the whole set rather than one per row: a
+        promotion covering twenty branches should cost one round trip.
+        """
+        from django.core.exceptions import ValidationError
+
+        rows = list(rows)
+        if not rows:
+            return
+        promotion_ids = {r.promotion_id for r in rows}
+        branch_ids = {r.branch_id for r in rows}
+        companies = dict(
+            Promotion.objects.filter(pk__in=promotion_ids)
+            .values_list('pk', 'company_id')
+        )
+        branch_companies = dict(
+            Branch.objects.filter(pk__in=branch_ids)
+            .values_list('pk', 'company_id')
+        )
+        for row in rows:
+            if companies.get(row.promotion_id) != branch_companies.get(row.branch_id):
+                raise ValidationError(
+                    'La sucursal no pertenece a la empresa de la promoción.'
+                )
+
+
+class PromotionItem(models.Model):
+    """
+    One component of a combo: an article and how many of it are required.
+
+    The set of these IS the qualifying condition. A basket qualifies once for
+    every complete set it contains.
+    """
+
+    promotion = models.ForeignKey(
+        Promotion, on_delete=models.CASCADE, related_name='items',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name='promotion_items',
+    )
+    quantity = models.PositiveSmallIntegerField(default=1)
+
+    class Meta:
+        ordering = ['pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['promotion', 'product'], name='unique_promotion_item',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gte=1),
+                name='promotion_item_quantity_positive',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.quantity}× {self.product.name}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.promotion_id and self.product_id:
+            if self.product.company_id != self.promotion.company_id:
+                raise ValidationError(
+                    {'product': 'El producto no pertenece a la empresa de la promoción.'}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    @staticmethod
+    def assert_all_match_promotion(rows):
+        """Set-level counterpart of `clean()`, for `bulk_create()` paths."""
+        from django.core.exceptions import ValidationError
+
+        rows = list(rows)
+        if not rows:
+            return
+        promotion_companies = dict(
+            Promotion.objects.filter(pk__in={r.promotion_id for r in rows})
+            .values_list('pk', 'company_id')
+        )
+        product_companies = dict(
+            Product.objects.filter(pk__in={r.product_id for r in rows})
+            .values_list('pk', 'company_id')
+        )
+        for row in rows:
+            if promotion_companies.get(row.promotion_id) != product_companies.get(row.product_id):
+                raise ValidationError(
+                    'El producto no pertenece a la empresa de la promoción.'
+                )
+
+
+class AppliedPromotion(models.Model):
+    """
+    What a promotion actually did to one sale, frozen.
+
+    A sale is NEVER re-priced from a live `Promotion`. The combo that was
+    running in March gets edited in April, renamed in May and switched off in
+    June; March's receipt must keep saying what March's customer was charged and
+    why. So the name, the type, the count and both amounts are snapshots, and
+    the FK to `Promotion` is PROTECT — a promotion that has been applied is part
+    of the record and cannot be deleted out from under it.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='applied_promotions',
+    )
+    order = models.ForeignKey(
+        Order, on_delete=models.PROTECT, related_name='applied_promotions',
+    )
+    promotion = models.ForeignKey(
+        Promotion, on_delete=models.PROTECT, related_name='applications',
+    )
+    promotion_name_snapshot = models.CharField(max_length=150)
+    promotion_type_snapshot = models.CharField(max_length=24)
+
+    applications = models.PositiveSmallIntegerField(default=1)
+    # What the components would have cost separately, and what came off.
+    regular_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    # The components and unit prices at the moment of sale, so the line can be
+    # explained years later without joining anything that may have changed.
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['pk']
+        indexes = [
+            models.Index(fields=['company', 'promotion', 'created_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['order', 'promotion'], name='unique_applied_promotion_per_order',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(discount_amount__gte=Decimal('0.00')),
+                name='applied_promotion_discount_not_negative',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.promotion_name_snapshot} ×{self.applications} (#{self.order_id})'
+
+    def clean(self):
+        """
+        INVARIANT: `company == order.company == promotion.company`.
+
+        `company` is denormalised here so the reporting index can slice by
+        tenant without joining `Order`. Denormalisation is what makes this check
+        necessary: the column can now disagree with the row it was copied from,
+        and a wrong value would put one tenant's discount in another tenant's
+        promotion report.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.order_id and self.company_id:
+            if self.order.company_id != self.company_id:
+                raise ValidationError(
+                    {'order': 'El pedido no pertenece a esta empresa.'}
+                )
+        if self.promotion_id and self.company_id:
+            if self.promotion.company_id != self.company_id:
+                raise ValidationError(
+                    {'promotion': 'La promoción no pertenece a esta empresa.'}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    @staticmethod
+    def assert_all_match_company(rows):
+        """
+        Set-level check for the snapshot writer, which uses `bulk_create()`.
+
+        The sale service derives every one of these values from the order it is
+        building, so under correct code this can never fire. It is here for the
+        case that stops being true — and it costs two queries once per sale that
+        actually had a promotion.
+        """
+        from django.core.exceptions import ValidationError
+
+        rows = list(rows)
+        if not rows:
+            return
+        order_companies = dict(
+            Order.objects.filter(pk__in={r.order_id for r in rows})
+            .values_list('pk', 'company_id')
+        )
+        promotion_companies = dict(
+            Promotion.objects.filter(pk__in={r.promotion_id for r in rows})
+            .values_list('pk', 'company_id')
+        )
+        for row in rows:
+            if order_companies.get(row.order_id) != row.company_id:
+                raise ValidationError('El pedido no pertenece a esta empresa.')
+            if promotion_companies.get(row.promotion_id) != row.company_id:
+                raise ValidationError('La promoción no pertenece a esta empresa.')
+
+
+# =============================================================================
+# Bulk import — Commercial Phase C1.4
+# =============================================================================
+#
+# WHY AN IMPORT IS THREE TABLES AND NOT AN UPLOAD HANDLER
+# ------------------------------------------------------
+# The naive shape is: receive the file, loop, write. It is wrong here for a
+# reason specific to what is being written. A product import can be corrected by
+# editing the product. A STOCK import cannot: it becomes Kardex movements, and
+# the Kardex is an append-only record of physical fact. Undoing it means issuing
+# compensating movements that are themselves permanent history — so the moment
+# to catch a mistake is BEFORE the write, not after.
+#
+# Hence: parse and normalise into `BulkImportRow` (which touches no business
+# table at all), show the operator exactly what will happen, and only then, on a
+# second deliberate action, apply. The file itself is never stored — its SHA256
+# and its normalised rows are, which is what an audit actually needs.
+
+
+class BulkImportJob(models.Model):
+    """
+    One upload, from the moment it was parsed to the moment it was applied.
+
+    Deliberately NOT a file store. Keeping the original workbook would mean
+    holding the tenant's commercial data — prices, costs, every article they
+    sell — indefinitely, to answer a question the normalised rows already
+    answer. The SHA256 is enough to prove which file this was.
+    """
+
+    PRODUCTS = 'products'
+    STOCK = 'stock'
+    TYPE_CHOICES = [
+        (PRODUCTS, 'Productos'),
+        (STOCK, 'Inventario'),
+    ]
+
+    PREVIEWED = 'previewed'
+    APPLIED = 'applied'
+    FAILED = 'failed'
+    STATUS_CHOICES = [
+        (PREVIEWED, 'Previsualizado'),
+        (APPLIED, 'Aplicado'),
+        (FAILED, 'Fallido'),
+    ]
+
+    # Stock only: what the numbers in the file MEAN.
+    MODE_INITIAL = 'initial'
+    MODE_RECONCILE = 'reconcile_target'
+    MODE_CHOICES = [
+        (MODE_INITIAL, 'Carga inicial'),
+        (MODE_RECONCILE, 'Ajuste a stock objetivo'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='import_jobs',
+    )
+    import_type = models.CharField(max_length=16, choices=TYPE_CHOICES, db_index=True)
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=PREVIEWED, db_index=True,
+    )
+    stock_mode = models.CharField(
+        max_length=20, choices=MODE_CHOICES, blank=True, default='',
+    )
+
+    original_filename = models.CharField(max_length=255, blank=True, default='')
+    file_sha256 = models.CharField(max_length=64, blank=True, default='', db_index=True)
+
+    # Frozen at preview so apply cannot be argued into using a different
+    # mapping than the one the operator reviewed.
+    mapping_snapshot = models.JSONField(default=dict, blank=True)
+    options_snapshot = models.JSONField(default=dict, blank=True)
+
+    rows_total = models.PositiveIntegerField(default=0)
+    rows_create = models.PositiveIntegerField(default=0)
+    rows_update = models.PositiveIntegerField(default=0)
+    rows_no_change = models.PositiveIntegerField(default=0)
+    rows_skip = models.PositiveIntegerField(default=0)
+    rows_error = models.PositiveIntegerField(default=0)
+
+    summary = models.JSONField(default=dict, blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='import_jobs_created',
+    )
+    applied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='import_jobs_applied',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        indexes = [
+            models.Index(fields=['company', 'import_type', '-created_at']),
+            models.Index(fields=['company', 'status']),
+        ]
+
+    def __str__(self):
+        return f'{self.get_import_type_display()} #{self.pk} ({self.status})'
+
+    @property
+    def is_applicable(self) -> bool:
+        return self.status == self.PREVIEWED and self.rows_error == 0
+
+
+class BulkImportRow(models.Model):
+    """
+    One line of a preview, kept so that apply reads from the DATABASE.
+
+    WHY NOT JUST POST THE ROWS BACK FROM THE BROWSER
+    -----------------------------------------------
+    Because then the browser decides what gets written. Everything the operator
+    approved is here, normalised and tenant-scoped, and apply re-reads it —
+    the client sends an id and a confirmation, never data.
+
+    Only MAPPED columns are stored. Copying every unrecognised column of a
+    workbook into the database would persist whatever else the tenant keeps in
+    their spreadsheet — costs, suppliers, notes — that nobody asked to store.
+    """
+
+    CREATE = 'create'
+    UPDATE = 'update'
+    NO_CHANGE = 'no_change'
+    SKIP = 'skip'
+    ERROR = 'error'
+    ACTION_CHOICES = [
+        (CREATE, 'Crear'),
+        (UPDATE, 'Actualizar'),
+        (NO_CHANGE, 'Sin cambios'),
+        (SKIP, 'Omitir'),
+        (ERROR, 'Error'),
+    ]
+
+    job = models.ForeignKey(
+        BulkImportJob, on_delete=models.CASCADE, related_name='rows',
+    )
+    sheet_name = models.CharField(max_length=120, blank=True, default='')
+    # The row number the OPERATOR sees in Excel. Off-by-one here means they fix
+    # the wrong line.
+    row_number = models.PositiveIntegerField()
+    action = models.CharField(max_length=12, choices=ACTION_CHOICES, db_index=True)
+    match_key = models.CharField(max_length=120, blank=True, default='')
+    normalized_data = models.JSONField(default=dict, blank=True)
+    errors = models.JSONField(default=list, blank=True)
+    warnings = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sheet_name', 'row_number', 'pk']
+        indexes = [
+            models.Index(fields=['job', 'action']),
+        ]
+
+    def __str__(self):
+        return f'{self.sheet_name}!{self.row_number} → {self.action}'
+
+
+class ImportMappingProfile(models.Model):
+    """
+    A remembered answer to "which column is which".
+
+    Mapping eighteen columns by hand is a five-minute job the first time and an
+    error every time after. A profile is keyed by a HEADER SIGNATURE — the shape
+    of the file — so the same export from the same system is recognised
+    tomorrow, next month, and by a different member of staff.
+
+    Keyed on the headers and NOT on the file's SHA256, which changes with every
+    new set of data and would recognise nothing twice. And keyed on the headers
+    and NOT on the company's slug: a preset written for one tenant's export
+    works for any tenant whose system produces the same columns, which is what
+    makes this a SaaS feature rather than one customer's hardcoding.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='import_profiles',
+    )
+    name = models.CharField(max_length=120)
+    import_type = models.CharField(
+        max_length=16, choices=BulkImportJob.TYPE_CHOICES, db_index=True,
+    )
+    header_signature = models.CharField(max_length=64, db_index=True)
+    mapping = models.JSONField(default=dict, blank=True)
+    options = models.JSONField(default=dict, blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='import_profiles_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'import_type', 'header_signature'],
+                name='unique_import_profile_per_signature',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'import_type', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f'{self.name} ({self.import_type})'
 
 # ===========================================================================
 # BR-005A — TECHNICAL SERVICE CORE (M8)

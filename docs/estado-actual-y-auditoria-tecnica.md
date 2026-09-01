@@ -1022,6 +1022,58 @@ Esquema local alineado con el código     SÍ (0033)
 Migraciones pendientes                   0
 500 en peticiones válidas                0
 Series / correlativos internos           IMPLEMENTADO
+Promociones automáticas / combos         IMPLEMENTADO
+Snapshot de promoción aplicada           IMPLEMENTADO
+Atajo de combos en POS                   IMPLEMENTADO
+Administración de cupones                IMPLEMENTADO
+Analítica de promociones                 IMPLEMENTADO
+Elegibilidad de vendedor                 IMPLEMENTADO
+Huella de idempotencia canónica          IMPLEMENTADO
+Reparación de histórico de descuentos    IMPLEMENTADO
+Carga masiva de productos (Excel)        PENDIENTE
+Carga masiva de inventario (Excel)       PENDIENTE
+Apilado promoción + cupón                PENDIENTE
+Promociones en e-commerce                PENDIENTE
+POS interno                              IMPLEMENTADO
+Cliente en POS                           IMPLEMENTADO
+Vendedor / operador separados            IMPLEMENTADO
+Reasignación de vendedor                 IMPLEMENTADO
+Comisión por Membership                  IMPLEMENTADO
+Comisión congelada por venta             IMPLEMENTADO
+Analítica de comisiones                  IMPLEMENTADO
+Cupón en POS                             IMPLEMENTADO
+Descuento manual autorizado              IMPLEMENTADO
+Preview de totales (servidor)            IMPLEMENTADO
+Efectivo y vuelto                        IMPLEMENTADO
+Referencia de pago / observaciones       IMPLEMENTADO
+Pagos mixtos                             PENDIENTE C2
+Liquidación de comisiones                PENDIENTE C2
+Comisión dividida                        PENDIENTE
+Grupos de clientes                       PENDIENTE
+Venta con código de barras               IMPLEMENTADO
+ProductBarcode                           IMPLEMENTADO
+POS aislamiento empresa/sucursal         IMPLEMENTADO
+POS idempotencia                         IMPLEMENTADO
+POS descuento transaccional de stock     IMPLEMENTADO
+Canal de venta (online/pos)              IMPLEMENTADO
+Medio de pago                            IMPLEMENTADO
+Vendedor (sold_by)                       IMPLEMENTADO
+Dashboard comercial                      IMPLEMENTADO
+Productos más vendidos                   IMPLEMENTADO
+Analítica por canal                      IMPLEMENTADO
+Pronóstico de demanda v1                 IMPLEMENTADO
+Confianza del pronóstico                 IMPLEMENTADO
+Días de cobertura                        IMPLEMENTADO
+Fecha estimada de quiebre                IMPLEMENTADO
+Lead time / safety stock                 IMPLEMENTADO
+Punto de reposición                      IMPLEMENTADO
+Reposición sugerida                      IMPLEMENTADO
+Sugerencia de transferencia interna      IMPLEMENTADO
+Caja / arqueo                            PENDIENTE C2
+Devoluciones / anulaciones               PENDIENTE C2
+Compras / proveedores                    PENDIENTE
+Costo y rentabilidad                     PENDIENTE
+Pronóstico estacional / ML               PENDIENTE
 Clientes tenant-aware (CRM)              IMPLEMENTADO
 Customer ↔ User (vínculo opcional)       IMPLEMENTADO
 Historial comercial del cliente          IMPLEMENTADO
@@ -1156,6 +1208,43 @@ la variante por slug devuelva exactamente lo mismo.
   sesión caducó, `checkout_url` es null y el cliente lee el estado del pedido.
 - **Superficie interna v1 pendiente**, con `sales.orders.view` ya en el catálogo.
 
+
+---
+
+## Fase Comercial C1.4 — grafo de migraciones y carga masiva
+
+**Grafo reconciliado.** Dos ramas salieron de la 0033 (`0034_checkout_idempotency`
+en master y `0034_commercial_pos_barcode → 0040` en la rama comercial). Se creó
+`0041`, una migración de merge real y vacía que depende de ambas hojas. **No se
+renumeró nada**: esas siete migraciones están aplicadas en una base de datos real,
+y renumerarlas le mostraría a Django siete migraciones que nunca ha ejecutado
+contra tablas que ya existen.
+
+**Defecto silencioso del auto-merge.** Git dejó **dos asignaciones
+`constraints = [...]`** en `Order.Meta`; la segunda tapaba a la primera. Python
+válido, semántica equivocada: desaparecía la unicidad de `pos_idempotency_key`.
+Las dos idempotencias se conservan y **no se unifican** — la del POS es única por
+empresa, la del checkout por empresa **y usuario**.
+
+**Defecto en producción encontrado por las pruebas nuevas.** `PATCH` sobre una
+promoción no era parcial: una clave ausente significaba «ponlo en None», así que
+`PATCH {is_active: false}` —lo que manda el botón de archivar— borraba el precio
+del combo y la petición se rechazaba con 400. El botón nunca funcionó. El único
+test de C1.3 que mandaba `is_active` apuntaba a la promoción de otra empresa y
+esperaba 404: pasaba por el control de tenant y nunca llegaba a ese código.
+
+**Fechas.** `promotion.starts_at = request.data[...]` no validaba nada: un
+`DateTimeField` acepta cualquier objeto en Python y sólo se convierte al llegar a
+la base de datos, ya dentro de la transacción. Entrada inválida daba 500 y una
+fecha sin zona horaria se guardaba naive. Nuevo `api_parsing.py`.
+
+**Carga masiva.** Ver `docs/saas-multiempresa.md` §8-unvicies. Lo esencial para
+una auditoría: la previsualización no escribe nada de negocio, aplicar lee del
+staging y no del navegador, el archivo original no se guarda, el stock se escribe
+únicamente por `inventory_services`, y **una celda vacía nunca es un cero**.
+
+---
+
 ---
 
 ## Actualización — superficie interna (M6)
@@ -1179,7 +1268,36 @@ impone sin ruta de rol legacy, que es la definición de ACTIVE en el catálogo.
 - **Sin superficie interna de inventario v1**, aunque `inventory.*` lleve
   ACTIVE desde la Fase 2D. Mobile no debe llamar `/api/admin/inventory/`.
 - **`sales.notes.manage` sigue AVAILABLE**: el módulo no se implementó.
-- **Servicio técnico sigue RESERVED**: `RepairOrder` no existe. *(Cerrado en M8: el núcleo existe y cinco de las capacidades pasaron a ACTIVE; tres siguen RESERVED.)*
+- **Servicio técnico sigue RESERVED**: `RepairOrder` no existe.
+
+
+---
+
+## Fase Comercial C1.5 — cierre de la auditoría de C1.4
+
+Seis defectos, todos en los bordes del importador:
+
+1. **Truncamiento silencioso.** 5001 filas → 5000 preparadas, 0 errores, trabajo
+   aplicable. Ahora `FULL_IMPORT` rechaza el archivo entero con 400 y sin crear
+   trabajo; `SAMPLE` (la inspección) sigue leyendo 25 filas y eso significa
+   «muestra», no «el archivo tiene 25».
+2. **Identidad en mayúsculas.** El importador fusionaba `AbC123` y `abc123`, que
+   el POS distingue. Eliminado todo `upper()` de la identidad.
+3. **Códigos inactivos invisibles.** `UNIQUE(company, code)` no filtra por
+   `is_active`, así que un código retirado sigue ocupando su cadena. El índice
+   ahora carga propiedad completa y distingue propiedad de escaneo.
+4. **Deriva entre preview y apply.** Aplicar exige el mismo producto que se
+   aprobó; si no, aborta todo pidiendo re-previsualizar.
+5. **INITIAL sin revalidar.** Ahora: locks → revalidación del conjunto →
+   escritura. Nunca se degrada a corrección.
+6. **Fuga de permisos en el historial.** `products.manage` veía trabajos de
+   inventario. Y el detalle era un oráculo de enumeración (403 vs 404).
+
+Además: enteros exactos para stock, sucursal inactiva rechazada, aviso de celda
+numérica basado en el tipo real de la celda, filas obsoletas que abortan en vez de
+omitirse, y el fallo al guardar un perfil de mapeo registrado en el log.
+
+---
 
 ---
 
@@ -1230,6 +1348,53 @@ en ese instante.
 - **`inventory_value` se calcula a precio de venta**, no a costo; la respuesta lo
   declara en `inventory_value_basis` en lugar de dejarlo implícito.
 - **Sin reserva de stock**: no cambió nada de esa semántica en esta fase.
+
+
+
+---
+
+## Fase 0.3 / P0-A — Dependencias y cadena de suministro
+
+Primera subfase del hardening de seguridad, sobre `master` (que ya integra C1 y
+M7). Verificado hoy contra OSV/GHSA, PyPI y npm.
+
+### Clasificación de los hallazgos
+
+| Hallazgo | Clasificación | Acción |
+|---|---|---|
+| next 16.2.9 — 9 advisories | CONFIRMADO | → 16.3.4 |
+| `hostname: "**"` en next.config | CONFIRMADO | allowlist por env, fail-closed |
+| sharp 0.32.6 — CVE de libvips | CONFIRMADO | → 0.35.4 (libvips 8.18.6) |
+| postcss ≤8.5.22 | CONFIRMADO | vía next 16.3.4 + audit fix |
+| Django 5.2.15 — 4 CVE | CONFIRMADO (2 sin superficie) | → 5.2.17 |
+| Pillow 12.2.0 — 13 CVE | CONFIRMADO, **sin superficie alcanzable** | → 12.3.0 igualmente |
+| sqlparse 0.5.5 — 4 CVE | CONFIRMADO (transitiva) | fijado a 0.6.0 |
+| `openpyxl` ausente de requirements | CONFIRMADO — rompe despliegue limpio | añadido |
+| DRF, SimpleJWT, Stripe, gunicorn, reportlab, psycopg2, cors-headers, django-environ | sin advisories | ninguna |
+
+### Por qué la «mínima segura» no fue la mínima obvia
+
+16.2.11 es la primera versión que cierra los nueve advisories de Next, pero
+16.2.12 seguía dejando `postcss@8.4.31` y `sharp@0.34.5` **anidados dentro de
+`node_modules/next/`**, fuera del alcance de una subida en la raíz. La mínima que
+realmente cierra el conjunto es 16.3.4.
+
+### Análisis de superficie, no sólo de versión
+
+Dos de los cuatro CVE de Django y los trece de Pillow no tienen camino de
+explotación en este código: no hay middleware de caché, no hay GIS, no hay
+`ImageField`/`FileField` y nada importa PIL. Se actualizó igual, pero la
+prioridad real del lote estaba en Next y en el comodín de imágenes.
+
+### Deuda que deja P0-A
+
+- El lint pasa de 18 a **19 warnings**: Next 16.3 añade la regla
+  `no-location-assign-relative-destination`, que marca un
+  `window.location.href = "/"` **preexistente** en `Header.tsx:60`. No es una
+  regresión de esta fase y no se toca aquí para no mezclar un refactor de
+  navegación con correcciones de seguridad.
+- `NEXT_PUBLIC_IMAGE_HOSTS` debe configurarse en producción antes de que ninguna
+  imagen remota vuelva a cargar. Sin ella no hay hosts remotos permitidos.
 
 ---
 

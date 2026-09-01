@@ -19,6 +19,7 @@ Phase 4.1 (+36 tests): email service unit tests, idempotency flags, no-duplicate
 Phase 4.2 (+46 tests, audit +4=50): PDF context builder (excludes Stripe fields, Decimal types, disclaimer), PDF generator (valid bytes, ValueError for unpaid), email+PDF integration (attachment, PDF fail graceful, error logged), admin PDF endpoint RBAC (4 allowed roles, technician/customer/anon blocked), audit log clean metadata, content-type, Content-Disposition, Stripe data not in cleartext, copywriting disclaimer, no-SUNAT-electronico title.
 Phase 4.3 (+37 tests, audit +3=42): resend_order_confirmation_email service (bypasses idempotency, best-effort PDF, updates flag, raises on SMTP failure), AdminOrderResendEmailView RBAC (admin+superadmin allowed; customer/sales/inventory/technician/anon blocked), 400 for unpaid, 404 for missing, 502 for SMTP failure, 405 for non-POST methods, audit log clean metadata (no Stripe IDs), SMTP failure records email_send_error, audit log NOT created on SMTP failure, HTML body no Stripe IDs, regression (automatic webhook flow unaffected).
 """
+import itertools
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
@@ -26,6 +27,7 @@ import stripe as stripe_lib
 
 from django.core import mail
 from django.core.cache import cache
+from django.db import models
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -18547,6 +18549,3198 @@ class M4SurfacesStayApartTest(TestCase):
         self.assertNotIn('access', response.json())
 
 
+# ===========================================================================
+# Commercial Phase C1 — POS, barcodes, forecasting
+# ===========================================================================
+
+from datetime import date as _date
+from datetime import timedelta as _timedelta
+
+from . import inventory_forecasting as _forecasting  # noqa: E402
+from . import inventory_services  # noqa: E402
+from . import pos_services as _pos  # noqa: E402
+from .models import (  # noqa: E402
+    Branch as _Branch,
+    PaymentMethod,
+    ProductBarcode,
+    SalesChannel,
+    normalize_barcode,
+)
+
+_C1_POS = 'sales.pos.use'
+_C1_ANALYTICS = 'sales.analytics.view'
+
+
+def _c1_stock(branch, product, quantity):
+    """Put an exact number of units on a shelf, through the real service."""
+    from . import inventory_services
+
+    row = inventory_services.get_or_create_branch_stock(branch, product)
+    BranchStock.objects.filter(pk=row.pk).update(quantity=quantity)
+    Product.objects.filter(pk=product.pk).update(inventory=quantity)
+    return BranchStock.objects.get(pk=row.pk)
+
+
+_c1_key_counter = itertools.count(1)
+
+
+def _c1_sale(**kwargs):
+    """
+    Complete a counter sale, supplying the two arguments C1.1 made mandatory.
+
+    `terms_confirmed` and a unique idempotency key are required of every real
+    caller now, so the helper provides them rather than every test repeating
+    them. Tests that are ABOUT those two arguments pass their own and are not
+    routed through here.
+    """
+    kwargs.setdefault('terms_confirmed', True)
+    kwargs.setdefault('idempotency_key', f'c1-auto-{next(_c1_key_counter):08d}')
+    # C1.2 made cash sales require the money on the counter. Tests that are not
+    # ABOUT cash should not have to count it out, so the helper pays generously;
+    # the ones that ARE about it pass their own amount and are not routed here.
+    if kwargs.get('payment_method', PaymentMethod.CASH) == PaymentMethod.CASH:
+        kwargs.setdefault('amount_received', Decimal('1000000.00'))
+    return _pos.create_pos_sale(**kwargs)
+
+
+def _c1_product(company, name='Artículo C1', price='100.00'):
+    return _seeded(Product.objects.create(
+        company=company, name=name,
+        slug=f'{name.lower().replace(" ", "-")}-{company.slug}',
+        price=Decimal(price), inventory=0,
+    ))
+
+
+class C1BarcodeTest(TestCase):
+    """§108 — a code identifies one article inside one company, and no further."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c1-bc-a', 'Empresa BC A')
+        self.b = _p3_company('c1-bc-b', 'Empresa BC B')
+        self.pa = _c1_product(self.a, 'Cable A')
+        self.pb = _c1_product(self.b, 'Cable B')
+
+    def test_the_same_code_may_exist_in_two_companies(self):
+        """
+        Two shops selling the same manufacturer's cable scan the same EAN.
+        Refusing that would make the platform unusable for its second tenant.
+        """
+        ProductBarcode.objects.create(company=self.a, product=self.pa, code='7501234567890')
+        ProductBarcode.objects.create(company=self.b, product=self.pb, code='7501234567890')
+        self.assertEqual(ProductBarcode.objects.filter(code='7501234567890').count(), 2)
+
+    def test_one_code_cannot_identify_two_articles_in_a_company(self):
+        from django.db import IntegrityError, transaction
+
+        other = _c1_product(self.a, 'Otro Cable')
+        ProductBarcode.objects.create(company=self.a, product=self.pa, code='7501234567890')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProductBarcode.objects.create(
+                    company=self.a, product=other, code='7501234567890',
+                )
+
+    def test_leading_zeros_are_preserved(self):
+        """
+        `0123456789012` and `123456789012` are different articles. An int cast
+        would silently merge them, which is why the column is text and nothing
+        ever parses it as a number.
+        """
+        code = ProductBarcode.objects.create(
+            company=self.a, product=self.pa, code='0123456789012',
+        )
+        code.refresh_from_db()
+        self.assertEqual(code.code, '0123456789012')
+
+    def test_case_is_not_folded(self):
+        """Code128 is case-sensitive; upper-casing would collide two codes."""
+        self.assertEqual(normalize_barcode('  aBc123  '), 'aBc123')
+
+    def test_a_trailing_newline_from_the_scanner_is_stripped(self):
+        """
+        A keyboard-wedge scanner sends CR/LF. Storing it would produce a code no
+        future scan reproduces.
+        """
+        self.assertEqual(normalize_barcode('7501234567890\r\n'), '7501234567890')
+
+    def test_control_characters_are_refused_not_repaired(self):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        with self.assertRaises(DjangoValidationError):
+            ProductBarcode(
+                company=self.a, product=self.pa, code='750\x01234',
+            ).full_clean()
+
+    def test_a_barcode_cannot_point_at_another_companys_product(self):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        with self.assertRaises(DjangoValidationError):
+            ProductBarcode(company=self.a, product=self.pb, code='9999999999').clean()
+
+    def test_the_company_is_derived_from_the_product(self):
+        code = ProductBarcode.objects.create(product=self.pa, code='5555555555')
+        self.assertEqual(code.company_id, self.a.pk)
+
+    def test_only_one_primary_per_product(self):
+        from django.db import IntegrityError, transaction
+
+        ProductBarcode.objects.create(
+            company=self.a, product=self.pa, code='1111111111', is_primary=True,
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProductBarcode.objects.create(
+                    company=self.a, product=self.pa, code='2222222222', is_primary=True,
+                )
+
+    def test_several_non_primary_codes_are_allowed(self):
+        """One article carries the maker's EAN, a UPC and the shop's own label."""
+        for code in ('1111111111', '2222222222', '3333333333'):
+            ProductBarcode.objects.create(company=self.a, product=self.pa, code=code)
+        self.assertEqual(self.pa.barcodes.count(), 3)
+
+
+class C1PosSaleTest(TestCase):
+    """§102–105 — the counter sale itself."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c1-pos', 'Empresa POS')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto POS', '50.00')
+        _c1_stock(self.branch, self.product, 10)
+        self.seller, _ = _p2d_member(
+            self.company, 'c1_seller', ['company.view', _C1_POS],
+        )
+
+    def _sell(self, items, **kw):
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=items, **kw,
+        )
+
+    def test_a_sale_writes_one_order_one_exit_and_moves_stock(self):
+        order, created = self._sell([{'product': self.product.pk, 'quantity': 2}])
+
+        self.assertTrue(created)
+        self.assertEqual(order.sales_channel, SalesChannel.POS)
+        self.assertTrue(order.paid)
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertIsNotNone(order.paid_at)
+        self.assertEqual(order.sold_by, self.seller)
+        self.assertEqual(order.fulfillment_branch, self.branch)
+        self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.DELIVERED)
+        self.assertEqual(order.total, Decimal('100.00'))
+
+        self.assertEqual(order.items.count(), 1)
+        item = order.items.first()
+        self.assertEqual(item.quantity, 2)
+        self.assertEqual(item.price, Decimal('50.00'))
+
+        exits = StockMovement.objects.filter(
+            order=order, movement_type=StockMovement.SALE_EXIT,
+        )
+        self.assertEqual(exits.count(), 1)
+        self.assertEqual(exits.first().quantity, 2)
+
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 8,
+        )
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 8)
+
+    def test_repeated_lines_of_one_article_are_merged(self):
+        """
+        §23, and it is a correctness requirement rather than tidiness.
+
+        `record_sale_stock_movements` is idempotent per (order, product): two
+        OrderItems for one product would have its exit written once and the
+        second skipped — selling two units while decrementing one.
+        """
+        order, _ = self._sell([
+            {'product': self.product.pk, 'quantity': 1},
+            {'product': self.product.pk, 'quantity': 2},
+        ])
+        self.assertEqual(order.items.count(), 1)
+        self.assertEqual(order.items.first().quantity, 3)
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 7,
+        )
+
+    def test_the_price_comes_from_the_catalogue_not_the_request(self):
+        """A browser may display a price; it is never asked what to charge."""
+        order, _ = _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1, 'price': '0.01'}],
+        )
+        self.assertEqual(order.total, Decimal('50.00'))
+        self.assertEqual(order.items.first().price, Decimal('50.00'))
+
+    def test_a_sale_is_all_or_nothing(self):
+        """
+        §103. One short article rolls the entire sale back: no order, no exit,
+        and not a single unit moved off any shelf.
+        """
+        other = _c1_product(self.company, 'Producto Agotado', '30.00')
+        _c1_stock(self.branch, other, 0)
+
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            self._sell([
+                {'product': self.product.pk, 'quantity': 1},
+                {'product': other.pk, 'quantity': 1},
+            ])
+
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 0,
+        )
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 10,
+        )
+
+    def test_stock_never_goes_negative(self):
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            self._sell([{'product': self.product.pk, 'quantity': 11}])
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 10,
+        )
+
+    def test_the_same_key_and_basket_returns_the_same_sale(self):
+        """§104 — a double click, a timeout and a retry are one sale."""
+        items = [{'product': self.product.pk, 'quantity': 1}]
+        first, c1 = self._sell(items, idempotency_key='basket-key-0001')
+        second, c2 = self._sell(items, idempotency_key='basket-key-0001')
+        third, c3 = self._sell(items, idempotency_key='basket-key-0001')
+
+        self.assertTrue(c1)
+        self.assertFalse(c2)
+        self.assertFalse(c3)
+        self.assertEqual({first.pk, second.pk, third.pk}, {first.pk})
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 1)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 1,
+        )
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 9,
+        )
+
+    def test_the_same_key_with_a_different_basket_is_refused(self):
+        """
+        §105. Returning the earlier sale would tell the operator that THIS
+        basket was sold, when it was not.
+        """
+        self._sell([{'product': self.product.pk, 'quantity': 1}], idempotency_key='basket-key-0002')
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell([{'product': self.product.pk, 'quantity': 5}], idempotency_key='basket-key-0002')
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 1)
+
+    def test_the_fingerprint_ignores_line_order(self):
+        """The same basket scanned in a different order is the same basket."""
+        a = _c1_product(self.company, 'Segundo', '10.00')
+        _c1_stock(self.branch, a, 5)
+        one = _pos.request_fingerprint(
+            company=self.company, branch=self.branch,
+            customer_id=None, seller_id=None, payment_method='cash',
+            items=_pos.normalize_items([
+                {'product': self.product.pk, 'quantity': 1},
+                {'product': a.pk, 'quantity': 1},
+            ]),
+        )
+        two = _pos.request_fingerprint(
+            company=self.company, branch=self.branch,
+            customer_id=None, seller_id=None, payment_method='cash',
+            items=_pos.normalize_items([
+                {'product': a.pk, 'quantity': 1},
+                {'product': self.product.pk, 'quantity': 1},
+            ]),
+        )
+        self.assertEqual(one, two)
+
+    def test_an_anonymous_counter_sale_has_no_customer(self):
+        """§26 — no fictitious "walk-in" customer is invented."""
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        self.assertIsNone(order.customer_id)
+        self.assertEqual(order.customer_name, '')
+
+    def test_a_chosen_customer_is_snapshotted_onto_the_order(self):
+        customer = _p4_customer(
+            self.company, first_name='Ana', last_name='Quispe',
+            phone='+51999111222', document_type='dni', document_number='12345678',
+        )
+        order, _ = self._sell(
+            [{'product': self.product.pk, 'quantity': 1}], customer=customer.pk,
+        )
+        self.assertEqual(order.customer, customer)
+        self.assertEqual(order.customer_name, 'Ana Quispe')
+        self.assertEqual(order.document_number, '12345678')
+
+        # And the snapshot does not follow later edits.
+        customer.phone = '+51999000000'
+        customer.save()
+        order.refresh_from_db()
+        self.assertEqual(order.customer_phone, '+51999111222')
+
+    def test_a_pos_sale_does_not_touch_the_online_channel(self):
+        """§36 — nothing about the storefront's semantics changes."""
+        online = _p3_order(self.company)
+        self.assertEqual(online.sales_channel, SalesChannel.ONLINE)
+        self.assertEqual(online.payment_method, PaymentMethod.STRIPE)
+        self.assertIsNone(online.sold_by_id)
+        self.assertEqual(online.pos_idempotency_key, '')
+
+    def test_payment_method_is_recorded(self):
+        order, _ = self._sell(
+            [{'product': self.product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD,
+        )
+        self.assertEqual(order.payment_method, PaymentMethod.CARD)
+
+    def test_an_unknown_payment_method_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(
+                [{'product': self.product.pk, 'quantity': 1}],
+                payment_method='bitcoin',
+            )
+
+    def test_a_pos_sale_can_issue_the_existing_internal_note(self):
+        """§37 — no parallel receipt model; the Phase 2E machinery is reused."""
+        from .sales_note_services import get_or_create_sales_note
+
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        note, created = get_or_create_sales_note(order)
+        self.assertTrue(created)
+        self.assertTrue(note.number)
+        self.assertEqual(note.order, order)
+
+
+class C1PosSecurityTest(TestCase):
+    """§106–107 — the till cannot reach outside its company or its branch."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c1-sec-a', 'Empresa Sec A')
+        self.b = _p3_company('c1-sec-b', 'Empresa Sec B')
+        self.branch_a = self.a.default_inventory_branch
+        self.branch_b = self.b.default_inventory_branch
+        self.product_a = _c1_product(self.a, 'Prod Sec A')
+        self.product_b = _c1_product(self.b, 'Prod Sec B')
+        _c1_stock(self.branch_a, self.product_a, 10)
+        _c1_stock(self.branch_b, self.product_b, 10)
+        ProductBarcode.objects.create(company=self.b, product=self.product_b, code='8888888888')
+
+        self.seller_a, _ = _p2d_member(self.a, 'c1_sec_seller', ['company.view', _C1_POS])
+        self.blind_a, _ = _p2d_member(self.a, 'c1_sec_blind', ['company.view'])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_selling_another_companys_product_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _c1_sale(
+                actor=self.seller_a, company=self.a, branch=self.branch_a,
+                items=[{'product': self.product_b.pk, 'quantity': 1}],
+            )
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_selling_from_another_companys_branch_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _pos.resolve_pos_branch(self.seller_a, self.a, self.branch_b.pk)
+
+    def test_another_companys_barcode_is_not_found(self):
+        res = self._as(self.seller_a).get(
+            f'/api/admin/pos/products/lookup/?code=8888888888&branch={self.branch_a.pk}'
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_cross_tenant_attempt_never_answers_500(self):
+        client = self._as(self.seller_a)
+        for path in (
+            f'/api/admin/pos/products/lookup/?code=8888888888&branch={self.branch_b.pk}',
+            f'/api/admin/pos/products/search/?q=Prod&branch={self.branch_b.pk}',
+        ):
+            res = client.get(path)
+            self.assertLess(res.status_code, 500, path)
+
+    def test_the_pos_capability_is_required(self):
+        res = self._as(self.blind_a).get('/api/admin/pos/context/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_selling_does_not_require_inventory_adjust(self):
+        """
+        §45, and it is the whole reason POS has its own capability. A seller
+        consumes stock BY SELLING; that is not a manual adjustment, and granting
+        `inventory.adjust` to every cashier would let them rewrite the Kardex.
+        """
+        capabilities = resolve_capabilities(self.seller_a, self.a)
+        self.assertIn(_C1_POS, capabilities)
+        self.assertNotIn('inventory.adjust', capabilities)
+
+        order, _ = _c1_sale(
+            actor=self.seller_a, company=self.a, branch=self.branch_a,
+            items=[{'product': self.product_a.pk, 'quantity': 1}],
+        )
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT,
+            ).count(),
+            1,
+        )
+
+    def test_a_branch_restricted_seller_cannot_sell_from_another_branch(self):
+        first = self.branch_a
+        second = Branch.objects.create(company=self.a, name='Sucursal 2')
+        restricted, _ = _p2d_member(
+            self.a, 'c1_restricted', ['company.view', _C1_POS],
+            mode='selected', branches=[first],
+        )
+        self.assertEqual(
+            _pos.resolve_pos_branch(restricted, self.a, first.pk).pk, first.pk,
+        )
+        with self.assertRaises(_pos.PosValidationError):
+            _pos.resolve_pos_branch(restricted, self.a, second.pk)
+
+    def test_stock_is_never_taken_from_another_branch(self):
+        """
+        §12. An empty shelf here is not covered by a full shelf across town —
+        that is a transfer, and a transfer is a decision with paperwork.
+        """
+        other = Branch.objects.create(company=self.a, name='Sucursal Llena')
+        _c1_stock(other, self.product_a, 50)
+        _c1_stock(self.branch_a, self.product_a, 0)
+
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            _c1_sale(
+                actor=self.seller_a, company=self.a, branch=self.branch_a,
+                items=[{'product': self.product_a.pk, 'quantity': 1}],
+            )
+        self.assertEqual(
+            BranchStock.objects.get(branch=other, product=self.product_a).quantity, 50,
+        )
+
+
+class C1ForecastTest(TestCase):
+    """§110 — the arithmetic, including the cases that make it wrong."""
+
+    def _series(self, pairs, today):
+        s = _forecasting.DemandSeries()
+        for days_ago, units in pairs:
+            s.daily[today - _timedelta(days=days_ago)] = units
+        if s.daily:
+            s.first_observed = min(s.daily)
+        return s
+
+    def setUp(self):
+        self.today = _date(2026, 6, 30)
+
+    def test_days_without_sales_count_as_zero(self):
+        """
+        The single most common way to get this wrong. 2, 0, 0, 2 over four days
+        is one a day; averaging only the selling days says two, and every
+        downstream number inherits the error.
+        """
+        s = self._series([(29, 2), (28, 0), (27, 0), (26, 2)], self.today)
+        s.first_observed = self.today - _timedelta(days=29)
+        f = _forecasting.forecast_for(
+            s, today=self.today, tracked_since=self.today - _timedelta(days=29),
+        )
+        self.assertAlmostEqual(f['avg_30'], 4 / 30, places=4)
+
+    def test_no_sales_at_all_is_insufficient_not_zero_demand(self):
+        f = _forecasting.forecast_for(_forecasting.DemandSeries(), today=self.today)
+        self.assertFalse(f['sufficient'])
+        self.assertEqual(f['confidence'], _forecasting.INSUFFICIENT_DATA)
+        self.assertEqual(f['daily'], 0)
+
+    def test_too_little_history_is_refused(self):
+        """§69 — under 14 days, or under 3 selling days, is not a forecast."""
+        s = self._series([(1, 5), (2, 5), (3, 5)], self.today)
+        f = _forecasting.forecast_for(
+            s, today=self.today, tracked_since=self.today - _timedelta(days=3),
+        )
+        self.assertFalse(f['sufficient'])
+
+    def test_a_new_product_is_not_padded_with_invented_zeros(self):
+        """
+        §68. An article stocked five days ago has five days of history, not
+        ninety. Padding would divide its real sales by eighteen.
+        """
+        s = self._series([(0, 4), (1, 4), (2, 4), (3, 4), (4, 4)], self.today)
+        tracked = self.today - _timedelta(days=4)
+        f = _forecasting.forecast_for(s, today=self.today, tracked_since=tracked)
+        self.assertEqual(f['history_days'], 5)
+        self.assertAlmostEqual(f['avg_90'], 4.0, places=4)
+
+    def test_steady_demand_produces_that_demand(self):
+        s = self._series([(d, 2) for d in range(90)], self.today)
+        f = _forecasting.forecast_for(
+            s, today=self.today, tracked_since=self.today - _timedelta(days=89),
+        )
+        self.assertAlmostEqual(f['daily'], 2.0, places=2)
+        self.assertEqual(f['confidence'], _forecasting.CONFIDENCE_HIGH)
+        self.assertEqual(f['trend'], _forecasting.TREND_STABLE)
+
+    def test_a_recent_surge_shows_as_an_upward_trend(self):
+        pairs = [(d, 10) for d in range(7)] + [(d, 1) for d in range(7, 60)]
+        f = _forecasting.forecast_for(
+            self._series(pairs, self.today), today=self.today,
+            tracked_since=self.today - _timedelta(days=59),
+        )
+        self.assertEqual(f['trend'], _forecasting.TREND_UP)
+        self.assertGreater(f['avg_7'], f['avg_30'])
+
+    def test_a_recent_collapse_shows_as_a_downward_trend(self):
+        pairs = [(d, 0) for d in range(7)] + [(d, 8) for d in range(7, 60)]
+        f = _forecasting.forecast_for(
+            self._series(pairs, self.today), today=self.today,
+            tracked_since=self.today - _timedelta(days=59),
+        )
+        self.assertEqual(f['trend'], _forecasting.TREND_DOWN)
+
+    def test_the_weights_are_the_documented_ones(self):
+        self.assertAlmostEqual(
+            _forecasting.WEIGHT_SHORT
+            + _forecasting.WEIGHT_MEDIUM
+            + _forecasting.WEIGHT_LONG,
+            1.0,
+        )
+
+
+class C1ReplenishmentTest(TestCase):
+    """§74–82 — coverage, reorder point, suggestion, risk and transfers."""
+
+    def setUp(self):
+        cache.clear()
+        self.today = _date(2026, 6, 30)
+        self.company = _p3_company('c1-repl', 'Empresa Repl')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Repuesto')
+
+    def _row(self, quantity, **kw):
+        row = _c1_stock(self.branch, self.product, quantity)
+        for key, value in kw.items():
+            setattr(row, key, value)
+        row.save()
+        return row
+
+    def _steady(self, per_day=2, days=90):
+        s = _forecasting.DemandSeries()
+        for d in range(days):
+            s.daily[self.today - _timedelta(days=d)] = per_day
+        s.first_observed = self.today - _timedelta(days=days - 1)
+        return _forecasting.forecast_for(
+            s, today=self.today,
+            tracked_since=self.today - _timedelta(days=days - 1),
+        )
+
+    def test_coverage_is_stock_divided_by_demand(self):
+        row = self._row(20)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertAlmostEqual(plan['days_of_cover'], 10.0, places=1)
+        self.assertIsNotNone(plan['estimated_stockout_date'])
+
+    def test_no_recent_consumption_is_not_infinite_coverage(self):
+        """§74 — a shelf nobody buys from is not "covered forever"."""
+        row = self._row(20)
+        plan = _forecasting.replenishment_for(
+            row, _forecasting.forecast_for(_forecasting.DemandSeries(), today=self.today),
+            today=self.today,
+        )
+        self.assertIsNone(plan['days_of_cover'])
+        self.assertIsNone(plan['estimated_stockout_date'])
+
+    def test_the_reorder_point_is_demand_times_lead_time_plus_safety(self):
+        """§76: 1.2/day × 5 days + 2 = 8."""
+        row = self._row(20, lead_time_days=5, safety_stock=2)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['reorder_point'], 12)  # 2×5 + 2
+
+    def test_without_a_lead_time_no_reorder_point_is_invented(self):
+        """§78 — a made-up lead time yields a confident wrong number."""
+        row = self._row(20, lead_time_days=0, safety_stock=3)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertIsNone(plan['reorder_point'])
+        self.assertEqual(plan['reorder_state'], _forecasting.CONFIGURATION_REQUIRED)
+        # Everything that does not depend on it is still reported.
+        self.assertIsNotNone(plan['days_of_cover'])
+
+    def test_the_suggestion_fills_to_the_higher_of_target_and_reorder_point(self):
+        row = self._row(4, target_stock=30, lead_time_days=5, safety_stock=2)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['suggested_quantity'], 26)  # 30 − 4
+
+    def test_a_healthy_shelf_suggests_nothing(self):
+        row = self._row(100, target_stock=30, lead_time_days=5)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['suggested_quantity'], 0)
+        self.assertEqual(plan['risk'], _forecasting.RISK_OK)
+
+    def test_zero_stock_is_the_most_severe_risk(self):
+        row = self._row(0)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['risk'], _forecasting.RISK_OUT_OF_STOCK)
+
+    def test_running_out_before_resupply_arrives_is_critical(self):
+        """Coverage 3 days, lead time 5: it is gone before the delivery lands."""
+        row = self._row(6, lead_time_days=5)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['days_of_cover'], 3.0)
+        self.assertEqual(plan['risk'], _forecasting.RISK_CRITICAL)
+
+    def test_below_the_reorder_point_asks_for_a_reorder(self):
+        row = self._row(14, lead_time_days=5, safety_stock=4)
+        plan = _forecasting.replenishment_for(row, self._steady(2), today=self.today)
+        self.assertEqual(plan['reorder_point'], 14)
+        self.assertEqual(plan['risk'], _forecasting.RISK_REORDER)
+
+    def test_physical_alerts_fire_without_a_forecast(self):
+        """
+        §69 — no history does not silence "this shelf is empty". Only the
+        forecast-dependent verdicts fall back.
+        """
+        empty = _forecasting.forecast_for(_forecasting.DemandSeries(), today=self.today)
+        self.assertEqual(
+            _forecasting.replenishment_for(self._row(0), empty, today=self.today)['risk'],
+            _forecasting.RISK_OUT_OF_STOCK,
+        )
+        self.assertEqual(
+            _forecasting.replenishment_for(
+                self._row(2, minimum_stock=5), empty, today=self.today,
+            )['risk'],
+            _forecasting.RISK_LOW,
+        )
+
+    def test_surplus_keeps_the_source_branch_whole(self):
+        """
+        §81. A branch gives up only what exceeds its OWN highest threshold.
+        Emptying one shop to fill another is the same shortage relocated.
+        """
+        row = self._row(20, target_stock=15, minimum_stock=5, safety_stock=3)
+        self.assertEqual(_forecasting.surplus_for_transfer(row), 5)
+
+        tight = self._row(10, target_stock=15, minimum_stock=5)
+        self.assertEqual(_forecasting.surplus_for_transfer(tight), 0)
+
+    def test_demand_comes_only_from_sales(self):
+        """
+        §66. Breakage, corrections and transfers all reduce stock and none of
+        them is a customer wanting the article.
+        """
+        import inspect
+
+        source = inspect.getsource(_forecasting.collect_demand)
+        self.assertIn('SALE_EXIT', source)
+        for excluded in ('DAMAGED_EXIT', 'MANUAL_EXIT', 'TRANSFER_OUT', 'CORRECTION'):
+            self.assertNotIn(excluded, source)
+
+
+class C1AnalyticsTest(TestCase):
+    """§111 — the dashboard sees one company and only the allowed branches."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c1-an-a', 'Empresa An A')
+        self.b = _p3_company('c1-an-b', 'Empresa An B')
+        self.pa = _c1_product(self.a, 'Prod An A', '100.00')
+        self.pb = _c1_product(self.b, 'Prod An B', '100.00')
+        _c1_stock(self.a.default_inventory_branch, self.pa, 50)
+        _c1_stock(self.b.default_inventory_branch, self.pb, 50)
+
+        self.analyst_a, _ = _p2d_member(
+            self.a, 'c1_analyst_a',
+            ['company.view', _C1_POS, _C1_ANALYTICS, 'inventory.view', 'inventory.reports'],
+        )
+        self.seller_only, _ = _p2d_member(
+            self.a, 'c1_seller_only', ['company.view', _C1_POS],
+        )
+
+        _c1_sale(
+            actor=self.analyst_a, company=self.a,
+            branch=self.a.default_inventory_branch,
+            items=[{'product': self.pa.pk, 'quantity': 3}],
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_the_dashboard_reports_this_companys_sales(self):
+        res = self._as(self.analyst_a).get('/api/admin/sales/dashboard/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(res.data['kpis']['last_30d']['revenue']), Decimal('300.00'))
+        self.assertEqual(res.data['kpis']['last_30d']['units'], 3)
+
+    def test_units_come_from_stock_that_actually_moved(self):
+        res = self._as(self.analyst_a).get('/api/admin/sales/dashboard/')
+        top = res.data['top_products']['results']
+        self.assertEqual([t['product_name'] for t in top], ['Prod An A'])
+        self.assertEqual(top[0]['units_sold'], 3)
+        self.assertEqual(top[0]['current_stock'], 47)
+
+    def test_channels_are_reported_separately(self):
+        res = self._as(self.analyst_a).get('/api/admin/sales/dashboard/')
+        channels = res.data['channels']['by_channel']
+        self.assertEqual(channels['pos']['orders'], 1)
+        self.assertEqual(channels['online']['orders'], 0)
+
+    def test_another_companys_sales_are_invisible(self):
+        res = self._as(self.analyst_a).get('/api/admin/sales/dashboard/')
+        blob = json.dumps(res.data)
+        self.assertNotIn('Prod An B', blob)
+        self.assertNotIn('Empresa An B', blob)
+
+    def test_analytics_requires_its_own_capability(self):
+        """Being allowed to sell is not being allowed to see the turnover."""
+        res = self._as(self.seller_only).get('/api/admin/sales/dashboard/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_replenishment_additionally_requires_inventory_reports(self):
+        analyst, _ = _p2d_member(
+            self.a, 'c1_analyst_only', ['company.view', _C1_ANALYTICS],
+        )
+        client = self._as(analyst)
+        self.assertEqual(
+            client.get('/api/admin/sales/dashboard/').status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            client.get('/api/admin/sales/replenishment/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_anonymous_is_refused(self):
+        for path in ('/api/admin/sales/dashboard/', '/api/admin/sales/replenishment/',
+                     '/api/admin/pos/context/', '/api/admin/pos/sales/'):
+            res = APIClient().get(path)
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN,
+                 status.HTTP_405_METHOD_NOT_ALLOWED),
+                path,
+            )
+
+    def test_there_is_no_public_pos_endpoint(self):
+        for path in ('/api/pos/', '/api/sales/dashboard/', '/api/storefront/pos/'):
+            self.assertEqual(
+                APIClient().get(path).status_code, status.HTTP_404_NOT_FOUND, path,
+            )
+
+
+class C1PosConcurrencyTest(TransactionTestCase):
+    """
+    §109 — two tills, one unit.
+
+    WHAT SQLITE CAN AND CANNOT PROVE
+    --------------------------------
+    `select_for_update()` is a no-op on SQLite: the engine serialises writes
+    with a database-level lock, so a threaded race here would exercise THAT
+    lock rather than this module's row lock, and pass for the wrong reason.
+
+    So the sequential invariants run everywhere, and the genuinely concurrent
+    case is skipped — loudly — where row locking does not exist. Same rule the
+    inventory and sequence phases already follow.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c1-conc', 'Empresa Conc C1')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Único')
+        _c1_stock(self.branch, self.product, 1)
+        self.seller, _ = _p2d_member(
+            self.company, 'c1_conc_seller', ['company.view', _C1_POS],
+        )
+
+    def test_the_last_unit_can_only_be_sold_once(self):
+        first, _ = _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+        )
+        self.assertIsNotNone(first.pk)
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            _c1_sale(
+                actor=self.seller, company=self.company, branch=self.branch,
+                items=[{'product': self.product.pk, 'quantity': 1}],
+            )
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 0,
+        )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 1)
+
+    def test_stock_never_reaches_a_negative_number(self):
+        for _ in range(3):
+            try:
+                _c1_sale(
+                    actor=self.seller, company=self.company, branch=self.branch,
+                    items=[{'product': self.product.pk, 'quantity': 1}],
+                )
+            except inventory_services.InsufficientStockError:
+                pass
+        row = BranchStock.objects.get(branch=self.branch, product=self.product)
+        self.assertGreaterEqual(row.quantity, 0)
+        self.assertEqual(row.quantity, 0)
+
+    def test_two_simultaneous_tills_do_not_oversell(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a threaded race here would exercise the engine\'s global write '
+                'lock rather than this module\'s. Run against PostgreSQL to '
+                'exercise it.'
+            )
+
+        results = []
+        lock = threading.Lock()
+
+        def sell():
+            try:
+                order, _created = _c1_sale(
+                    actor=self.seller, company=self.company, branch=self.branch,
+                    items=[{'product': self.product.pk, 'quantity': 1}],
+                )
+                with lock:
+                    results.append(order.pk)
+            except inventory_services.InsufficientStockError:
+                pass
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=sell) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(results), 1, 'exactamente una venta debe ganar')
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 0,
+        )
+
+    def test_the_locking_helper_is_the_shared_one(self):
+        """
+        Introspection, because the behavioural test above cannot run on SQLite.
+
+        POS must not introduce a second lock ordering: two orderings in one
+        codebase is a deadlock waiting for the two paths to meet.
+        """
+        import inspect
+
+        source = inspect.getsource(inventory_services.record_sale_stock_movements)
+        self.assertIn('_locked_branch_stocks', source)
+        self.assertNotIn('BranchStock.objects.update', inspect.getsource(_pos))
+        self.assertNotIn('Product.objects.update', inspect.getsource(_pos))
+
+
+# ===========================================================================
+# C1.1 — hardening: idempotency, forecast window, transfers, timezone, consent
+# ===========================================================================
+
+class C11IdempotencyKeyTest(TestCase):
+    """§6 — the key is required, and never silently repaired."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c11-key', 'Empresa Key')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Key')
+        _c1_stock(self.branch, self.product, 10)
+        self.seller, _ = _p2d_member(self.company, 'c11_seller', ['company.view', _C1_POS])
+
+    def _sell(self, **kw):
+        # Paid by card: this class is about the KEY, not about counting cash.
+        kw.setdefault('payment_method', PaymentMethod.CARD)
+        return _pos.create_pos_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            terms_confirmed=True, **kw,
+        )
+
+    def test_a_missing_key_is_refused(self):
+        """
+        An empty key meant a sale with NO protection — the single code path
+        where a double click charges twice.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell()
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_an_empty_key_is_refused(self):
+        for empty in ('', '   ', None):
+            with self.assertRaises(_pos.PosValidationError):
+                self._sell(idempotency_key=empty)
+
+    def test_a_key_that_is_too_long_is_refused_not_truncated(self):
+        """
+        `str(value)[:64]` reads as harmless and is not: two distinct 80-character
+        keys sharing their first 64 collapse into ONE, and the second sale is
+        answered with the first one's order.
+        """
+        long_key = 'a' * 80
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(idempotency_key=long_key)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_two_long_keys_are_never_folded_into_one(self):
+        first = 'k' * 64 + 'AAAA'
+        second = 'k' * 64 + 'BBBB'
+        self.assertNotEqual(first[:64] + 'x', second[:64] + 'y')
+        for key in (first, second):
+            with self.assertRaises(_pos.PosValidationError):
+                self._sell(idempotency_key=key)
+
+    def test_a_key_with_control_characters_is_refused(self):
+        for bad in ('key\nwith-newline', 'key\rwith-cr', 'key with space', 'short'):
+            with self.assertRaises(_pos.PosValidationError):
+                self._sell(idempotency_key=bad)
+
+    def test_a_uuid_is_accepted(self):
+        import uuid
+
+        order, created = self._sell(idempotency_key=str(uuid.uuid4()))
+        self.assertTrue(created)
+        self.assertTrue(order.pos_idempotency_key)
+
+    def test_the_endpoint_refuses_a_missing_key_with_400(self):
+        client = APIClient()
+        client.force_authenticate(user=self.seller)
+        for body in (
+            {'branch': self.branch.pk, 'items': [{'product': self.product.pk, 'quantity': 1}],
+             'terms_confirmed': True},
+            {'branch': self.branch.pk, 'items': [{'product': self.product.pk, 'quantity': 1}],
+             'terms_confirmed': True, 'idempotency_key': ''},
+            {'branch': self.branch.pk, 'items': [{'product': self.product.pk, 'quantity': 1}],
+             'terms_confirmed': True, 'idempotency_key': 'x' * 80},
+        ):
+            res = client.post('/api/admin/pos/sales/', body, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, body)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_the_same_key_may_be_used_by_two_companies(self):
+        """§7 — idempotency is tenant-scoped, never global."""
+        other = _p3_company('c11-key-b', 'Empresa Key B')
+        other_product = _c1_product(other, 'Producto Key B')
+        _c1_stock(other.default_inventory_branch, other_product, 5)
+        seller_b, _ = _p2d_member(other, 'c11_seller_b', ['company.view', _C1_POS])
+
+        key = 'shared-key-across-tenants'
+        self._sell(idempotency_key=key)
+        order_b, created = _pos.create_pos_sale(
+            actor=seller_b, company=other, branch=other.default_inventory_branch,
+            items=[{'product': other_product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD,
+            terms_confirmed=True, idempotency_key=key,
+        )
+        self.assertTrue(created)
+        self.assertEqual(Order.objects.filter(pos_idempotency_key=key).count(), 2)
+
+
+class C11IdempotencyRecoveryTest(TransactionTestCase):
+    """
+    §8–9 — recovering from the unique-constraint collision.
+
+    An IntegrityError marks the transaction for rollback. Catching it and then
+    querying inside the SAME atomic block raises TransactionManagementError
+    instead of answering, so the INSERT is wrapped in its own savepoint.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c11-rec', 'Empresa Rec')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Rec')
+        _c1_stock(self.branch, self.product, 20)
+        self.seller, _ = _p2d_member(self.company, 'c11_rec_seller', ['company.view', _C1_POS])
+
+    def _sell(self, key, quantity=1):
+        return _pos.create_pos_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': quantity}],
+            payment_method=PaymentMethod.CARD,
+            terms_confirmed=True, idempotency_key=key,
+        )
+
+    def test_the_insert_is_wrapped_in_its_own_savepoint(self):
+        """
+        Structural, because the behavioural race needs row locking.
+
+        Without the nested atomic the recovery path cannot run at all: the
+        connection refuses the follow-up query. This pins the shape.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        # PARSED, not split on substrings. The first version chopped the source
+        # around `try:` and `except`, which held only while the function's lines
+        # stayed in that order — it broke the moment the body was reorganised,
+        # reporting a defect that was not there.
+        source = textwrap.dedent(inspect.getsource(_pos.create_pos_sale))
+        tree = ast.parse(source)
+
+        handlers = [n for n in ast.walk(tree) if isinstance(n, ast.Try)]
+        wrapped = False
+        for node in handlers:
+            catches_integrity = any(
+                getattr(h.type, 'id', '') == 'IntegrityError' for h in node.handlers
+            )
+            if not catches_integrity:
+                continue
+            # The guarded body must itself open an atomic block — that is the
+            # savepoint the recovery depends on.
+            for inner in ast.walk(ast.Module(body=node.body, type_ignores=[])):
+                if isinstance(inner, ast.With):
+                    for item in inner.items:
+                        call = item.context_expr
+                        if (
+                            isinstance(call, ast.Call)
+                            and getattr(call.func, 'attr', '') == 'atomic'
+                        ):
+                            wrapped = True
+        self.assertTrue(
+            wrapped,
+            'el INSERT debe ir en su propio savepoint dentro del try/except',
+        )
+        self.assertNotIn('set_rollback', source)
+
+    def test_recovery_returns_the_winning_order(self):
+        """
+        Simulates the loser of the race: the row already exists when this
+        caller's INSERT lands.
+        """
+        key = 'recovery-key-0001'
+        first, created_first = self._sell(key)
+        self.assertTrue(created_first)
+
+        second, created_second = self._sell(key)
+        self.assertFalse(created_second)
+        self.assertEqual(second.pk, first.pk)
+        self.assertEqual(Order.objects.filter(pos_idempotency_key=key).count(), 1)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=first, movement_type=StockMovement.SALE_EXIT,
+            ).count(),
+            1,
+        )
+
+    def test_an_unrelated_integrity_error_is_not_swallowed(self):
+        """
+        Only a collision on THIS constraint is a idempotent replay. Any other
+        violated invariant is a real defect, and hiding it here would turn it
+        into a silent "no sale" with no explanation anywhere.
+        """
+        from unittest.mock import patch
+
+        from django.db import IntegrityError
+
+        with patch.object(
+            Order, 'save', side_effect=IntegrityError('unrelated constraint'),
+        ):
+            with self.assertRaises(IntegrityError):
+                self._sell('unrelated-error-key')
+
+    def test_two_simultaneous_requests_with_one_key_produce_one_sale(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite serialises writes with a database-level lock, so a '
+                'threaded race here would not exercise the unique-constraint '
+                'collision this recovery path exists for. Run against '
+                'PostgreSQL to exercise it.'
+            )
+
+        key = 'concurrent-key-0001'
+        results, errors = [], []
+        lock = threading.Lock()
+
+        def sell():
+            try:
+                order, created = self._sell(key)
+                with lock:
+                    results.append((order.pk, created))
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=sell) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], 'ningún caller debe recibir un error')
+        self.assertEqual(len(results), 4)
+        self.assertEqual(len({pk for pk, _c in results}), 1, 'una sola venta')
+        self.assertEqual(sum(1 for _pk, c in results if c), 1, 'un solo created=True')
+        self.assertEqual(Order.objects.filter(pos_idempotency_key=key).count(), 1)
+
+
+class C11ForecastWindowTest(TestCase):
+    """§11–12 — real zeros before the first sale are part of the history."""
+
+    def setUp(self):
+        self.today = _date(2026, 6, 30)
+
+    def _series(self, pairs):
+        s = _forecasting.DemandSeries()
+        for days_ago, units in pairs:
+            s.daily[self.today - _timedelta(days=days_ago)] = units
+        if s.daily:
+            s.first_observed = min(s.daily)
+        return s
+
+    def test_a_late_first_sale_does_not_delete_the_quiet_days(self):
+        """
+        THE BUG THIS FIXES. Stocked 30 days ago, first sold 3 days ago, 2 units
+        total. That is 30 days of history with 28 zeros — not 3 days of brisk
+        trade.
+
+        Starting the window at the first sale reported roughly ten times the
+        real demand, and coverage, reorder point and suggestion all inherited it.
+        """
+        series = self._series([(2, 1), (1, 0), (0, 1)])
+        tracked = self.today - _timedelta(days=29)
+
+        f = _forecasting.forecast_for(series, today=self.today, tracked_since=tracked)
+        self.assertEqual(f['history_days'], 30)
+        self.assertAlmostEqual(f['avg_30'], 2 / 30, places=4)
+
+    def test_without_a_tracking_date_the_first_sale_is_the_fallback(self):
+        """
+        Not ideal, but honest: with no stocking date the first movement is the
+        earliest moment the article is known to have been here.
+        """
+        series = self._series([(2, 1), (0, 1)])
+        f = _forecasting.forecast_for(series, today=self.today, tracked_since=None)
+        self.assertEqual(f['history_days'], 3)
+
+    def test_a_genuinely_new_product_is_still_not_padded(self):
+        """The opposite mistake stays fixed: no zeros before it existed."""
+        series = self._series([(d, 4) for d in range(5)])
+        tracked = self.today - _timedelta(days=4)
+        f = _forecasting.forecast_for(series, today=self.today, tracked_since=tracked)
+        self.assertEqual(f['history_days'], 5)
+        self.assertAlmostEqual(f['avg_90'], 4.0, places=4)
+
+    def test_a_tracking_date_older_than_the_window_is_clamped(self):
+        series = self._series([(d, 1) for d in range(90)])
+        tracked = self.today - _timedelta(days=800)
+        f = _forecasting.forecast_for(series, today=self.today, tracked_since=tracked)
+        self.assertEqual(f['history_days'], _forecasting.LONG_WINDOW)
+
+
+class C11TransferReserveTest(TestCase):
+    """§14–15 — the source branch keeps its own reorder point."""
+
+    def setUp(self):
+        cache.clear()
+        self.today = _date(2026, 6, 30)
+        self.company = _p3_company('c11-tr', 'Empresa Transfer')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Transferible')
+
+    def _row(self, **kw):
+        row = _c1_stock(self.branch, self.product, kw.pop('quantity', 0))
+        for key, value in kw.items():
+            setattr(row, key, value)
+        row.save()
+        return row
+
+    def _steady(self, per_day):
+        s = _forecasting.DemandSeries()
+        for d in range(90):
+            s.daily[self.today - _timedelta(days=d)] = per_day
+        return _forecasting.forecast_for(
+            s, today=self.today, tracked_since=self.today - _timedelta(days=89),
+        )
+
+    def test_the_reorder_point_is_part_of_the_reserve(self):
+        """
+        §15 exactly. A busy shop with target=10 was reported as having 10 units
+        to spare while sitting 2 above the level at which it should be
+        restocking ITSELF. The transfer would have solved one shortage by
+        opening another where nobody was looking.
+        """
+        row = self._row(quantity=20, target_stock=10, minimum_stock=5,
+                        safety_stock=2, lead_time_days=8)
+        forecast = self._steady(2)  # 2/day × 8 days + 2 = reorder point 18
+
+        plan = _forecasting.replenishment_for(row, forecast, today=self.today)
+        self.assertEqual(plan['reorder_point'], 18)
+
+        without = _forecasting.surplus_for_transfer(row)
+        self.assertEqual(without, 10, 'la reserva por umbrales sola daría 10')
+
+        with_forecast = _forecasting.surplus_for_transfer(
+            row, forecast=forecast, today=self.today,
+        )
+        self.assertEqual(with_forecast, 2)
+
+    def test_missing_information_keeps_stock_rather_than_giving_it_away(self):
+        """
+        No forecast, or no lead time, falls back to the configured thresholds —
+        never to a reorder point of zero.
+        """
+        row = self._row(quantity=20, target_stock=15, minimum_stock=5, lead_time_days=0)
+        empty = _forecasting.forecast_for(
+            _forecasting.DemandSeries(), today=self.today,
+        )
+        self.assertEqual(
+            _forecasting.surplus_for_transfer(row, forecast=empty, today=self.today), 5,
+        )
+        self.assertEqual(_forecasting.surplus_for_transfer(row), 5)
+
+    def test_a_branch_at_its_own_reorder_point_offers_nothing(self):
+        row = self._row(quantity=18, target_stock=10, minimum_stock=5,
+                        safety_stock=2, lead_time_days=8)
+        self.assertEqual(
+            _forecasting.surplus_for_transfer(
+                row, forecast=self._steady(2), today=self.today,
+            ),
+            0,
+        )
+
+
+class C11TimezoneTest(TestCase):
+    """§16–17 — each tenant's day, not the server's."""
+
+    def setUp(self):
+        cache.clear()
+        self.lima = _p3_company('c11-tz-lima', 'Empresa Lima')
+        self.tokyo = _p3_company('c11-tz-tokyo', 'Empresa Tokio')
+        for company, tz in ((self.lima, 'America/Lima'), (self.tokyo, 'Asia/Tokyo')):
+            row = company.settings
+            row.timezone = tz
+            row.save(update_fields=['timezone', 'updated_at'])
+
+    def test_today_is_computed_in_the_tenants_zone(self):
+        from .sales_analytics_views import _company_today, _company_tz
+
+        self.assertEqual(str(_company_tz(self.lima)), 'America/Lima')
+        self.assertEqual(str(_company_tz(self.tokyo)), 'Asia/Tokyo')
+
+        # Around the UTC day boundary the two shops are on different dates.
+        lima_today = _company_today(self.lima)
+        tokyo_today = _company_today(self.tokyo)
+        self.assertLessEqual((tokyo_today - lima_today).days, 1)
+        self.assertGreaterEqual((tokyo_today - lima_today).days, 0)
+
+    def test_a_company_without_a_timezone_falls_back_to_the_platform(self):
+        from django.utils import timezone as dj_tz
+
+        from .sales_analytics_views import _company_tz
+
+        plain = _p3_company('c11-tz-none', 'Empresa Sin TZ')
+        self.assertEqual(_company_tz(plain), dj_tz.get_default_timezone())
+
+    def test_an_unresolvable_timezone_does_not_break_the_dashboard(self):
+        """
+        A stored zone that no longer exists is a configuration problem. It must
+        not take a dashboard down: the platform default is used instead.
+        """
+        from django.utils import timezone as dj_tz
+
+        from .sales_analytics_views import _company_tz
+
+        # Written past the model's validator on purpose: this is the shape of a
+        # value that WAS valid when saved and stopped resolving later — a tzdata
+        # update, or a zone the platform dropped. The validator prevents typing
+        # one in; it cannot prevent the world changing underneath a stored one.
+        from .models import CompanySettings
+
+        CompanySettings.objects.filter(pk=self.lima.settings.pk).update(
+            timezone='Mars/Olympus_Mons',
+        )
+        self.lima.refresh_from_db()
+        self.lima.settings.refresh_from_db()
+        self.assertEqual(_company_tz(self.lima), dj_tz.get_default_timezone())
+
+    def test_day_bounds_bracket_a_local_day_in_utc(self):
+        import zoneinfo
+
+        from .sales_analytics_views import _day_bounds
+
+        tz = zoneinfo.ZoneInfo('Asia/Tokyo')
+        start, end = _day_bounds(_date(2026, 6, 30), tz)
+        self.assertEqual((end - start).days, 1)
+        # Tokyo is UTC+9, so its midnight is 15:00 UTC the day before.
+        self.assertEqual(start.astimezone(_timezone_utc()).hour, 15)
+        self.assertEqual(start.astimezone(_timezone_utc()).day, 29)
+
+    def test_the_queries_do_not_use_the_connection_timezone(self):
+        """
+        `__date` and a bare TruncDate both render in the CONNECTION's zone. For a
+        tenant fourteen hours away that files an evening's trade under the wrong
+        day, shifting every average and every reorder point.
+        """
+        import ast
+        import inspect
+
+        from . import inventory_forecasting, sales_analytics_views
+
+        forbidden = {
+            'paid_at__date__gte', 'paid_at__date__lte',
+            'created_at__date__gte', 'created_at__date__lte',
+        }
+        for module in (sales_analytics_views, inventory_forecasting):
+            # PARSED, not grepped. The docstrings in these modules EXPLAIN why
+            # `paid_at__date__gte` is wrong, and a plain text scan matches its
+            # own explanation — which is how a correct file fails its own test.
+            tree = ast.parse(inspect.getsource(module))
+            keywords = {
+                node.arg for node in ast.walk(tree)
+                if isinstance(node, ast.keyword) and node.arg
+            }
+            self.assertFalse(
+                keywords & forbidden,
+                f'{module.__name__} filtra por la zona horaria de la conexión: '
+                f'{keywords & forbidden}',
+            )
+            # A bare TruncDate takes no tzinfo, so any call to it must pass one.
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and getattr(node.func, 'id', '') == 'TruncDate'
+                ):
+                    self.assertTrue(
+                        any(kw.arg == 'tzinfo' for kw in node.keywords),
+                        f'{module.__name__}: TruncDate sin tzinfo explícito',
+                    )
+
+    def test_two_tenants_report_their_own_days(self):
+        """End to end: each dashboard answers with its own local date."""
+        for company in (self.lima, self.tokyo):
+            user, _ = _p2d_member(
+                company, f'c11_tz_{company.slug[-5:]}',
+                ['company.view', _C1_ANALYTICS],
+            )
+            client = APIClient()
+            client.force_authenticate(user=user)
+            res = client.get('/api/admin/sales/dashboard/')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            from .sales_analytics_views import _company_today
+
+            self.assertEqual(res.data['today'], _company_today(company).isoformat())
+            self.assertEqual(res.data['timezone'], str(company.settings.timezone))
+
+
+def _timezone_utc():
+    import datetime as _dt
+
+    return _dt.timezone.utc
+
+
+class C11ConsentTest(TestCase):
+    """§18 — acceptance is asserted by a person, not inferred from the sale."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c11-consent', 'Empresa Consent')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Consent')
+        _c1_stock(self.branch, self.product, 10)
+        self.seller, _ = _p2d_member(
+            self.company, 'c11_consent_seller', ['company.view', _C1_POS],
+        )
+
+    def _sell(self, **kw):
+        kw.setdefault('payment_method', PaymentMethod.CARD)
+        return _pos.create_pos_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            idempotency_key='consent-key-0001', **kw,
+        )
+
+    def test_a_sale_without_confirmation_is_refused(self):
+        """
+        Handing the article over does not prove anybody was told anything. The
+        first version recorded acceptance automatically, which put a statement on
+        the order that nobody had made.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell()
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_falsey_confirmation_is_refused(self):
+        for value in (False, None, 0, '', 'false'):
+            with self.assertRaises(_pos.PosValidationError):
+                self._sell(terms_confirmed=value)
+
+    def test_confirmation_records_acceptance(self):
+        order, _ = self._sell(terms_confirmed=True)
+        self.assertTrue(order.accepted_terms)
+        self.assertTrue(order.accepted_warranty_policy)
+        # And the trail names who asserted it.
+        self.assertEqual(order.sold_by, self.seller)
+
+    def test_the_endpoint_refuses_without_the_flag(self):
+        client = APIClient()
+        client.force_authenticate(user=self.seller)
+        res = client.post('/api/admin/pos/sales/', {
+            'branch': self.branch.pk,
+            'items': [{'product': self.product.pk, 'quantity': 1}],
+            'idempotency_key': 'consent-endpoint-key',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+
+# ===========================================================================
+# C1.2 — customers, sellers, commissions, discounts, cash
+# ===========================================================================
+
+from .models import (  # noqa: E402
+    Coupon as _Coupon,
+    DiscountSource,
+    SalesCommission,
+)
+
+_C12_ASSIGN = 'sales.pos.assign_seller'
+_C12_DISCOUNT = 'sales.discounts.apply'
+_C12_COMM_VIEW = 'sales.commissions.view'
+_C12_COMM_MANAGE = 'sales.commissions.manage'
+
+
+def _c12_rate(company, user, percent):
+    m = Membership.objects.get(company=company, user=user)
+    m.commission_rate_percent = Decimal(str(percent))
+    m.save(update_fields=['commission_rate_percent', 'updated_at'])
+    return m
+
+
+class C12SellerTest(TestCase):
+    """§9–14, §71 — the operator and the seller are two different people."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-seller', 'Empresa Seller')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Seller', '100.00')
+        _c1_stock(self.branch, self.product, 20)
+        self.cashier, _ = _p2d_member(self.company, 'c12_cashier', ['company.view', _C1_POS])
+        self.supervisor, _ = _p2d_member(
+            self.company, 'c12_supervisor', ['company.view', _C1_POS, _C12_ASSIGN],
+        )
+        self.colleague, _ = _p2d_member(self.company, 'c12_colleague', ['company.view', _C1_POS])
+
+    def _sell(self, actor, **kw):
+        kw.setdefault('may_assign_seller', False)
+        return _c1_sale(
+            actor=actor, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}], **kw,
+        )
+
+    def test_the_seller_defaults_to_whoever_is_at_the_till(self):
+        """Nobody should have to pick themselves off a list for every sale."""
+        order, _ = self._sell(self.cashier)
+        self.assertEqual(order.sold_by, self.cashier)
+
+    def test_a_supervisor_can_credit_a_colleague(self):
+        """
+        A supervisor ringing up a sale a colleague made is an ordinary shop.
+        Without this, the attribution is lost or staff share logins.
+        """
+        order, _ = self._sell(
+            self.supervisor, seller_id=self.colleague.pk, may_assign_seller=True,
+        )
+        self.assertEqual(order.sold_by, self.colleague)
+
+    def test_a_cashier_cannot_credit_somebody_else(self):
+        """It moves money: without the gate anyone could credit anyone."""
+        with self.assertRaises(_pos.PosPermissionError):
+            self._sell(self.cashier, seller_id=self.colleague.pk)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_naming_yourself_needs_no_permission(self):
+        order, _ = self._sell(self.cashier, seller_id=self.cashier.pk)
+        self.assertEqual(order.sold_by, self.cashier)
+
+    def test_a_seller_from_another_company_is_not_found(self):
+        other = _p3_company('c12-seller-b', 'Empresa Seller B')
+        outsider, _ = _p2d_member(other, 'c12_outsider', ['company.view', _C1_POS])
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(self.supervisor, seller_id=outsider.pk, may_assign_seller=True)
+
+    def test_an_inactive_membership_cannot_be_credited(self):
+        membership = Membership.objects.get(company=self.company, user=self.colleague)
+        membership.is_active = False
+        membership.save(update_fields=['is_active'])
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(self.supervisor, seller_id=self.colleague.pk, may_assign_seller=True)
+
+    def test_the_seller_name_is_frozen_on_the_order(self):
+        """
+        §14. `sold_by` can become NULL if the account is removed, and a ledger
+        that forgets whose money it was is not a ledger.
+        """
+        self.colleague.first_name = 'Ana'
+        self.colleague.last_name = 'Quispe'
+        self.colleague.save()
+        order, _ = self._sell(
+            self.supervisor, seller_id=self.colleague.pk, may_assign_seller=True,
+        )
+        self.assertEqual(order.seller_name_snapshot, 'Ana Quispe')
+
+        self.colleague.first_name = 'Anabel'
+        self.colleague.save()
+        order.refresh_from_db()
+        self.assertEqual(order.seller_name_snapshot, 'Ana Quispe')
+
+    def test_the_audit_records_both_the_operator_and_the_seller(self):
+        AdminAuditLog.objects.all().delete()
+        self._sell(self.supervisor, seller_id=self.colleague.pk, may_assign_seller=True)
+        entry = AdminAuditLog.objects.filter(action='pos_sale_completed').first()
+        self.assertEqual(entry.actor, self.supervisor)
+        self.assertEqual(entry.metadata['seller_id'], self.colleague.pk)
+        self.assertTrue(entry.metadata['reassigned_seller'])
+
+
+class C12CommissionTest(TestCase):
+    """§15–22, §72–73 — the obligation, frozen at the sale."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-comm', 'Empresa Comisión')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Comisión', '100.00')
+        _c1_stock(self.branch, self.product, 100)
+        self.seller, _ = _p2d_member(
+            self.company, 'c12_comm_seller',
+            ['company.view', _C1_POS, _C12_DISCOUNT],
+        )
+
+    def _sell(self, quantity=10, **kw):
+        kw.setdefault('may_apply_manual_discount', True)
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': quantity}], **kw,
+        )
+
+    def test_commission_is_on_the_net_sale(self):
+        """
+        §72: subtotal 1000, discount 100, rate 5% → base 900, commission 45.00.
+
+        The discount comes off FIRST. Paying a percentage of money the shop
+        never collected would make every discount cost more than it appears to.
+        """
+        _c12_rate(self.company, self.seller, '5.00')
+        order, _ = self._sell(
+            quantity=10,
+            manual_discount_type='amount', manual_discount_value='100',
+            discount_reason='cliente frecuente',
+        )
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(order.total, Decimal('900.00'))
+        self.assertEqual(commission.base_amount, Decimal('900.00'))
+        self.assertEqual(commission.amount, Decimal('45.00'))
+        self.assertEqual(commission.rate_percent, Decimal('5.00'))
+        self.assertEqual(commission.status, SalesCommission.STATUS_ACCRUED)
+
+    def test_commission_after_a_coupon(self):
+        """§73: 100 − 10% coupon = 90; 5% of that is 4.50, not 5.00."""
+        _c12_rate(self.company, self.seller, '5.00')
+        _Coupon.objects.create(company=self.company, code='DIEZ', discount_percent=10)
+        order, _ = self._sell(quantity=1, coupon_code='DIEZ')
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(order.total, Decimal('90.00'))
+        self.assertEqual(commission.amount, Decimal('4.50'))
+
+    def test_a_rate_change_does_not_rewrite_history(self):
+        """
+        §17, §72. The company agreed to pay 5% for those sales. Recomputing
+        them from today's rate would restate a debt after the fact.
+        """
+        _c12_rate(self.company, self.seller, '5.00')
+        order, _ = self._sell(quantity=10)
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(commission.amount, Decimal('50.00'))
+
+        _c12_rate(self.company, self.seller, '8.00')
+        commission.refresh_from_db()
+        self.assertEqual(commission.amount, Decimal('50.00'))
+        self.assertEqual(commission.rate_percent, Decimal('5.00'))
+
+    def test_a_zero_rate_writes_no_row(self):
+        """
+        §22. A ledger lists obligations, and "nothing is owed" is not one. A
+        table of zeros would have to be filtered out of every report.
+        """
+        _c12_rate(self.company, self.seller, '0.00')
+        order, _ = self._sell(quantity=1)
+        self.assertFalse(SalesCommission.objects.filter(order=order).exists())
+
+    def test_the_rate_belongs_to_the_employment_not_the_person(self):
+        """
+        §16. The same human sells for two businesses on different terms, so a
+        rate on `User` could not express the truth.
+        """
+        other = _p3_company('c12-comm-b', 'Empresa Comisión B')
+        Membership.objects.create(
+            user=self.seller, company=other, role='sales', is_active=True,
+            commission_rate_percent=Decimal('9.00'),
+        )
+        _c12_rate(self.company, self.seller, '3.00')
+        self.assertEqual(
+            _pos.commission_rate_for(self.company, self.seller), Decimal('3.00'),
+        )
+        self.assertEqual(_pos.commission_rate_for(other, self.seller), Decimal('9.00'))
+
+    def test_the_seller_name_is_frozen_on_the_commission(self):
+        _c12_rate(self.company, self.seller, '5.00')
+        self.seller.first_name = 'Rosa'
+        self.seller.last_name = 'Mendoza'
+        self.seller.save()
+        order, _ = self._sell(quantity=1)
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(commission.seller_name_snapshot, 'Rosa Mendoza')
+
+    def test_one_commission_per_order(self):
+        from django.db import IntegrityError, transaction
+
+        _c12_rate(self.company, self.seller, '5.00')
+        order, _ = self._sell(quantity=1)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                SalesCommission.objects.create(
+                    company=self.company, order=order, seller=self.seller,
+                    rate_percent=Decimal('5.00'), base_amount=Decimal('1.00'),
+                    amount=Decimal('0.05'),
+                )
+
+    def test_an_online_order_generates_no_commission(self):
+        """§58 — nobody sold it, so nobody is owed for it."""
+        online = _p3_order(self.company)
+        self.assertIsNone(online.sold_by_id)
+        self.assertFalse(SalesCommission.objects.filter(order=online).exists())
+
+    def test_a_failed_sale_leaves_no_commission(self):
+        """
+        §55. The commission is inside the same transaction: a ledger entry for
+        a sale that did not happen is worse than no entry at all.
+        """
+        _c12_rate(self.company, self.seller, '5.00')
+        # Above the 100 units on the shelf, below the per-line cap — so the
+        # failure is the shelf, which is what this test is about.
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            self._sell(quantity=500)
+        self.assertEqual(SalesCommission.objects.count(), 0)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+
+class C12DiscountTest(TestCase):
+    """§29–38, §74–76 — where money comes off, and on whose authority."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-disc', 'Empresa Descuento')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Descuento', '100.00')
+        _c1_stock(self.branch, self.product, 50)
+        self.cashier, _ = _p2d_member(self.company, 'c12_disc_cashier', ['company.view', _C1_POS])
+        self.manager, _ = _p2d_member(
+            self.company, 'c12_disc_manager', ['company.view', _C1_POS, _C12_DISCOUNT],
+        )
+
+    def _sell(self, actor, may_discount=False, **kw):
+        return _c1_sale(
+            actor=actor, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            may_apply_manual_discount=may_discount, **kw,
+        )
+
+    def test_a_coupon_needs_no_special_permission(self):
+        """
+        §33. The company configured that promotion in advance; honouring it is
+        not a decision the cashier is making.
+        """
+        _Coupon.objects.create(company=self.company, code='PROMO', discount_percent=20)
+        order, _ = self._sell(self.cashier, coupon_code='PROMO')
+        self.assertEqual(order.total, Decimal('80.00'))
+        self.assertEqual(order.discount_amount, Decimal('20.00'))
+        self.assertEqual(order.discount_source, DiscountSource.COUPON)
+        self.assertEqual(order.coupon_code, 'PROMO')
+
+    def test_a_manual_discount_without_permission_is_refused(self):
+        """
+        §74 — typing a price is a decision, not part of working a till.
+
+        A PERMISSION error, not a validation one: the request is well-formed,
+        this caller may simply not make it. C1.3 split the two so the endpoint
+        can answer 403 instead of sending an operator hunting for a typo.
+        """
+        with self.assertRaises(_pos.PosPermissionError):
+            self._sell(
+                self.cashier, manual_discount_type='percent',
+                manual_discount_value='10', discount_reason='amigo',
+            )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_manual_discount_with_permission_works(self):
+        order, _ = self._sell(
+            self.manager, may_discount=True, manual_discount_type='percent',
+            manual_discount_value='10', discount_reason='producto con detalle',
+        )
+        self.assertEqual(order.discount_amount, Decimal('10.00'))
+        self.assertEqual(order.total, Decimal('90.00'))
+        self.assertEqual(order.discount_source, DiscountSource.MANUAL)
+        self.assertEqual(order.discount_reason, 'producto con detalle')
+        self.assertEqual(order.discount_authorized_by, self.manager)
+
+    def test_a_manual_discount_needs_a_reason(self):
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(
+                self.manager, may_discount=True, manual_discount_type='amount',
+                manual_discount_value='10', discount_reason='',
+            )
+
+    def test_a_discount_cannot_exceed_the_subtotal(self):
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(
+                self.manager, may_discount=True, manual_discount_type='amount',
+                manual_discount_value='500', discount_reason='exagerado',
+            )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_percentage_outside_its_range_is_refused(self):
+        for bad in ('0', '-5', '101'):
+            with self.assertRaises(_pos.DiscountError):
+                self._sell(
+                    self.manager, may_discount=True, manual_discount_type='percent',
+                    manual_discount_value=bad, discount_reason='x',
+                )
+
+    def test_a_coupon_and_a_manual_discount_together_are_refused(self):
+        """
+        §76. Stacking is a business policy with rules — which applies first,
+        whether they compound, what the floor is. Guessing one here would bake
+        an unexamined policy into a till.
+        """
+        _Coupon.objects.create(company=self.company, code='PROMO', discount_percent=10)
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(
+                self.manager, may_discount=True, coupon_code='PROMO',
+                manual_discount_type='percent', manual_discount_value='5',
+                discount_reason='ambos',
+            )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 0,
+        )
+
+    def test_another_companys_coupon_is_not_found(self):
+        """§75 — the same code may exist in two tenants, independently."""
+        other = _p3_company('c12-disc-b', 'Empresa Descuento B')
+        _Coupon.objects.create(company=other, code='AJENO', discount_percent=50)
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(self.cashier, coupon_code='AJENO')
+
+    def test_an_expired_coupon_is_refused(self):
+        _Coupon.objects.create(
+            company=self.company, code='VIEJO', discount_percent=10,
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(self.cashier, coupon_code='VIEJO')
+
+    def test_an_inactive_coupon_is_refused(self):
+        _Coupon.objects.create(
+            company=self.company, code='APAGADO', discount_percent=10, is_active=False,
+        )
+        with self.assertRaises(_pos.DiscountError):
+            self._sell(self.cashier, coupon_code='APAGADO')
+
+    def test_a_discount_does_not_change_what_leaves_the_shelf(self):
+        """§56 — money changed, goods did not. Two sold is two out."""
+        order, _ = _c1_sale(
+            actor=self.manager, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 2}],
+            may_apply_manual_discount=True, manual_discount_type='percent',
+            manual_discount_value='50', discount_reason='promoción presencial',
+        )
+        exit_movement = StockMovement.objects.get(
+            order=order, movement_type=StockMovement.SALE_EXIT,
+        )
+        self.assertEqual(exit_movement.quantity, 2)
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 48,
+        )
+
+    def test_a_manual_discount_is_audited_separately(self):
+        AdminAuditLog.objects.all().delete()
+        self._sell(
+            self.manager, may_discount=True, manual_discount_type='percent',
+            manual_discount_value='10', discount_reason='autorización comercial',
+        )
+        entry = AdminAuditLog.objects.filter(action='pos_manual_discount_applied').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.actor, self.manager)
+        self.assertEqual(entry.metadata['reason'], 'autorización comercial')
+
+
+class C12CashTest(TestCase):
+    """§43–47, §77 — cash, change, and what "not cash" means."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-cash', 'Empresa Efectivo')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Efectivo', '90.00')
+        _c1_stock(self.branch, self.product, 20)
+        self.seller, _ = _p2d_member(self.company, 'c12_cash_seller', ['company.view', _C1_POS])
+
+    def _sell(self, **kw):
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}], **kw,
+        )
+
+    def test_change_is_calculated_by_the_server(self):
+        order, _ = self._sell(payment_method='cash', amount_received='100')
+        self.assertEqual(order.amount_received, Decimal('100.00'))
+        self.assertEqual(order.change_amount, Decimal('10.00'))
+
+    def test_not_enough_cash_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method='cash', amount_received='80')
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 0,
+        )
+
+    def test_cash_is_required_for_a_cash_sale(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method='cash', amount_received=None)
+
+    def test_exact_payment_gives_no_change(self):
+        order, _ = self._sell(payment_method='cash', amount_received='90')
+        self.assertEqual(order.change_amount, Decimal('0.00'))
+
+    def test_a_card_sale_records_no_cash(self):
+        """
+        §46. Writing zero would make "paid the exact amount in cash"
+        indistinguishable from "did not pay in cash".
+        """
+        order, _ = self._sell(payment_method='card')
+        self.assertIsNone(order.amount_received)
+        self.assertIsNone(order.change_amount)
+
+    def test_a_payment_reference_is_stored(self):
+        order, _ = self._sell(payment_method='transfer', payment_reference='OP-4471')
+        self.assertEqual(order.payment_reference, 'OP-4471')
+
+    def test_money_is_decimal_not_float(self):
+        """A third of a cent lost per sale is a ledger that never reconciles."""
+        received, change = _pos.resolve_cash('cash', Decimal('33.33'), '100')
+        self.assertIsInstance(change, Decimal)
+        self.assertEqual(change, Decimal('66.67'))
+
+
+class C12CustomerAndIdempotencyTest(TestCase):
+    """§70, §78 — the customer on the sale, and what makes a sale "the same"."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c12-cust', 'Empresa Cliente')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Cliente', '100.00')
+        _c1_stock(self.branch, self.product, 50)
+        self.seller, _ = _p2d_member(
+            self.company, 'c12_cust_seller',
+            ['company.view', _C1_POS, _C12_ASSIGN, _C12_DISCOUNT],
+        )
+        self.other_seller, _ = _p2d_member(
+            self.company, 'c12_cust_other', ['company.view', _C1_POS],
+        )
+        self.customer = _p4_customer(
+            self.company, first_name='Ana', last_name='Quispe',
+            phone='+51999111222', email='ana@example.invalid',
+            document_type='dni', document_number='12345678',
+        )
+
+    def _sell(self, **kw):
+        kw.setdefault('may_assign_seller', True)
+        kw.setdefault('may_apply_manual_discount', True)
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}], **kw,
+        )
+
+    def test_a_counter_sale_may_be_anonymous(self):
+        order, _ = self._sell()
+        self.assertIsNone(order.customer_id)
+
+    def test_a_selected_customer_is_snapshotted(self):
+        """
+        §8. `Order.customer` is who they are now; the `customer_*` fields are
+        who they were when they bought.
+        """
+        order, _ = self._sell(customer=self.customer.pk)
+        self.assertEqual(order.customer, self.customer)
+        self.assertEqual(order.customer_name, 'Ana Quispe')
+        self.assertEqual(order.document_number, '12345678')
+
+        self.customer.phone = '+51999000000'
+        self.customer.first_name = 'Anabel'
+        self.customer.save()
+        order.refresh_from_db()
+        self.assertEqual(order.customer_phone, '+51999111222')
+        self.assertEqual(order.customer_name, 'Ana Quispe')
+
+    def test_another_companys_customer_is_not_found(self):
+        other = _p3_company('c12-cust-b', 'Empresa Cliente B')
+        foreign = _p4_customer(other, first_name='Ajeno')
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(customer=foreign.pk)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_an_archived_customer_is_not_selectable(self):
+        self.customer.is_active = False
+        self.customer.save()
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(customer=self.customer.pk)
+
+    # -- idempotency ------------------------------------------------------
+
+    def test_the_same_key_and_the_same_sale_returns_it(self):
+        first, c1 = self._sell(idempotency_key='c12-same-0001', customer=self.customer.pk)
+        second, c2 = self._sell(idempotency_key='c12-same-0001', customer=self.customer.pk)
+        self.assertTrue(c1)
+        self.assertFalse(c2)
+        self.assertEqual(first.pk, second.pk)
+
+    def test_changing_the_seller_makes_it_a_different_sale(self):
+        """
+        §42. Without the seller in the fingerprint, a retry with a different
+        seller would return the earlier order and report success while the
+        commission stayed with the wrong person.
+        """
+        self._sell(idempotency_key='c12-seller-key1', seller_id=self.seller.pk)
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(idempotency_key='c12-seller-key1', seller_id=self.other_seller.pk)
+
+    def test_changing_the_customer_makes_it_a_different_sale(self):
+        other = _p4_customer(self.company, first_name='Otro', last_name='Cliente')
+        self._sell(idempotency_key='c12-cust-key1', customer=self.customer.pk)
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(idempotency_key='c12-cust-key1', customer=other.pk)
+
+    def test_changing_the_discount_makes_it_a_different_sale(self):
+        self._sell(idempotency_key='c12-disc-key1')
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(
+                idempotency_key='c12-disc-key1', manual_discount_type='percent',
+                manual_discount_value='10', discount_reason='cambio',
+            )
+
+    def test_changing_the_coupon_makes_it_a_different_sale(self):
+        _Coupon.objects.create(company=self.company, code='C12A', discount_percent=5)
+        _Coupon.objects.create(company=self.company, code='C12B', discount_percent=15)
+        self._sell(idempotency_key='c12-coup-key1', coupon_code='C12A')
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(idempotency_key='c12-coup-key1', coupon_code='C12B')
+
+    def test_changing_the_notes_makes_it_a_different_sale(self):
+        self._sell(idempotency_key='c12-note-key1', sale_notes='primera')
+        with self.assertRaises(_pos.PosIdempotencyConflict):
+            self._sell(idempotency_key='c12-note-key1', sale_notes='segunda')
+
+    def test_optional_fields_are_stored(self):
+        order, _ = self._sell(
+            sale_notes='Cliente pidió factura después.',
+            external_reference='ORD-EXT-99',
+            payment_method='transfer', payment_reference='OP-123',
+        )
+        self.assertEqual(order.sale_notes, 'Cliente pidió factura después.')
+        self.assertEqual(order.external_reference, 'ORD-EXT-99')
+        self.assertEqual(order.payment_reference, 'OP-123')
+
+
+class C12ApiTest(TestCase):
+    """§40, §79 — the endpoints, and what a caller cannot reach through them."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c12-api-a', 'Empresa API A')
+        self.b = _p3_company('c12-api-b', 'Empresa API B')
+        self.pa = _c1_product(self.a, 'Producto API A', '100.00')
+        self.pb = _c1_product(self.b, 'Producto API B', '100.00')
+        _c1_stock(self.a.default_inventory_branch, self.pa, 50)
+        _c1_stock(self.b.default_inventory_branch, self.pb, 50)
+
+        self.cashier, _ = _p2d_member(self.a, 'c12_api_cashier', ['company.view', _C1_POS])
+        self.admin, _ = _p2d_member(
+            self.a, 'c12_api_admin',
+            ['company.view', _C1_POS, _C12_ASSIGN, _C12_DISCOUNT,
+             _C12_COMM_VIEW, _C12_COMM_MANAGE],
+        )
+        self.customer_b = _p4_customer(self.b, first_name='Ajeno')
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _body(self, **kw):
+        body = {
+            'branch': self.a.default_inventory_branch.pk,
+            'items': [{'product': self.pa.pk, 'quantity': 1}],
+            'payment_method': 'card',
+        }
+        body.update(kw)
+        return body
+
+    # -- preview ----------------------------------------------------------
+
+    def test_the_preview_prices_without_writing_anything(self):
+        res = self._as(self.cashier).post(
+            '/api/admin/pos/preview/', self._body(), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(res.data['total']), Decimal('100.00'))
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_the_preview_applies_a_coupon(self):
+        _Coupon.objects.create(company=self.a, code='PRE10', discount_percent=10)
+        res = self._as(self.cashier).post(
+            '/api/admin/pos/preview/', self._body(coupon_code='PRE10'), format='json',
+        )
+        self.assertEqual(Decimal(res.data['discount']), Decimal('10.00'))
+        self.assertEqual(Decimal(res.data['total']), Decimal('90.00'))
+        self.assertEqual(res.data['discount_source'], 'coupon')
+
+    def test_the_preview_refuses_what_the_sale_would_refuse(self):
+        """A preview that showed a total the charge then declined is worse than
+        no preview."""
+        res = self._as(self.cashier).post(
+            '/api/admin/pos/preview/',
+            self._body(manual_discount_type='percent', manual_discount_value='10',
+                       discount_reason='sin permiso'),
+            format='json',
+        )
+        # 403: the basket is fine, this cashier may not discount it.
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_the_preview_hides_commission_without_permission(self):
+        _c12_rate(self.a, self.cashier, '5.00')
+        res = self._as(self.cashier).post(
+            '/api/admin/pos/preview/', self._body(), format='json',
+        )
+        self.assertIsNone(res.data['commission'])
+
+        res = self._as(self.admin).post(
+            '/api/admin/pos/preview/', self._body(), format='json',
+        )
+        self.assertIsNotNone(res.data['commission'])
+
+    # -- context ----------------------------------------------------------
+
+    def test_the_context_reports_what_this_operator_may_do(self):
+        cashier = self._as(self.cashier).get('/api/admin/pos/context/').data
+        self.assertFalse(cashier['can_assign_seller'])
+        self.assertFalse(cashier['can_apply_discount'])
+        # A list of colleagues is staffing information.
+        self.assertEqual(cashier['sellers'], [])
+
+        admin = self._as(self.admin).get('/api/admin/pos/context/').data
+        self.assertTrue(admin['can_assign_seller'])
+        self.assertTrue(admin['can_apply_discount'])
+        self.assertTrue(admin['sellers'])
+
+    # -- cross tenant -----------------------------------------------------
+
+    def test_a_foreign_customer_seller_coupon_or_product_is_refused(self):
+        client = self._as(self.admin)
+        seller_b, _ = _p2d_member(self.b, 'c12_seller_b', ['company.view', _C1_POS])
+        _Coupon.objects.create(company=self.b, code='AJENO', discount_percent=50)
+
+        for label, body in (
+            ('customer', self._body(customer=self.customer_b.pk)),
+            ('seller', self._body(seller=seller_b.pk)),
+            ('coupon', self._body(coupon_code='AJENO')),
+            ('product', self._body(items=[{'product': self.pb.pk, 'quantity': 1}])),
+            ('branch', self._body(branch=self.b.default_inventory_branch.pk)),
+        ):
+            res = client.post(
+                '/api/admin/pos/sales/',
+                {**body, 'idempotency_key': f'cross-{label}-key', 'terms_confirmed': True},
+                format='json',
+            )
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN,
+                 status.HTTP_404_NOT_FOUND),
+                label,
+            )
+            self.assertLess(res.status_code, 500, label)
+        self.assertEqual(Order.objects.count(), 0)
+
+    # -- commissions ------------------------------------------------------
+
+    def test_commissions_require_their_own_capability(self):
+        for path in ('/api/admin/sales/commissions/',
+                     '/api/admin/sales/commission-settings/'):
+            self.assertEqual(
+                self._as(self.cashier).get(path).status_code,
+                status.HTTP_403_FORBIDDEN, path,
+            )
+            self.assertEqual(
+                self._as(self.admin).get(path).status_code, status.HTTP_200_OK, path,
+            )
+
+    def test_an_admin_configures_a_rate(self):
+        membership = Membership.objects.get(company=self.a, user=self.cashier)
+        res = self._as(self.admin).patch(
+            f'/api/admin/sales/commission-settings/{membership.pk}/',
+            {'commission_rate_percent': '7.50'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        membership.refresh_from_db()
+        self.assertEqual(membership.commission_rate_percent, Decimal('7.50'))
+
+        entry = AdminAuditLog.objects.filter(action='commission_rate_changed').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.metadata['to'], '7.50')
+
+    def test_a_rate_outside_its_range_is_refused(self):
+        membership = Membership.objects.get(company=self.a, user=self.cashier)
+        for bad in ('-1', '101', 'abc'):
+            res = self._as(self.admin).patch(
+                f'/api/admin/sales/commission-settings/{membership.pk}/',
+                {'commission_rate_percent': bad}, format='json',
+            )
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, bad)
+
+    def test_another_companys_membership_is_not_configurable(self):
+        seller_b, _ = _p2d_member(self.b, 'c12_conf_b', ['company.view'])
+        membership_b = Membership.objects.get(company=self.b, user=seller_b)
+        res = self._as(self.admin).patch(
+            f'/api/admin/sales/commission-settings/{membership_b.pk}/',
+            {'commission_rate_percent': '99'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        membership_b.refresh_from_db()
+        self.assertEqual(membership_b.commission_rate_percent, Decimal('0.00'))
+
+    def test_the_commission_report_reads_the_ledger_not_the_current_rate(self):
+        """
+        §27, §64. A seller moved from 5% to 20% is owed 5% on what they already
+        sold; recomputing from today's rate would restate a settled debt.
+        """
+        _c12_rate(self.a, self.admin, '5.00')
+        _c1_sale(
+            actor=self.admin, company=self.a, branch=self.a.default_inventory_branch,
+            items=[{'product': self.pa.pk, 'quantity': 10}],
+        )
+        _c12_rate(self.a, self.admin, '20.00')
+
+        res = self._as(self.admin).get('/api/admin/sales/commissions/')
+        row = res.data['results'][0]
+        self.assertEqual(Decimal(row['commission']), Decimal('50.00'))
+        self.assertEqual(row['current_rate_percent'], '20.00')
+
+    def test_anonymous_is_refused_everywhere(self):
+        for path in ('/api/admin/pos/preview/', '/api/admin/sales/commissions/',
+                     '/api/admin/sales/commission-settings/'):
+            res = APIClient().get(path)
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN,
+                 status.HTTP_405_METHOD_NOT_ALLOWED),
+                path,
+            )
+
+
+# ===========================================================================
+# C1.3 — hardening: intent fingerprint, seller eligibility, discount history
+# ===========================================================================
+
+class C13FingerprintTest(TestCase):
+    """
+    §6–7 — the fingerprint hashes the REQUEST, not what the catalogue made of it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-fp', 'Empresa Huella')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Huella', '100.00')
+        _c1_stock(self.branch, self.product, 50)
+        self.seller, _ = _p2d_member(
+            self.company, 'c13_fp_seller',
+            ['company.view', _C1_POS, _C12_DISCOUNT],
+        )
+
+    def _fp(self, **kw):
+        base = dict(
+            company=self.company, branch=self.branch,
+            customer_id=None, seller_id=None, payment_method='card',
+            items=[{'product': self.product.pk, 'quantity': 1}],
+        )
+        base.update(kw)
+        return _pos.request_fingerprint(**base)
+
+    def test_a_price_change_does_not_change_the_fingerprint(self):
+        """
+        THE DEFECT THIS FIXES. The old fingerprint hashed the RESOLVED discount,
+        so a retry after any catalogue edit hashed differently and was refused
+        as a conflict — telling an operator their own sale collided with itself.
+        """
+        before = self._fp()
+        self.product.price = Decimal('999.00')
+        self.product.save()
+        self.assertEqual(before, self._fp())
+
+    def test_editing_a_coupon_does_not_change_the_fingerprint(self):
+        coupon = _Coupon.objects.create(
+            company=self.company, code='FPC', discount_percent=10,
+        )
+        before = self._fp(coupon_code='FPC')
+        coupon.discount_percent = 40
+        coupon.save()
+        self.assertEqual(before, self._fp(coupon_code='FPC'))
+
+        # And deactivating it entirely still does not.
+        coupon.is_active = False
+        coupon.save()
+        self.assertEqual(before, self._fp(coupon_code='FPC'))
+
+    def test_the_coupon_code_is_normalised_but_still_significant(self):
+        self.assertEqual(self._fp(coupon_code='promo'), self._fp(coupon_code=' PROMO '))
+        self.assertNotEqual(self._fp(coupon_code='PROMO'), self._fp(coupon_code='OTRO'))
+
+    def test_numbers_hash_the_same_however_they_were_serialised(self):
+        """
+        `100`, `100.0` and `'100.00'` are one amount. Without normalising, a
+        retry from a different client path would look like a different sale.
+        """
+        self.assertEqual(self._fp(amount_received=100), self._fp(amount_received='100.00'))
+        self.assertEqual(
+            self._fp(manual_discount_value=10), self._fp(manual_discount_value='10.0'),
+        )
+
+    def test_the_cash_tendered_is_part_of_the_request(self):
+        """
+        §7. Without it, a retry handing over a different note would be answered
+        with the earlier sale and the change would be wrong.
+        """
+        self.assertNotEqual(
+            self._fp(amount_received='100'), self._fp(amount_received='200'),
+        )
+
+    def test_every_typed_field_is_significant(self):
+        baseline = self._fp()
+        for field, value in (
+            ('customer_id', 7), ('seller_id', 9), ('payment_method', 'cash'),
+            ('coupon_code', 'X10'), ('manual_discount_type', 'percent'),
+            ('manual_discount_value', '5'), ('discount_reason', 'motivo'),
+            ('amount_received', '500'), ('payment_reference', 'OP-1'),
+            ('external_reference', 'EXT-1'), ('sale_notes', 'nota'),
+            ('terms_confirmed', True),
+        ):
+            self.assertNotEqual(baseline, self._fp(**{field: value}), field)
+
+    def test_it_hashes_no_derived_money(self):
+        """
+        Structural: the payload must not name a computed amount. Those change
+        when an admin edits a promotion, and a retry must not depend on that.
+        """
+        import inspect
+
+        source = inspect.getsource(_pos.request_fingerprint)
+        payload = source.split('payload = {')[1].split('}')[0]
+        for derived in ('discount_amount', 'discount_percent', 'commission',
+                        'subtotal', 'total', "'price'"):
+            self.assertNotIn(derived, payload, derived)
+
+    def test_a_retry_after_a_price_change_returns_the_original_sale(self):
+        """End to end: the money already charged is what comes back."""
+        first, created = _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD, idempotency_key='c13-retry-0001',
+        )
+        self.assertTrue(created)
+        self.assertEqual(first.total, Decimal('100.00'))
+
+        self.product.price = Decimal('500.00')
+        self.product.save()
+
+        second, created_again = _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD, idempotency_key='c13-retry-0001',
+        )
+        self.assertFalse(created_again)
+        self.assertEqual(second.pk, first.pk)
+        self.assertEqual(second.total, Decimal('100.00'))
+
+    def test_a_retry_is_answered_without_re_pricing(self):
+        """
+        §6: the existing sale is found BEFORE anything is resolved, so a retry
+        cannot fail on a coupon that expired or a permission that was revoked
+        in the meantime.
+        """
+        import inspect
+
+        source = inspect.getsource(_pos.create_pos_sale)
+        fingerprint_at = source.index('fingerprint = request_fingerprint')
+        lookup_at = source.index('_existing_for_key(company, idempotency_key)')
+        priced_at = source.index('priced = build_pos_sale')
+        self.assertLess(fingerprint_at, lookup_at)
+        self.assertLess(lookup_at, priced_at, 'se resuelven precios antes de mirar la clave')
+
+
+class C13SellerEligibilityTest(TestCase):
+    """§10–12 — who may be credited with a sale, and paid for it."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-elig', 'Empresa Elegible')
+        self.branch = self.company.default_inventory_branch
+        self.other_branch = Branch.objects.create(company=self.company, name='Sucursal 2')
+        self.product = _c1_product(self.company, 'Producto Elegible', '100.00')
+        _c1_stock(self.branch, self.product, 30)
+
+        self.supervisor, _ = _p2d_member(
+            self.company, 'c13_supervisor', ['company.view', _C1_POS, _C12_ASSIGN],
+        )
+        self.seller, _ = _p2d_member(self.company, 'c13_seller', ['company.view', _C1_POS])
+        # Stock clerk: active membership, no POS capability.
+        self.clerk, _ = _p2d_member(
+            self.company, 'c13_clerk', ['company.view', 'inventory.view', 'inventory.adjust'],
+        )
+
+    def test_a_stock_clerk_is_not_an_eligible_seller(self):
+        """
+        THE DEFECT THIS FIXES. Any active membership used to qualify, so a sale —
+        and a commission — could be credited to somebody never allowed near a
+        till. Commission is money; the bar to receive it is the bar to do the
+        work.
+        """
+        eligible = {m.user_id for m in _pos.eligible_pos_sellers(self.company)}
+        self.assertIn(self.seller.pk, eligible)
+        self.assertIn(self.supervisor.pk, eligible)
+        self.assertNotIn(self.clerk.pk, eligible)
+
+    def test_crediting_a_stock_clerk_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _c1_sale(
+                actor=self.supervisor, company=self.company, branch=self.branch,
+                items=[{'product': self.product.pk, 'quantity': 1}],
+                payment_method=PaymentMethod.CARD,
+                seller_id=self.clerk.pk, may_assign_seller=True,
+            )
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_eligibility_reads_real_capabilities_not_the_role_name(self):
+        """
+        A custom role that grants `sales.pos.use` counts; a role merely NAMED
+        "Ventas" does not. Checking `membership.role == 'sales'` would get both
+        answers wrong.
+        """
+        named, membership = _p2d_member(
+            self.company, 'c13_named_only', ['company.view'],
+        )
+        membership.role = 'sales'
+        membership.save(update_fields=['role'])
+        eligible = {m.user_id for m in _pos.eligible_pos_sellers(self.company)}
+        self.assertNotIn(named.pk, eligible)
+
+    def test_a_seller_without_access_to_that_branch_is_refused(self):
+        """
+        §11. Crediting a sale in one shop to somebody who only works another
+        would pay commission for work they were never in a position to do.
+        """
+        restricted, _ = _p2d_member(
+            self.company, 'c13_restricted', ['company.view', _C1_POS],
+            mode='selected', branches=[self.other_branch],
+        )
+        eligible_here = {
+            m.user_id for m in _pos.eligible_pos_sellers(self.company, self.branch)
+        }
+        self.assertNotIn(restricted.pk, eligible_here)
+
+        eligible_there = {
+            m.user_id for m in _pos.eligible_pos_sellers(self.company, self.other_branch)
+        }
+        self.assertIn(restricted.pk, eligible_there)
+
+        with self.assertRaises(_pos.PosValidationError):
+            _c1_sale(
+                actor=self.supervisor, company=self.company, branch=self.branch,
+                items=[{'product': self.product.pk, 'quantity': 1}],
+                payment_method=PaymentMethod.CARD,
+                seller_id=restricted.pk, may_assign_seller=True,
+            )
+
+    def test_another_companys_member_is_never_eligible(self):
+        other = _p3_company('c13-elig-b', 'Empresa Elegible B')
+        outsider, _ = _p2d_member(other, 'c13_outsider', ['company.view', _C1_POS])
+        eligible = {m.user_id for m in _pos.eligible_pos_sellers(self.company)}
+        self.assertNotIn(outsider.pk, eligible)
+
+    def test_the_context_offers_only_eligible_sellers(self):
+        client = APIClient()
+        client.force_authenticate(user=self.supervisor)
+        res = client.get('/api/admin/pos/context/')
+        offered = {s['id'] for s in res.data['sellers']}
+        self.assertIn(self.seller.pk, offered)
+        self.assertNotIn(self.clerk.pk, offered)
+
+    def test_reassigning_without_permission_answers_403(self):
+        client = APIClient()
+        client.force_authenticate(user=self.seller)
+        res = client.post('/api/admin/pos/sales/', {
+            'branch': self.branch.pk,
+            'items': [{'product': self.product.pk, 'quantity': 1}],
+            'payment_method': 'card',
+            'seller': self.supervisor.pk,
+            'terms_confirmed': True,
+            'idempotency_key': 'c13-forbidden-key',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class C13ReferenceValidationTest(TestCase):
+    """§8 — references are refused when too long, never silently shortened."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-ref', 'Empresa Referencia')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Ref', '100.00')
+        _c1_stock(self.branch, self.product, 20)
+        self.seller, _ = _p2d_member(self.company, 'c13_ref_seller', ['company.view', _C1_POS])
+
+    def _sell(self, **kw):
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+            payment_method=PaymentMethod.CARD, **kw,
+        )
+
+    def test_an_overlong_payment_reference_is_refused(self):
+        """
+        Truncating an authorisation code stores something that no longer matches
+        the bank's record, and nobody is told.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_reference='X' * 200)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_an_overlong_external_reference_is_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(external_reference='Y' * 200)
+
+    def test_overlong_notes_are_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(sale_notes='Z' * 2000)
+
+    def test_a_reference_at_the_limit_is_stored_whole(self):
+        exact = 'A' * 100
+        order, _ = self._sell(payment_reference=exact)
+        self.assertEqual(order.payment_reference, exact)
+
+
+class C13DiscountHistoryTest(TestCase):
+    """§5 — repairing what migration 0036 mislabelled."""
+
+    def _module(self):
+        import importlib
+
+        return importlib.import_module(
+            'store.migrations.0038_backfill_historical_discount_source'
+        )
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-hist', 'Empresa Histórica')
+
+    def test_a_coupon_order_mislabelled_as_none_is_repaired(self):
+        """
+        0036 set every historical order to `none`, including the ones that came
+        through checkout with a real coupon. The money was right; the label said
+        the sale had no discount at all.
+        """
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.NONE,
+            discount_amount=Decimal('10.00'),
+            coupon_code='VERANO',
+        )
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.COUPON)
+
+    def test_a_discount_with_no_coupon_is_left_alone(self):
+        """
+        Labelling it `manual` would invent a decision, and
+        `discount_authorized_by` would be empty — implying somebody authorised
+        it while leaving no trace of who. An honest `none` plus a count beats a
+        plausible fiction.
+        """
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.NONE,
+            discount_amount=Decimal('25.00'),
+            coupon_code='',
+        )
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.NONE)
+
+    def test_an_order_with_no_discount_stays_none(self):
+        order = _p3_order(self.company)
+        self.assertEqual(order.discount_source, DiscountSource.NONE)
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.NONE)
+
+    def test_the_money_is_never_touched(self):
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.NONE,
+            discount_amount=Decimal('10.00'),
+            coupon_code='VERANO',
+            total=Decimal('90.00'),
+        )
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.total, Decimal('90.00'))
+        self.assertEqual(order.discount_amount, Decimal('10.00'))
+        self.assertEqual(order.coupon_code, 'VERANO')
+
+    def test_repairing_twice_changes_nothing_the_second_time(self):
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.NONE,
+            discount_amount=Decimal('10.00'), coupon_code='VERANO',
+        )
+        module = self._module()
+        module.repair(django_apps, None)
+        module.repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.COUPON)
+
+    def test_a_c12_manual_discount_is_not_relabelled(self):
+        """Rows written by C1.2 code are correct by construction."""
+        order = _p3_order(self.company)
+        Order.objects.filter(pk=order.pk).update(
+            discount_source=DiscountSource.MANUAL,
+            discount_amount=Decimal('10.00'), coupon_code='',
+        )
+        self._module().repair(django_apps, None)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_source, DiscountSource.MANUAL)
+
+
+# ===========================================================================
+# C1.3 — automatic promotions and combos
+# ===========================================================================
+
+from . import promotion_services as _promo  # noqa: E402
+from .models import (  # noqa: E402
+    AppliedPromotion,
+    Promotion,
+    PromotionBranch,
+    PromotionItem,
+)
+
+_C13_PROMO_VIEW = 'sales.promotions.view'
+_C13_PROMO_MANAGE = 'sales.promotions.manage'
+
+
+def _c13_combo(company, products, *, fixed_price=None, percent=None, **kw):
+    """A combo of `products` (list of (product, qty))."""
+    promotion = Promotion.objects.create(
+        company=company,
+        name=kw.pop('name', f'Combo {company.slug} {Promotion.objects.count()}'),
+        promotion_type=(
+            Promotion.BUNDLE_FIXED_PRICE if fixed_price is not None
+            else Promotion.BUNDLE_PERCENT
+        ),
+        fixed_price=Decimal(str(fixed_price)) if fixed_price is not None else None,
+        discount_percent=Decimal(str(percent)) if percent is not None else None,
+        **kw,
+    )
+    for product, qty in products:
+        PromotionItem.objects.create(promotion=promotion, product=product, quantity=qty)
+    return promotion
+
+
+class C13PromotionEngineTest(TestCase):
+    """§42–46, §53 — the arithmetic and the consumption rules."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-eng', 'Empresa Motor')
+        self.branch = self.company.default_inventory_branch
+        self.phone = _c1_product(self.company, 'Teléfono', '3000.00')
+        self.case = _c1_product(self.company, 'Funda', '100.00')
+        self.glass = _c1_product(self.company, 'Vidrio', '50.00')
+        for p in (self.phone, self.case, self.glass):
+            _c1_stock(self.branch, p, 50)
+        self.prices = {
+            p.pk: Decimal(str(p.price)) for p in (self.phone, self.case, self.glass)
+        }
+
+    def _basket(self, *pairs):
+        return [{'product': p.pk, 'quantity': q} for p, q in pairs]
+
+    def test_a_fixed_price_combo_discounts_the_difference(self):
+        """§42: 3000 + 100 + 50 = 3150 regular; combo at 3000 saves 150."""
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            fixed_price='3000.00',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1), (self.glass, 1)),
+            self.prices,
+        )
+        self.assertEqual(result['discount'], Decimal('150.00'))
+        entry = result['applied'][0]
+        self.assertEqual(entry['applications'], 1)
+        self.assertEqual(entry['regular_amount'], Decimal('3150.00'))
+
+    def test_a_percentage_combo_discounts_that_share(self):
+        """§43: 10% of 3150."""
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            percent='10.00',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1), (self.glass, 1)),
+            self.prices,
+        )
+        self.assertEqual(result['discount'], Decimal('315.00'))
+
+    def test_an_incomplete_basket_gets_nothing(self):
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            fixed_price='3000.00',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1)),
+            self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+        self.assertEqual(result['discount'], Decimal('0.00'))
+
+    def test_it_applies_as_many_times_as_the_basket_allows(self):
+        """§44: two cables and one charger required, four and two present."""
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 4), (self.glass, 2)),
+            self.prices,
+        )
+        self.assertEqual(result['applied'][0]['applications'], 2)
+        # Regular per set: 2×100 + 50 = 250. Combo 200 → 50 saved, twice.
+        self.assertEqual(result['discount'], Decimal('100.00'))
+
+    def test_the_scarcest_component_bounds_the_count(self):
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 4), (self.glass, 1)),
+            self.prices,
+        )
+        self.assertEqual(result['applied'][0]['applications'], 1)
+
+    def test_a_max_applications_ceiling_is_respected(self):
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='100.00', max_applications_per_order=2,
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 5), (self.glass, 5)),
+            self.prices,
+        )
+        self.assertEqual(result['applied'][0]['applications'], 2)
+
+    def test_leftover_units_stay_at_the_normal_price(self):
+        """
+        §53. A combo needing one of each, against a basket with a spare case —
+        the spare is not discounted, and the combo's own maths is unaffected.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 2), (self.glass, 1)),
+            self.prices,
+        )
+        entry = result['applied'][0]
+        self.assertEqual(entry['applications'], 1)
+        self.assertEqual(entry['regular_amount'], Decimal('150.00'))
+        self.assertEqual(result['discount'], Decimal('50.00'))
+
+    def test_a_combo_priced_above_its_parts_does_not_fire(self):
+        """Charging MORE for buying together would be indefensible."""
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='9999.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_priority_decides_who_takes_the_units(self):
+        """
+        §46. Deterministic, not optimal: the higher priority consumes first and
+        the other finds nothing left. An admin controls the outcome.
+        """
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='100.00', priority=1, name='Baja',
+        )
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='50.00', priority=99, name='Alta',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(len(result['applied']), 1)
+        self.assertEqual(result['applied'][0]['promotion'].name, 'Alta')
+        self.assertEqual(result['discount'], Decimal('100.00'))  # 150 − 50
+
+    def test_the_same_basket_always_gives_the_same_answer(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00', name='A')
+        _c13_combo(self.company, [(self.case, 1), (self.phone, 1)], fixed_price='2900.00', name='B')
+        basket = self._basket((self.case, 1), (self.glass, 1), (self.phone, 1))
+        first = _promo.evaluate(self.company, self.branch, basket, self.prices)
+        second = _promo.evaluate(self.company, self.branch, basket, self.prices)
+        self.assertEqual(
+            [a['promotion'].pk for a in first['applied']],
+            [a['promotion'].pk for a in second['applied']],
+        )
+        self.assertEqual(first['discount'], second['discount'])
+
+    def test_an_inactive_promotion_does_not_fire(self):
+        promotion = _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+        )
+        promotion.is_active = False
+        promotion.save()
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_a_future_promotion_does_not_fire_yet(self):
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+            starts_at=timezone.now() + timedelta(days=7),
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_an_expired_promotion_stops(self):
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+            starts_at=timezone.now() - timedelta(days=30),
+            ends_at=timezone.now() - timedelta(days=1),
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_branch_scope_selected_with_no_branches_fires_nowhere(self):
+        """
+        §39, fail-closed. "No rows means everywhere" would turn deleting the
+        last branch into a silent widening of scope.
+        """
+        promotion = _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+        self.assertFalse(promotion.applies_to_branch(self.branch))
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+    def test_branch_scope_selected_fires_only_where_listed(self):
+        other = Branch.objects.create(company=self.company, name='Sucursal 2')
+        promotion = _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00',
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+        PromotionBranch.objects.create(promotion=promotion, branch=other)
+        self.assertFalse(promotion.applies_to_branch(self.branch))
+        self.assertTrue(promotion.applies_to_branch(other))
+
+    def test_another_companys_promotion_never_applies(self):
+        other = _p3_company('c13-eng-b', 'Empresa Motor B')
+        other_case = _c1_product(other, 'Funda Ajena', '100.00')
+        other_glass = _c1_product(other, 'Vidrio Ajeno', '50.00')
+        _c13_combo(other, [(other_case, 1), (other_glass, 1)], fixed_price='100.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(result['applied'], [])
+
+
+class C13PromotionSaleTest(TestCase):
+    """§41, §47–48, §55–57 — what a promotion does to a real sale."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c13-sale', 'Empresa Venta')
+        self.branch = self.company.default_inventory_branch
+        self.phone = _c1_product(self.company, 'Teléfono V', '3000.00')
+        self.case = _c1_product(self.company, 'Funda V', '100.00')
+        self.glass = _c1_product(self.company, 'Vidrio V', '50.00')
+        for p in (self.phone, self.case, self.glass):
+            _c1_stock(self.branch, p, 20)
+        self.seller, _ = _p2d_member(
+            self.company, 'c13_sale_seller',
+            ['company.view', _C1_POS, _C12_DISCOUNT],
+        )
+        self.promotion = _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            fixed_price='3000.00', name='Combo Protección',
+        )
+
+    def _sell(self, **kw):
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[
+                {'product': self.phone.pk, 'quantity': 1},
+                {'product': self.case.pk, 'quantity': 1},
+                {'product': self.glass.pk, 'quantity': 1},
+            ],
+            payment_method=PaymentMethod.CARD, **kw,
+        )
+
+    def test_a_qualifying_basket_is_discounted_without_anyone_asking(self):
+        """§49 — the company configured the rule; nobody presses a button."""
+        order, _ = self._sell()
+        self.assertEqual(order.discount_amount, Decimal('150.00'))
+        self.assertEqual(order.total, Decimal('3000.00'))
+        self.assertEqual(order.discount_source, DiscountSource.PROMOTION)
+
+    def test_the_order_contains_the_real_articles_not_a_combo_product(self):
+        """
+        §41, the decision the whole design rests on. A combo `Product` would
+        need stock that does not exist, and the Kardex would record a sale of
+        something that was never on a shelf.
+        """
+        order, _ = self._sell()
+        sold = {i.product_id for i in order.items.all()}
+        self.assertEqual(sold, {self.phone.pk, self.case.pk, self.glass.pk})
+
+        exits = StockMovement.objects.filter(
+            order=order, movement_type=StockMovement.SALE_EXIT,
+        )
+        self.assertEqual(exits.count(), 3)
+        for product in (self.phone, self.case, self.glass):
+            self.assertEqual(
+                BranchStock.objects.get(branch=self.branch, product=product).quantity, 19,
+            )
+
+    def test_the_promotion_is_snapshotted_on_the_sale(self):
+        order, _ = self._sell()
+        applied = AppliedPromotion.objects.get(order=order)
+        self.assertEqual(applied.promotion_name_snapshot, 'Combo Protección')
+        self.assertEqual(applied.applications, 1)
+        self.assertEqual(applied.regular_amount, Decimal('3150.00'))
+        self.assertEqual(applied.discount_amount, Decimal('150.00'))
+        self.assertEqual(len(applied.metadata['components']), 3)
+
+    def test_editing_the_promotion_does_not_rewrite_the_sale(self):
+        """
+        §47, §57. March's receipt must keep saying what March's customer paid,
+        however the combo is renamed, repriced or switched off afterwards.
+        """
+        order, _ = self._sell()
+        self.promotion.name = 'Otro nombre'
+        self.promotion.fixed_price = Decimal('1.00')
+        self.promotion.is_active = False
+        self.promotion.save()
+
+        order.refresh_from_db()
+        applied = AppliedPromotion.objects.get(order=order)
+        self.assertEqual(order.total, Decimal('3000.00'))
+        self.assertEqual(applied.promotion_name_snapshot, 'Combo Protección')
+        self.assertEqual(applied.discount_amount, Decimal('150.00'))
+
+    def test_an_applied_promotion_cannot_be_deleted(self):
+        """It is part of the record of what a customer was charged."""
+        from django.db.models import ProtectedError
+
+        self._sell()
+        with self.assertRaises(ProtectedError):
+            self.promotion.delete()
+
+    def test_a_promotion_does_not_combine_with_a_coupon(self):
+        """
+        §48. Stacking is a policy with rules nobody has written down; picking
+        one here would bake it into a till unexamined.
+        """
+        _Coupon.objects.create(company=self.company, code='EXTRA', discount_percent=10)
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(coupon_code='EXTRA')
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 0,
+        )
+
+    def test_a_promotion_does_not_combine_with_a_manual_discount(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(
+                may_apply_manual_discount=True, manual_discount_type='percent',
+                manual_discount_value='5', discount_reason='extra',
+            )
+
+    def test_commission_is_paid_on_the_discounted_total(self):
+        """§55: 3150 − 150 = 3000; 5% of that is 150.00."""
+        _c12_rate(self.company, self.seller, '5.00')
+        order, _ = self._sell()
+        commission = SalesCommission.objects.get(order=order)
+        self.assertEqual(commission.base_amount, Decimal('3000.00'))
+        self.assertEqual(commission.amount, Decimal('150.00'))
+
+    def test_a_failed_sale_leaves_no_promotion_snapshot(self):
+        """The snapshot is inside the same transaction as everything else."""
+        _c1_stock(self.branch, self.glass, 0)
+        with self.assertRaises(inventory_services.InsufficientStockError):
+            self._sell()
+        self.assertEqual(AppliedPromotion.objects.count(), 0)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_retry_returns_the_original_price_after_the_promotion_changed(self):
+        """
+        §56–57 together: the fingerprint hashes intent, so the retry finds its
+        own sale; the snapshot means it is returned at the money charged then.
+        """
+        first, created = self._sell(idempotency_key='c13-promo-retry-01')
+        self.assertTrue(created)
+        self.assertEqual(first.total, Decimal('3000.00'))
+
+        self.promotion.fixed_price = Decimal('1.00')
+        self.promotion.save()
+
+        second, created_again = self._sell(idempotency_key='c13-promo-retry-01')
+        self.assertFalse(created_again)
+        self.assertEqual(second.pk, first.pk)
+        self.assertEqual(second.total, Decimal('3000.00'))
+        self.assertEqual(AppliedPromotion.objects.filter(order=first).count(), 1)
+
+    def test_combo_availability_is_bounded_by_the_scarcest_component(self):
+        """§52 — never offer a combo the shelf cannot complete."""
+        _c1_stock(self.branch, self.glass, 2)
+        combos = _promo.combo_availability(self.company, self.branch)
+        self.assertEqual(combos[0]['available_sets'], 2)
+
+        _c1_stock(self.branch, self.glass, 0)
+        combos = _promo.combo_availability(self.company, self.branch)
+        self.assertEqual(combos[0]['available_sets'], 0)
+
+
+class C13PromotionApiTest(TestCase):
+    """§58–66, §80 — administration, authority and tenant isolation."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c13-api-a', 'Empresa Promo A')
+        self.b = _p3_company('c13-api-b', 'Empresa Promo B')
+        self.pa1 = _c1_product(self.a, 'A Uno', '100.00')
+        self.pa2 = _c1_product(self.a, 'A Dos', '50.00')
+        self.pb1 = _c1_product(self.b, 'B Uno', '100.00')
+
+        self.admin, _ = _p2d_member(
+            self.a, 'c13_promo_admin',
+            ['company.view', _C13_PROMO_VIEW, _C13_PROMO_MANAGE],
+        )
+        self.viewer, _ = _p2d_member(self.a, 'c13_promo_viewer', ['company.view', _C13_PROMO_VIEW])
+        self.seller, _ = _p2d_member(self.a, 'c13_promo_seller', ['company.view', _C1_POS])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _body(self, **kw):
+        body = {
+            'name': 'Combo API',
+            'promotion_type': 'bundle_fixed_price',
+            'fixed_price': '120.00',
+            'items': [
+                {'product': self.pa1.pk, 'quantity': 1},
+                {'product': self.pa2.pk, 'quantity': 1},
+            ],
+        }
+        body.update(kw)
+        return body
+
+    def test_an_admin_creates_a_combo(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/', self._body(), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(res.data['items']), 2)
+        self.assertEqual(Promotion.objects.filter(company=self.a).count(), 1)
+
+    def test_a_viewer_cannot_create(self):
+        res = self._as(self.viewer).post(
+            '/api/admin/sales/promotions/', self._body(), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_seller_cannot_even_read(self):
+        """
+        §62. A promotion fires automatically — a salesperson does not need to
+        read the rules to benefit from them, and what the company gives away is
+        management information.
+        """
+        res = self._as(self.seller).get('/api/admin/sales/promotions/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_combo_needs_at_least_two_products(self):
+        """§60 — a bundle of one is a price change wearing a costume."""
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/',
+            self._body(items=[{'product': self.pa1.pk, 'quantity': 1}]),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_another_companys_product_cannot_be_put_in_a_combo(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/',
+            self._body(items=[
+                {'product': self.pa1.pk, 'quantity': 1},
+                {'product': self.pb1.pk, 'quantity': 1},
+            ]),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Promotion.objects.count(), 0)
+
+    def test_another_companys_branch_cannot_be_scoped(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/',
+            self._body(branch_scope='selected',
+                       branches=[self.b.default_inventory_branch.pk]),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_duplicate_product_in_one_combo_is_refused(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/promotions/',
+            self._body(items=[
+                {'product': self.pa1.pk, 'quantity': 1},
+                {'product': self.pa1.pk, 'quantity': 2},
+            ]),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_another_companys_promotion_is_not_reachable(self):
+        foreign = _c13_combo(
+            self.b, [(self.pb1, 1), (_c1_product(self.b, 'B Dos', '10.00'), 1)],
+            fixed_price='50.00',
+        )
+        client = self._as(self.admin)
+        self.assertEqual(
+            client.get(f'/api/admin/sales/promotions/{foreign.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        res = client.patch(
+            f'/api/admin/sales/promotions/{foreign.pk}/',
+            {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        foreign.refresh_from_db()
+        self.assertTrue(foreign.is_active)
+
+    def test_there_is_no_delete(self):
+        promotion = _c13_combo(
+            self.a, [(self.pa1, 1), (self.pa2, 1)], fixed_price='120.00',
+        )
+        res = self._as(self.admin).delete(f'/api/admin/sales/promotions/{promotion.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_the_list_reports_how_much_has_been_given_away(self):
+        """§65 — usage, never "profitability": the platform has no cost data."""
+        res = self._as(self.admin).get('/api/admin/sales/promotions/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        blob = json.dumps(res.data).lower()
+        for forbidden in ('margen', 'margin', 'utilidad', 'profit', 'roi'):
+            self.assertNotIn(forbidden, blob)
+
+    # -- coupons ----------------------------------------------------------
+
+    def test_an_admin_creates_a_coupon(self):
+        res = self._as(self.admin).post(
+            '/api/admin/sales/coupons/',
+            {'code': 'verano', 'discount_percent': 15}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['code'], 'VERANO')
+
+    def test_a_duplicate_coupon_code_in_one_company_is_refused(self):
+        _Coupon.objects.create(company=self.a, code='VERANO', discount_percent=10)
+        res = self._as(self.admin).post(
+            '/api/admin/sales/coupons/',
+            {'code': 'VERANO', 'discount_percent': 20}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+
+    def test_the_same_code_may_exist_in_two_companies(self):
+        _Coupon.objects.create(company=self.b, code='VERANO', discount_percent=10)
+        res = self._as(self.admin).post(
+            '/api/admin/sales/coupons/',
+            {'code': 'VERANO', 'discount_percent': 20}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(_Coupon.objects.filter(code='VERANO').count(), 2)
+
+    def test_another_companys_coupon_is_not_editable(self):
+        foreign = _Coupon.objects.create(company=self.b, code='AJENO', discount_percent=10)
+        res = self._as(self.admin).patch(
+            f'/api/admin/sales/coupons/{foreign.pk}/',
+            {'discount_percent': 99}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.discount_percent, 10)
+
+    def test_anonymous_is_refused(self):
+        for path in ('/api/admin/sales/promotions/', '/api/admin/sales/coupons/',
+                     '/api/admin/pos/combos/'):
+            res = APIClient().get(path)
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN), path,
+            )
+
+
 # =============================================================================
 # M5 — public storefront config v1, and the AUTHENTICATED native checkout
 # =============================================================================
@@ -19330,6 +22524,2051 @@ class M5OrderIdempotencyModelTest(TestCase):
 
 
 # =============================================================================
+# C1.4 — hardening of what C1.3 left soft
+# =============================================================================
+#
+# Three defects, all of the same shape: a value arrives from a request, is
+# assigned straight onto a model field, and Django agrees until the database
+# does not. The window on a promotion is not decoration — it decides whether a
+# discount fires at a till — so getting it wrong is a wrong price on a real
+# receipt, not a cosmetic 500.
+
+
+class C14PromotionDateTimeTest(TestCase):
+    """§6, §7 — request dates are parsed, never assigned raw."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-dates', 'Empresa Fechas')
+        self.p1 = _c1_product(self.company, 'Fechas Uno', '100.00')
+        self.p2 = _c1_product(self.company, 'Fechas Dos', '50.00')
+        self.admin, _ = _p2d_member(
+            self.company, 'c14_dates_admin',
+            ['company.view', _C13_PROMO_VIEW, _C13_PROMO_MANAGE],
+        )
+        self.client_ = APIClient()
+        self.client_.force_authenticate(user=self.admin)
+
+    def _body(self, **kw):
+        body = {
+            'name': 'Combo Fechas',
+            'promotion_type': 'bundle_fixed_price',
+            'fixed_price': '120.00',
+            'items': [
+                {'product': self.p1.pk, 'quantity': 1},
+                {'product': self.p2.pk, 'quantity': 1},
+            ],
+        }
+        body.update(kw)
+        return body
+
+    def _create(self, **kw):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/', self._body(**kw), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        return Promotion.objects.get(pk=res.data['id'])
+
+    # --- the defect itself ------------------------------------------------
+
+    def test_an_unparseable_start_is_a_400_not_a_500(self):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/',
+            self._body(starts_at='mañana por la tarde'), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('starts_at', res.data)
+        self.assertFalse(Promotion.objects.filter(company=self.company).exists())
+
+    def test_an_unparseable_end_is_a_400_not_a_500(self):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/',
+            self._body(ends_at='31/02/2026'), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('ends_at', res.data)
+
+    def test_a_number_is_not_a_date(self):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/', self._body(starts_at=20260301),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # --- what must keep working -------------------------------------------
+
+    def test_a_naive_local_datetime_is_stored_aware(self):
+        """
+        The obvious HTML control — `<input type="datetime-local">` — sends no
+        timezone. Rejecting it would make the natural widget unusable, so a
+        naive value is read as local time (America/Lima) rather than refused or,
+        worse, stored naive and interpreted as UTC five hours away.
+        """
+        promotion = self._create(starts_at='2026-03-01T20:00')
+        self.assertTrue(timezone.is_aware(promotion.starts_at))
+        local = timezone.localtime(promotion.starts_at)
+        self.assertEqual((local.hour, local.minute), (20, 0))
+
+    def test_an_explicit_offset_is_respected(self):
+        promotion = self._create(starts_at='2026-03-01T20:00:00+00:00')
+        self.assertEqual(promotion.starts_at.utcoffset().total_seconds(), 0)
+
+    def test_a_bare_date_becomes_local_midnight(self):
+        promotion = self._create(starts_at='2026-03-01')
+        local = timezone.localtime(promotion.starts_at)
+        self.assertEqual((local.hour, local.minute), (0, 0))
+
+    def test_an_empty_string_clears_the_bound(self):
+        """An absent bound is a real answer: 'no start' means 'already running'."""
+        promotion = self._create(starts_at='2026-03-01T20:00')
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'starts_at': ''}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        promotion.refresh_from_db()
+        self.assertIsNone(promotion.starts_at)
+
+    # --- ordering, including the PATCH case that is easy to get wrong -----
+
+    def test_a_window_that_closes_before_it_opens_is_refused(self):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/',
+            self._body(starts_at='2026-03-10T00:00', ends_at='2026-03-01T00:00'),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('ends_at', res.data)
+
+    def test_patching_only_the_end_is_checked_against_the_stored_start(self):
+        """
+        The case a naive implementation misses. Send only `ends_at` and there is
+        no `starts_at` in the request to compare against — so the comparison has
+        to use the bound ALREADY STORED. Without that, this PATCH would be
+        accepted and leave a window that can never be open: a promotion that
+        silently never fires and never says why.
+        """
+        promotion = self._create(starts_at='2026-03-10T00:00')
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'ends_at': '2026-03-01T00:00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        promotion.refresh_from_db()
+        self.assertIsNone(promotion.ends_at)
+
+    def test_patching_only_the_start_is_checked_against_the_stored_end(self):
+        promotion = self._create(ends_at='2026-03-01T00:00')
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'starts_at': '2026-03-10T00:00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patching_both_at_once_is_accepted_when_ordered(self):
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'starts_at': '2026-03-01T00:00', 'ends_at': '2026-03-10T00:00'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        promotion.refresh_from_db()
+        self.assertLess(promotion.starts_at, promotion.ends_at)
+
+    def test_archiving_sends_only_is_active_and_that_must_work(self):
+        """
+        The regression that mattered. The promotions screen archives with
+        `PATCH {is_active: false}` and nothing else. The write path used to read
+        an absent key as "set this to None", so the combo's price was blanked
+        and `Promotion.clean()` rejected the request: the archive button
+        returned 400 every time it was pressed.
+
+        C1.3's only PATCH-with-is_active test aimed at ANOTHER company's
+        promotion and asserted 404 — it passed on the tenant check and never
+        reached this code.
+        """
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        promotion.refresh_from_db()
+        self.assertFalse(promotion.is_active)
+        self.assertEqual(promotion.fixed_price, Decimal('120.00'))
+
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'is_active': True}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        promotion.refresh_from_db()
+        self.assertTrue(promotion.is_active)
+
+    def test_patching_only_the_priority_leaves_the_price_alone(self):
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'priority': 7}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        promotion.refresh_from_db()
+        self.assertEqual(promotion.priority, 7)
+        self.assertEqual(promotion.fixed_price, Decimal('120.00'))
+        self.assertEqual(promotion.items.count(), 2)
+
+    def test_switching_type_without_the_new_field_is_refused(self):
+        """
+        Partial does not mean permissive. Changing a fixed-price combo into a
+        percentage one without saying what percentage leaves the promotion
+        undefined, so it is a 400 — not a silent 0%.
+        """
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'promotion_type': 'bundle_percent'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        promotion.refresh_from_db()
+        self.assertEqual(promotion.promotion_type, 'bundle_fixed_price')
+        self.assertEqual(promotion.fixed_price, Decimal('120.00'))
+
+    def test_a_bad_date_does_not_half_apply_the_rest_of_the_patch(self):
+        """The 400 happens before the transaction, so nothing else moved."""
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'name': 'Renombrado', 'starts_at': 'no es fecha'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        promotion.refresh_from_db()
+        self.assertEqual(promotion.name, 'Combo Fechas')
+
+    # --- coupons, same discipline ----------------------------------------
+
+    def test_a_coupon_with_an_unparseable_expiry_is_a_400(self):
+        res = self.client_.post(
+            '/api/admin/sales/coupons/',
+            {'code': 'BAD', 'discount_percent': 10, 'expires_at': 'el viernes'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('expires_at', res.data)
+        self.assertFalse(Coupon.objects.filter(company=self.company).exists())
+
+    def test_a_coupon_expiry_is_stored_aware(self):
+        res = self.client_.post(
+            '/api/admin/sales/coupons/',
+            {'code': 'OK10', 'discount_percent': 10, 'expires_at': '2026-12-31T23:59'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        coupon = Coupon.objects.get(company=self.company, code='OK10')
+        self.assertTrue(timezone.is_aware(coupon.expires_at))
+
+    def test_patching_a_coupon_expiry_with_rubbish_is_a_400(self):
+        self.client_.post(
+            '/api/admin/sales/coupons/',
+            {'code': 'PAT10', 'discount_percent': 10}, format='json',
+        )
+        coupon = Coupon.objects.get(company=self.company, code='PAT10')
+        res = self.client_.patch(
+            f'/api/admin/sales/coupons/{coupon.pk}/',
+            {'expires_at': '????'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        coupon.refresh_from_db()
+        self.assertIsNone(coupon.expires_at)
+
+
+class C14PromotionTenantInvariantTest(TestCase):
+    """§8, §9 — defence in depth under the API's own validation."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c14-inv-a', 'Invariante A')
+        self.b = _p3_company('c14-inv-b', 'Invariante B')
+        self.branch_a = _p2d_branch(self.a, 'Sucursal A')
+        self.branch_b = _p2d_branch(self.b, 'Sucursal B')
+        self.pa1 = _c1_product(self.a, 'Inv A Uno', '100.00')
+        self.pa2 = _c1_product(self.a, 'Inv A Dos', '50.00')
+        self.pb1 = _c1_product(self.b, 'Inv B Uno', '100.00')
+        self.promotion = Promotion.objects.create(
+            company=self.a, name='Combo Invariante',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE,
+            fixed_price=Decimal('120.00'),
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+
+    # --- ORM level --------------------------------------------------------
+
+    def test_a_foreign_branch_cannot_be_attached_to_a_promotion(self):
+        with self.assertRaises(DjangoValidationError):
+            PromotionBranch.objects.create(
+                promotion=self.promotion, branch=self.branch_b,
+            )
+
+    def test_the_own_branch_still_attaches(self):
+        row = PromotionBranch.objects.create(
+            promotion=self.promotion, branch=self.branch_a,
+        )
+        self.assertEqual(row.branch.company_id, self.promotion.company_id)
+
+    def test_the_bulk_path_refuses_a_foreign_branch(self):
+        """
+        `bulk_create()` never calls `save()`, so `clean()` never runs — which is
+        exactly why a set-level check has to exist for the code that writes
+        these rows in bulk, and that is all of it.
+        """
+        rows = [
+            PromotionBranch(promotion=self.promotion, branch=self.branch_a),
+            PromotionBranch(promotion=self.promotion, branch=self.branch_b),
+        ]
+        with self.assertRaises(DjangoValidationError):
+            PromotionBranch.assert_all_match_promotion(rows)
+
+    def test_the_bulk_path_accepts_a_clean_set(self):
+        PromotionBranch.assert_all_match_promotion(
+            [PromotionBranch(promotion=self.promotion, branch=self.branch_a)]
+        )
+
+    def test_a_foreign_product_cannot_be_a_component(self):
+        with self.assertRaises(DjangoValidationError):
+            PromotionItem.objects.create(
+                promotion=self.promotion, product=self.pb1, quantity=1,
+            )
+
+    def test_the_bulk_item_path_refuses_a_foreign_product(self):
+        rows = [
+            PromotionItem(promotion=self.promotion, product=self.pa1, quantity=1),
+            PromotionItem(promotion=self.promotion, product=self.pb1, quantity=1),
+        ]
+        with self.assertRaises(DjangoValidationError):
+            PromotionItem.assert_all_match_promotion(rows)
+
+    def test_an_applied_promotion_cannot_carry_a_foreign_order(self):
+        """
+        `AppliedPromotion.company` is denormalised so the reporting index can
+        slice by tenant without joining `Order`. Denormalisation is precisely
+        what makes this check necessary: the column can now disagree with the
+        row it was copied from, and a wrong value files one tenant's discount
+        under another tenant's promotion report.
+        """
+        foreign_order = _order(self.b)
+        with self.assertRaises(DjangoValidationError):
+            AppliedPromotion.objects.create(
+                company=self.a, order=foreign_order, promotion=self.promotion,
+                promotion_name_snapshot='Combo Invariante',
+                promotion_type_snapshot=Promotion.BUNDLE_FIXED_PRICE,
+                applications=1,
+                regular_amount=Decimal('150.00'),
+                discount_amount=Decimal('30.00'),
+            )
+
+    def test_an_applied_promotion_cannot_carry_a_foreign_promotion(self):
+        own_order = _order(self.a)
+        foreign_promotion = Promotion.objects.create(
+            company=self.b, name='Combo Ajeno',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE,
+            fixed_price=Decimal('90.00'),
+        )
+        with self.assertRaises(DjangoValidationError):
+            AppliedPromotion.objects.create(
+                company=self.a, order=own_order, promotion=foreign_promotion,
+                promotion_name_snapshot='Combo Ajeno',
+                promotion_type_snapshot=Promotion.BUNDLE_FIXED_PRICE,
+                applications=1,
+                regular_amount=Decimal('150.00'),
+                discount_amount=Decimal('30.00'),
+            )
+
+    def test_the_bulk_snapshot_path_refuses_a_mismatched_set(self):
+        foreign_order = _order(self.b)
+        rows = [AppliedPromotion(
+            company_id=self.a.pk, order=foreign_order, promotion=self.promotion,
+            promotion_name_snapshot='X', promotion_type_snapshot='bundle_fixed_price',
+            applications=1, regular_amount=Decimal('1.00'),
+            discount_amount=Decimal('0.50'),
+        )]
+        with self.assertRaises(DjangoValidationError):
+            AppliedPromotion.assert_all_match_company(rows)
+
+    # --- API level, which validated first ---------------------------------
+
+    def test_the_api_refuses_a_foreign_branch_before_the_model_has_to(self):
+        admin, _ = _p2d_member(
+            self.a, 'c14_inv_admin',
+            ['company.view', _C13_PROMO_VIEW, _C13_PROMO_MANAGE],
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        res = client.post('/api/admin/sales/promotions/', {
+            'name': 'Combo Cruzado',
+            'promotion_type': 'bundle_fixed_price',
+            'fixed_price': '120.00',
+            'items': [
+                {'product': self.pa1.pk, 'quantity': 1},
+                {'product': self.pa2.pk, 'quantity': 1},
+            ],
+            'branch_scope': 'selected',
+            'branches': [self.branch_b.pk],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('branches', res.data)
+        self.assertFalse(
+            PromotionBranch.objects.filter(branch=self.branch_b).exists()
+        )
+
+
+# =============================================================================
+# C1.4 — bulk import from Excel
+# =============================================================================
+#
+# FIXTURES ARE BUILT, NOT COMMITTED
+# --------------------------------
+# The owner's two workbooks are real commercial data — 696 articles, their
+# internal codes, what the shop sells. They stay out of the repository (§72).
+# What the tests need is the SHAPE of those files, so the shape is rebuilt here
+# from the audit: the same sheet names, the same header rows, the same
+# eighteen columns, and the same malformed `errorStyle="error"` that makes
+# openpyxl refuse the original. The products are invented.
+
+import hashlib as _c14_hashlib
+import io as _c14_io
+import zipfile as _c14_zip
+
+from store import (  # noqa: E402
+    import_exports as _c14_exports,
+    import_formats as _c14_formats,
+    import_services as _c14_products,
+    stock_import_services as _c14_stock,
+    xlsx_reader as _c14_reader,
+)
+from store.models import (  # noqa: E402
+    BulkImportJob as _BulkImportJob,
+    BulkImportRow as _BulkImportRow,
+    ImportMappingProfile as _ImportMappingProfile,
+)
+
+_C14_PRODUCT_HEADERS = [
+    'Código de barras', 'Código', 'Unidad de medida', 'Nombre', 'Peso',
+    'Código SUNAT', 'Descripción', 'Precio costo', 'Afectación', 'Compra',
+    'Venta', 'Almacenable', 'Stock mínimo', 'Marca',
+    'Stock inicial - ALMACEN 1 - 11416', 'Area - black dog octavio - 817',
+    'Precio venta - 11834', 'SUCURSAL 1 - 11357',
+]
+_C14_PRODUCT_BANNER = {
+    1: 'Información del producto', 10: 'Tipo de operación',
+    13: 'Campos adicionales', 15: 'Stock Por Almacén',
+    16: 'Áreas de impresión', 17: 'Stock Octavio Muñoz - (11834)',
+    18: 'Visibilidad del producto',
+}
+_C14_STOCK_HEADERS = ['ID', 'CODIGO', 'CODIGO EAN', 'NOMBRE', 'ALMACEN 1 - 11416']
+
+
+def _c14_break_validations(payload: bytes) -> bytes:
+    """
+    Reproduce the defect that makes the owner's own file unreadable.
+
+    Google Sheets writes `errorStyle="error"` on its data validations. That value
+    is not in the OOXML enumeration (`stop | warning | information`), so openpyxl
+    raises while parsing and the workbook cannot be opened at all. openpyxl will
+    not emit it, so the fixture injects it into the finished archive — which is
+    also proof that the reader's repair works on a file it did not create.
+    """
+    source = _c14_zip.ZipFile(_c14_io.BytesIO(payload))
+    out = _c14_io.BytesIO()
+    with _c14_zip.ZipFile(out, 'w', _c14_zip.ZIP_DEFLATED) as target:
+        for info in source.infolist():
+            body = source.read(info.filename)
+            if info.filename == 'xl/worksheets/sheet1.xml':
+                injected = (
+                    b'<dataValidations count="1">'
+                    b'<dataValidation type="list" errorStyle="error" allowBlank="1" '
+                    b'sqref="C3:C202"><formula1>"NIU,ZZ"</formula1></dataValidation>'
+                    b'</dataValidations>'
+                )
+                body = body.replace(b'</worksheet>', injected + b'</worksheet>')
+            target.writestr(info.filename, body)
+    return out.getvalue()
+
+
+def _c14_products_workbook(rows=(), *, broken=True):
+    """
+    The 18-column, 5-sheet, banner-row-then-headers product template.
+
+    `rows` are dicts keyed by header name; anything absent is left blank, which
+    is what the real template looks like for most of its columns.
+    """
+    import openpyxl
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = 'Productos'
+    for column, text in _C14_PRODUCT_BANNER.items():
+        sheet.cell(row=1, column=column, value=text)
+    for column, header in enumerate(_C14_PRODUCT_HEADERS, start=1):
+        sheet.cell(row=2, column=column, value=header)
+    for offset, values in enumerate(rows):
+        for column, header in enumerate(_C14_PRODUCT_HEADERS, start=1):
+            if header in values:
+                sheet.cell(row=3 + offset, column=column, value=values[header])
+
+    for name in ('Unidades de medida', 'Marcas', 'Variables', 'Afectaciones'):
+        extra = workbook.create_sheet(name)
+        extra.cell(row=1, column=1, value=name)
+        extra.cell(row=2, column=1, value='Código')
+        extra.cell(row=2, column=2, value='Nombre')
+    workbook['Unidades de medida'].cell(row=3, column=1, value='NIU')
+    workbook['Unidades de medida'].cell(row=3, column=2, value='PRODUCTO (UND)')
+
+    buffer = _c14_io.BytesIO()
+    workbook.save(buffer)
+    payload = buffer.getvalue()
+    return _c14_break_validations(payload) if broken else payload
+
+
+def _c14_stock_workbook(rows=(), *, headers=None, sheet_title='Worksheet'):
+    """The 5-column inventory export. A value of `None` leaves the cell EMPTY."""
+    import openpyxl
+
+    headers = list(headers or _C14_STOCK_HEADERS)
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = sheet_title
+    for column, header in enumerate(headers, start=1):
+        sheet.cell(row=1, column=column, value=header)
+    for offset, values in enumerate(rows):
+        for column, header in enumerate(headers, start=1):
+            value = values.get(header)
+            if value is not None:
+                sheet.cell(row=2 + offset, column=column, value=value)
+    buffer = _c14_io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _c14_upload(payload: bytes, name='carga.xlsx'):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    return SimpleUploadedFile(
+        name, payload,
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
+class C14XlsxReaderTest(TestCase):
+    """§15, §16, §17 — reading a file somebody else's software wrote."""
+
+    def test_a_workbook_openpyxl_refuses_is_read_anyway(self):
+        """
+        The whole reason this module exists. The owner's product template does
+        not open: Google Sheets wrote `errorStyle="error"`, which is not a legal
+        value, and openpyxl raises rather than ignore it. Those validations are
+        dropdown hints for whoever types into the sheet — refusing the file over
+        them would mean telling the owner their own template is invalid.
+        """
+        import openpyxl
+
+        payload = _c14_products_workbook(broken=True)
+        with self.assertRaises(Exception):
+            wb = openpyxl.load_workbook(_c14_io.BytesIO(payload), read_only=True)
+            list(wb['Productos'].iter_rows())
+
+        workbook, notes = _c14_reader.load_workbook(payload)
+        headers, rows, _t = _c14_reader.read_rows(workbook, 'Productos', header_row=2)
+        self.assertEqual(headers, _C14_PRODUCT_HEADERS)
+        self.assertTrue(notes)
+
+    def test_the_original_bytes_are_never_modified(self):
+        payload = _c14_products_workbook(broken=True)
+        before = _c14_hashlib.sha256(payload).hexdigest()
+        _c14_reader.load_workbook(payload)
+        self.assertEqual(_c14_hashlib.sha256(payload).hexdigest(), before)
+
+    def test_a_valid_workbook_is_not_rewritten(self):
+        payload = _c14_stock_workbook([{'ID': 1, 'NOMBRE': 'X'}])
+        _workbook, notes = _c14_reader.load_workbook(payload)
+        self.assertEqual(notes, [])
+
+    def test_only_xlsx_is_accepted(self):
+        payload = _c14_stock_workbook([{'ID': 1}])
+        for name in ('libro.xlsm', 'libro.xls', 'libro.zip', 'libro.csv'):
+            with self.assertRaises(_c14_reader.XlsxError, msg=name):
+                _c14_reader.check_upload(_c14_upload(payload, name), filename=name)
+
+    def test_a_macro_bearing_archive_is_refused(self):
+        payload = _c14_stock_workbook([{'ID': 1}])
+        buffer = _c14_io.BytesIO()
+        source = _c14_zip.ZipFile(_c14_io.BytesIO(payload))
+        with _c14_zip.ZipFile(buffer, 'w') as target:
+            for info in source.infolist():
+                target.writestr(info.filename, source.read(info.filename))
+            target.writestr('xl/vbaProject.bin', b'\x00' * 32)
+        with self.assertRaises(_c14_reader.XlsxError):
+            _c14_reader.check_upload(_c14_upload(buffer.getvalue()), filename='x.xlsx')
+
+    def test_a_zip_bomb_is_refused_before_it_is_parsed(self):
+        """
+        A megabyte that becomes gigabytes in RAM. Caught from the archive's own
+        directory listing, so the payload is never decompressed to find out.
+        """
+        buffer = _c14_io.BytesIO()
+        with _c14_zip.ZipFile(buffer, 'w', _c14_zip.ZIP_DEFLATED) as target:
+            target.writestr('xl/workbook.xml', b'<workbook/>')
+            target.writestr('xl/bomb.xml', b'0' * (60 * 1024 * 1024))
+        with self.assertRaises(_c14_reader.XlsxTooLarge):
+            _c14_reader.check_upload(_c14_upload(buffer.getvalue()), filename='x.xlsx')
+
+    def test_an_oversized_upload_is_refused(self):
+        big = _c14_upload(b'x' * (_c14_reader.MAX_UPLOAD_BYTES + 1))
+        with self.assertRaises(_c14_reader.XlsxTooLarge):
+            _c14_reader.check_upload(big, filename='x.xlsx')
+
+    def test_something_that_is_not_a_zip_is_refused(self):
+        with self.assertRaises(_c14_reader.XlsxError):
+            _c14_reader.check_upload(_c14_upload(b'no soy un excel'), filename='x.xlsx')
+
+    def test_an_integer_code_is_not_rendered_in_scientific_notation(self):
+        """
+        Excel stores `CODIGO EAN` as a number, so Python receives a float. A
+        barcode printed as `3.1e+11` matches nothing.
+        """
+        self.assertEqual(_c14_reader.normalize_scalar(310000000001.0), '310000000001')
+        self.assertEqual(_c14_reader.normalize_scalar(7751234567890), '7751234567890')
+
+    def test_trailing_blank_rows_are_not_data(self):
+        """
+        The owner's product sheet declares 202 rows and contains none: the extra
+        rows exist because the template has formatting on them.
+        """
+        payload = _c14_products_workbook(broken=True)
+        workbook, _notes = _c14_reader.load_workbook(payload)
+        _headers, rows, _t = _c14_reader.read_rows(workbook, 'Productos', header_row=2)
+        self.assertEqual(rows, [])
+
+
+class C14ProductImportTest(TestCase):
+    """§25–37, §73 — the product half of the matrix."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-prod', 'Importa Productos')
+        self.other = _p3_company('c14-prod-b', 'Otra Empresa')
+        self.user, _ = _p2d_member(self.company, 'c14_prod_admin',
+                                   ['company.view', 'products.manage'])
+        self.category = Category.objects.create(
+            company=self.company, name='Accesorios', slug='accesorios',
+        )
+
+    def _preview(self, rows, **kwargs):
+        payload = _c14_products_workbook(rows)
+        return _c14_products.preview_products(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(payload), filename='Carga_Masiva_(Productos).xlsx',
+            **kwargs,
+        )
+
+    def _row(self, **kw):
+        base = {
+            'Código de barras': '7751234567892', 'Código': 'C000001',
+            'Nombre': 'Cable Lightning', 'Descripción': 'Cable de un metro',
+            'Precio venta - 11834': 49.90,
+        }
+        base.update(kw)
+        return base
+
+    # --- detection --------------------------------------------------------
+
+    def test_the_black_dog_format_is_recognised_without_being_told(self):
+        job = self._preview([self._row()])
+        self.assertIn('18 columnas', job.summary['detected'])
+        self.assertEqual(job.mapping_snapshot['header_row'], 2)
+
+    def test_the_banner_row_is_not_imported_as_a_product(self):
+        """Header row 2, not 1. Get it wrong and you create «Información del producto»."""
+        job = self._preview([self._row()])
+        names = {r.normalized_data.get('name') for r in job.rows.all()}
+        self.assertNotIn('Información del producto', names)
+        self.assertEqual(names, {'Cable Lightning'})
+
+    def test_the_tax_columns_are_reported_as_recognised_but_not_imported(self):
+        """
+        `Código SUNAT` and `Afectación` are for electronic invoicing, which this
+        platform does not do. Saying so beats an operator assuming they landed.
+        """
+        job = self._preview([self._row()])
+        ignored = {u['column'] for u in job.summary['unmapped']}
+        self.assertIn('Código SUNAT', ignored)
+        self.assertIn('Afectación', ignored)
+        self.assertIn('Precio costo', ignored)
+
+    def test_the_stock_column_of_the_product_sheet_is_not_imported(self):
+        """
+        §25. The template carries `Stock inicial - ALMACEN 1 - 11416`. Stock has
+        its own importer with its own preview and its own Kardex movements; a
+        product import that also moved stock would write to the ledger from a
+        screen that never warned about it.
+        """
+        job = self._preview([self._row(**{'Stock inicial - ALMACEN 1 - 11416': 25})])
+        self.assertNotIn('stock', job.mapping_snapshot['mapping'])
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertEqual(StockMovement.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(Product.objects.get(company=self.company).inventory, 0)
+
+    # --- create / update --------------------------------------------------
+
+    def test_a_new_product_is_created_with_both_of_its_codes(self):
+        job = self._preview([self._row()])
+        self.assertEqual(job.rows_create, 1)
+        _c14_products.apply_products(job=job, actor=self.user)
+        product = Product.objects.get(company=self.company, name='Cable Lightning')
+        self.assertEqual(product.price, Decimal('49.90'))
+        codes = dict(product.barcodes.values_list('code', 'symbology'))
+        self.assertEqual(codes['7751234567892'], ProductBarcode.EAN13)
+        # §27 — CODIGO becomes an INTERNAL barcode instead of a new column.
+        self.assertEqual(codes['C000001'], ProductBarcode.INTERNAL)
+
+    def test_a_second_import_updates_instead_of_duplicating(self):
+        _c14_products.apply_products(
+            job=self._preview([self._row()]), actor=self.user,
+        )
+        job = self._preview([self._row(**{'Precio venta - 11834': 59.90})])
+        self.assertEqual(job.rows_update, 1)
+        self.assertEqual(job.rows_create, 0)
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+        self.assertEqual(
+            Product.objects.get(company=self.company).price, Decimal('59.90'),
+        )
+
+    def test_a_blank_cell_does_not_erase_what_is_already_there(self):
+        """
+        §37. An empty description column means "I did not fill this in", never
+        "delete what you have". Wiping it destroys work nobody asked to destroy.
+        """
+        _c14_products.apply_products(
+            job=self._preview([self._row()]), actor=self.user,
+        )
+        row = self._row()
+        row.pop('Descripción')
+        _c14_products.apply_products(
+            job=self._preview([row]), actor=self.user,
+        )
+        self.assertEqual(
+            Product.objects.get(company=self.company).description,
+            'Cable de un metro',
+        )
+
+    def test_create_only_mode_leaves_existing_products_alone(self):
+        _c14_products.apply_products(
+            job=self._preview([self._row()]), actor=self.user,
+        )
+        job = self._preview(
+            [self._row(**{'Precio venta - 11834': 99.90})],
+            options={'mode': 'create_only'},
+        )
+        self.assertEqual(job.rows_skip, 1)
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertEqual(
+            Product.objects.get(company=self.company).price, Decimal('49.90'),
+        )
+
+    # --- identifiers ------------------------------------------------------
+
+    def test_identifiers_pointing_at_different_products_are_an_error(self):
+        """
+        §30. Choosing one would either update the wrong article or duplicate an
+        existing one, and both happen silently.
+        """
+        a = _c1_product(self.company, 'Producto A', '10.00')
+        b = _c1_product(self.company, 'Producto B', '20.00')
+        ProductBarcode.objects.create(company=self.company, product=a, code='7751234567892')
+        ProductBarcode.objects.create(company=self.company, product=b, code='C000001')
+        job = self._preview([self._row()])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('apuntan a productos distintos', job.rows.first().errors[0])
+
+    def test_the_same_barcode_twice_in_one_file_is_an_error(self):
+        job = self._preview([self._row(), self._row(**{'Nombre': 'Otro nombre'})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_the_excel_id_never_becomes_the_primary_key(self):
+        """
+        §26. `ID` is a number in somebody else's database. Six hundred rows whose
+        ids start at 1288488 would either fail or, worse, land on unrelated rows.
+        """
+        job = self._preview([self._row()])
+        _c14_products.apply_products(job=job, actor=self.user)
+        product = Product.objects.get(company=self.company)
+        self.assertNotEqual(product.pk, 1288488)
+
+    # --- barcode semantics ------------------------------------------------
+
+    def test_a_symbology_is_only_named_when_the_check_digit_agrees(self):
+        """
+        §28. The owner's file holds 692 twelve-digit codes of which 67 have a
+        valid check digit — which is what chance produces. They are an internal
+        sequence, not retail barcodes, and calling them UPC-A would put a false
+        claim in the catalogue and invite somebody to print one.
+        """
+        self.assertEqual(_c14_products.detect_symbology('7751234567892'),
+                         ProductBarcode.EAN13)
+        self.assertEqual(_c14_products.detect_symbology('310000000001'),
+                         ProductBarcode.UNKNOWN)
+        self.assertEqual(_c14_products.detect_symbology('C000001'),
+                         ProductBarcode.UNKNOWN)
+
+    def test_a_numeric_code_warns_about_a_possible_lost_zero_and_invents_nothing(self):
+        """§28, §29 — warn, never restore. A digit decides which product this is."""
+        job = self._preview([self._row(**{'Código de barras': 310000000001})])
+        row = job.rows.first()
+        self.assertTrue(any('cero' in w for w in row.warnings))
+        self.assertEqual(row.normalized_data['barcode'], '310000000001')
+
+    def test_a_text_code_keeping_its_leading_zero_is_imported_verbatim(self):
+        job = self._preview([self._row(**{'Código de barras': '0750123456789'})])
+        self.assertEqual(job.rows.first().normalized_data['barcode'], '0750123456789')
+
+    # --- prices -----------------------------------------------------------
+
+    def test_a_price_that_is_not_a_number_is_a_row_error(self):
+        job = self._preview([self._row(**{'Precio venta - 11834': 'gratis'})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_an_ambiguous_thousands_separator_is_refused_rather_than_guessed(self):
+        """
+        §34. `1,999` is one thousand nine hundred ninety-nine in Peru and 1.999
+        in an English export. The difference is a factor of a thousand on a price
+        tag, so the row asks instead of choosing.
+        """
+        job = self._preview([self._row(**{'Precio venta - 11834': '1,999'})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('ambiguo', job.rows.first().errors[0])
+
+    def test_an_unambiguous_european_price_is_read_correctly(self):
+        job = self._preview([self._row(**{'Precio venta - 11834': '1.999,90'})])
+        self.assertEqual(job.rows.first().normalized_data['price'], '1999.90')
+
+    def test_a_price_is_never_a_float(self):
+        job = self._preview([self._row(**{'Precio venta - 11834': 19.99})])
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertIsInstance(Product.objects.get(company=self.company).price, Decimal)
+
+    def test_a_negative_price_is_refused(self):
+        job = self._preview([self._row(**{'Precio venta - 11834': -5})])
+        self.assertEqual(job.rows_error, 1)
+
+    # --- formulas ---------------------------------------------------------
+
+    def test_a_formula_in_a_mapped_cell_is_a_row_error(self):
+        """
+        §17. The cached value was computed by whatever machine last saved the
+        file, possibly from rows that are not in this upload. Neither evaluated
+        nor trusted.
+        """
+        job = self._preview([self._row(**{'Precio venta - 11834': '=A1*2'})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('fórmula', job.rows.first().errors[0])
+
+    # --- rows and categories ----------------------------------------------
+
+    def test_a_completely_empty_row_is_skipped_not_failed(self):
+        """§24 — and no empty product is created."""
+        job = self._preview([self._row(), {}, self._row(**{
+            'Nombre': 'Otro', 'Código': 'C000002', 'Código de barras': '7751234567908',
+        })])
+        self.assertEqual(job.rows_error, 0)
+        self.assertEqual(job.rows_create, 2)
+
+    def test_an_unknown_category_is_an_error_by_default(self):
+        """§33 — creating categories silently populates a catalogue with typos."""
+        job = self._preview(
+            [self._row()],
+            mapping={'name': 3, 'code': 1, 'barcode': 0, 'price': 16, 'category': 6},
+            header_row=2,
+        )
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('categoría', job.rows.first().errors[0].lower())
+
+    def test_categories_are_created_when_that_is_asked_for_explicitly(self):
+        job = self._preview(
+            [self._row(**{'Descripción': 'Cargadores'})],
+            mapping={'name': 3, 'code': 1, 'barcode': 0, 'price': 16, 'category': 6},
+            header_row=2, options={'create_missing_categories': True},
+        )
+        self.assertEqual(job.rows_error, 0)
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertTrue(
+            Category.objects.filter(company=self.company, name='Cargadores').exists()
+        )
+        self.assertFalse(
+            Category.objects.filter(company=self.other, name='Cargadores').exists()
+        )
+
+    # --- slugs ------------------------------------------------------------
+
+    def test_two_products_with_the_same_name_get_distinct_slugs(self):
+        job = self._preview([
+            self._row(**{'Nombre': 'Cable', 'Código': 'C000001',
+                         'Código de barras': '7751234567892'}),
+            self._row(**{'Nombre': 'Cable', 'Código': 'C000002',
+                         'Código de barras': '7751234567908'}),
+        ])
+        self.assertEqual(job.rows_error, 0)
+        _c14_products.apply_products(job=job, actor=self.user)
+        slugs = list(Product.objects.filter(company=self.company).values_list('slug', flat=True))
+        self.assertEqual(len(slugs), len(set(slugs)))
+
+    def test_another_tenant_may_use_the_same_slug(self):
+        """Scoped to the company: two shops can both sell a "Cable Lightning"."""
+        _c1_product(self.other, 'Cable Lightning', '10.00')
+        _c14_products.apply_products(job=self._preview([self._row()]), actor=self.user)
+        self.assertTrue(Product.objects.filter(company=self.company).exists())
+
+    # --- apply discipline -------------------------------------------------
+
+    def test_one_bad_row_prevents_the_whole_import(self):
+        """§36 — a half-imported catalogue cannot be told from a whole one."""
+        job = self._preview([
+            self._row(),
+            self._row(**{'Nombre': 'Roto', 'Código': 'C000002',
+                         'Código de barras': '7751234567908',
+                         'Precio venta - 11834': 'gratis'}),
+        ])
+        with self.assertRaises(_c14_products.ImportError_):
+            _c14_products.apply_products(job=job, actor=self.user)
+        self.assertFalse(Product.objects.filter(company=self.company).exists())
+
+    def test_applying_twice_does_not_import_twice(self):
+        """§52 — pressing a button twice is not a mistake worth duplicating a catalogue over."""
+        job = self._preview([self._row()])
+        _job, first = _c14_products.apply_products(job=job, actor=self.user)
+        _job, second = _c14_products.apply_products(job=job, actor=self.user)
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+
+    def test_preview_writes_nothing_commercial(self):
+        """§53."""
+        before = (Product.objects.count(), ProductBarcode.objects.count(),
+                  Category.objects.count())
+        self._preview([self._row()])
+        after = (Product.objects.count(), ProductBarcode.objects.count(),
+                 Category.objects.count())
+        self.assertEqual(before, after)
+
+    def test_a_product_that_appears_between_preview_and_apply_aborts_the_job(self):
+        """
+        A preview is a forecast, not a promise — and when the forecast stops
+        matching, the job stops.
+
+        C1.4 let apply quietly re-resolve and UPDATE whatever now held the code.
+        That is safe only while the thing that appeared is the same article; if
+        an unrelated product took the code, the same path renames and reprices
+        it. Nothing in the data distinguishes the two cases, so apply refuses
+        both and asks for a fresh preview — which a person can read.
+        """
+        job = self._preview([self._row()])
+        self.assertEqual(job.rows_create, 1)
+        sneaked = _c1_product(self.company, 'Cable Lightning', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=sneaked, code='7751234567892',
+        )
+        with self.assertRaises(_c14_products.ImportError_) as caught:
+            _c14_products.apply_products(job=job, actor=self.user)
+        self.assertIn('previsualización', str(caught.exception))
+        # Nothing written, and the product that appeared is untouched.
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+        sneaked.refresh_from_db()
+        self.assertEqual(sneaked.price, Decimal('10.00'))
+
+    def test_the_original_file_is_not_stored(self):
+        """
+        §64. The SHA256 proves which file this was; the workbook itself is the
+        tenant's commercial data — prices, costs, everything they sell — and
+        keeping it indefinitely to answer a question the normalised rows already
+        answer is a liability, not a feature.
+        """
+        job = self._preview([self._row()])
+        self.assertEqual(len(job.file_sha256), 64)
+        binary_fields = [
+            f.name for f in _BulkImportJob._meta.get_fields()
+            if isinstance(f, (models.FileField, models.BinaryField))
+        ]
+        self.assertEqual(binary_fields, [])
+        self.assertEqual(job.original_filename, 'Carga_Masiva_(Productos).xlsx')
+
+    def test_a_code_too_short_for_a_barcode_is_a_row_error_not_a_crash(self):
+        """
+        Found by this suite. `validate_barcode` wants 4–64 characters; a
+        two-character code used to pass the preview, be reported as CREATE, and
+        then raise from inside apply() — a stack trace instead of a row number,
+        after the operator had been told the file was fine.
+        """
+        job = self._preview([self._row(**{'Código': 'C1'})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('C1', job.rows.first().errors[0])
+
+
+class C14StockImportTest(TestCase):
+    """§38–52, §73 — the half that writes to the Kardex."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-stock', 'Importa Stock')
+        self.other = _p3_company('c14-stock-b', 'Otra Stock')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.branch2 = _p2d_branch(self.company, 'Secundaria')
+        self.foreign_branch = _p2d_branch(self.other, 'Ajena')
+        self.user, _ = _p2d_member(
+            self.company, 'c14_stock_admin',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.product = _c1_product(self.company, 'Cable Lightning', '49.90')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product,
+            code='7751234567892', symbology=ProductBarcode.EAN13,
+        )
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+            symbology=ProductBarcode.INTERNAL,
+        )
+
+    def _row(self, **kw):
+        base = {'ID': 1288488, 'CODIGO': 'C000001',
+                'CODIGO EAN': '7751234567892', 'NOMBRE': 'Cable Lightning'}
+        base.update(kw)
+        return base
+
+    def _preview(self, rows, *, mode=None, branch_map=None, headers=None):
+        payload = _c14_stock_workbook(rows, headers=headers)
+        return _c14_stock.preview_stock(
+            company=self.company, actor=self.user, upload=_c14_upload(payload),
+            filename='Carga_Masiva_(inventarios)-2.xlsx',
+            branch_map=branch_map or {4: self.branch.pk},
+            mode=mode or _BulkImportJob.MODE_RECONCILE,
+        )
+
+    def _set_stock(self, quantity, *, branch=None, product=None):
+        inventory_services.create_stock_movement(
+            branch=branch or self.branch, product_id=(product or self.product).pk,
+            movement_type=StockMovement.INITIAL_STOCK, quantity=quantity,
+            reason='alta de prueba',
+        )
+
+    def _quantity(self, *, branch=None, product=None):
+        return inventory_services.branch_quantity(
+            branch or self.branch, product or self.product,
+        )
+
+    # =====================================================================
+    # THE RULE (§14, §44)
+    # =====================================================================
+
+    def test_a_blank_cell_leaves_the_stock_exactly_where_it_was(self):
+        """
+        The rule this whole subsystem is arranged around. The owner's real file
+        has 696 rows and a completely empty quantity column: it is the catalogue
+        printed out, waiting for somebody to walk the shelves. Read blank as
+        zero and that one upload writes off the entire shop.
+        """
+        self._set_stock(17)
+        job = self._preview([self._row()])            # no 'ALMACEN' key at all
+        row = job.rows.get(action=_BulkImportRow.SKIP)
+        self.assertEqual(row.normalized_data['quantity_kind'], 'blank')
+        # The preview shows the stock it is PRESERVING. A blank next to a blank
+        # is exactly the ambiguity this rule exists to remove.
+        self.assertEqual(row.normalized_data['current_preview'], 17)
+        self.assertIn('se queda en 17', row.warnings[0])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 17)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                branch=self.branch, reference_type='bulk_import',
+            ).count(),
+            0,
+        )
+
+    def test_an_explicit_zero_writes_the_stock_down_to_zero(self):
+        """
+        The opposite instruction, and it looks almost identical in a
+        spreadsheet. 17 → 0 is a real correction and produces a real movement.
+        """
+        self._set_stock(17)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 0})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 0)
+        movement = StockMovement.objects.get(reference_type='bulk_import')
+        self.assertEqual(movement.movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movement.quantity, 17)
+
+    def test_blank_and_zero_are_distinguishable_in_the_preview_itself(self):
+        """An operator must be able to SEE the difference before applying."""
+        self._set_stock(17)
+        blank = self._preview([self._row()]).rows.first()
+        zero = self._preview([self._row(**{'ALMACEN 1 - 11416': 0})]).rows.first()
+        self.assertEqual(blank.action, _BulkImportRow.SKIP)
+        self.assertEqual(zero.action, _BulkImportRow.UPDATE)
+        self.assertEqual(zero.normalized_data['target'], 0)
+        self.assertIsNone(blank.normalized_data.get('target'))
+
+    # =====================================================================
+    # Targets, not deltas
+    # =====================================================================
+
+    def test_a_target_above_current_produces_a_positive_correction(self):
+        self._set_stock(10)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 15})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 15)
+        self.assertEqual(
+            StockMovement.objects.get(reference_type='bulk_import').movement_type,
+            StockMovement.CORRECTION_POSITIVE,
+        )
+
+    def test_a_target_equal_to_current_moves_nothing(self):
+        self._set_stock(10)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 10})])
+        self.assertEqual(job.rows_no_change, 1)
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+
+    def test_a_sale_between_preview_and_apply_does_not_resurrect_stock(self):
+        """
+        §48 — the case the whole target-not-delta design exists for.
+
+        Preview sees 10, target 15, and shows "+5". Then the till sells two: the
+        shelf holds 8. Applying the preview's +5 would leave 13 and the shop
+        would be permanently two short, with a Kardex that says everything
+        balanced. The delta is recomputed under the lock at apply time.
+        """
+        self._set_stock(10)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 15})])
+        self.assertEqual(job.rows.first().normalized_data['delta_preview'], 5)
+
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=2, reason='venta',
+        )
+        self.assertEqual(self._quantity(), 8)
+
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 15)
+        movement = StockMovement.objects.get(reference_type='bulk_import')
+        self.assertEqual(movement.quantity, 7)
+
+    # =====================================================================
+    # Validation of the quantity itself (§45)
+    # =====================================================================
+
+    def test_a_negative_quantity_is_refused(self):
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': -1})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_a_decimal_quantity_is_refused(self):
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 2.5})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('entera', job.rows.first().errors[0])
+
+    def test_text_is_not_a_quantity(self):
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 'abc'})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_a_padded_number_is_read_as_that_number(self):
+        self._set_stock(1)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': ' 7 '})])
+        self.assertEqual(job.rows.first().normalized_data['target'], 7)
+
+    def test_a_whole_number_written_as_a_float_is_accepted(self):
+        """Excel stores every number as a double; `7.0` is seven, not a decimal."""
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 7.0})])
+        self.assertEqual(job.rows_error, 0)
+        self.assertEqual(job.rows.first().normalized_data['target'], 7)
+
+    def test_a_formula_in_a_quantity_cell_is_refused(self):
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': '=SUM(A1:A2)'})])
+        self.assertEqual(job.rows_error, 1)
+
+    # =====================================================================
+    # Matching
+    # =====================================================================
+
+    def test_a_product_that_does_not_exist_is_an_error_not_a_creation(self):
+        """
+        A stock importer that creates products would create them from a name and
+        a quantity, with no price and no codes — and it would do it six hundred
+        times from one bad column mapping.
+        """
+        job = self._preview([self._row(
+            **{'CODIGO': 'C999999', 'CODIGO EAN': '7758888888882',
+               'NOMBRE': 'No existe', 'ALMACEN 1 - 11416': 5})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('no se encontró', job.rows.first().errors[0].lower())
+
+    def test_conflicting_identifiers_are_an_error(self):
+        """§30, on the stock side."""
+        other = _c1_product(self.company, 'Otro', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=other, code='7759999999995',
+        )
+        job = self._preview([self._row(
+            **{'CODIGO EAN': '7759999999995', 'ALMACEN 1 - 11416': 5})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_the_same_product_and_branch_twice_is_an_error_not_last_row_wins(self):
+        """§46 — "last row wins" silently discards somebody's count."""
+        job = self._preview([
+            self._row(**{'ALMACEN 1 - 11416': 5}),
+            self._row(**{'ALMACEN 1 - 11416': 9}),
+        ])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('ya aparecen en la fila', job.rows.get(action='error').errors[0])
+
+    def test_the_excel_id_is_not_used_as_a_primary_key(self):
+        """§38 — matching is by code; the origin system's id identifies nothing here."""
+        job = self._preview([self._row(**{'ID': self.product.pk + 9999,
+                                          'ALMACEN 1 - 11416': 5})])
+        self.assertEqual(job.rows_error, 0)
+        self.assertEqual(job.rows.first().normalized_data['product_id'], self.product.pk)
+
+    # =====================================================================
+    # Modes (§41–43)
+    # =====================================================================
+
+    def test_initial_mode_refuses_a_product_that_already_has_history(self):
+        """
+        §42. "Initial stock" claims nothing was there before. Saying that about a
+        shelf with a Kardex behind it rewrites the beginning of a story that has
+        already been told.
+        """
+        self._set_stock(4)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 10})],
+                            mode=_BulkImportJob.MODE_INITIAL)
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('carga inicial', job.rows.first().errors[0].lower())
+
+    def test_initial_mode_refuses_history_even_when_the_shelf_is_now_empty(self):
+        """
+        The subtler half of the same rule. Stock back at zero does not mean
+        nothing ever happened here: an entry and a matching exit leave a Kardex
+        and an empty shelf. Writing INITIAL_STOCK on top would insert an opening
+        balance into the middle of a story that had already started.
+        """
+        self._set_stock(4)
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=4, reason='venta',
+        )
+        self.assertEqual(self._quantity(), 0)
+
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 10})],
+                            mode=_BulkImportJob.MODE_INITIAL)
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('historial', job.rows.first().errors[0])
+
+    def test_initial_mode_works_on_a_product_with_no_history(self):
+        fresh = _c1_product(self.company, 'Sin historial', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=fresh, code='C000777',
+        )
+        job = self._preview(
+            [self._row(**{'CODIGO': 'C000777', 'CODIGO EAN': '',
+                          'NOMBRE': 'Sin historial', 'ALMACEN 1 - 11416': 12})],
+            mode=_BulkImportJob.MODE_INITIAL,
+        )
+        self.assertEqual(job.rows_error, 0)
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(product=fresh), 12)
+        self.assertEqual(
+            StockMovement.objects.get(product=fresh).movement_type,
+            StockMovement.INITIAL_STOCK,
+        )
+
+    # =====================================================================
+    # Warehouses (§39, §40)
+    # =====================================================================
+
+    def test_the_warehouse_column_is_detected_by_shape_not_by_its_number(self):
+        """
+        `11416` is a warehouse id in the system that exported the file. Reading
+        it as a `Branch.pk` here would point at whichever branch happened to
+        have that primary key.
+        """
+        detected = _c14_formats.detect(
+            _BulkImportJob.STOCK, 'Worksheet', _C14_STOCK_HEADERS,
+        )
+        self.assertEqual(detected['warehouse_columns'], [(4, 'ALMACEN 1 - 11416')])
+        self.assertNotEqual(self.branch.pk, 11416)
+
+    def test_several_warehouses_go_through_the_same_importer(self):
+        """§40 — today one column, tomorrow three, no new code path."""
+        headers = _C14_STOCK_HEADERS + ['ALMACEN 2 - 20993']
+        self._set_stock(1)
+        self._set_stock(1, branch=self.branch2)
+        job = self._preview(
+            [self._row(**{'ALMACEN 1 - 11416': 5, 'ALMACEN 2 - 20993': 8})],
+            branch_map={4: self.branch.pk, 5: self.branch2.pk}, headers=headers,
+        )
+        self.assertEqual(job.rows_error, 0)
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 5)
+        self.assertEqual(self._quantity(branch=self.branch2), 8)
+
+    def test_a_blank_in_one_warehouse_does_not_affect_the_other(self):
+        headers = _C14_STOCK_HEADERS + ['ALMACEN 2 - 20993']
+        self._set_stock(3)
+        self._set_stock(4, branch=self.branch2)
+        job = self._preview(
+            [self._row(**{'ALMACEN 2 - 20993': 9})],
+            branch_map={4: self.branch.pk, 5: self.branch2.pk}, headers=headers,
+        )
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 3)
+        self.assertEqual(self._quantity(branch=self.branch2), 9)
+
+    # =====================================================================
+    # Tenant and Kardex discipline
+    # =====================================================================
+
+    def test_another_tenants_branch_cannot_be_written(self):
+        with self.assertRaises(_c14_stock.StockImportError):
+            self._preview([self._row(**{'ALMACEN 1 - 11416': 5})],
+                          branch_map={4: self.foreign_branch.pk})
+
+    def test_preview_creates_no_movement_and_no_stock(self):
+        """§53."""
+        movements = StockMovement.objects.count()
+        self._preview([self._row(**{'ALMACEN 1 - 11416': 5})])
+        self.assertEqual(StockMovement.objects.count(), movements)
+
+    def test_every_change_goes_through_the_kardex(self):
+        """
+        §49 — `inventory_services` is the only writer. A movement per change,
+        with the stock before and after recorded on it, is what makes the
+        history reconstructable.
+        """
+        self._set_stock(2)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 6})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        movement = StockMovement.objects.get(reference_type='bulk_import')
+        self.assertEqual((movement.stock_before, movement.stock_after), (2, 6))
+        self.assertEqual(movement.reason, 'Carga masiva de inventario')
+        self.assertEqual(movement.actor, self.user)
+
+    def test_the_movement_points_back_at_the_job(self):
+        """§51 — through the existing reference mechanism, not a new FK."""
+        self._set_stock(1)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 4})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        movement = StockMovement.objects.get(reference_type='bulk_import')
+        self.assertEqual(movement.reference_id, str(job.pk))
+
+    def test_the_compatibility_aggregate_stays_in_step(self):
+        self._set_stock(2)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 9})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 9)
+
+    def test_applying_twice_does_not_move_stock_twice(self):
+        """§52 — the failure mode this prevents is a doubled shop."""
+        self._set_stock(2)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 9})])
+        _job, first, _m = _c14_stock.apply_stock(job=job, actor=self.user)
+        _job, second, _m = _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(self._quantity(), 9)
+        self.assertEqual(
+            StockMovement.objects.filter(reference_type='bulk_import').count(), 1,
+        )
+
+    def test_a_job_with_errors_cannot_be_applied_at_all(self):
+        self._set_stock(5)
+        job = self._preview([
+            self._row(**{'ALMACEN 1 - 11416': 9}),
+            self._row(**{'CODIGO': 'C000999', 'CODIGO EAN': '', 'NOMBRE': 'Fantasma',
+                         'ALMACEN 1 - 11416': 3}),
+        ])
+        self.assertEqual(job.rows_error, 1)
+        with self.assertRaises(_c14_stock.StockImportError):
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 5)
+
+    def test_a_large_file_is_previewed_in_a_bounded_number_of_queries(self):
+        """
+        §74. The naive implementation issues a query per row per identifier: for
+        the owner's 696-row file that is thousands of round trips and a preview
+        measured in minutes.
+        """
+        products = []
+        for index in range(60):
+            product = _c1_product(self.company, f'Bulk {index}', '10.00')
+            ProductBarcode.objects.create(
+                company=self.company, product=product, code=f'C{index:06d}9',
+            )
+            products.append(product)
+        rows = [
+            {'ID': 1000 + i, 'CODIGO': f'C{i:06d}9', 'CODIGO EAN': '',
+             'NOMBRE': f'Bulk {i}', 'ALMACEN 1 - 11416': i}
+            for i in range(60)
+        ]
+        with self.assertNumQueries(FuzzyInt(1, 40)):
+            job = self._preview(rows)
+        self.assertEqual(job.rows_error, 0)
+
+
+class FuzzyInt(int):
+    """An upper bound for `assertNumQueries` — the ceiling is what matters."""
+
+    def __new__(cls, low, high):
+        obj = super().__new__(cls, high)
+        obj.low, obj.high = low, high
+        return obj
+
+    def __eq__(self, other):
+        return self.low <= other <= self.high
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash((self.low, self.high))
+
+    def __repr__(self):
+        return f'entre {self.low} y {self.high} consultas'
+
+
+class C14ImportApiTest(TestCase):
+    """§57, §58, §59, §63 — authority, tenancy and the surrounding endpoints."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-api', 'API Import')
+        self.other = _p3_company('c14-api-b', 'API Otra')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.branch2 = _p2d_branch(self.company, 'Secundaria')
+        self.foreign_branch = _p2d_branch(self.other, 'Ajena')
+
+        self.product_admin, _ = _p2d_member(
+            self.company, 'c14_api_products', ['company.view', 'products.manage'],
+        )
+        self.stock_admin, _ = _p2d_member(
+            self.company, 'c14_api_stock',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.nobody, _ = _p2d_member(self.company, 'c14_api_nobody', ['company.view'])
+        self.product = _c1_product(self.company, 'Cable Lightning', '49.90')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _product_file(self):
+        return _c14_upload(_c14_products_workbook([{
+            'Código de barras': '7751234567892', 'Código': 'C000002',
+            'Nombre': 'Nuevo cable', 'Precio venta - 11834': 19.90,
+        }]), 'Carga_Masiva_(Productos).xlsx')
+
+    def _stock_file(self, quantity=5):
+        return _c14_upload(_c14_stock_workbook([{
+            'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+            'NOMBRE': 'Cable Lightning', 'ALMACEN 1 - 11416': quantity,
+        }]), 'Carga_Masiva_(inventarios)-2.xlsx')
+
+    # --- authority --------------------------------------------------------
+
+    def test_product_import_needs_products_manage(self):
+        res = self._as(self.nobody).post(
+            '/api/admin/products/import/preview/', {'file': self._product_file()},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_stock_import_needs_inventory_adjust(self):
+        res = self._as(self.product_admin).post(
+            '/api/admin/inventory/import/preview/',
+            {'file': self._stock_file(),
+             'branch_map': json.dumps({'4': self.branch.pk})},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_is_refused_everywhere(self):
+        for path in ('/api/admin/imports/', '/api/admin/imports/inspect/',
+                     '/api/admin/products/import/preview/',
+                     '/api/admin/inventory/import/preview/',
+                     '/api/admin/products/import/template/',
+                     '/api/admin/inventory/export/'):
+            res = APIClient().get(path)
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN,
+                 status.HTTP_405_METHOD_NOT_ALLOWED),
+                path,
+            )
+
+    def test_stock_import_also_needs_access_to_the_branch(self):
+        """
+        §57 — the two axes. "May move stock" and "may move stock HERE" are
+        different questions, and a chain has staff for whom the answers differ.
+        """
+        limited, membership = _p2d_member(
+            self.company, 'c14_api_limited',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        membership.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.filter(membership=membership).delete()
+        MembershipBranchAccess.objects.create(
+            membership=membership, branch=self.branch,
+        )
+
+        res = self._as(limited).post(
+            '/api/admin/inventory/import/preview/',
+            {'file': self._stock_file(),
+             'branch_map': json.dumps({'4': self.branch2.pk})},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_another_tenants_branch_is_not_found_rather_than_refused(self):
+        res = self._as(self.stock_admin).post(
+            '/api/admin/inventory/import/preview/',
+            {'file': self._stock_file(),
+             'branch_map': json.dumps({'4': self.foreign_branch.pk})},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # --- the two-step flow ------------------------------------------------
+
+    def test_preview_then_apply(self):
+        res = self._as(self.product_admin).post(
+            '/api/admin/products/import/preview/', {'file': self._product_file()},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data['counts']['create'], 1)
+        self.assertEqual(res.data['status'], 'previewed')
+        self.assertFalse(
+            Product.objects.filter(company=self.company, name='Nuevo cable').exists()
+        )
+
+        job_id = res.data['id']
+        res = self._as(self.product_admin).post(
+            f'/api/admin/products/import/{job_id}/apply/', {}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['status'], 'applied')
+        self.assertTrue(
+            Product.objects.filter(company=self.company, name='Nuevo cable').exists()
+        )
+
+    def test_another_tenant_cannot_apply_my_job(self):
+        res = self._as(self.product_admin).post(
+            '/api/admin/products/import/preview/', {'file': self._product_file()},
+            format='multipart',
+        )
+        job_id = res.data['id']
+        intruder, _ = _p2d_member(
+            self.other, 'c14_api_intruder', ['company.view', 'products.manage'],
+        )
+        res = self._as(intruder).post(
+            f'/api/admin/products/import/{job_id}/apply/', {}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(
+            _BulkImportJob.objects.get(pk=job_id).status == 'previewed'
+        )
+
+    def test_the_audit_log_records_the_import_without_the_catalogue_in_it(self):
+        """
+        §66. An audit entry naming 696 products is a copy of the file in a table
+        that was never meant to hold one.
+        """
+        res = self._as(self.stock_admin).post(
+            '/api/admin/inventory/import/preview/',
+            {'file': self._stock_file(),
+             'branch_map': json.dumps({'4': self.branch.pk})},
+            format='multipart',
+        )
+        job_id = res.data['id']
+        self._as(self.stock_admin).post(
+            f'/api/admin/inventory/import/{job_id}/apply/', {}, format='json',
+        )
+        entry = AdminAuditLog.objects.filter(action='inventory_import_applied').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.metadata['job_id'], job_id)
+        blob = json.dumps(entry.metadata)
+        self.assertNotIn('Cable Lightning', blob)
+        self.assertNotIn('C000001', blob)
+
+    # --- inspection, history, downloads -----------------------------------
+
+    def test_inspect_reports_the_sheets_without_staging_anything(self):
+        before = _BulkImportJob.objects.count()
+        res = self._as(self.product_admin).post(
+            '/api/admin/imports/inspect/',
+            {'file': self._product_file(), 'import_type': 'products'},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        names = [s['name'] for s in res.data['sheets']]
+        self.assertEqual(names, ['Productos', 'Unidades de medida', 'Marcas',
+                                 'Variables', 'Afectaciones'])
+        productos = res.data['sheets'][0]
+        self.assertEqual(productos['header_row'], 2)
+        self.assertEqual(len(productos['headers']), 18)
+        self.assertIn('18 columnas', productos['detected'])
+        self.assertEqual(_BulkImportJob.objects.count(), before)
+
+    def test_the_history_is_tenant_scoped(self):
+        self._as(self.product_admin).post(
+            '/api/admin/products/import/preview/', {'file': self._product_file()},
+            format='multipart',
+        )
+        stranger, _ = _p2d_member(
+            self.other, 'c14_api_stranger', ['company.view', 'products.manage'],
+        )
+        res = self._as(stranger).get('/api/admin/imports/')
+        self.assertEqual(res.data['results'], [])
+        res = self._as(self.product_admin).get('/api/admin/imports/')
+        self.assertEqual(len(res.data['results']), 1)
+
+    def test_the_error_report_downloads_as_csv(self):
+        upload = _c14_upload(_c14_products_workbook([{
+            'Código de barras': '7751234567892', 'Código': 'C000009',
+            'Nombre': 'Precio malo', 'Precio venta - 11834': 'gratis',
+        }]), 'malo.xlsx')
+        res = self._as(self.product_admin).post(
+            '/api/admin/products/import/preview/', {'file': upload},
+            format='multipart',
+        )
+        job_id = res.data['id']
+        res = self._as(self.product_admin).get(
+            f'/api/admin/imports/{job_id}/errors.csv'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        body = res.content.decode('utf-8')
+        self.assertIn('Precio malo', body)
+        self.assertIn('attachment', res['Content-Disposition'])
+
+    def test_the_product_template_downloads_and_the_importer_can_read_it(self):
+        """§60 — a template the platform cannot read back is not a template."""
+        res = self._as(self.product_admin).get('/api/admin/products/import/template/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        workbook, _notes = _c14_reader.load_workbook(res.content)
+        headers, rows, _t = _c14_reader.read_rows(workbook, 'Productos', header_row=1)
+        self.assertIn('Nombre', headers)
+        self.assertIn('Precio de venta', headers)
+
+    def test_the_inventory_export_round_trips_through_the_importer(self):
+        """§61, §62 — download, count in Excel, upload again."""
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.INITIAL_STOCK, quantity=4, reason='alta',
+        )
+        res = self._as(self.stock_admin).get(
+            f'/api/admin/inventory/export/?branches={self.branch.pk}'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        workbook, _notes = _c14_reader.load_workbook(res.content)
+        headers, rows, _t = _c14_reader.read_rows(
+            workbook, 'Inventario', header_row=1,
+        )
+        self.assertEqual(headers[:3], ['CODIGO', 'CODIGO EAN', 'NOMBRE'])
+        # NOT the exporting system's header. That number is another platform's
+        # warehouse id and has no business in every tenant's download.
+        self.assertNotIn('ALMACEN 1 - 11416', headers)
+        self.assertIn(f'ALMACEN {self.branch.name}', headers)
+        self.assertEqual(rows[0][1][3], '4')
+
+    def test_the_count_sheet_can_be_downloaded_blank(self):
+        """
+        §61(B). Pre-filled quantities are how a physical count stops being a
+        count: whoever holds the sheet reads "14", sees fourteen-ish, and writes
+        nothing.
+        """
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.INITIAL_STOCK, quantity=4, reason='alta',
+        )
+        res = self._as(self.stock_admin).get(
+            f'/api/admin/inventory/export/?branches={self.branch.pk}&quantities=blank'
+        )
+        workbook, _notes = _c14_reader.load_workbook(res.content)
+        _headers, rows, _t = _c14_reader.read_rows(
+            workbook, 'Inventario', header_row=1,
+        )
+        self.assertNotIn(3, rows[0][1])
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 4,
+        )
+
+    def test_the_export_refuses_another_tenants_branch(self):
+        res = self._as(self.stock_admin).get(
+            f'/api/admin/inventory/export/?branches={self.foreign_branch.pk}'
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class C14MappingProfileTest(TestCase):
+    """§20, §21, §22 — remembering the shape, not the customer."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-profile', 'Perfiles')
+        self.other = _p3_company('c14-profile-b', 'Perfiles B')
+        self.user, _ = _p2d_member(
+            self.company, 'c14_profile_admin', ['company.view', 'products.manage'],
+        )
+
+    def test_a_signature_survives_the_data_changing(self):
+        """
+        Keyed on the SHAPE. Hashing the file would recognise nothing twice,
+        because the data is different in every upload — which is the point of
+        uploading it.
+        """
+        first = _c14_formats.header_signature(
+            'products', 'Productos', _C14_PRODUCT_HEADERS,
+        )
+        second = _c14_formats.header_signature(
+            'products', 'Productos', _C14_PRODUCT_HEADERS,
+        )
+        self.assertEqual(first, second)
+
+    def test_different_columns_are_a_different_shape(self):
+        changed = _C14_PRODUCT_HEADERS[:-1]
+        self.assertNotEqual(
+            _c14_formats.header_signature('products', 'Productos', _C14_PRODUCT_HEADERS),
+            _c14_formats.header_signature('products', 'Productos', changed),
+        )
+
+    def test_accents_and_case_do_not_change_the_shape(self):
+        self.assertEqual(
+            _c14_formats.normalize_header('CÓDIGO EAN'),
+            _c14_formats.normalize_header('codigo_ean'),
+        )
+
+    def test_two_warehouses_are_not_folded_into_one_column(self):
+        """
+        Digits are kept on purpose: `ALMACEN 1` and `ALMACEN 2` are two shops,
+        and collapsing them would merge two warehouses into one.
+        """
+        self.assertNotEqual(
+            _c14_formats.normalize_header('ALMACEN 1 - 11416'),
+            _c14_formats.normalize_header('ALMACEN 2 - 11417'),
+        )
+
+    def test_a_profile_is_stored_after_the_first_preview(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        client.post(
+            '/api/admin/products/import/preview/',
+            {'file': _c14_upload(_c14_products_workbook([{
+                'Código de barras': '7751234567892', 'Código': 'C000002',
+                'Nombre': 'X', 'Precio venta - 11834': 10,
+            }]), 'p.xlsx')},
+            format='multipart',
+        )
+        profile = _ImportMappingProfile.objects.get(company=self.company)
+        self.assertEqual(profile.import_type, 'products')
+        self.assertIn('name', profile.mapping)
+        self.assertFalse(_ImportMappingProfile.objects.filter(company=self.other).exists())
+
+    def test_the_presets_are_not_keyed_to_a_company(self):
+        """
+        §22. `if company.slug == 'black-dog-store'` is not a feature, it is one
+        customer welded into a platform: the second tenant with the same
+        accounting system gets nothing, and the branch that runs for one customer
+        is the branch nobody else's tests cover.
+        """
+        import ast
+        import inspect
+
+        # Walked as a SYNTAX TREE, not scanned as text. The module's own
+        # docstring quotes `if company.slug == 'black-dog-store'` as the thing
+        # it refuses to do, and a text scan cannot tell an example of a mistake
+        # from the mistake.
+        tree = ast.parse(inspect.getsource(_c14_formats))
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in ('slug', 'pk', 'id'):
+                base = node.value
+                if isinstance(base, ast.Name) and base.id in ('company', 'tenant'):
+                    offenders.append(node.lineno)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                # A tenant's slug appearing as a runtime STRING would be the
+                # same welding by another route. Docstrings are excluded: they
+                # are the module explaining itself.
+                if node.value in ('black-dog-store', 'blackdog'):
+                    offenders.append(node.lineno)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)):
+                doc = ast.get_docstring(node, clean=False)
+                if doc is None:
+                    continue
+                first = node.body[0]
+                if isinstance(first, ast.Expr):
+                    span = range(first.lineno, (first.end_lineno or first.lineno) + 1)
+                    offenders = [line for line in offenders if line not in span]
+        self.assertEqual(offenders, [], 'el detector depende de una empresa concreta')
+
+        # And it really does fire for a company that is not the owner's.
+        stranger = _p3_company('c14-anyone', 'Cualquier Empresa')
+        detected = _c14_formats.detect('products', 'Productos', _C14_PRODUCT_HEADERS)
+        self.assertIsNotNone(detected)
+        self.assertTrue(stranger.pk)
+
+    def test_a_file_from_another_system_with_the_same_columns_is_recognised(self):
+        """A different warehouse number is the same format."""
+        headers = ['ID', 'CODIGO', 'CODIGO EAN', 'NOMBRE', 'ALMACEN 1 - 99999']
+        detected = _c14_formats.detect('stock', 'Worksheet', headers)
+        self.assertIsNotNone(detected)
+        self.assertEqual(detected['warehouse_columns'], [(4, 'ALMACEN 1 - 99999')])
+
+
+class C14MigrationGraphTest(TestCase):
+    """§4, §71 — one graph, and it still runs from either side."""
+
+    def test_the_graph_has_exactly_one_leaf(self):
+        """
+        Two branches left 0033 and Django refuses a graph with two leaves — it
+        cannot know which order was intended, and the answer is not in the files.
+        """
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        leaves = [
+            name for app, name in loader.graph.leaf_nodes() if app == 'store'
+        ]
+        self.assertEqual(len(leaves), 1, leaves)
+
+    def test_the_merge_migration_depends_on_both_real_leaves(self):
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        merge = loader.disk_migrations[
+            ('store', '0041_merge_checkout_and_commercial_graphs')
+        ]
+        dependencies = {name for app, name in merge.dependencies if app == 'store'}
+        self.assertEqual(dependencies, {
+            '0034_checkout_idempotency',
+            '0040_promotion_capabilities_for_untouched_presets',
+        })
+
+    def test_the_merge_migration_changes_no_schema(self):
+        """
+        The two branches touch disjoint columns, so there is nothing to
+        reconcile in SQL. An empty node costs one row in `django_migrations`;
+        renumbering seven applied migrations costs a manual recovery.
+        """
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        merge = loader.disk_migrations[
+            ('store', '0041_merge_checkout_and_commercial_graphs')
+        ]
+        self.assertEqual(merge.operations, [])
+
+    def test_the_published_commercial_migrations_were_not_renumbered(self):
+        """
+        Those seven are applied in a real database. Renumbering them would show
+        Django seven migrations it has never run against tables that already
+        exist.
+        """
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        names = {name for app, name in loader.disk_migrations if app == 'store'}
+        for expected in (
+            '0034_commercial_pos_barcode',
+            '0035_commercial_capabilities_for_untouched_presets',
+            '0036_pos_customers_discounts_commissions',
+            '0037_commission_capabilities_for_untouched_presets',
+            '0038_backfill_historical_discount_source',
+            '0039_promotions_and_combos',
+            '0040_promotion_capabilities_for_untouched_presets',
+            '0034_checkout_idempotency',
+        ):
+            self.assertIn(expected, names)
+
+    def test_both_idempotency_constraints_survive(self):
+        """
+        §5. The auto-merge left two `constraints = [...]` in `Order.Meta`, the
+        second silently shadowing the first — valid Python that dropped the POS
+        uniqueness. They are different guarantees on different surfaces and are
+        deliberately not unified.
+        """
+        names = {c.name for c in Order._meta.constraints}
+        self.assertIn('unique_pos_idempotency_key_per_company', names)
+        self.assertIn('unique_checkout_idempotency_per_customer', names)
+
+    def test_a_fresh_database_builds_the_whole_graph(self):
+        """
+        §71(A). Implicitly proven by this suite existing — Django builds a fresh
+        database from 0001 to the leaf for every run — and asserted so that the
+        guarantee is stated rather than assumed.
+        """
+        from django.db import connection
+
+        tables = set(connection.introspection.table_names())
+        for table in ('store_bulkimportjob', 'store_bulkimportrow',
+                      'store_importmappingprofile', 'store_promotion',
+                      'store_stockmovement'):
+            self.assertIn(table, tables)
+
+
+class C14StockWriterDisciplineTest(TestCase):
+    """§49 — `inventory_services` is the ONLY thing that writes stock."""
+
+    IMPORT_MODULES = [
+        'import_services', 'stock_import_services', 'import_views',
+        'import_exports', 'import_formats', 'xlsx_reader',
+    ]
+
+    def test_no_import_module_writes_stock_directly(self):
+        """
+        Asserted over the SYNTAX TREE, not by scanning source text — these
+        modules discuss `BranchStock.quantity` in their prose precisely because
+        they must not touch it, and a text scan cannot tell an explanation from
+        an assignment.
+
+        The rule matters because a direct write leaves no Kardex row. The stock
+        would move and the history would not record it, so the shelf and the
+        ledger would disagree with no way to tell when they started to.
+        """
+        import ast
+        import importlib
+        import inspect
+
+        offenders = []
+        for name in self.IMPORT_MODULES:
+            module = importlib.import_module(f'store.{name}')
+            tree = ast.parse(inspect.getsource(module))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if (isinstance(target, ast.Attribute)
+                                and target.attr in ('quantity', 'inventory')):
+                            offenders.append(f'{name}:{node.lineno} = .{target.attr}')
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    if node.func.attr in ('update', 'bulk_update'):
+                        for keyword in node.keywords:
+                            if keyword.arg in ('quantity', 'inventory'):
+                                offenders.append(
+                                    f'{name}:{node.lineno} update({keyword.arg}=…)'
+                                )
+        self.assertEqual(offenders, [])
+
+    def test_the_stock_importer_calls_the_service(self):
+        """The other half: it does not write directly AND it does write."""
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(_c14_stock))
+        calls = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        self.assertIn('create_stock_movement', calls)
+
+
+class C14ImportedProductIsUsableTest(TestCase):
+    """§67 — a product that arrived by import is an ordinary product."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-usable', 'Usable')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.user, _ = _p2d_member(
+            self.company, 'c14_usable_admin',
+            ['company.view', 'products.manage', 'inventory.adjust',
+             _C13_PROMO_VIEW, _C13_PROMO_MANAGE],
+        )
+
+    def _import(self, rows):
+        job = _c14_products.preview_products(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_products_workbook(rows)), filename='p.xlsx',
+        )
+        _c14_products.apply_products(job=job, actor=self.user)
+        return job
+
+    def test_an_imported_product_can_join_a_promotion_immediately(self):
+        """
+        Nothing about the import marks a product as second class — no pending
+        flag, no separate table. If it did, an operator would import a catalogue
+        and then find they could not build a combo out of it.
+        """
+        self._import([
+            {'Código de barras': '7751234567892', 'Código': 'C000001',
+             'Nombre': 'Cable importado', 'Precio venta - 11834': 40},
+            {'Código de barras': '7751234567908', 'Código': 'C000002',
+             'Nombre': 'Cargador importado', 'Precio venta - 11834': 60},
+        ])
+        one = Product.objects.get(company=self.company, name='Cable importado')
+        two = Product.objects.get(company=self.company, name='Cargador importado')
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        res = client.post('/api/admin/sales/promotions/', {
+            'name': 'Combo importado',
+            'promotion_type': 'bundle_fixed_price',
+            'fixed_price': '80.00',
+            'items': [
+                {'product': one.pk, 'quantity': 1},
+                {'product': two.pk, 'quantity': 1},
+            ],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+
+    def test_an_imported_product_can_be_sold_and_leaves_stock(self):
+        """
+        The full chain: import the article, import its stock, sell it, and the
+        Kardex shows the exit against the quantity the import created.
+        """
+        self._import([{
+            'Código de barras': '7751234567892', 'Código': 'C000001',
+            'Nombre': 'Cable importado', 'Precio venta - 11834': 40,
+        }])
+        product = Product.objects.get(company=self.company, name='Cable importado')
+
+        stock_job = _c14_stock.preview_stock(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '7751234567892',
+                'NOMBRE': 'Cable importado', 'ALMACEN 1 - 11416': 6,
+            }])),
+            filename='inv.xlsx', branch_map={4: self.branch.pk},
+            mode=_BulkImportJob.MODE_INITIAL,
+        )
+        self.assertEqual(stock_job.rows_error, 0)
+        _c14_stock.apply_stock(job=stock_job, actor=self.user)
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, product), 6,
+        )
+
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=2, reason='venta',
+        )
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, product), 4,
+        )
+
+
+# =============================================================================
 # M6 — the INTERNAL surface: /api/v1/internal/<company_slug>/
 # =============================================================================
 #
@@ -19996,6 +25235,765 @@ class M6CapabilityStatusTest(TestCase):
             '/api/v1/internal/m6-x/customers/',
         ):
             self.assertEqual(client.get(path).status_code, 404, path)
+
+
+# =============================================================================
+# C1.5 — what the remote audit of C1.4 found
+# =============================================================================
+
+
+class C15RowLimitTest(TestCase):
+    """§6–10 — a file over the limit is refused whole, never trimmed."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-limit', 'Limite')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.user, _ = _p2d_member(
+            self.company, 'c15_limit_admin',
+            ['company.view', 'products.manage', 'inventory.adjust'],
+        )
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+        )
+
+    def _product_rows(self, count):
+        return [{
+            'Código de barras': f'{7751234500000 + i}', 'Código': f'P{i:06d}',
+            'Nombre': f'Producto {i}', 'Precio venta - 11834': 10,
+        } for i in range(count)]
+
+    def _stock_rows(self, count):
+        return [{
+            'ID': i, 'CODIGO': f'S{i:06d}', 'CODIGO EAN': '',
+            'NOMBRE': f'Articulo {i}', 'ALMACEN 1 - 11416': 1,
+        } for i in range(count)]
+
+    # --- the reader itself ------------------------------------------------
+
+    def test_exactly_the_limit_is_allowed(self):
+        payload = _c14_stock_workbook(self._stock_rows(_c14_reader.MAX_DATA_ROWS))
+        workbook, _n = _c14_reader.load_workbook(payload)
+        _h, rows, truncated = _c14_reader.read_rows(
+            workbook, 'Worksheet', header_row=1, mode=_c14_reader.FULL_IMPORT,
+        )
+        self.assertEqual(len(rows), _c14_reader.MAX_DATA_ROWS)
+        self.assertFalse(truncated)
+
+    def test_one_row_over_the_limit_is_refused(self):
+        payload = _c14_stock_workbook(self._stock_rows(_c14_reader.MAX_DATA_ROWS + 1))
+        workbook, _n = _c14_reader.load_workbook(payload)
+        with self.assertRaises(_c14_reader.XlsxTooManyRows):
+            _c14_reader.read_rows(
+                workbook, 'Worksheet', header_row=1, mode=_c14_reader.FULL_IMPORT,
+            )
+
+    def test_trailing_blank_rows_do_not_push_a_file_over_the_limit(self):
+        """
+        §8. A sheet with the limit's worth of records followed by rows of
+        leftover template formatting is a file AT the limit, not over it.
+        Counting the blanks would refuse a perfectly importable file.
+        """
+        rows = self._stock_rows(_c14_reader.MAX_DATA_ROWS)
+        payload = _c14_stock_workbook(rows + [{} for _ in range(30)])
+        workbook, _n = _c14_reader.load_workbook(payload)
+        _h, read, truncated = _c14_reader.read_rows(
+            workbook, 'Worksheet', header_row=1, mode=_c14_reader.FULL_IMPORT,
+        )
+        self.assertEqual(len(read), _c14_reader.MAX_DATA_ROWS)
+        self.assertFalse(truncated)
+
+    def test_sample_mode_stops_early_and_says_so(self):
+        """§10 — for an inspection, stopping early is the point, not a failure."""
+        payload = _c14_stock_workbook(self._stock_rows(200))
+        workbook, _n = _c14_reader.load_workbook(payload)
+        _h, rows, truncated = _c14_reader.read_rows(
+            workbook, 'Worksheet', header_row=1,
+            limit=_c14_reader.SAMPLE_ROWS, mode=_c14_reader.SAMPLE,
+        )
+        self.assertEqual(len(rows), _c14_reader.SAMPLE_ROWS)
+        self.assertTrue(truncated)
+
+    # --- the services -----------------------------------------------------
+
+    def test_an_oversized_product_file_leaves_no_job_behind(self):
+        """
+        The defect this closes: 5001 rows produced 5000 staged rows, zero
+        errors and an applicable job — a partial import that reported success.
+        """
+        before = _BulkImportJob.objects.count()
+        with self.assertRaises(_c14_reader.XlsxTooManyRows):
+            _c14_products.preview_products(
+                company=self.company, actor=self.user,
+                upload=_c14_upload(_c14_products_workbook(
+                    self._product_rows(_c14_reader.MAX_DATA_ROWS + 1))),
+                filename='grande.xlsx',
+            )
+        self.assertEqual(_BulkImportJob.objects.count(), before)
+
+    def test_an_oversized_stock_file_leaves_no_job_behind(self):
+        """§9 — the same rule on both importers, not just one."""
+        before = _BulkImportJob.objects.count()
+        with self.assertRaises(_c14_reader.XlsxTooManyRows):
+            _c14_stock.preview_stock(
+                company=self.company, actor=self.user,
+                upload=_c14_upload(_c14_stock_workbook(
+                    self._stock_rows(_c14_reader.MAX_DATA_ROWS + 1))),
+                filename='grande.xlsx', branch_map={4: self.branch.pk},
+            )
+        self.assertEqual(_BulkImportJob.objects.count(), before)
+
+    def test_the_api_reports_an_oversized_file_as_a_400(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        res = client.post(
+            '/api/admin/products/import/preview/',
+            {'file': _c14_upload(_c14_products_workbook(
+                self._product_rows(_c14_reader.MAX_DATA_ROWS + 1)))},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('5000', res.data['detail'])
+
+
+class C15BarcodeIdentityTest(TestCase):
+    """§11–19 — one semantics of identity, shared with the till."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-ident', 'Identidad')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.user, _ = _p2d_member(
+            self.company, 'c15_ident_admin',
+            ['company.view', 'products.manage', 'inventory.adjust',
+             'inventory.view', _C1_POS],
+        )
+
+    def _preview(self, rows, **kw):
+        return _c14_products.preview_products(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_products_workbook(rows)), filename='p.xlsx',
+            **kw,
+        )
+
+    def _row(self, **kw):
+        base = {'Código de barras': '7751234567892', 'Código': 'C000001',
+                'Nombre': 'Cable', 'Precio venta - 11834': 10}
+        base.update(kw)
+        return base
+
+    # --- case sensitivity -------------------------------------------------
+
+    def test_two_codes_differing_only_in_case_are_two_products(self):
+        """
+        §12, §13. `normalize_barcode()` trims and nothing else, because Code128
+        carries mixed case a scanner reproduces faithfully. The importer used to
+        upper-case its index, which meant it merged two articles the till keeps
+        apart.
+        """
+        a = _c1_product(self.company, 'Producto A', '10.00')
+        b = _c1_product(self.company, 'Producto B', '20.00')
+        ProductBarcode.objects.create(company=self.company, product=a, code='AbC123')
+        ProductBarcode.objects.create(company=self.company, product=b, code='abc123')
+
+        index = _c14_products.CatalogueIndex(self.company)
+        self.assertEqual(index.owner_of('AbC123'), a.pk)
+        self.assertEqual(index.owner_of('abc123'), b.pk)
+
+        upper, _e, _by, _w = index.match(barcode='AbC123')
+        lower, _e, _by, _w = index.match(barcode='abc123')
+        self.assertEqual(upper, a.pk)
+        self.assertEqual(lower, b.pk)
+
+    def test_the_import_agrees_with_the_pos_on_the_same_two_codes(self):
+        """
+        §14 — one semantics of identity. If the scanner and the importer
+        disagree about what a code means, one of them is quietly editing the
+        wrong article.
+        """
+        a = _c1_product(self.company, 'Producto A', '10.00')
+        b = _c1_product(self.company, 'Producto B', '20.00')
+        ProductBarcode.objects.create(company=self.company, product=a, code='AbC123')
+        ProductBarcode.objects.create(company=self.company, product=b, code='abc123')
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        for code, expected in (('AbC123', a), ('abc123', b)):
+            res = client.get(
+                f'/api/admin/pos/products/lookup/?code={code}&branch={self.branch.pk}'
+            )
+            self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+            self.assertEqual(res.data['id'], expected.pk, code)
+
+            index = _c14_products.CatalogueIndex(self.company)
+            matched, _e, _by, _w = index.match(barcode=code)
+            self.assertEqual(matched, expected.pk, code)
+
+    def test_a_file_holding_both_cases_is_not_a_duplicate(self):
+        """§13 — if the database keeps them apart, the preview must too."""
+        job = self._preview([
+            self._row(**{'Código de barras': 'AbC12345', 'Código': 'C000001',
+                         'Nombre': 'Uno'}),
+            self._row(**{'Código de barras': 'abc12345', 'Código': 'C000002',
+                         'Nombre': 'Dos'}),
+        ])
+        self.assertEqual(job.rows_error, 0, [r.errors for r in job.rows.all()])
+        self.assertEqual(job.rows_create, 2)
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertEqual(
+            set(ProductBarcode.objects.filter(company=self.company)
+                .values_list('code', flat=True)),
+            {'AbC12345', 'abc12345', 'C000001', 'C000002'},
+        )
+
+    # --- inactive barcodes hold their code --------------------------------
+
+    def test_an_inactive_barcode_still_identifies_its_product(self):
+        """
+        §15–17. `UNIQUE(company, code)` has no condition on `is_active`, so a
+        retired label still RESERVES the string. Loading only active codes made
+        the preview blind to exactly the rows that would explode at apply.
+        """
+        product = _c1_product(self.company, 'Con código retirado', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=product, code='XYZ123', is_active=False,
+        )
+        index = _c14_products.CatalogueIndex(self.company)
+        self.assertEqual(index.owner_of('XYZ123'), product.pk)
+        self.assertTrue(index.is_inactive('XYZ123'))
+
+        matched, error, _by, warnings = index.match(barcode='XYZ123')
+        self.assertEqual(matched, product.pk)
+        self.assertIsNone(error)
+        self.assertTrue(any('desactivado' in w for w in warnings))
+
+    def test_an_import_row_does_not_reactivate_or_duplicate_it(self):
+        product = _c1_product(self.company, 'Retirado', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=product, code='XYZ123', is_active=False,
+        )
+        job = self._preview([self._row(**{
+            'Código de barras': 'XYZ123', 'Código': 'XYZ123',
+            'Nombre': 'Retirado', 'Precio venta - 11834': 15,
+        })])
+        self.assertEqual(job.rows_error, 0, [r.errors for r in job.rows.all()])
+        self.assertTrue(any('desactivado' in w for w in job.rows.first().warnings))
+
+        _c14_products.apply_products(job=job, actor=self.user)
+        codes = ProductBarcode.objects.filter(company=self.company, code='XYZ123')
+        self.assertEqual(codes.count(), 1)
+        self.assertFalse(codes.first().is_active)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+
+    def test_an_inactive_code_owned_by_another_product_is_an_error(self):
+        """
+        §18 — never wait for `UNIQUE(company, code)` to explode during apply.
+        """
+        owner = _c1_product(self.company, 'Dueño', '10.00')
+        other = _c1_product(self.company, 'Otro', '20.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=owner, code='XYZ123', is_active=False,
+        )
+        ProductBarcode.objects.create(
+            company=self.company, product=other, code='7751234567892',
+        )
+        job = self._preview([self._row(**{
+            'Código de barras': '7751234567892', 'Código': 'XYZ123',
+            'Nombre': 'Otro',
+        })])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_the_stock_importer_can_identify_by_an_inactive_code(self):
+        product = _c1_product(self.company, 'Retirado', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=product, code='XYZ123', is_active=False,
+        )
+        job = _c14_stock.preview_stock(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'XYZ123', 'CODIGO EAN': '',
+                'NOMBRE': 'Retirado', 'ALMACEN 1 - 11416': 5,
+            }])),
+            filename='inv.xlsx', branch_map={4: self.branch.pk},
+        )
+        self.assertEqual(job.rows_error, 0, [r.errors for r in job.rows.all()])
+        row = job.rows.first()
+        self.assertEqual(row.normalized_data['product_id'], product.pk)
+        self.assertTrue(any('desactivado' in w for w in row.warnings))
+
+    def test_a_code_taken_between_preview_and_apply_aborts_cleanly(self):
+        """§19 — a controlled rollback, never an IntegrityError as a 500."""
+        job = self._preview([self._row()])
+        self.assertEqual(job.rows_create, 1)
+
+        squatter = _c1_product(self.company, 'Se adelantó', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=squatter, code='C000001',
+        )
+        with self.assertRaises(_c14_products.ImportError_) as caught:
+            _c14_products.apply_products(job=job, actor=self.user)
+        self.assertIn('previsualización', str(caught.exception))
+        self.assertFalse(
+            Product.objects.filter(company=self.company, name='Cable').exists()
+        )
+
+
+class C15NumericCellWarningTest(TestCase):
+    """§20–21 — do not assert a cell type the file did not report."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-num', 'Numerico')
+        self.user, _ = _p2d_member(
+            self.company, 'c15_num_admin', ['company.view', 'products.manage'],
+        )
+
+    def _preview(self, value):
+        return _c14_products.preview_products(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_products_workbook([{
+                'Código de barras': value, 'Código': 'C000001',
+                'Nombre': 'Cable', 'Precio venta - 11834': 10,
+            }])),
+            filename='p.xlsx',
+        )
+
+    def test_a_genuinely_numeric_cell_warns(self):
+        job = self._preview(310000000001)
+        self.assertTrue(any('numérica' in w for w in job.rows.first().warnings))
+
+    def test_a_text_cell_of_digits_does_not_claim_excel_converted_it(self):
+        """
+        The defect: the warning was driven by a digits-only regex, so a column
+        correctly formatted as TEXT was told it might be damaged. An alarm that
+        cries wolf gets ignored on the day it is right.
+        """
+        job = self._preview('750123456789')
+        row = job.rows.first()
+        self.assertEqual(row.normalized_data['barcode'], '750123456789')
+        self.assertEqual(row.warnings, [])
+
+    def test_neither_case_ever_restores_a_leading_zero(self):
+        for value in (310000000001, '310000000001'):
+            job = self._preview(value)
+            self.assertEqual(
+                job.rows.first().normalized_data['barcode'], '310000000001',
+            )
+
+
+class C15ExactIntegerTest(TestCase):
+    """§33–35 — a count is an exact integer, never a float."""
+
+    def test_whole_numbers_written_in_excels_many_ways(self):
+        for text, expected in (('7', 7), ('7.0', 7), ('7.000', 7), (' 7 ', 7),
+                               ('0', 0), (7.0, 7), (7, 7)):
+            kind, value, error = _c14_stock.parse_quantity(text)
+            self.assertEqual((kind, value, error), ('value', expected, None), text)
+
+    def test_a_count_beyond_double_precision_is_not_silently_rounded(self):
+        """
+        `int(float('9007199254740993'))` is 9007199254740992 — one short, with
+        no error anywhere. A stock figure parsed through a float can come back
+        wrong and look right.
+        """
+        kind, value, error = _c14_stock.parse_quantity('9007199254740993')
+        self.assertEqual(kind, 'value')
+        self.assertIsNone(value)
+        self.assertIsNotNone(error)
+        self.assertNotIn('9007199254740992', str(error))
+
+    def test_a_quantity_that_would_overflow_the_column_is_a_row_error(self):
+        kind, value, error = _c14_stock.parse_quantity(
+            str(_c14_stock.MAX_STOCK_QUANTITY + 1)
+        )
+        self.assertIsNone(value)
+        self.assertIn('máxima', error)
+
+    def test_the_column_ceiling_itself_is_accepted(self):
+        _kind, value, error = _c14_stock.parse_quantity(
+            str(_c14_stock.MAX_STOCK_QUANTITY)
+        )
+        self.assertEqual(value, _c14_stock.MAX_STOCK_QUANTITY)
+        self.assertIsNone(error)
+
+    def test_the_shapes_that_are_not_counts(self):
+        for text in ('7.1', '1e3', 'NaN', 'Infinity', '-1', 'abc', '0x10', '½'):
+            _kind, value, error = _c14_stock.parse_quantity(text)
+            self.assertIsNone(value, text)
+            self.assertIsNotNone(error, text)
+
+    def test_blank_is_still_not_a_quantity_at_all(self):
+        for blank in (None, '', '   '):
+            kind, value, error = _c14_stock.parse_quantity(blank)
+            self.assertEqual((kind, value, error), ('blank', None, None))
+
+
+class C15ImportAuthorizationTest(TestCase):
+    """§22–25, §45, §46 — one capability must not reveal the other's work."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c15-auth-a', 'Auth A')
+        self.b = _p3_company('c15-auth-b', 'Auth B')
+        self.branch = _p2d_branch(self.a, 'Principal')
+        self.product = _c1_product(self.a, 'Cable', '10.00')
+        ProductBarcode.objects.create(
+            company=self.a, product=self.product, code='C000001',
+        )
+
+        self.both, _ = _p2d_member(
+            self.a, 'c15_auth_both',
+            ['company.view', 'products.manage', 'inventory.adjust', 'inventory.view'],
+        )
+        self.products_only, _ = _p2d_member(
+            self.a, 'c15_auth_products', ['company.view', 'products.manage'],
+        )
+        self.stock_only, _ = _p2d_member(
+            self.a, 'c15_auth_stock',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.neither, _ = _p2d_member(self.a, 'c15_auth_none', ['company.view'])
+        self.stranger, _ = _p2d_member(
+            self.b, 'c15_auth_stranger',
+            ['company.view', 'products.manage', 'inventory.adjust', 'inventory.view'],
+        )
+
+        self.product_job = self._make_product_job()
+        self.stock_job = self._make_stock_job()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _make_product_job(self):
+        return _c14_products.preview_products(
+            company=self.a, actor=self.both,
+            upload=_c14_upload(_c14_products_workbook([{
+                'Código de barras': '7751234567892', 'Código': 'C000002',
+                'Nombre': 'Nuevo', 'Precio venta - 11834': 10,
+            }])),
+            filename='productos-secretos.xlsx',
+        )
+
+    def _make_stock_job(self):
+        return _c14_stock.preview_stock(
+            company=self.a, actor=self.both,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+                'NOMBRE': 'Cable', 'ALMACEN 1 - 11416': 3,
+            }])),
+            filename='inventario-secreto.xlsx', branch_map={4: self.branch.pk},
+        )
+
+    def _ids(self, response):
+        return {row['id'] for row in response.data['results']}
+
+    # --- history ----------------------------------------------------------
+
+    def test_a_products_only_user_never_sees_stock_jobs(self):
+        """
+        The leak this closes: without `?type`, the view demanded
+        `products.manage` and then listed EVERY job — filenames, row counts,
+        branch names and who ran them — including inventory work the caller has
+        no authority over.
+        """
+        res = self._as(self.products_only).get('/api/admin/imports/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._ids(res), {self.product_job.pk})
+        self.assertNotIn(
+            'inventario-secreto.xlsx',
+            json.dumps(res.data, default=str),
+        )
+
+    def test_a_stock_only_user_never_sees_product_jobs(self):
+        res = self._as(self.stock_only).get('/api/admin/imports/')
+        self.assertEqual(self._ids(res), {self.stock_job.pk})
+
+    def test_holding_both_shows_both(self):
+        res = self._as(self.both).get('/api/admin/imports/')
+        self.assertEqual(self._ids(res), {self.product_job.pk, self.stock_job.pk})
+
+    def test_asking_for_a_type_you_do_not_hold_is_a_403(self):
+        res = self._as(self.products_only).get('/api/admin/imports/?type=stock')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        res = self._as(self.stock_only).get('/api/admin/imports/?type=products')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_asking_for_a_type_you_do_hold_narrows_the_list(self):
+        res = self._as(self.both).get('/api/admin/imports/?type=stock')
+        self.assertEqual(self._ids(res), {self.stock_job.pk})
+
+    def test_neither_capability_is_a_403(self):
+        res = self._as(self.neither).get('/api/admin/imports/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_another_tenant_sees_none_of_it(self):
+        res = self._as(self.stranger).get('/api/admin/imports/')
+        self.assertEqual(res.data['results'], [])
+
+    # --- detail and error report -----------------------------------------
+
+    def test_a_products_user_cannot_open_a_stock_job(self):
+        res = self._as(self.products_only).get(
+            f'/api/admin/imports/{self.stock_job.pk}/'
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_products_user_can_open_a_product_job(self):
+        res = self._as(self.products_only).get(
+            f'/api/admin/imports/{self.product_job.pk}/'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_another_tenants_job_is_indistinguishable_from_one_that_never_existed(self):
+        """
+        §24. Looking the job up by primary key FIRST and then choosing the
+        capability from what was found made the endpoint an oracle: probing an
+        id answered 403 when a job of that kind existed somewhere and 404 when
+        nothing did, so ids could be enumerated by reading the difference.
+        """
+        missing = _BulkImportJob.objects.order_by('-pk').first().pk + 5000
+        for path in (f'/api/admin/imports/{self.product_job.pk}/',
+                     f'/api/admin/imports/{self.stock_job.pk}/',
+                     f'/api/admin/imports/{missing}/'):
+            res = self._as(self.stranger).get(path)
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, path)
+
+    def test_the_error_report_follows_the_same_rules(self):
+        missing = _BulkImportJob.objects.order_by('-pk').first().pk + 5000
+        self.assertEqual(
+            self._as(self.products_only)
+            .get(f'/api/admin/imports/{self.stock_job.pk}/errors.csv').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        for pk in (self.stock_job.pk, self.product_job.pk, missing):
+            self.assertEqual(
+                self._as(self.stranger)
+                .get(f'/api/admin/imports/{pk}/errors.csv').status_code,
+                status.HTTP_404_NOT_FOUND,
+            )
+
+    def test_an_invalid_type_is_a_400_not_a_silent_full_listing(self):
+        res = self._as(self.both).get('/api/admin/imports/?type=todo')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class C15InitialRaceTest(TransactionTestCase):
+    """§26–31 — INITIAL means INITIAL at the moment it is written."""
+
+    reset_sequences = True
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-initial', 'Carga Inicial')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.user, _ = _p2d_member(
+            self.company, 'c15_initial_admin',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+        )
+
+    def _preview(self, quantity=10):
+        return _c14_stock.preview_stock(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+                'NOMBRE': 'Cable', 'ALMACEN 1 - 11416': quantity,
+            }])),
+            filename='inv.xlsx', branch_map={4: self.branch.pk},
+            mode=_BulkImportJob.MODE_INITIAL,
+        )
+
+    def test_stock_arriving_between_preview_and_apply_aborts_the_load(self):
+        """
+        §30. The preview saw an empty shelf with no history. Then a delivery was
+        booked in. Applying INITIAL_STOCK now would insert an opening balance
+        into the middle of a story that had already started, and the Kardex
+        would stop adding up to the stock it describes.
+        """
+        job = self._preview()
+        self.assertEqual(job.rows_error, 0)
+
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=3,
+            reason='llegó mercadería',
+        )
+
+        with self.assertRaises(_c14_stock.StockImportError) as caught:
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertIn('carga inicial', str(caught.exception).lower())
+
+        # Nothing of the import was written, and the delivery is untouched.
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 3,
+        )
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+        job.refresh_from_db()
+        self.assertEqual(job.status, _BulkImportJob.PREVIEWED)
+
+    def test_it_is_never_downgraded_to_a_correction(self):
+        """
+        §28. The tempting shortcut is `INITIAL if current == 0 else CORRECTION`.
+        That silently turns "this is what we started with" into "this is an
+        adjustment" — two different claims about where the units came from.
+        """
+        job = self._preview()
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=3, reason='x',
+        )
+        with self.assertRaises(_c14_stock.StockImportError):
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertFalse(
+            StockMovement.objects.filter(
+                movement_type__in=[StockMovement.CORRECTION_POSITIVE,
+                                   StockMovement.CORRECTION_NEGATIVE],
+            ).exists()
+        )
+
+    def test_history_that_nets_back_to_zero_still_blocks_it(self):
+        """An empty shelf is not the same as a shelf that never had anything."""
+        job = self._preview()
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=3, reason='x',
+        )
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=3, reason='y',
+        )
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 0,
+        )
+        with self.assertRaises(_c14_stock.StockImportError):
+            _c14_stock.apply_stock(job=job, actor=self.user)
+
+    def test_an_untouched_shelf_still_loads(self):
+        """The rule must not become "INITIAL never works"."""
+        job = self._preview(quantity=12)
+        _job, changed, movements = _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertTrue(changed)
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.INITIAL_STOCK)
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 12,
+        )
+
+    def test_a_deactivated_branch_stops_the_apply(self):
+        """
+        §37 — the same rule the rest of inventory enforces. A physical count
+        refuses an inactive branch and a transfer refuses one; arriving from a
+        spreadsheet is not a reason to be the one path that writes stock into a
+        closed shop.
+        """
+        job = self._preview(quantity=12)
+        self.branch.is_active = False
+        self.branch.save(update_fields=['is_active'])
+        with self.assertRaises(_c14_stock.StockImportError):
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+
+    def test_a_deactivated_branch_is_refused_at_preview_too(self):
+        self.branch.is_active = False
+        self.branch.save(update_fields=['is_active'])
+        with self.assertRaises(_c14_stock.StockImportError):
+            self._preview()
+
+    def test_a_product_deleted_between_preview_and_apply_aborts_everything(self):
+        """
+        §36 — a staged row that no longer resolves is NOT skipped. Skipping
+        would apply most of the file and quietly drop the rest: the partial
+        import this whole design exists to prevent.
+        """
+        job = _c14_stock.preview_stock(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+                'NOMBRE': 'Cable', 'ALMACEN 1 - 11416': 5,
+            }])),
+            filename='inv.xlsx', branch_map={4: self.branch.pk},
+            mode=_BulkImportJob.MODE_RECONCILE,
+        )
+        row = job.rows.get(action=_BulkImportRow.UPDATE)
+        row.normalized_data = {**row.normalized_data, 'product_id': 10 ** 7}
+        row.save(update_fields=['normalized_data'])
+
+        with self.assertRaises(_c14_stock.StockImportError) as caught:
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertIn('cambiaron desde la previsualización', str(caught.exception))
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+
+
+class C15BranchAccessRevocationTest(TestCase):
+    """§47 — branch access is re-checked at APPLY, the call that moves stock."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-revoke', 'Revocacion')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.other = _p2d_branch(self.company, 'Secundaria')
+        self.user, membership = _p2d_member(
+            self.company, 'c15_revoke_user',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.membership = membership
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        return client
+
+    def test_revoking_access_between_preview_and_apply_blocks_the_write(self):
+        res = self._client().post(
+            '/api/admin/inventory/import/preview/',
+            {'file': _c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+                'NOMBRE': 'Cable', 'ALMACEN 1 - 11416': 6,
+            }])),
+             'branch_map': json.dumps({'4': self.branch.pk})},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        job_id = res.data['id']
+
+        # Access narrowed to the OTHER branch after the preview was approved.
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.filter(membership=self.membership).delete()
+        MembershipBranchAccess.objects.create(
+            membership=self.membership, branch=self.other,
+        )
+        cache.clear()
+
+        res = self._client().post(
+            f'/api/admin/inventory/import/{job_id}/apply/', {}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 0,
+        )
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+        self.assertEqual(
+            _BulkImportJob.objects.get(pk=job_id).status, _BulkImportJob.PREVIEWED,
+        )
 
 
 # =============================================================================

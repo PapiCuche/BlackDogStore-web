@@ -175,6 +175,9 @@ Reglas:
 - **Cada empresa numera desde su propio 1.** Dos empresas pueden tener cada una
   su `NV-000001`; ninguna ve la actividad de la otra en sus números.
 - Emitir o descargar una nota **no modifica el pago ni el inventario**.
+- Desde la Fase Comercial C1 una **venta de mostrador** también puede emitir su
+  nota interna: el POS crea un `Order` normal, pagado y con sucursal, así que
+  cumple todas las precondiciones sin ninguna vía paralela.
 
 ### Lo que la nota NO es
 
@@ -311,7 +314,9 @@ adivinar: [saas-multiempresa.md](saas-multiempresa.md), sección
 17. Margen de ganancia por producto.
 18. Dashboard financiero.
 19. Control de caja.
-20. Exportar inventario y ventas a Excel.
+20. ~~Exportar inventario a Excel.~~ → **implementado en C1.4**: descarga con
+    cantidades o en blanco para conteo físico, y el mismo archivo se vuelve a
+    subir. Exportar **ventas** a Excel sigue **PENDIENTE**.
 21. Exportar movimientos a PDF.
 
 **Operación**
@@ -322,3 +327,45 @@ adivinar: [saas-multiempresa.md](saas-multiempresa.md), sección
 24. Integración SUNAT real: series fiscales, XML UBL 2.1, firma digital y
     validación tributaria. Esta fase es independiente y no debe mezclarse con el
     correlativo interno descrito arriba.
+
+
+---
+
+## Carga masiva de inventario (Fase C1.4)
+
+Existe un importador de existencias desde Excel en `/admin/inventory/import`.
+Escribe **sólo** a través de `inventory_services`, así que cada cambio es un
+`StockMovement` con `reference_type='bulk_import'` y el id del trabajo — no hay
+ninguna ruta que toque `BranchStock.quantity` directamente.
+
+**La regla que hay que conocer antes de usarlo:**
+
+    celda de cantidad vacía  →  ese stock NO se toca
+    cero escrito             →  ese stock baja a cero
+
+No son lo mismo y en Excel se parecen. El archivo de inventario del propietario
+tiene 696 filas con esa columna vacía: es el catálogo impreso esperando un
+conteo, y leerlo como ceros daría de baja toda la tienda.
+
+**Dos modos.** «Ajuste a stock objetivo» es el normal: el número es lo que hay en
+el estante y el sistema calcula la corrección. «Carga inicial» sólo se admite
+para un producto que todavía no tiene ningún movimiento en esa sucursal; si ya
+hay Kardex, la fila da error, porque decir «stock inicial» sobre un estante con
+historial reescribe el principio de una historia ya contada.
+
+La diferencia se recalcula **bajo lock al aplicar**, no se toma de la
+previsualización: si la caja vendió dos unidades mientras alguien revisaba la
+pantalla, el ajuste sigue dejando el estante en la cifra contada.
+
+
+### Hardening C1.5
+
+- **Archivos de más de 5000 filas se rechazan enteros**, no se recortan. Un
+  recorte silencioso daba una importación parcial que informaba de cero errores.
+- **La carga inicial se vuelve a validar al aplicar**, con todos los locks
+  tomados: stock en cero y sin Kardex. Si cambió, falla todo; nunca se convierte
+  en una corrección.
+- **Sucursal inactiva rechazada**, igual que en conteos y transferencias.
+- **Las cantidades se leen como enteros exactos.** Nada pasa por `float`.
+- Una fila preparada cuyo producto o sucursal ya no existe **aborta el trabajo**
+  en vez de omitirse.

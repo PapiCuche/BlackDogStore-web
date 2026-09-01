@@ -38,6 +38,8 @@ asymmetry is recorded as debt in docs/saas-multiempresa.md.
 
 from django.db import migrations
 
+# NOTE ON ORDERING — see `dependencies` below. This migration must be the LAST
+# capability grant in the graph.
 NEW_CAPABILITIES = (
     'service.devices.manage',
     'service.devices.view',
@@ -95,6 +97,17 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('store', '0036_seed_repair_statuses_and_series'),
+        # AND the commercial graph's leaf. This is a merge point, and the
+        # dependency is not bureaucratic: `grant()` compares a role's capability
+        # set against "every assignable capability minus the five new ones",
+        # read from the LIVE catalogue. If it ran before the POS phase's own
+        # capability grants, the set it computed would include eight codes the
+        # database had not been given yet, every comparison would miss, and no
+        # administrator would receive the service capabilities at all.
+        #
+        # Running last is the only ordering under which the discriminator is
+        # comparing like with like.
+        ('store', '0042_bulk_imports'),
     ]
 
     operations = [

@@ -57,6 +57,580 @@ cookie + CSRF.
 
 ---
 
+## Fase 0.3 / P0-A — Dependencias y cadena de suministro
+
+**Estado: IMPLEMENTADO.** Sin migraciones.
+
+Primera subfase del hardening de seguridad. Todo lo de aquí se verificó hoy
+contra OSV/GHSA y PyPI/npm, no contra memoria.
+
+### Frontend — de 7 vulnerabilidades a 0
+
+`next 16.2.9 → 16.3.4` · `sharp 0.32.6 → 0.35.4` · `eslint-config-next 16.3.4`,
+más `npm audit fix` para las transitivas de build.
+
+La versión mínima que cierra los **nueve** advisories de Next es 16.2.11, pero
+16.2.12 **no bastaba**: Next empaqueta sus propias copias anidadas de
+`postcss@8.4.31` y `sharp@0.34.5`, ambas vulnerables, que una subida de `sharp`
+en la raíz no alcanza. `16.3.4` trae `postcss@8.5.23` y ya no depende de sharp.
+Por eso la «actualización mínima segura» acabó siendo 16.3.4 y no 16.2.12.
+
+`npm audit`: **0 vulnerabilidades**.
+
+### El proxy de imágenes abierto
+
+`next.config.ts` tenía `{ protocol: "https", hostname: "**" }`. La documentación
+de la propia versión de Next dice que `**` casa cualquier subdominio y que omitir
+`pathname`/`search` implica comodín, «which may allow malicious actors to
+optimize urls you did not intend».
+
+Como la tienda renderiza con `next/image`, `/_next/image` era un **proxy de
+imágenes abierto**: cualquiera podía hacer que el servidor descargara cualquier
+URL HTTPS, con su IP y su ancho de banda. Era además la superficie del DoS de la
+Image Optimization API.
+
+Ahora los hosts salen de `NEXT_PUBLIC_IMAGE_HOSTS`, y **si no se configura no se
+permite ninguno**. Es deliberado: una imagen que no carga se ve y se corrige; un
+comodín restaurado en silencio, no. Un `**` puesto en la variable se descarta.
+Verificado en vivo: `169.254.169.254` (metadatos de AWS) y cualquier otro host
+responden 400.
+
+### Backend
+
+`Django 5.2.15 → 5.2.17` (sólo parches de seguridad en la línea LTS; 5.2.16
+corrige tres CVE y 5.2.17 una) · `Pillow 12.2.0 → 12.3.0` · `sqlparse` fijado a
+`0.6.0`.
+
+De los cuatro CVE de Django, **dos no aplicaban** a este proyecto: no se usa el
+middleware de caché (CVE-2026-48588) ni GIS/GDALRaster (CVE-2026-53877). Sí
+aplica el de `DomainNameValidator`, porque `image_url`, `website_url`,
+`facebook_url` e `instagram_url` son `URLField`. Se sube igual a la última.
+
+Los **trece** CVE de Pillow **no tienen superficie alcanzable**: no hay un solo
+`ImageField` ni `FileField` en el proyecto y nada bajo `backend/` importa PIL.
+Se actualiza porque es gratis, no porque estuviera expuesto.
+
+### `openpyxl` faltaba en `requirements.txt`
+
+Estaba instalado en desarrollo y todo el importador de la Fase C1.4 depende de
+él, así que localmente funcionaba mientras un despliegue limpio habría reventado
+con `ModuleNotFoundError` al abrir la carga masiva. Una dependencia que sólo
+existe en la máquina donde se escribió no es una dependencia.
+
+---
+
+## Fase Comercial C1.5 — Hardening de la carga masiva previo al merge
+
+**Estado: IMPLEMENTADO.** Sin migraciones nuevas.
+
+Cierra los defectos de la auditoría remota de C1.4. Todos son de la misma
+familia: el importador era correcto en el camino feliz y demasiado confiado en
+los bordes.
+
+### 5000 filas no puede significar «recorta y sigue»
+
+El lector paraba en 5000 filas y marcaba `truncated`, pero el preview seguía
+adelante: un archivo de 5001 filas producía **5000 filas preparadas, cero
+errores y un trabajo aplicable**. Eso es una importación parcial que se presenta
+como completa.
+
+Ahora hay dos modos explícitos. `SAMPLE` (la inspección) para de leer a
+propósito y eso significa «hay más». `FULL_IMPORT` **no recorta nunca**: lee una
+fila más que el límite sólo para saber si se pasó, y si se pasó **rechaza el
+archivo entero con 400**, antes de crear ningún trabajo. Las filas vacías del
+final no cuentan: una hoja con 5000 registros y 200 filas de formato sobrante es
+un archivo de 5000.
+
+### Una sola semántica de identidad
+
+`normalize_barcode()` recorta y nada más, porque Code128 lleva mayúsculas y
+minúsculas que el lector reproduce. El importador **ponía todo en mayúsculas**,
+así que fusionaba dos artículos que la caja distingue. `AbC123` y `abc123` vuelven
+a ser dos códigos distintos, en el import igual que en el POS.
+
+### Un código desactivado sigue ocupando su código
+
+`UNIQUE(company, code)` no tiene condición sobre `is_active`. El índice cargaba
+sólo los activos, así que era ciego justo a las filas que iban a reventar al
+aplicar. Ahora se distinguen dos preguntas: **propiedad** (todos los códigos,
+activos o no — la que necesita un importador) y **escaneo** (sólo activos — la
+del POS). Un código retirado identifica a su producto, con aviso, **no se
+reactiva** y **no se duplica**; si pertenece a otro producto, es error de fila.
+
+### Preview y apply tienen que coincidir
+
+Si entre las dos pantallas alguien ocupa un código, aplicar ya no adivina: el
+trabajo **aborta entero** pidiendo volver a previsualizar. Antes actualizaba
+silenciosamente el producto que hubiera aparecido — seguro cuando es el mismo
+artículo, y un renombrado de un producto ajeno cuando no lo es. Nada en los datos
+distingue los dos casos; una persona sí.
+
+### La carga inicial se revalida al aplicar
+
+«Stock inicial» afirma que antes no había nada. El preview lo comprobaba y luego
+el operador se iba a almorzar. Ahora, **bajo todos los locks y antes de escribir
+un solo movimiento**, se vuelve a exigir: stock en cero y sin Kardex previo. Si
+cambió, **falla todo** — no se degrada a corrección, porque eso convertiría «esto
+es con lo que empezamos» en «esto es un ajuste» sin decirlo. También se rechaza
+stock existente sin Kardex: es un estado que este sistema no produce y cuya
+procedencia se desconoce.
+
+### El stock es un entero exacto
+
+`int(float(text))` convertía `9007199254740993` en `…992`: la cuenta volvía corta,
+en silencio. Se parsea como entero exacto y se valida contra el techo real de la
+columna; una cifra imposible es error de fila, no un 500.
+
+### El historial filtraba entre capacidades
+
+`/api/admin/imports/` elegía la capacidad según `?type` pero **no filtraba la
+consulta**: con sólo `products.manage` se veían los trabajos de inventario —
+nombres de archivo, sucursales, filas y quién los ejecutó. Ahora cada tipo exige
+su capacidad y sin `?type` se ve exactamente lo que se tiene. Sin ninguna: 403.
+
+El detalle y el reporte de errores buscaban el trabajo **por pk global** y luego
+elegían la capacidad según lo encontrado, lo que convertía el endpoint en un
+oráculo: 403 si existía un trabajo de ese tipo en algún sitio, 404 si no. Ahora se
+resuelve primero la empresa, se busca dentro de ella, y otro inquilino recibe 404
+indistinguible.
+
+### Además
+
+- Una fila preparada que ya no resuelve (producto o sucursal desaparecidos) **aborta
+  el trabajo**, no se salta en silencio.
+- Sucursal inactiva: rechazada en preview y en apply, igual que ya hacían los
+  conteos físicos y las transferencias.
+- El aviso de «posible cero perdido» ya no afirma que Excel guardó la celda como
+  número salvo que **la celda fuera realmente numérica**; una columna de texto con
+  dígitos ya no se marca.
+- El fallo al guardar un perfil de mapeo se registra en el log (sin contenido del
+  archivo) en vez de tragarse por completo.
+
+---
+
+## Fase Comercial C1.4 — Carga masiva de productos e inventario desde Excel
+
+**Estado: IMPLEMENTADO.** Migración **0042**.
+
+### Los dos formatos reales, auditados
+
+`Carga_Masiva_(Productos).xlsx` — SHA256 `b14bca62…6b6d534`. Cinco hojas, pero
+**no son cinco hojas de productos**: `Productos` es la de datos y
+`Unidades de medida` (63 filas), `Marcas` (vacía), `Variables` (vacía) y
+`Afectaciones` (4 filas) son vocabularios de validación. La fila 1 es un banner
+de títulos combinados y la **fila 2** tiene los 18 encabezados reales. La hoja de
+productos está **vacía**: es la plantilla en blanco.
+
+`Carga_Masiva_(inventarios)-2.xlsx` — SHA256 `83bb2a69…30150a0`. Una hoja,
+cabecera simple, **696 productos**, `CODIGO` único en las 696 filas, `CODIGO EAN`
+presente en 692 y guardado como **número**, y la **columna de cantidad
+completamente vacía**.
+
+### Dos hallazgos que cambiaron el diseño
+
+**Los EAN del archivo no son códigos de barras.** Son la serie
+`310000000001…310000000696` con 4 huecos, y sólo 67 de 692 pasan el dígito de
+control —lo que da el azar—. Por eso la simbología sólo se nombra cuando el
+dígito de control lo confirma; en caso contrario `unknown`. Etiquetarlos
+`upca` metería una afirmación falsa en el catálogo e invitaría a alguien a
+imprimir uno.
+
+**El precio de la plantilla es por sucursal.** No hay «Precio de venta»: sólo
+`Precio venta - 11834`, que es la lista de precios de una tienda. El catálogo
+guarda un precio por producto, así que se importa —es el único que hay— pero la
+previsualización lo advierte.
+
+### Vacío no es cero
+
+La regla alrededor de la que está construido todo el importador de stock:
+
+    celda vacía  →  no tocar ese stock
+    cero escrito →  poner ese stock en cero
+
+Son instrucciones opuestas y en una hoja de cálculo se parecen. El archivo real
+tiene 696 filas con la columna de cantidad vacía: es el catálogo impreso,
+esperando a que alguien recorra los estantes. Leer vacío como cero da de baja
+la tienda entera en una sola carga.
+
+### Objetivo, no diferencia
+
+El número del archivo es el stock **contado**, no cuánto sumar. El movimiento se
+calcula como `objetivo − actual` **bajo lock en el momento de aplicar**, nunca
+con la diferencia que mostró la previsualización: entre las dos pantallas la caja
+puede haber vendido dos unidades.
+
+### Arquitectura
+
+`BulkImportJob` · `BulkImportRow` · `ImportMappingProfile`. Dos pasos siempre:
+previsualizar (no escribe nada comercial) y aplicar (lee del staging, no del
+navegador). **El archivo no se guarda**: sólo su SHA256 y las filas ya
+normalizadas.
+
+- **Lector seguro** (`xlsx_reader.py`): sólo `.xlsx`, 10 MB, tope de filas,
+  defensa contra zip bomb, rechazo de macros, y **saneado en memoria** de los
+  `dataValidation` que Google Sheets escribe con `errorStyle="error"` —valor que
+  no existe en el estándar y que impide abrir el archivo del propietario. El
+  original nunca se modifica. Las fórmulas ni se evalúan ni se leen de caché.
+- **Presets por firma de encabezados**, no por empresa. Cualquier inquilino cuyo
+  sistema exporte esas columnas queda reconocido; un `if company.slug == …`
+  habría soldado un cliente a la plataforma.
+- **Escritura de stock sólo por `inventory_services`**: todo cambio es un
+  `StockMovement` con referencia al job. Locks en orden `(branch_id, product_id)`.
+- **Aplicar es idempotente**: el segundo clic devuelve el resultado del primero.
+- Plantilla de productos e **exportación del inventario** (con cantidades o en
+  blanco para conteo físico), reimportables por el mismo sistema.
+
+### PENDIENTE
+- Importación parcial · CSV · compras a proveedor · promociones · reversión
+  automática de una importación ya aplicada · limpieza/retención de
+  `BulkImportRow`.
+
+---
+
+## Fase Comercial C1.4 — Reconciliación del grafo de migraciones y hardening de promociones
+
+**Estado: IMPLEMENTADO.** Migración **0041** (merge, sin operaciones).
+
+### El grafo tenía dos hojas
+
+Dos líneas de trabajo salieron de la 0033 sin saber una de otra: `0034_checkout_idempotency`
+(checkout nativo, en master) y `0034_commercial_pos_barcode → … → 0040` (POS y
+promociones). Django se niega a ejecutar un grafo con dos hojas, y hace bien: la
+respuesta no está en los archivos.
+
+Se creó una **migración de merge real** (`0041`), vacía, que depende de ambas
+hojas. No se renumeró nada. Renumerar la rama comercial habría hecho que Django
+viera siete migraciones nunca ejecutadas contra tablas que ya existen, y de eso
+se sale a mano.
+
+### Dos idempotencias, y el merge automático casi se lleva una
+
+El auto-merge de `models.py` dejó **dos asignaciones `constraints = [...]`** en
+`Order.Meta`; la segunda tapaba a la primera en silencio. Python válido, semántica
+equivocada: la unicidad de `pos_idempotency_key` desaparecía, y con ella la
+garantía de que un reintento del POS no duplica una venta. Se unificaron en una
+sola lista. **No se fusionan** las dos idempotencias: la del POS es única por
+empresa (un mostrador tiene una sola secuencia de ventas), la del checkout es
+única por empresa **y usuario** (dos clientes pueden generar la misma clave).
+
+### Fechas de promociones y cupones
+
+`promotion.starts_at = request.data['starts_at']` parecía validar. No validaba:
+un `DateTimeField` acepta cualquier cosa en Python y sólo se convierte al llegar
+a la base de datos, ya dentro de la transacción. `"mañana"` daba **500**, y
+`"2026-01-01 10:00"` se guardaba naive, con una hora que significaba lo que
+dijera el reloj del servidor. Una ventana de promoción decide si un descuento se
+dispara en una caja: equivocarse cinco horas es un precio equivocado en un recibo
+real.
+
+Nuevo `store/api_parsing.py`: `parse_optional_datetime()` y `parse_window()`.
+Vacío → `None`; ISO-8601 → aware; naive → hora local (America/Lima), porque el
+control HTML obvio no manda zona horaria; inválido → **400**, nunca 500. Un
+número JSON **no** es una fecha: `20260301` se rechaza en vez de adivinar entre
+fecha compacta y epoch.
+
+### El botón de archivar nunca funcionó
+
+`PATCH` no era parcial. Una clave ausente significaba «ponlo en None», así que
+`PATCH {is_active: false}` —exactamente lo que manda el botón de archivar—
+borraba el precio del combo y `Promotion.clean()` rechazaba la petición con 400.
+El único test de C1.3 que mandaba `is_active` apuntaba a la promoción de **otra**
+empresa y esperaba 404: pasaba por el control de tenant y nunca llegaba a este
+código. Ahora una clave ausente significa «déjalo como está».
+
+### Invariantes de tenant
+
+`PromotionBranch`, `PromotionItem` y `AppliedPromotion` validan en `clean()` que
+promoción, sucursal, producto y pedido pertenezcan a la misma empresa. Como
+`bulk_create()` **no** llama a `save()` —y es justo el camino que escribe estas
+filas—, cada uno tiene además un `assert_all_match_*()` de conjunto, resuelto en
+una consulta, que los caminos masivos invocan antes de escribir.
+
+---
+
+## Fase Comercial C1.3 — Hardening C1.2 + promociones automáticas y combos
+
+**Estado: IMPLEMENTADO PARCIALMENTE.** Migraciones **0038, 0039, 0040**.
+
+Dos entregas: cerrar los hallazgos de la auditoría de C1.2, y añadir promociones
+automáticas. **La carga masiva por Excel NO se implementó** — ver el apartado
+final.
+
+### Hardening C1.2
+
+- **El histórico de descuentos estaba mal etiquetado.** La migración 0036 puso
+  `discount_source = none` en todos los pedidos anteriores, afirmando que
+  ninguno había tenido descuento. Pero `coupon_code` y `discount_amount` existen
+  desde antes y el checkout aplica cupones desde la Fase 1, así que cada pedido
+  con cupón quedó marcado como si no lo hubiera tenido. La 0038 lo repara. Un
+  descuento **sin** código se deja en `none` a propósito: llamarlo `manual`
+  inventaría una autorización que nadie dio, y `discount_authorized_by` quedaría
+  vacío. Se cuentan y se reportan.
+- **La huella de idempotencia dependía del catálogo.** Hasheaba el descuento ya
+  *resuelto*, así que un reintento noventa segundos después —tras editar una
+  promoción o vencer un cupón— hasheaba distinto y se rechazaba por conflicto: al
+  operador se le decía que su propia venta chocaba consigo misma. Ahora hashea
+  sólo lo que el operador tecleó, y el reintento se resuelve **antes** de mirar
+  un solo precio.
+- **El efectivo entra en la huella** (§7): sin él, un reintento entregando otro
+  billete devolvía la venta anterior y el vuelto salía mal.
+- **Las referencias ya no se truncan.** Recortar un código de autorización guarda
+  algo que ya no coincide con el registro del banco, sin avisar. Ahora se rechaza.
+- **403 ≠ 400.** Falta de permiso para descontar o para atribuir la venta
+  responde 403. Un 400 mandaba al operador a buscar un error de tecleo inexistente.
+- **Elegibilidad del vendedor.** Antes valía cualquier membresía activa, así que
+  se podía acreditar una venta —y pagar comisión— a un almacenero o a un técnico.
+  Ahora hace falta `sales.pos.use` resuelto por el motor real de capacidades, y
+  acceso a la sucursal de esa venta.
+
+### Promociones automáticas y combos
+
+- **`Promotion` + `PromotionItem` + `PromotionBranch` + `AppliedPromotion`.**
+- **Un combo NO es un producto.** No existe un `Product` "Combo iPhone": no
+  tendría stock. La venta lleva los tres artículos reales, salen tres
+  `SALE_EXIT` de tres estantes reales, y la promoción sólo cambia el dinero.
+- **Motor determinista** en `promotion_services.py`: `prioridad DESC, id ASC`,
+  cada promoción consume unidades y una unidad ya usada no se reutiliza.
+- **Se aplica sola.** El operador no pulsa nada: la empresa ya configuró la regla.
+- **Atajo de combos en el POS**, con disponibilidad calculada desde el
+  componente más escaso — nunca se ofrece un combo que el estante no completa.
+- **Snapshot congelado**: editar, renombrar o desactivar una promoción no
+  reescribe una venta pasada.
+- **Sin apilar** con cupón ni descuento manual: apilar es una política de negocio
+  con reglas que nadie ha escrito.
+- **Administración** en `/admin/sales/promotions`, con la pestaña de códigos que
+  da a `Coupon` la UI tenant-aware que nunca tuvo.
+- Cuatro capabilities nuevas, todas **ACTIVE**.
+
+### NO implementado en esta fase
+- **Carga masiva de productos por Excel.**
+- **Carga masiva de inventario por Excel.**
+
+La auditoría de los dos archivos adjuntos **sí** se hizo y se entrega, porque es
+el trabajo previo que esa fase necesita. Lo que no se hizo es el importador. Un
+importador a medias que escribe stock es peor que ninguno: el stock es
+irreversible sin un movimiento compensatorio, y la mitad del diseño que pide el
+prompt —preview/apply con hash, mapeo configurable, reconciliación contra el
+Kardex, bloqueo determinista y atomicidad— sólo aporta seguridad si está
+completo.
+
+---
+
+## Fase Comercial C1.2 — Venta enriquecida: cliente, vendedor, comisiones y descuentos
+
+**Estado: IMPLEMENTADO.** Migraciones **0036, 0037**.
+
+### El problema que cierra
+El POS de C1 sabía cobrar y descontar stock, y no sabía nada más. No podía decir
+a quién se le vendió, a quién se le acredita la venta, cuánto gana quien la hizo,
+ni por qué se cobró menos de lo que marcaba la etiqueta. Un mostrador real
+necesita las cuatro cosas, y un negocio que paga comisiones las necesita
+registradas en el momento, no reconstruidas después.
+
+### IMPLEMENTADO
+- **Cliente en el POS**: sin identificar, buscar o seleccionar uno del CRM. Se
+  reutiliza `Customer`; no hay un segundo modelo de cliente.
+- **Operador ≠ vendedor.** `request.user` es quien opera y firma la auditoría;
+  `Order.sold_by` es a quién se acredita la venta.
+- **Reasignación de vendedor** con `sales.pos.assign_seller`.
+- **`Membership.commission_rate_percent`** — la comisión pertenece al empleo.
+- **`SalesCommission`** — el ledger: una fila por venta, congelada.
+- **Descuentos**: cupón existente reutilizado, o descuento manual con
+  `sales.discounts.apply`, motivo obligatorio y autor registrado.
+- **`POST /api/admin/pos/preview/`** — el total del servidor antes de cobrar.
+- **Efectivo y vuelto**, calculados en el servidor.
+- **Datos opcionales acotados**: `payment_reference`, `external_reference`,
+  `sale_notes`.
+- **`/admin/sales/commissions`** — devengado por vendedor y porcentajes del equipo.
+- Cuatro capabilities nuevas, todas **ACTIVE**.
+- 59 tests nuevos (1676 → **1735 OK**, 4 omitidos).
+
+### Decisiones
+- **La comisión es del empleo, no de la persona.** Un mismo humano vende para
+  dos empresas en condiciones distintas, así que una tasa en `User` no podría
+  decir la verdad. Tampoco va en el rol: dos vendedores de una misma tienda
+  suelen tener tratos distintos.
+- **`SalesCommission` es una tabla, no tres columnas en `Order`.** Una comisión
+  no es una propiedad de la venta: es una obligación con vida propia —se
+  devenga, puede anularse cuando el producto vuelve, y algún día se liquida en
+  lote. Nada de eso cabe en tres campos colgando de un pedido.
+- **Todo se congela al vender.** Tasa, base e importe son snapshots. Si mañana
+  alguien pasa de 3% a 5%, lo de ayer sigue en 3%: la empresa acordó pagar 3%
+  por esas ventas, y recalcularlas desde la tasa de hoy reescribiría una deuda
+  a posteriori.
+- **La comisión se calcula sobre la venta NETA.** El descuento se resta primero:
+  pagar un porcentaje de dinero que la tienda no cobró haría que cada descuento
+  costara más de lo que aparenta.
+- **Tasa 0% no escribe fila.** Un ledger lista obligaciones, y «no se debe nada»
+  no es una. Una tabla de ceros habría que filtrarla en cada informe.
+- **Un cupón no necesita permiso; un descuento manual sí.** La empresa configuró
+  la promoción de antemano, así que aplicarla no es una decisión del cajero.
+  Teclear un precio sí lo es, y por eso lleva permiso, motivo y autor.
+- **Cupón y descuento manual no se apilan.** Apilar es una política de negocio
+  con reglas —cuál se aplica primero, si componen, cuál es el suelo—. Adivinar
+  una aquí habría metido una política sin examinar dentro de una caja.
+- **El total lo calcula el servidor, también en el preview.** Recalcular el
+  porcentaje del cupón en el navegador significaría que el número que el
+  operador lee en voz alta lo produce un código distinto del que cobra, y el
+  cliente está delante cuando no coinciden.
+- **Sin efectivo no hay venta en efectivo, y sin efectivo no hay vuelto en
+  tarjeta.** Los campos quedan NULL: escribir cero haría indistinguible «pagó
+  justo en efectivo» de «no pagó en efectivo».
+- **Campos con nombre, no un JSON cajón de sastre.** Un blob libre se convierte
+  en el sitio donde cae todo y nada se puede validar, reportar ni borrar.
+
+### Corregido durante la fase
+- **El preview era inusable para ventas en efectivo.** Validaba el efectivo
+  recibido, así que exigía contar el dinero *antes* de poder mostrar el total —
+  justo al revés de para qué sirve un preview. Ahora el preview no lo valida y
+  la venta sí.
+
+### PENDIENTE (Comercial C2)
+- Pagos mixtos (efectivo + tarjeta) · liquidación y pago de comisiones ·
+  devoluciones, que deberán anular la comisión con un movimiento compensatorio ·
+  comisión dividida entre dos vendedores · grupos de clientes · caja y arqueo.
+
+---
+
+## Fase Comercial C1.1 — Hardening previo al merge
+
+**Estado: IMPLEMENTADO.** Sin migraciones nuevas.
+
+Correcciones de una auditoría remota sobre C1, más la integración con el
+catálogo público móvil (`/api/v1/`) que entró a `master` en paralelo.
+
+### Corregido
+
+- **La clave de idempotencia era opcional.** Una venta sin clave no tenía
+  protección alguna: el único camino donde un doble clic cobra dos veces. Ahora
+  es obligatoria, y **no se trunca**: `str(value)[:64]` habría fundido dos claves
+  distintas de 80 caracteres en una sola y respondido la segunda venta con el
+  pedido de la primera. Una clave demasiado larga se rechaza.
+- **La recuperación del `IntegrityError` ocurría dentro del mismo `atomic`.** Un
+  `IntegrityError` marca la transacción para rollback, así que la consulta
+  posterior lanzaba `TransactionManagementError` en vez de responder. El INSERT
+  va ahora en su propio savepoint. Además, un `IntegrityError` de **otro**
+  constraint se re-lanza: sólo la colisión de esta clave es un reintento.
+- **El pronóstico borraba días cero reales.** `_history_start` empezaba la
+  ventana en la primera venta, así que un artículo en stock hace 30 días con su
+  primera venta hace 3 se leía como 3 días de historia en lugar de 30 con 27
+  ceros — unas diez veces la demanda real, y la cobertura, el punto de
+  reposición y la sugerencia heredaban el error. Ahora manda `tracked_since`
+  cuando existe; `first_observed` es sólo el respaldo.
+- **Lo mismo por otra puerta en «más vendidos»:** la cobertura agregada llamaba
+  al pronóstico sin `tracked_since`. Ahora deriva la fecha del `BranchStock` más
+  antiguo visible.
+- **La sucursal fuente no protegía su punto de reposición.** Una tienda con
+  `target=10` y punto de reposición 18 aparecía con 10 unidades disponibles para
+  transferir mientras estaba 2 por encima de su propio umbral de reposición: la
+  transferencia habría resuelto una escasez abriendo otra donde nadie miraba.
+  El excedente usa ahora el pronóstico de la fuente; sin datos suficientes cae a
+  sus umbrales configurados, **nunca a cero**.
+- **Los filtros diarios usaban el timezone de la conexión.** `paid_at__date` y
+  `TruncDate` sin `tzinfo` se resuelven en la zona del servidor: para un tenant
+  a catorce horas, la tarde de ventas cae en el día siguiente. Las métricas C1
+  construyen ahora los límites en la zona de la empresa y comparan timestamps
+  crudos — más correcto y además indexable.
+- **El POS registraba aceptación de términos sin que nadie la diera.** Entregar
+  el artículo no prueba que se informó al cliente. El operador confirma
+  explícitamente antes de cobrar; sin esa confirmación el backend responde 400.
+  Lo que queda registrado es una afirmación que una persona hizo de verdad, y la
+  auditoría ya dice quién.
+
+### Integración con el catálogo móvil
+`origin/master` se fusionó en la rama. Tres conflictos —`CHANGELOG.md`,
+`docs/saas-multiempresa.md` y `tests.py`— resueltos **conservando ambos lados**:
+los tests y funciones de `/api/v1/`, las capabilities de C1 y la documentación de
+los dos desarrollos.
+
+### Tests
+29 nuevos. Total: **1597 OK**, 4 omitidos (los casos de concurrencia real que
+SQLite no puede probar y que se saltan en voz alta).
+
+---
+
+## Fase Comercial C1 — Punto de venta, códigos de barras e inteligencia de stock
+
+**Estado: IMPLEMENTADO.** Migraciones **0034, 0035**.
+
+### El problema que cierra
+La plataforma sabía vender por internet y no sabía vender en el mostrador. Un
+negocio con tienda física llevaba las ventas presenciales fuera del sistema, así
+que el stock que mostraba el panel era el que quedaba *después de restar lo que
+nadie había registrado*. El Kardex describía media operación.
+
+Y sin ventas físicas registradas no había demanda real que medir: la reposición
+de la Fase 2D sólo podía decir «estás por debajo del mínimo», nunca «esto se te
+acaba el jueves».
+
+### IMPLEMENTADO
+- **Punto de venta** en `/admin/sales/pos`: escaneo, búsqueda, carrito, cliente
+  opcional, medio de pago y cobro.
+- **`ProductBarcode`** — varios códigos por artículo (EAN del fabricante, UPC,
+  etiqueta interna). `UNIQUE(company, code)`.
+- **Lector USB/Bluetooth** estándar (HID keyboard wedge), sin SDK propietario.
+  Todo funciona igual tecleando el código a mano.
+- **`Order.sales_channel`** (`online` | `pos`), **`payment_method`**,
+  **`sold_by`**, **`pos_idempotency_key`** + **`pos_request_fingerprint`**.
+- **`store/pos_services.py`** — la venta de mostrador, todo-o-nada.
+- **`store/inventory_forecasting.py`** — pronóstico de demanda explicable,
+  cobertura, punto de reposición, cantidad sugerida y riesgo.
+- **`BranchStock.safety_stock`** y **`lead_time_days`**.
+- **Dashboard comercial** en `/admin/sales`: facturación, tendencia, canales,
+  más vendidos, inventario en riesgo y reposición sugerida.
+- **`sales.pos.use`** y **`sales.analytics.view`** — nuevas y **ACTIVE**.
+- 64 tests nuevos (1444 → **1508 OK**, 3 omitidos).
+
+### Cambios de comportamiento
+- Una venta POS crea un `Order` normal, pagado, entregado y con su sucursal;
+  aparece en el historial, en los reportes y puede emitir su nota interna con la
+  numeración de la Fase 2E.
+- El stock se descuenta **de la sucursal donde se vende**, dentro de la misma
+  transacción que crea la venta.
+- Los pedidos históricos quedan `online` / `stripe` por el default de columna,
+  que es la evidencia real: todos se hicieron por la tienda.
+
+### Decisiones
+- **Un solo núcleo de ventas.** Un modelo `PosSale` aparte habría obligado a
+  calcular dos veces cada reporte, cada movimiento de stock, cada documento y
+  cada historial de cliente, y luego a conciliarlos.
+- **Dos canales, dos políticas ante el faltante — una implementación.** Online:
+  el dinero ya se capturó, así que el faltante se anota y el ítem se salta. POS:
+  no se ha cobrado nada, así que **lanza** y la transacción entera se deshace.
+  Dos copias del mismo bucle habrían divergido, y la que divergiera sería la que
+  nadie estaba mirando.
+- **El navegador nunca decide un precio.** Muestra uno para que el operador lea
+  el total en voz alta; el servidor cobra desde su propio catálogo.
+- **Idempotencia con huella.** La clave dice «es el mismo intento»; la huella
+  dice «es la misma venta». Sin ella, una clave reutilizada devolvería la venta
+  de otro y diría que salió bien. Misma clave + otra cesta → **409**.
+- **Las líneas repetidas se agrupan**, y no por orden: `SALE_EXIT` es idempotente
+  por `(order, product)`, así que dos `OrderItem` del mismo producto habrían
+  vendido dos unidades descontando una.
+- **El código de barras es texto, no número.** `0123456789012` y `123456789012`
+  son artículos distintos; un cast a entero los fusiona en silencio. Tampoco se
+  pasa a mayúsculas: Code128 distingue.
+- **Los días sin ventas cuentan como cero.** Es el error clásico: 2, 0, 0, 2 son
+  1/día, no 2/día. Omitir los ceros infla todo lo que viene después.
+- **Sin historial suficiente no hay pronóstico**, y se dice. Pero las alertas
+  físicas —sin stock, bajo mínimo— siguen funcionando.
+- **`lead_time_days = 0` significa sin configurar**, no «llega al instante». Un
+  plazo inventado produce un número seguro y equivocado.
+- **La sugerencia de transferencia es conservadora**: una sucursal sólo cede lo
+  que excede su propio umbral más alto. Vaciar una tienda para llenar otra es la
+  misma escasez en otro barrio.
+- **Nada de margen ni utilidad.** La plataforma no registra costos, así que
+  cualquier cifra sería inventada. Se reporta facturación, no ganancia.
+- **`sales.orders.*` sigue AVAILABLE**, no ACTIVE: su puente RBAC legacy sigue
+  en pie y cambiar la etiqueta sin quitarlo sería una mentira del catálogo.
+
+### PENDIENTE (Comercial C2)
+- Caja / arqueo · devoluciones y anulaciones compensatorias · compras y
+  proveedores · costo real y rentabilidad · descuentos manuales en POS ·
+  pronóstico estacional · lector por cámara.
+
+---
+
 ## API v1 — inventario interno (M7A)
 
 **Estado: IMPLEMENTADO.** Sin migraciones. Aditiva.

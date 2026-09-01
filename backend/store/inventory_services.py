@@ -379,9 +379,26 @@ def apply_manual_stock_movement(
     return movement
 
 
-def record_sale_stock_movements(order: Order, *, actor=None) -> list[StockMovement]:
+def record_sale_stock_movements(
+    order: Order, *, actor=None, strict: bool = False,
+) -> list[StockMovement]:
     """
     Register one `sale_exit` per order item and decrement the FULFILLING branch.
+
+    TWO CHANNELS, TWO POLICIES ON SHORTFALL — and one implementation
+    ----------------------------------------------------------------
+    `strict=False` (ONLINE, the default and the original behaviour): the money
+    is already captured by the time Stripe's webhook arrives, so a shortfall is
+    recorded on the order and the item is skipped. Refusing here would leave a
+    paid order that never decremented stock.
+
+    `strict=True` (POS): nothing has been captured yet — the operator is
+    standing at the counter and the whole sale is inside one transaction. A
+    shortfall RAISES, the transaction rolls back, and no order exists. Selling
+    something the shop does not have is the failure to prevent, not to record.
+
+    The two share this body on purpose. Two copies would drift, and the one that
+    drifted would be the one nobody was watching.
 
     WHICH BRANCH: `order.fulfillment_branch`, decided once at checkout and
     stored. Never re-derived here — a company that changes its default branch
@@ -437,7 +454,44 @@ def record_sale_stock_movements(order: Order, *, actor=None) -> list[StockMoveme
             .values_list('product_id', flat=True)
         )
 
-        for item in order.items.select_related('product').all():
+        items = list(order.items.select_related('product').all())
+
+        if strict:
+            # VALIDATE EVERYTHING BEFORE WRITING ANYTHING.
+            #
+            # Without this, a two-line sale whose second product is short would
+            # decrement the first, then raise, then roll back — correct, but it
+            # holds a write lock on a row it was always going to release. Worse,
+            # the error would name the second product while the operator watched
+            # the first one's stock flicker.
+            #
+            # Locking every row up front, in the module's one ordering, also
+            # means two tills selling overlapping baskets queue instead of
+            # deadlocking.
+            pending = [i for i in items if i.product_id not in already_recorded]
+            if pending:
+                locked = _locked_branch_stocks(
+                    branch, [i.product for i in pending],
+                )
+                required: dict[int, int] = {}
+                for item in pending:
+                    required[item.product_id] = (
+                        required.get(item.product_id, 0) + item.quantity
+                    )
+                for product_id, needed in sorted(required.items()):
+                    row = locked.get(product_id)
+                    available = row.quantity if row else 0
+                    if available < needed:
+                        product = next(
+                            i.product for i in pending if i.product_id == product_id
+                        )
+                        raise InsufficientStockError(
+                            f'Stock insuficiente para "{product.name}" en '
+                            f'{branch.name}. Stock actual: {available}, '
+                            f'salida solicitada: {needed}.'
+                        )
+
+        for item in items:
             if item.product_id in already_recorded:
                 continue  # idempotency guard
 
@@ -459,6 +513,9 @@ def record_sale_stock_movements(order: Order, *, actor=None) -> list[StockMoveme
                     },
                 )
             except InsufficientStockError as exc:
+                if strict:
+                    # POS: nothing captured yet, so refuse the whole sale.
+                    raise
                 # Payment already captured: flag the discrepancy, do not roll back.
                 movement = None
                 _flag_stock_shortfall(order, item, str(exc))

@@ -37,6 +37,38 @@ from .inventory_views import (
     AdminStockTransferDispatchView, AdminStockTransferItemsView,
     AdminStockTransferListView, AdminStockTransferReceiveView,
 )
+from .pos_views import (
+    AdminCommissionSettingsView,
+    AdminPosContextView,
+    AdminPosPreviewView,
+    AdminPosLookupView,
+    AdminPosSaleView,
+    AdminPosSearchView,
+    AdminProductBarcodeView,
+)
+from .sales_analytics_views import (
+    AdminCommissionsView,
+    AdminSalesDashboardView,
+    AdminSalesReplenishmentView,
+)
+from .import_views import (
+    AdminImportErrorReportView,
+    AdminImportHistoryView,
+    AdminImportInspectView,
+    AdminImportJobView,
+    AdminInventoryExportView,
+    AdminProductImportApplyView,
+    AdminProductImportPreviewView,
+    AdminProductTemplateView,
+    AdminStockImportApplyView,
+    AdminStockImportPreviewView,
+)
+from .promotion_views import (
+    AdminCouponView,
+    AdminPosCombosView,
+    AdminPromotionDetailView,
+    AdminPromotionListView,
+)
 from .customer_views import (
     AdminCustomerDetailView,
     AdminCustomerListView,
@@ -150,6 +182,39 @@ urlpatterns = [
     # --- SaaS Phase 3: company configuration and branding ---
     path('storefront/config/', StorefrontConfigView.as_view(), name='storefront-config'),
     path('admin/company-settings/', AdminCompanySettingsView.as_view(), name='admin-company-settings'),
+
+    # --- Commercial Phase C1: point of sale + analytics ---
+    # All internal control. `sales.pos.use` for the till, `sales.analytics.view`
+    # for the numbers, and `inventory.reports` on top for the forecast detail.
+    path('admin/pos/context/', AdminPosContextView.as_view(), name='admin-pos-context'),
+    path('admin/pos/products/lookup/', AdminPosLookupView.as_view(), name='admin-pos-lookup'),
+    path('admin/pos/products/search/', AdminPosSearchView.as_view(), name='admin-pos-search'),
+    path('admin/pos/sales/', AdminPosSaleView.as_view(), name='admin-pos-sale'),
+    path('admin/products/<int:pk>/barcodes/', AdminProductBarcodeView.as_view(), name='admin-product-barcodes'),
+    path('admin/pos/preview/', AdminPosPreviewView.as_view(), name='admin-pos-preview'),
+    path('admin/sales/dashboard/', AdminSalesDashboardView.as_view(), name='admin-sales-dashboard'),
+    path('admin/sales/commissions/', AdminCommissionsView.as_view(), name='admin-sales-commissions'),
+    # --- Commercial Phase C1.3: promotions, combos and coupon administration ---
+    path('admin/sales/promotions/', AdminPromotionListView.as_view(), name='admin-promotions'),
+    path('admin/sales/promotions/<int:pk>/', AdminPromotionDetailView.as_view(), name='admin-promotion-detail'),
+    path('admin/sales/coupons/', AdminCouponView.as_view(), name='admin-coupons'),
+    path('admin/sales/coupons/<int:pk>/', AdminCouponView.as_view(), name='admin-coupon-detail'),
+    path('admin/pos/combos/', AdminPosCombosView.as_view(), name='admin-pos-combos'),
+
+    # --- C1.4: bulk imports ------------------------------------------------
+    path('admin/imports/inspect/', AdminImportInspectView.as_view(), name='admin-import-inspect'),
+    path('admin/imports/', AdminImportHistoryView.as_view(), name='admin-import-history'),
+    path('admin/imports/<int:pk>/', AdminImportJobView.as_view(), name='admin-import-job'),
+    path('admin/imports/<int:pk>/errors.csv', AdminImportErrorReportView.as_view(), name='admin-import-errors'),
+    path('admin/products/import/preview/', AdminProductImportPreviewView.as_view(), name='admin-product-import-preview'),
+    path('admin/products/import/<int:pk>/apply/', AdminProductImportApplyView.as_view(), name='admin-product-import-apply'),
+    path('admin/products/import/template/', AdminProductTemplateView.as_view(), name='admin-product-template'),
+    path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),
+    path('admin/inventory/import/<int:pk>/apply/', AdminStockImportApplyView.as_view(), name='admin-stock-import-apply'),
+    path('admin/inventory/export/', AdminInventoryExportView.as_view(), name='admin-inventory-export'),
+    path('admin/sales/commission-settings/', AdminCommissionSettingsView.as_view(), name='admin-commission-settings'),
+    path('admin/sales/commission-settings/<int:pk>/', AdminCommissionSettingsView.as_view(), name='admin-commission-setting-detail'),
+    path('admin/sales/replenishment/', AdminSalesReplenishmentView.as_view(), name='admin-sales-replenishment'),
 
     # --- SaaS Phase 4: customers (internal CRM) ---
     # No public counterpart. A customer's document, phone, address and the notes

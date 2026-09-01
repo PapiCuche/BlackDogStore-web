@@ -122,6 +122,56 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Gestionar el despacho de pedidos.', STATUS_ACTIVE),
     _cap('sales.notes.manage', 'sales', 'Notas de venta internas',
          'Emitir y descargar notas de venta internas.', STATUS_AVAILABLE),
+    # PHASE C1 — ACTIVE, because the POS and analytics endpoints enforce these
+    # directly, with no legacy-role bridge behind them.
+    #
+    # (This note used to say "the three above stay AVAILABLE". Two of them no
+    # longer do: M6 built the internal orders module and promoted
+    # `sales.orders.view` and `.manage` to ACTIVE, which is why the comment
+    # above them explains that promotion. `sales.notes.manage` is the one that
+    # is still AVAILABLE, and for the original reason: nothing enforces it yet,
+    # and relabelling it would be a lie told by a status field.)
+    #
+    # `sales.pos.use` is deliberately NOT folded into `sales.orders.manage`.
+    # Reading the order book and taking money at a counter are different
+    # authorities, and a shop that lets someone look up a dispatch has not
+    # thereby let them sell.
+    _cap('sales.pos.use', 'sales', 'Punto de venta',
+         'Registrar ventas presenciales y descontar stock de la sucursal.',
+         STATUS_ACTIVE),
+    # Being allowed to sell is not being allowed to see what the business earns.
+    _cap('sales.analytics.view', 'sales', 'Analítica comercial',
+         'Ver facturación, productos más vendidos y comparativa de canales.',
+         STATUS_ACTIVE),
+    # PHASE C1.2 — four authorities that all sound like "selling" and are not.
+    #
+    # Attributing a sale to a colleague MOVES MONEY: without a gate, anyone
+    # could credit any commission to anyone, including themselves.
+    _cap('sales.pos.assign_seller', 'sales', 'Atribuir venta a otro vendedor',
+         'Registrar una venta a nombre de otro vendedor de la empresa.',
+         STATUS_ACTIVE),
+    # A coupon needs no permission — the company configured that promotion in
+    # advance. Typing a discount at the counter is a decision, and decisions
+    # about price are not part of working a till.
+    _cap('sales.discounts.apply', 'sales', 'Aplicar descuentos manuales',
+         'Descontar un porcentaje o un monto fuera de una promoción configurada.',
+         STATUS_ACTIVE),
+    _cap('sales.commissions.view', 'sales', 'Ver comisiones',
+         'Consultar comisiones devengadas por vendedor.', STATUS_ACTIVE),
+    _cap('sales.commissions.manage', 'sales', 'Configurar comisiones',
+         'Definir el porcentaje de comisión de cada miembro del equipo.',
+         STATUS_ACTIVE),
+    # PHASE C1.3 — configuring a promotion is giving product away, and that is
+    # NOT implied by `products.manage`. Being allowed to edit a price tag and
+    # being allowed to decide that three articles together cost less than their
+    # parts are different commercial authorities, and a shop should be able to
+    # grant one without the other.
+    _cap('sales.promotions.view', 'sales', 'Ver promociones',
+         'Consultar promociones automáticas, combos y códigos de descuento.',
+         STATUS_ACTIVE),
+    _cap('sales.promotions.manage', 'sales', 'Administrar promociones',
+         'Crear, editar y archivar promociones, combos y códigos.',
+         STATUS_ACTIVE),
 
     # --- cross-cutting (module exists; endpoints still legacy-authorised) ---
     _cap('reports.view', 'reports', 'Ver reportes',

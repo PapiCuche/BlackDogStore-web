@@ -134,8 +134,51 @@ export const INTERNAL_MODULES: InternalModule[] = [
     legacyRoles: ["sales", "admin", "superadmin"],
     status: "partial",
   },
-  { id: "sales.pos", group: "sales", label: "Nueva venta / POS", description: "Punto de venta en tienda.", status: "pending" },
+  {
+    id: "sales.summary",
+    group: "sales",
+    label: "Resumen comercial",
+    description: "Facturación, canales, más vendidos y reposición sugerida.",
+    href: "/admin/sales",
+    // Phase C1: real authority, no legacy bridge. The replenishment section
+    // inside additionally needs `inventory.reports` and hides itself without it.
+    requiredCapabilities: ["sales.analytics.view"],
+    status: "implemented",
+  },
+  {
+    id: "sales.pos",
+    group: "sales",
+    label: "Punto de venta",
+    description: "Venta presencial con lector de código de barras.",
+    href: "/admin/sales/pos",
+    requiredCapabilities: ["sales.pos.use"],
+    status: "implemented",
+    quickAction: true,
+  },
   { id: "sales.quotes", group: "sales", label: "Cotizaciones", description: "Cotizaciones a clientes.", status: "pending" },
+  {
+    id: "sales.promotions",
+    group: "sales",
+    label: "Promociones",
+    description: "Combos automáticos y códigos de descuento.",
+    href: "/admin/sales/promotions",
+    // Phase C1.3: giving product away is its own authority — deliberately NOT
+    // implied by `products.manage`.
+    requiredCapabilities: ["sales.promotions.view"],
+    status: "implemented",
+  },
+  {
+    id: "sales.commissions",
+    group: "sales",
+    label: "Comisiones",
+    description: "Comisiones devengadas por vendedor y porcentajes del equipo.",
+    href: "/admin/sales/commissions",
+    // Phase C1.2: what a colleague earns is management information, so this is
+    // NOT part of the sales preset. Configuring a rate needs `manage` on top,
+    // checked inside the screen.
+    requiredCapabilities: ["sales.commissions.view"],
+    status: "implemented",
+  },
   { id: "sales.receivables", group: "sales", label: "Cuentas por cobrar", description: "Saldos pendientes de cobro.", status: "pending" },
 
   // ── Caja ─────────────────────────────────────────────────────────────────
@@ -180,6 +223,15 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
     quickAction: true,
   },
+  {
+    id: "products.import",
+    group: "products",
+    label: "Carga masiva",
+    description: "Importar productos desde Excel, con previsualización antes de escribir.",
+    href: "/admin/products/import",
+    requiredCapabilities: ["products.manage"],
+    status: "implemented",
+  },
   { id: "products.categories", group: "products", label: "Categorías", description: "Taxonomía del catálogo. API tenant-aware, pantalla pendiente.", status: "partial" },
 
   // ── Inventario ───────────────────────────────────────────────────────────
@@ -195,6 +247,15 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["inventory.view"],
     status: "implemented",
     quickAction: true,
+  },
+  {
+    id: "inventory.import",
+    group: "inventory",
+    label: "Carga masiva",
+    description: "Ajustar existencias desde Excel. Genera movimientos de Kardex.",
+    href: "/admin/inventory/import",
+    requiredCapabilities: ["inventory.adjust"],
+    status: "implemented",
   },
   {
     id: "inventory.movements",

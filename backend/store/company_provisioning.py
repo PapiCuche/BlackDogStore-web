@@ -88,9 +88,17 @@ PRESET_AREAS: tuple[tuple[str, str, int], ...] = (
 )
 
 # --- Generic preset roles -----------------------------------------------------
+# PHASE C1: the sales role can now work the till.
+#
+# `sales.pos.use` is included because selling at a counter IS the sales job.
+# `sales.analytics.view` is NOT: a salesperson ringing up a cable does not
+# thereby need to see the company's turnover, its best branches or how their
+# colleagues are performing. A business that wants that grants it — one
+# checkbox, and a decision they get to make rather than inherit.
 _SALES_CAPS = (
     'company.view', 'products.view', 'reports.view',
     'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage',
+    'sales.pos.use',
 )
 _INVENTORY_CAPS = (
     'company.view', 'products.view', 'reports.view',

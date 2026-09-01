@@ -704,3 +704,734 @@ export function updateCustomer(
     `/admin/customers/${customerId}/${qs}`, data, "No se pudo guardar el cliente.",
   );
 }
+
+// ---------------------------------------------------------------------------
+// Commercial Phase C1 — point of sale
+// ---------------------------------------------------------------------------
+
+export type PosBranch = { id: number; name: string };
+export type PosPaymentMethod = { value: string; label: string };
+
+export type PosContext = {
+  company: { id: number; name: string };
+  branches: PosBranch[];
+  /** null when the till must ask: several branches and no authorised default. */
+  default_branch: number | null;
+  payment_methods: PosPaymentMethod[];
+  can_manage_customers: boolean;
+  /** Resolved once at open, so the UI never offers a control that then 403s. */
+  can_assign_seller: boolean;
+  can_apply_discount: boolean;
+  can_view_commissions: boolean;
+  seller: { id: number; username: string; name: string };
+  /** Empty unless the caller may reassign — staffing is not public. */
+  sellers: PosSeller[];
+};
+
+export type PosProduct = {
+  id: number;
+  name: string;
+  /** Decimal as a string. Displayed, never sent back as authority. */
+  price: string;
+  available: number;
+  barcode: string;
+};
+
+export type PosSaleLine = { product: number; quantity: number };
+
+export type PosSaleResult = {
+  order_id: number;
+  created: boolean;
+  subtotal: string;
+  discount: string;
+  discount_source: string;
+  discount_reason: string;
+  total: string;
+  paid_at: string | null;
+  payment_method: string;
+  amount_received: string | null;
+  change_amount: string | null;
+  payment_reference: string;
+  branch: PosBranch;
+  seller: string;
+  customer: string;
+  commission: string | null;
+  items: { product: number; name: string; quantity: number; price: string }[];
+};
+
+/** A sale refused because the shelf is empty, with where the units actually are. */
+export class PosStockError extends Error {
+  elsewhere: { branch: string; product: string; quantity: number }[];
+  constructor(message: string, elsewhere: PosStockError["elsewhere"] = []) {
+    super(message);
+    this.name = "PosStockError";
+    this.elsewhere = elsewhere;
+  }
+}
+
+/** The idempotency key was already spent on a different basket. */
+export class PosConflictError extends Error {
+  existingOrder: number | null;
+  constructor(message: string, existingOrder: number | null) {
+    super(message);
+    this.name = "PosConflictError";
+    this.existingOrder = existingOrder;
+  }
+}
+
+export async function fetchPosContext(companyId: number | null): Promise<PosContext> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/context/${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo abrir el punto de venta."));
+  return res.json();
+}
+
+/**
+ * Resolve a scanned code. A 404 is an ordinary answer here — an unknown label
+ * is a normal event at a counter, not a transport failure.
+ */
+export async function posLookup(
+  companyId: number | null,
+  branchId: number,
+  code: string,
+): Promise<PosProduct | null> {
+  const qs = new URLSearchParams({ branch: String(branchId), code });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/lookup/?${qs}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo leer el código."));
+  return res.json();
+}
+
+export async function posSearch(
+  companyId: number | null,
+  branchId: number,
+  q: string,
+): Promise<PosProduct[]> {
+  const qs = new URLSearchParams({ branch: String(branchId), q });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/search/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo buscar."));
+  return (await res.json()).results ?? [];
+}
+
+export async function posSale(
+  companyId: number | null,
+  body: PosSaleInput,
+): Promise<PosSaleResult> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/sales/${qs}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (res.ok) return res.json();
+
+  const payload = await res.json().catch(() => null);
+  const detail = (payload as { detail?: string })?.detail ?? "No se pudo cobrar.";
+  if (res.status === 409) {
+    if ((payload as { code?: string })?.code === "insufficient_stock") {
+      throw new PosStockError(
+        detail,
+        (payload as { available_elsewhere?: PosStockError["elsewhere"] })
+          ?.available_elsewhere ?? [],
+      );
+    }
+    throw new PosConflictError(
+      detail,
+      (payload as { existing_order?: number })?.existing_order ?? null,
+    );
+  }
+  throw new Error(detail);
+}
+
+// ---------------------------------------------------------------------------
+// Commercial Phase C1 — analytics
+// ---------------------------------------------------------------------------
+
+export type SalesKpi = {
+  revenue: string;
+  orders: number;
+  units: number;
+  average_ticket: string;
+};
+
+export type SalesDashboard = {
+  company: { id: number; name: string };
+  branches: PosBranch[];
+  today: string;
+  kpis: Record<string, SalesKpi>;
+  channels: {
+    window_days: number;
+    by_channel: Record<string, { orders: number; revenue: string; units: number }>;
+  };
+  trend: { date: string; revenue: string; orders: number }[];
+  top_products: {
+    window_days: number;
+    results: {
+      product_id: number;
+      product_name: string;
+      units_sold: number;
+      revenue: string;
+      current_stock: number;
+      /** null when there is no recent consumption to divide by. */
+      days_of_cover: number | null;
+    }[];
+  };
+  stock_alerts: { out_of_stock: number; low: number } | null;
+};
+
+export type ReplenishmentRow = {
+  branch_id: number;
+  branch_name: string;
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  minimum_stock: number;
+  target_stock: number;
+  safety_stock: number;
+  lead_time_days: number;
+  days_of_cover: number | null;
+  estimated_stockout_date: string | null;
+  reorder_point: number | null;
+  reorder_state: string;
+  suggested_quantity: number;
+  risk: string;
+  forecast: {
+    daily: number;
+    avg_7: number;
+    avg_30: number;
+    avg_90: number;
+    history_days: number;
+    selling_days: number;
+    sufficient: boolean;
+    confidence: string;
+    trend: string;
+  };
+  transfer_options?: {
+    branch_id: number;
+    branch_name: string;
+    quantity: number;
+    can_transfer: number;
+  }[];
+};
+
+export type ReplenishmentReport = {
+  today: string;
+  branches: PosBranch[];
+  method: { formula: string; demand_source: string; note: string };
+  results: ReplenishmentRow[];
+};
+
+export async function fetchSalesDashboard(
+  companyId: number | null,
+  branchId?: number | null,
+): Promise<SalesDashboard> {
+  const qs = new URLSearchParams();
+  if (companyId) qs.set("company", String(companyId));
+  if (branchId) qs.set("branch", String(branchId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/dashboard/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar la analítica."));
+  return res.json();
+}
+
+export async function fetchReplenishment(
+  companyId: number | null,
+  branchId?: number | null,
+): Promise<ReplenishmentReport> {
+  const qs = new URLSearchParams();
+  if (companyId) qs.set("company", String(companyId));
+  if (branchId) qs.set("branch", String(branchId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/replenishment/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar la reposición."));
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Commercial Phase C1.2 — enriched sale
+// ---------------------------------------------------------------------------
+
+export type PosSeller = { id: number; name: string };
+
+export type AppliedPromotionPreview = {
+  id: number;
+  name: string;
+  applications: number;
+  regular_amount: string;
+  discount_amount: string;
+};
+
+export type PosPreview = {
+  subtotal: string;
+  discount: string;
+  discount_source: "none" | "coupon" | "manual" | "promotion";
+  /** Fired by the basket itself — nobody typed anything. */
+  promotions: AppliedPromotionPreview[];
+  coupon_code: string;
+  total: string;
+  seller: { id: number | null; name: string };
+  customer: { id: number; name: string } | null;
+  /** null unless the caller may see earnings. */
+  commission: { rate_percent: string; base_amount: string; amount: string } | null;
+  lines: { product: number; name: string; quantity: number; price: string }[];
+};
+
+export type PosSaleInput = {
+  branch: number;
+  items: PosSaleLine[];
+  customer?: number | null;
+  seller?: number | null;
+  payment_method: string;
+  idempotency_key: string;
+  terms_confirmed: boolean;
+  coupon_code?: string;
+  manual_discount_type?: "percent" | "amount" | "";
+  manual_discount_value?: string | number | null;
+  discount_reason?: string;
+  amount_received?: string | number | null;
+  payment_reference?: string;
+  external_reference?: string;
+  sale_notes?: string;
+};
+
+export type CommissionRow = {
+  seller_id: number | null;
+  seller_name: string;
+  sales: number;
+  net_amount: string;
+  commission: string;
+  /** Shown BESIDE the historical total, never used to compute it. */
+  current_rate_percent: string | null;
+};
+
+export type CommissionReport = {
+  window_days: number;
+  today: string;
+  branches: PosBranch[];
+  total_commission: string;
+  note: string;
+  results: CommissionRow[];
+};
+
+export type CommissionSetting = {
+  membership_id: number;
+  user_id: number;
+  name: string;
+  role: string;
+  commission_rate_percent: string;
+};
+
+/**
+ * Price a basket without charging it.
+ *
+ * Runs the server's own arithmetic, so the total shown is the total that will
+ * be charged. A discount the sale would refuse is refused here too, rather than
+ * displaying a number that then fails at the till.
+ */
+export async function posPreview(
+  companyId: number | null,
+  body: Omit<PosSaleInput, "idempotency_key" | "terms_confirmed">,
+): Promise<PosPreview> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/preview/${qs}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo calcular el total."));
+  return res.json();
+}
+
+export async function fetchCommissions(
+  companyId: number | null,
+  params: { days?: number; branch?: number | null } = {},
+): Promise<CommissionReport> {
+  const qs = new URLSearchParams();
+  if (companyId) qs.set("company", String(companyId));
+  if (params.days) qs.set("days", String(params.days));
+  if (params.branch) qs.set("branch", String(params.branch));
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/commissions/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron cargar las comisiones."));
+  return res.json();
+}
+
+export async function fetchCommissionSettings(
+  companyId: number | null,
+): Promise<{ can_manage: boolean; results: CommissionSetting[] }> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/commission-settings/${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar la configuración."));
+  return res.json();
+}
+
+export function updateCommissionRate(
+  membershipId: number,
+  companyId: number | null,
+  rate: string,
+): Promise<{ membership_id: number; commission_rate_percent: string }> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/commission-settings/${membershipId}/${qs}`,
+    { commission_rate_percent: rate },
+    "No se pudo guardar el porcentaje.",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Commercial Phase C1.3 — promotions, combos and coupons
+// ---------------------------------------------------------------------------
+
+export type PromotionItemRow = {
+  product: number;
+  product_name: string;
+  price: string;
+  quantity: number;
+};
+
+export type PromotionRow = {
+  id: number;
+  name: string;
+  promotion_type: "bundle_fixed_price" | "bundle_percent";
+  promotion_type_label: string;
+  priority: number;
+  is_active: boolean;
+  /** Active AND inside its window — what the till actually sees. */
+  is_live: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+  branch_scope: "all" | "selected";
+  branches: { id: number; name: string }[];
+  fixed_price: string | null;
+  discount_percent: string | null;
+  max_applications_per_order: number | null;
+  items: PromotionItemRow[];
+  stats: {
+    orders?: number;
+    applications?: number;
+    discount_given?: string;
+    regular_value?: string;
+  };
+};
+
+export type PromotionList = {
+  can_manage: boolean;
+  branches: PosBranch[];
+  results: PromotionRow[];
+};
+
+export type CouponRow = {
+  id: number;
+  code: string;
+  discount_percent: number;
+  is_active: boolean;
+  expires_at: string | null;
+  is_expired: boolean;
+};
+
+export type ComboOffer = {
+  id: number;
+  name: string;
+  promotion_type: string;
+  components: {
+    product_id: number;
+    product_name: string;
+    quantity: number;
+    available: number;
+    price: string;
+  }[];
+  regular_amount: string;
+  discount_amount: string;
+  combo_amount: string;
+  /** How many complete sets the shelf can supply right now. */
+  available_sets: number;
+};
+
+export async function fetchPromotions(companyId: number | null): Promise<PromotionList> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/promotions/${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron cargar las promociones."));
+  return res.json();
+}
+
+export type PromotionWrite = Partial<{
+  name: string;
+  promotion_type: string;
+  fixed_price: string | null;
+  discount_percent: string | null;
+  priority: number;
+  is_active: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+  branch_scope: string;
+  branches: number[];
+  max_applications_per_order: number | null;
+  items: { product: number; quantity: number }[];
+}>;
+
+export function createPromotion(
+  companyId: number | null,
+  data: PromotionWrite,
+): Promise<PromotionRow> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/promotions/${qs}`, data, "No se pudo crear la promoción.", "POST",
+  );
+}
+
+export function updatePromotion(
+  id: number,
+  companyId: number | null,
+  data: PromotionWrite,
+): Promise<PromotionRow> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/promotions/${id}/${qs}`, data, "No se pudo guardar la promoción.",
+  );
+}
+
+export async function fetchCoupons(
+  companyId: number | null,
+): Promise<{ can_manage: boolean; results: CouponRow[] }> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/coupons/${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron cargar los códigos."));
+  return res.json();
+}
+
+export function createCoupon(
+  companyId: number | null,
+  data: { code: string; discount_percent: number; expires_at?: string | null },
+): Promise<CouponRow> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/coupons/${qs}`, data, "No se pudo crear el código.", "POST",
+  );
+}
+
+export function updateCoupon(
+  id: number,
+  companyId: number | null,
+  data: Partial<{ is_active: boolean; discount_percent: number; expires_at: string | null }>,
+): Promise<CouponRow> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return patchWithFieldErrors(
+    `/admin/sales/coupons/${id}/${qs}`, data, "No se pudo guardar el código.",
+  );
+}
+
+/** Combos the current branch can actually complete, for the POS shortcut. */
+export async function fetchCombos(
+  companyId: number | null,
+  branchId: number,
+): Promise<ComboOffer[]> {
+  const qs = new URLSearchParams({ branch: String(branchId) });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/combos/?${qs}`);
+  if (!res.ok) return [];
+  return (await res.json()).results ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// C1.4 — bulk imports
+// ---------------------------------------------------------------------------
+//
+// Every import is TWO calls: preview, then apply. There is no single-shot
+// endpoint, and adding one would defeat the design — the point of staging is
+// that a person sees what will happen to six hundred rows before it happens.
+
+export type ImportAction = "create" | "update" | "no_change" | "skip" | "error";
+
+export type ImportRow = {
+  sheet: string;
+  row: number;
+  action: ImportAction;
+  match_key: string;
+  data: Record<string, unknown>;
+  errors: string[];
+  warnings: string[];
+};
+
+export type ImportJob = {
+  id: number;
+  import_type: "products" | "stock";
+  status: "previewed" | "applied" | "failed";
+  stock_mode: string;
+  original_filename: string;
+  file_sha256: string;
+  mapping: Record<string, unknown>;
+  options: Record<string, unknown>;
+  counts: {
+    total: number;
+    create: number;
+    update: number;
+    no_change: number;
+    skip: number;
+    error: number;
+  };
+  summary: {
+    detected?: string;
+    reader_notes?: string[];
+    format_notes?: string[];
+    unmapped?: { column: string; reason: string }[];
+    branches?: { column: string; branch_id: number; branch_name: string }[];
+    sheets?: string[];
+    applied?: Record<string, number>;
+  };
+  created_at: string;
+  applied_at: string | null;
+  created_by: string;
+  applied_by: string;
+  is_applicable: boolean;
+  rows?: ImportRow[];
+  rows_truncated?: boolean;
+};
+
+export type InspectedSheet = {
+  name: string;
+  header_row: number;
+  headers: string[];
+  sample_rows: number;
+  detected: string;
+  preset: string;
+  mapping: Record<string, number>;
+  warehouse_columns: { index: number; header: string }[];
+  notes: string[];
+  signature: string;
+  profile: { id: number; name: string; mapping: Record<string, number> } | null;
+};
+
+export type InspectResult = {
+  import_type: string;
+  reader_notes: string[];
+  sheets: InspectedSheet[];
+  fields: Record<string, { label: string; required: boolean }>;
+  branches: { id: number; name: string }[];
+};
+
+/**
+ * POST multipart WITHOUT forcing a Content-Type.
+ *
+ * `fetchWithAuth` always sets `application/json`, which is right for every other
+ * call in this file and fatal here: a multipart body needs the boundary the
+ * browser generates, and a hand-written Content-Type has no boundary in it, so
+ * the server receives a body it cannot split into parts. Deleting the header
+ * lets the browser write the correct one.
+ */
+async function postForm<T>(path: string, form: FormData, fallback: string): Promise<T> {
+  const res = await fetchWithAuth(`${API_BASE}${path}`, {
+    method: "POST",
+    body: form,
+    headers: { "Content-Type": "" },
+  });
+  if (res.ok) return res.json();
+  throw new Error(await readDetail(res, fallback));
+}
+
+export function inspectImportFile(
+  companyId: number | null,
+  file: File,
+  importType: "products" | "stock",
+): Promise<InspectResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("import_type", importType);
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return postForm(`/admin/imports/inspect/${qs}`, form, "No se pudo leer el archivo.");
+}
+
+export function previewProductImport(
+  companyId: number | null,
+  file: File,
+  opts: {
+    sheetName?: string;
+    headerRow?: number;
+    mapping?: Record<string, number>;
+    options?: Record<string, unknown>;
+  } = {},
+): Promise<ImportJob> {
+  const form = new FormData();
+  form.append("file", file);
+  if (opts.sheetName) form.append("sheet_name", opts.sheetName);
+  if (opts.headerRow) form.append("header_row", String(opts.headerRow));
+  if (opts.mapping) form.append("mapping", JSON.stringify(opts.mapping));
+  if (opts.options) form.append("options", JSON.stringify(opts.options));
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return postForm(
+    `/admin/products/import/preview/${qs}`, form,
+    "No se pudo previsualizar el archivo.",
+  );
+}
+
+export function previewStockImport(
+  companyId: number | null,
+  file: File,
+  opts: {
+    branchMap: Record<string, number>;
+    mode: string;
+    sheetName?: string;
+    headerRow?: number;
+    mapping?: Record<string, number>;
+  },
+): Promise<ImportJob> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("branch_map", JSON.stringify(opts.branchMap));
+  form.append("mode", opts.mode);
+  if (opts.sheetName) form.append("sheet_name", opts.sheetName);
+  if (opts.headerRow) form.append("header_row", String(opts.headerRow));
+  if (opts.mapping) form.append("mapping", JSON.stringify(opts.mapping));
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return postForm(
+    `/admin/inventory/import/preview/${qs}`, form,
+    "No se pudo previsualizar el inventario.",
+  );
+}
+
+export async function applyImport(
+  companyId: number | null,
+  job: ImportJob,
+): Promise<ImportJob> {
+  const base =
+    job.import_type === "products"
+      ? `/admin/products/import/${job.id}/apply/`
+      : `/admin/inventory/import/${job.id}/apply/`;
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}${base}${qs}`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo aplicar la importación."));
+  return res.json();
+}
+
+export async function fetchImportHistory(
+  companyId: number | null,
+  importType?: "products" | "stock",
+): Promise<ImportJob[]> {
+  const qs = new URLSearchParams();
+  if (companyId) qs.set("company", String(companyId));
+  if (importType) qs.set("type", importType);
+  const res = await fetchWithAuth(`${API_BASE}/admin/imports/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar el historial."));
+  return (await res.json()).results ?? [];
+}
+
+/** Absolute URLs for the browser to navigate to — downloads, not fetches. */
+export function importErrorReportUrl(companyId: number | null, jobId: number) {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return `${API_BASE}/admin/imports/${jobId}/errors.csv${qs}`;
+}
+
+export function productTemplateUrl(companyId: number | null) {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return `${API_BASE}/admin/products/import/template/${qs}`;
+}
+
+export function inventoryExportUrl(
+  companyId: number | null,
+  branchIds: number[],
+  quantities: "current" | "blank",
+) {
+  const qs = new URLSearchParams({ quantities });
+  if (companyId) qs.set("company", String(companyId));
+  if (branchIds.length) qs.set("branches", branchIds.join(","));
+  return `${API_BASE}/admin/inventory/export/?${qs}`;
+}
