@@ -9,6 +9,60 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase 0.3 / P0-C — Aislamiento administrativo legacy y regresión multitenant
+
+**Estado: IMPLEMENTADO.** Sin migraciones.
+
+### «Administrador» de una empresa significaba administrador de la plataforma
+
+`UserProfile.role` es una columna global de una sola fila por usuario. Se diseñó
+cuando había una tienda, así que **no contiene ninguna empresa** y no puede
+adquirirla leyéndola con más cuidado. Tres endpoints seguían autorizando sobre
+ella, encima de querysets sin filtrar:
+
+| Endpoint | Antes | Consecuencia |
+|---|---|---|
+| `GET /admin/users/` | `IsAdminRole` + `User.objects` | Un admin de UNA empresa listaba **todos los usuarios de la plataforma**, con sus emails |
+| `PATCH /admin/users/{pk}/role/` | `IsSuperAdminRole` + `User.objects` | **Escalada de privilegios** |
+| `GET /admin/audit-logs/` | `IsAdminRole` + `AdminAuditLog.objects` | Un admin leía **el rastro de auditoría de todos los inquilinos** |
+
+### La escalada
+
+`IsSuperAdminRole` se satisface con `UserProfile.role == 'superadmin'` — un valor
+que **ese mismo endpoint escribe**. Un superadmin legacy que no fuera superusuario
+de Django podía concederse ese rol a sí mismo o a cualquiera, en toda la
+plataforma. La escalera era el propio endpoint.
+
+Ahora exige **`IsPlatformAdmin`**: cambiar un rol global es una operación de
+plataforma se mire por donde se mire. La autoridad por empresa se concede con
+`Membership`, en `/admin/memberships/`, que ya existía.
+
+### Lo demás nace del queryset
+
+Listado de personas y auditoría se construyen **hacia abajo** desde las empresas
+del llamante: un usuario de otro inquilino no se filtra del resultado, **nunca
+está en él**. La autoridad es la capacidad `memberships.view` dentro de una
+empresa, no una etiqueta global. Los administradores de plataforma siguen viendo
+todo.
+
+Las entradas de auditoría **sin empresa** (anteriores a la multiempresa, o de
+plataforma) quedan sólo para administradores de plataforma: un nulo no es permiso.
+
+No se retira `UserProfile.role` — sigue clasificado **OBSOLETO / TRANSICIÓN**.
+Esta subfase le impide cruzar la frontera multiempresa, no lo elimina.
+
+### M8 revisado, no reescrito
+
+El núcleo de servicio técnico ya estaba bien: `Device.clean()` y
+`RepairOrder.clean()` validan empresa de cliente, sucursal y equipo y se invocan
+desde `save()`; las vistas internas parten de `filter(company=..., branch__in=
+visible_branches(...))` y responden 404; la propiedad del cliente es una FK
+(`Customer.user`), nunca el email; el serializer de cliente documenta cada
+omisión. El hueco era que **nadie probaba mover una orden ajena** por su máquina
+de estados — la parte que cambia registros de otro. Añadido.
+
+---
+
 ## Fase 0.3 / P0-B — Trusted proxy, IP del cliente y rate limiting
 
 **Estado: PARCIAL — REQUIERE INFRA.** Sin migraciones.

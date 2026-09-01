@@ -1534,3 +1534,83 @@ servicio por sucursal porque alguien configuró así sus notas.
   un negocio lo pida.
 - BR-008 sigue `API_PENDING`, pero ahora tiene contra qué diseñarse.
 
+
+
+---
+
+## Fase 0.3 / P0-C — Aislamiento administrativo legacy
+
+### Hallazgos revalidados contra HEAD
+
+| ID | Hallazgo | Resultado | Severidad |
+|---|---|---|---|
+| P0-C-01 | `AdminUserListView` — `IsAdminRole` + `User.objects` global | **CONFIRMADO** | Alta — fuga de PII entre inquilinos |
+| P0-C-02 | `AdminUserRoleView` — `IsSuperAdminRole` sobre rol global | **CONFIRMADO** | **Crítica** — escalada de privilegios |
+| P0-C-03 | `AdminAuditLogListView` — `IsAdminRole` + log global | **CONFIRMADO** | Alta — rastro de otros inquilinos |
+| P0-C-04 | `IsPlatformAdmin` ya existía | **YA CORREGIDO** | — |
+| P0-C-05 | `/admin/memberships/` ya tenant-scoped (`scope_queryset`) | **YA CORREGIDO** | — |
+| P0-C-06 | M8 `Device` / `RepairOrder` invariantes de empresa | **YA CORREGIDO** | — |
+| P0-C-07 | M8 vistas internas: queryset desde el tenant, 404 | **YA CORREGIDO** | — |
+| P0-C-08 | M8 propiedad de cliente por FK, no por email | **YA CORREGIDO** | — |
+| P0-C-09 | M8 transición de orden ajena **sin test** | **REQUIERE TEST** → añadido | — |
+| P0-C-10 | `TechnicianAssignment.clean()` no lo llama `save()` | **PARCIAL por diseño** — el service layer es el guardián, documentado y ahora probado | Baja |
+
+### La escalada de P0-C-02
+
+`IsSuperAdminRole` acepta `UserProfile.role == 'superadmin'`, y **ese endpoint
+escribe ese valor**. Un superadmin legacy sin `is_superuser` podía concedérselo a
+quien quisiera, en toda la plataforma. La escalera era el propio endpoint.
+
+### Principio aplicado
+
+```
+PLATAFORMA                        EMPRESA
+User.is_superuser                 Membership + CompanyRole + capabilities
+   ↓                                 ↓
+operar la plataforma              sólo SU empresa
+```
+
+Nunca `UserProfile.role → autoridad global`. El rol legacy **no se retira**
+(sigue OBSOLETO / TRANSICIÓN); se le impide cruzar la frontera.
+
+### Un falso verde encontrado y corregido
+
+El primer intento de test hacía `UserProfile.objects.update_or_create(...)` sobre
+un usuario recién creado. Crear un usuario dispara una señal que fabrica un
+`UserProfile` con rol `customer`, y Django **cachea ese objeto en la instancia**:
+actualizar la fila no toca la copia cacheada, así que `get_user_role()` seguía
+respondiendo `customer`. El test «al rol legacy se le deniega» pasaba porque la
+fixture nunca llegó a ser administrador, no porque el endpoint rechazara a uno.
+
+Se corrigió con `refresh_from_db()` y se añadió un test que vigila la propia
+fixture. Comprobación: revirtiendo el arreglo, fallan **3 tests**; con el arreglo,
+pasan los 21.
+
+
+### Cambio de contrato, y los 35 tests que lo señalaron
+
+Al ejecutar la suite completa fallaron **35 tests preexistentes** de
+`AdminUserListTest`, `AdminUserRoleChangeTest`, `AdminAuditLog*Test`,
+`Audit31*` y los bloques de regresión de las fases 3.2 y 3.3.
+
+No eran daño colateral: **codificaban el contrato antiguo**. Cada uno creaba un
+usuario con `UserProfile.role = 'admin'` y **sin ninguna empresa**, y afirmaba
+que ese usuario obtenía 200 sobre la lista global de usuarios o sobre el registro
+de auditoría completo. Esa afirmación *era* la vulnerabilidad, escrita como
+expectativa.
+
+La distinción que hubo que hacer, test a test:
+
+| Lo que probaba | Resolución |
+|---|---|
+| «el rol legacy abre la superficie global» | **La expectativa era el fallo.** Sustituida por autoridad de plataforma |
+| paginación, filtros, ausencia de contraseñas, metadatos de auditoría, 404, no cambiarse el propio rol | **Sigue siendo válido.** Sólo cambió la fixture que llega al endpoint |
+
+Un detalle que obligó a rectificar: promover la fixture *compartida* de
+`Phase33RegressionTest` a superusuario arregló los dos tests globales y rompió
+otros dos de catálogo y pedidos, porque un administrador de plataforma se
+resuelve distinto en la capa de tenant — debe elegir empresa explícitamente. La
+fixture de plataforma quedó separada, sólo para los dos endpoints globales.
+
+Y se conserva explícitamente el test que afirma lo contrario de lo que afirmaban
+los antiguos: `P0CLegacyAdminIsolationTest.test_the_legacy_global_role_alone_grants_nothing`.
