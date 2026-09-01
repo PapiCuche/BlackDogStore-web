@@ -460,6 +460,31 @@ class Order(models.Model):
     accepted_terms = models.BooleanField(default=False)
     accepted_warranty_policy = models.BooleanField(default=False)
 
+    # --- M5: durable checkout idempotency (native clients) -------------------
+    #
+    # WHY THIS IS A COLUMN AND NOT A CACHE.
+    #
+    # A double tap, a retried request or a timeout must not create two orders
+    # and two payment sessions. A disabled button improves the odds and
+    # guarantees nothing: the second request may already be in flight, and a
+    # cache that can be evicted or that lives in one process is not a guarantee
+    # either. The only thing that holds under concurrency is a uniqueness
+    # constraint the database enforces.
+    #
+    # NULL for every browser order, and that is deliberate rather than a gap:
+    # the web checkout has no client request key and is not being changed to
+    # acquire one. The partial constraint below therefore only binds rows that
+    # actually carry a key.
+    idempotency_key = models.CharField(max_length=100, blank=True, null=True, db_index=True)
+
+    # SHA-256 of the canonical request payload, so a replay of the same key with
+    # DIFFERENT contents can be refused (409) instead of silently answering with
+    # the first order. Returning the earlier order there would tell a client its
+    # new basket was accepted when it was not.
+    #
+    # A hash, not the payload: nothing about the buyer is stored twice.
+    idempotency_fingerprint = models.CharField(max_length=64, blank=True)
+
     class Meta:
         # Every admin list, dashboard KPI and report starts by narrowing to one
         # company and then filters by date or status — these match that shape.
@@ -472,6 +497,18 @@ class Order(models.Model):
             models.Index(fields=['company', 'sales_channel', 'paid_at']),
             models.Index(fields=['company', 'sold_by', 'paid_at']),
         ]
+        # TWO idempotency guarantees, deliberately NOT unified.
+        #
+        # They look alike and they are not. The POS key is typed by a till
+        # operator's browser and is unique per COMPANY, because a shop floor has
+        # one sequence of sales no matter who rings them up. The checkout key
+        # comes from a native client and is unique per company AND USER, because
+        # two customers picking the same client-generated key must not collide —
+        # scoping that one to the company alone would make one customer's
+        # checkout fail on a stranger's.
+        #
+        # Merging them into one "generic idempotency" column would have to pick
+        # one of those two scopes and would be wrong for the other surface.
         constraints = [
             # ONE sale per idempotency key per company.
             #
@@ -483,6 +520,14 @@ class Order(models.Model):
                 fields=['company', 'pos_idempotency_key'],
                 condition=~models.Q(pos_idempotency_key=''),
                 name='unique_pos_idempotency_key_per_company',
+            ),
+            # Scoped to company AND user, not to the key alone: two customers
+            # may generate the same client key, and a global constraint would
+            # make one of them fail on the other's checkout.
+            models.UniqueConstraint(
+                fields=['company', 'user', 'idempotency_key'],
+                condition=models.Q(idempotency_key__isnull=False),
+                name='unique_checkout_idempotency_per_customer',
             ),
         ]
 
@@ -3077,6 +3122,64 @@ class PromotionBranch(models.Model):
     def __str__(self):
         return f'{self.promotion.name} @ {self.branch.name}'
 
+    def clean(self):
+        """
+        INVARIANT: `branch.company == promotion.company`.
+
+        The API checks this before it ever builds one of these, walking DOWN
+        from the company so a foreign branch is simply not in the candidate set.
+        This is the second lock on the same door: a shell, a data fix or a
+        future endpoint that skips that check would otherwise attach another
+        tenant's branch to this tenant's promotion — and because
+        `applies_to_branch()` reads exactly this table, the effect would be a
+        discount firing in a shop that belongs to someone else.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.promotion_id and self.branch_id:
+            if self.branch.company_id != self.promotion.company_id:
+                raise ValidationError(
+                    {'branch': 'La sucursal no pertenece a la empresa de la promoción.'}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    @staticmethod
+    def assert_all_match_promotion(rows):
+        """
+        Set-level check for bulk paths.
+
+        `bulk_create()` does NOT call `save()` and therefore does NOT call
+        `clean()` — so the guarantee above evaporates for exactly the code that
+        writes many rows at once, which is the code that writes these. Any
+        authorised bulk path calls this first.
+
+        Resolved with one query over the whole set rather than one per row: a
+        promotion covering twenty branches should cost one round trip.
+        """
+        from django.core.exceptions import ValidationError
+
+        rows = list(rows)
+        if not rows:
+            return
+        promotion_ids = {r.promotion_id for r in rows}
+        branch_ids = {r.branch_id for r in rows}
+        companies = dict(
+            Promotion.objects.filter(pk__in=promotion_ids)
+            .values_list('pk', 'company_id')
+        )
+        branch_companies = dict(
+            Branch.objects.filter(pk__in=branch_ids)
+            .values_list('pk', 'company_id')
+        )
+        for row in rows:
+            if companies.get(row.promotion_id) != branch_companies.get(row.branch_id):
+                raise ValidationError(
+                    'La sucursal no pertenece a la empresa de la promoción.'
+                )
+
 
 class PromotionItem(models.Model):
     """
@@ -3121,6 +3224,28 @@ class PromotionItem(models.Model):
     def save(self, *args, **kwargs):
         self.clean()
         return super().save(*args, **kwargs)
+
+    @staticmethod
+    def assert_all_match_promotion(rows):
+        """Set-level counterpart of `clean()`, for `bulk_create()` paths."""
+        from django.core.exceptions import ValidationError
+
+        rows = list(rows)
+        if not rows:
+            return
+        promotion_companies = dict(
+            Promotion.objects.filter(pk__in={r.promotion_id for r in rows})
+            .values_list('pk', 'company_id')
+        )
+        product_companies = dict(
+            Product.objects.filter(pk__in={r.product_id for r in rows})
+            .values_list('pk', 'company_id')
+        )
+        for row in rows:
+            if promotion_companies.get(row.promotion_id) != product_companies.get(row.product_id):
+                raise ValidationError(
+                    'El producto no pertenece a la empresa de la promoción.'
+                )
 
 
 class AppliedPromotion(models.Model):
@@ -3173,3 +3298,59 @@ class AppliedPromotion(models.Model):
 
     def __str__(self):
         return f'{self.promotion_name_snapshot} ×{self.applications} (#{self.order_id})'
+
+    def clean(self):
+        """
+        INVARIANT: `company == order.company == promotion.company`.
+
+        `company` is denormalised here so the reporting index can slice by
+        tenant without joining `Order`. Denormalisation is what makes this check
+        necessary: the column can now disagree with the row it was copied from,
+        and a wrong value would put one tenant's discount in another tenant's
+        promotion report.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.order_id and self.company_id:
+            if self.order.company_id != self.company_id:
+                raise ValidationError(
+                    {'order': 'El pedido no pertenece a esta empresa.'}
+                )
+        if self.promotion_id and self.company_id:
+            if self.promotion.company_id != self.company_id:
+                raise ValidationError(
+                    {'promotion': 'La promoción no pertenece a esta empresa.'}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    @staticmethod
+    def assert_all_match_company(rows):
+        """
+        Set-level check for the snapshot writer, which uses `bulk_create()`.
+
+        The sale service derives every one of these values from the order it is
+        building, so under correct code this can never fire. It is here for the
+        case that stops being true — and it costs two queries once per sale that
+        actually had a promotion.
+        """
+        from django.core.exceptions import ValidationError
+
+        rows = list(rows)
+        if not rows:
+            return
+        order_companies = dict(
+            Order.objects.filter(pk__in={r.order_id for r in rows})
+            .values_list('pk', 'company_id')
+        )
+        promotion_companies = dict(
+            Promotion.objects.filter(pk__in={r.promotion_id for r in rows})
+            .values_list('pk', 'company_id')
+        )
+        for row in rows:
+            if order_companies.get(row.order_id) != row.company_id:
+                raise ValidationError('El pedido no pertenece a esta empresa.')
+            if promotion_companies.get(row.promotion_id) != row.company_id:
+                raise ValidationError('La promoción no pertenece a esta empresa.')

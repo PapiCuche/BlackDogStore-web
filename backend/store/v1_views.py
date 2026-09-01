@@ -29,7 +29,10 @@ untouched. `/api/` behaves today exactly as it did before this module existed.
 """
 from rest_framework import permissions, viewsets
 from rest_framework.exceptions import NotFound
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
+from .settings_views import build_storefront_config_payload
 from .tenancy import (
     company_storefront_categories,
     company_storefront_products,
@@ -130,3 +133,25 @@ class V1StorefrontProductViewSet(V1PublicStorefrontMixin, viewsets.ReadOnlyModel
             queryset = queryset.order_by(V1_PRODUCT_ORDERING[ordering])
 
         return queryset
+
+
+class V1StorefrontConfigView(V1PublicStorefrontMixin, APIView):
+    """
+    One storefront's public configuration, addressed by SLUG.
+
+    BR-006 for native clients. The web already serves this at
+    `/api/storefront/config/`, resolved from the Host — right for a browser and
+    useless to an app, which reaches a shared API host and has no Host of its
+    own to be identified by.
+
+    The PAYLOAD IS THE SAME FUNCTION, not a parallel implementation: two
+    builders would drift, and the drift would be a shop whose app shows one
+    phone number and whose website shows another.
+
+    Unknown company, inactive company and malformed slug all answer with the
+    same 404 the catalogue gives, so this endpoint cannot be walked to discover
+    which companies exist.
+    """
+
+    def get(self, request, company_slug=None):
+        return Response(build_storefront_config_payload(self.get_storefront_company()))

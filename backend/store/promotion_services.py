@@ -253,5 +253,7 @@ def freeze(order, evaluation):
             metadata={'components': entry['components']},
         ))
     if rows:
+        # bulk_create skips clean(); assert the tenant invariant over the set.
+        AppliedPromotion.assert_all_match_company(rows)
         AppliedPromotion.objects.bulk_create(rows)
     return rows

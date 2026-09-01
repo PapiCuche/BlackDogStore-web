@@ -9,8 +9,11 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
+from .v1_checkout_views import V1CustomerCheckoutView
 from .v1_customer_views import V1CustomerOrderViewSet
-from .v1_views import V1StorefrontCategoryViewSet, V1StorefrontProductViewSet
+from .v1_views import (
+    V1StorefrontCategoryViewSet, V1StorefrontConfigView, V1StorefrontProductViewSet,
+)
 
 storefront_router = DefaultRouter()
 storefront_router.register(
@@ -31,11 +34,19 @@ customer_router.register(r'orders', V1CustomerOrderViewSet, basename='v1-custome
 # anything else never reaches a view.
 urlpatterns = [
     path(
+        'storefront/<slug:company_slug>/config/',
+        V1StorefrontConfigView.as_view(), name='v1-storefront-config',
+    ),
+    path(
         'storefront/<slug:company_slug>/',
         include((storefront_router.urls, 'v1-storefront')),
     ),
     # Native session core (BR-001A). Separate from `/api/auth/`, which belongs
     # to the web frontend and is not modified by any of this.
+    path(
+        'customer/<slug:company_slug>/checkout/',
+        V1CustomerCheckoutView.as_view(), name='v1-customer-checkout',
+    ),
     path(
         'customer/<slug:company_slug>/',
         include((customer_router.urls, 'v1-customer')),

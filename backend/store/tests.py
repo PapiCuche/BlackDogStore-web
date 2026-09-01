@@ -21728,3 +21728,1183 @@ class C13PromotionApiTest(TestCase):
                 res.status_code,
                 (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN), path,
             )
+
+
+# =============================================================================
+# M5 — public storefront config v1, and the AUTHENTICATED native checkout
+# =============================================================================
+#
+# Two audiences buy from the same shop through different doors. The browser
+# checkout stays anonymous with a session cart; the native one requires a
+# session and receives item intents. What must NOT differ is what anything
+# costs, and most of what follows is about pinning that down.
+
+from .models import BranchStock as _M5BranchStock  # noqa: E402
+
+
+def _m5_config_url(slug):
+    return f'/api/v1/storefront/{slug}/config/'
+
+
+def _m5_checkout_url(slug):
+    return f'/api/v1/customer/{slug}/checkout/'
+
+
+def _m5_stripe_session(session_id='cs_test_m5', url='https://checkout.stripe.com/pay/cs_test_m5'):
+    mock = MagicMock()
+    mock.id = session_id
+    mock.url = url
+    return mock
+
+
+def _m5_stock(product, branch, quantity):
+    row, _ = _M5BranchStock.objects.get_or_create(branch=branch, product=product)
+    row.quantity = quantity
+    row.save(update_fields=['quantity'])
+    return row
+
+
+class M5StorefrontConfigTest(TestCase):
+    """BR-006 for native clients: the same payload, addressed by slug."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'm5-cfg-a', tax_id='20780000001')
+        self.b = _saas_company('Empresa B', 'm5-cfg-b', tax_id='20780000002')
+        self.client = APIClient()
+
+    def test_it_serves_the_company_named_in_the_path(self):
+        payload = self.client.get(_m5_config_url('m5-cfg-a')).json()
+
+        self.assertEqual(payload['company']['slug'], 'm5-cfg-a')
+        self.assertEqual(payload['company']['name'], 'Empresa A')
+
+    def test_two_tenants_get_their_OWN_config(self):
+        a = self.client.get(_m5_config_url('m5-cfg-a')).json()
+        b = self.client.get(_m5_config_url('m5-cfg-b')).json()
+
+        self.assertNotEqual(a['company']['slug'], b['company']['slug'])
+        self.assertNotEqual(a['company']['tax_id'], b['company']['tax_id'])
+
+    def test_it_needs_no_authentication(self):
+        # Branding is what the app draws before anyone signs in. Gating it would
+        # make the login screen unbrandable.
+        self.assertEqual(self.client.get(_m5_config_url('m5-cfg-a')).status_code, 200)
+
+    def test_the_payload_matches_the_WEB_one_exactly(self):
+        # One builder, two transports. Two builders would drift into a shop
+        # whose app shows one phone number and whose website shows another.
+        from_slug = self.client.get(_m5_config_url('m5-cfg-a')).json()
+        with _storefront_of(self.a):
+            from_host = APIClient().get('/api/storefront/config/').json()
+
+        self.assertEqual(from_slug, from_host)
+
+    def test_it_carries_the_sections_the_app_needs(self):
+        payload = self.client.get(_m5_config_url('m5-cfg-a')).json()
+
+        self.assertEqual(set(payload), {'company', 'branding', 'contact', 'policies'})
+        self.assertIn('whatsapp_link', payload['contact'])
+        self.assertIn('warranty_url', payload['policies'])
+
+    def test_it_exposes_NO_operational_configuration(self):
+        body = self.client.get(_m5_config_url('m5-cfg-a')).content.decode()
+
+        for internal in (
+            'order_notification_email', 'stripe', 'secret', 'capabilit', 'membership',
+        ):
+            self.assertNotIn(internal, body.lower())
+
+    def test_an_unknown_company_is_404(self):
+        self.assertEqual(self.client.get(_m5_config_url('no-existe')).status_code, 404)
+
+    def test_an_inactive_company_is_404(self):
+        self.a.is_active = False
+        self.a.save(update_fields=['is_active'])
+
+        self.assertEqual(self.client.get(_m5_config_url('m5-cfg-a')).status_code, 404)
+
+    def test_unknown_and_inactive_are_INDISTINGUISHABLE(self):
+        self.b.is_active = False
+        self.b.save(update_fields=['is_active'])
+
+        unknown = self.client.get(_m5_config_url('no-existe'))
+        inactive = self.client.get(_m5_config_url('m5-cfg-b'))
+
+        self.assertEqual(unknown.status_code, inactive.status_code)
+        self.assertEqual(unknown.json(), inactive.json())
+
+    def test_a_query_parameter_cannot_change_the_tenant(self):
+        payload = self.client.get(f"{_m5_config_url('m5-cfg-a')}?company=m5-cfg-b").json()
+
+        self.assertEqual(payload['company']['slug'], 'm5-cfg-a')
+
+    def test_the_HOST_cannot_change_the_tenant(self):
+        with override_settings(ALLOWED_HOSTS=['*'], DEFAULT_STOREFRONT_COMPANY_SLUG='m5-cfg-b'):
+            payload = self.client.get(
+                _m5_config_url('m5-cfg-a'), HTTP_HOST='m5-cfg-b.example.com',
+            ).json()
+
+        self.assertEqual(payload['company']['slug'], 'm5-cfg-a')
+
+    def test_a_tenant_header_cannot_change_the_tenant(self):
+        payload = self.client.get(
+            _m5_config_url('m5-cfg-a'), HTTP_X_COMPANY_SLUG='m5-cfg-b',
+        ).json()
+
+        self.assertEqual(payload['company']['slug'], 'm5-cfg-a')
+
+
+class M5CheckoutBase(TestCase):
+    """Shared fixture: one company, one branch with stock, one signed-in client."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Tienda M5', 'm5-shop', tax_id='20781000001')
+        self.branch = self.company.branches.first() or _saas_branch(self.company)
+        self.company.default_inventory_branch = self.branch
+        self.company.save(update_fields=['default_inventory_branch'])
+
+        self.product = _prod(self.company, 'iPhone 15', 'iphone-15-m5', price='4000.00')
+        _m5_stock(self.product, self.branch, 10)
+
+        self.user = User.objects.create_user(
+            username='compradora', email='compradora@example.com', password='Pass123!',
+        )
+        _v1_customer(self.company, self.user)
+
+        self.client = APIClient()
+        payload = self.client.post(
+            '/api/v1/auth/login/',
+            {'email': 'compradora@example.com', 'password': 'Pass123!'},
+            format='json',
+        ).json()
+        self.access = payload['access']
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.access}')
+
+    def body(self, **overrides):
+        body = {
+            'items': [{'product_slug': 'iphone-15-m5', 'quantity': 1}],
+            'customer_name': 'Ana Torres',
+            'customer_phone': '987654321',
+            'document_type': 'dni',
+            'document_number': '12345678',
+            'delivery_method': 'pickup_store',
+            'receipt_type': 'boleta',
+            'accepted_terms': True,
+            'accepted_warranty_policy': True,
+            'idempotency_key': 'req-0000000001',
+        }
+        body.update(overrides)
+        return body
+
+
+class M5CheckoutAuthTest(M5CheckoutBase):
+    """Only a v1 Bearer token, held by a client of this company, opens this."""
+
+    def test_anonymous_is_401(self):
+        self.assertEqual(
+            APIClient().post(_m5_checkout_url('m5-shop'), self.body(), format='json').status_code,
+            401,
+        )
+
+    def test_a_WEB_session_cookie_does_not_open_it(self):
+        web = APIClient()
+        web.post(
+            '/api/auth/login/', {'username': 'compradora', 'password': 'Pass123!'},
+            format='json',
+        )
+
+        self.assertEqual(
+            web.post(_m5_checkout_url('m5-shop'), self.body(), format='json').status_code, 401,
+        )
+
+    def test_a_malformed_bearer_token_is_401(self):
+        bad = APIClient()
+        bad.credentials(HTTP_AUTHORIZATION='Bearer basura')
+
+        self.assertEqual(
+            bad.post(_m5_checkout_url('m5-shop'), self.body(), format='json').status_code, 401,
+        )
+
+    @patch('stripe.checkout.Session.create')
+    def test_a_customer_of_ANOTHER_company_cannot_check_out_here(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+        other = _saas_company('Otra', 'm5-otra', tax_id='20781000002')
+        stranger = User.objects.create_user(
+            username='ajena', email='ajena@example.com', password='Pass123!',
+        )
+        _v1_customer(other, stranger)
+        client = APIClient()
+        token = client.post(
+            '/api/v1/auth/login/', {'email': 'ajena@example.com', 'password': 'Pass123!'},
+            format='json',
+        ).json()['access']
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+
+        response = client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    @patch('stripe.checkout.Session.create')
+    def test_an_EMPLOYEE_who_is_not_a_client_cannot_check_out(self, mock_create):
+        # Signing in as staff is not a customer relation. A point of sale is a
+        # different surface with a different permission.
+        mock_create.return_value = _m5_stripe_session()
+        staff = User.objects.create_user(
+            username='vendedor', email='vendedor@example.com', password='Pass123!',
+        )
+        Membership.objects.create(user=staff, company=self.company, role='sales')
+        client = APIClient()
+        token = client.post(
+            '/api/v1/auth/login/', {'email': 'vendedor@example.com', 'password': 'Pass123!'},
+            format='json',
+        ).json()['access']
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+
+        self.assertEqual(
+            client.post(_m5_checkout_url('m5-shop'), self.body(), format='json').status_code, 404,
+        )
+
+    @patch('stripe.checkout.Session.create')
+    def test_an_employee_who_IS_also_a_client_may_buy_as_a_client(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+        staff = User.objects.create_user(
+            username='empleada', email='empleada@example.com', password='Pass123!',
+        )
+        Membership.objects.create(user=staff, company=self.company, role='sales')
+        _v1_customer(self.company, staff)
+        client = APIClient()
+        token = client.post(
+            '/api/v1/auth/login/', {'email': 'empleada@example.com', 'password': 'Pass123!'},
+            format='json',
+        ).json()['access']
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+
+        response = client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Order.objects.get(pk=response.json()['order_id']).user, staff)
+
+
+class M5CheckoutCommercialAuthorityTest(M5CheckoutBase):
+    """The client proposes items. The server decides everything about money."""
+
+    @patch('stripe.checkout.Session.create')
+    def test_it_creates_a_pending_order_priced_by_the_SERVER(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(items=[
+                {'product_slug': 'iphone-15-m5', 'quantity': 2},
+            ]), format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual(order.total, Decimal('8000.00'))
+        self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
+
+    def test_it_REFUSES_a_client_sent_price(self):
+        # Rejected loudly rather than dropped: a client sending a price believes
+        # it sets prices, and silence would let it keep believing that.
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(total='1.00'), format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('total', response.json())
+
+    def test_it_refuses_every_server_owned_field(self):
+        for field, value in [
+            ('price', '1.00'), ('subtotal', '1.00'), ('discount_amount', '999.00'),
+            ('company_id', 99), ('branch_id', 99), ('status', 'paid'),
+            ('paid', True), ('user_id', 1), ('stripe_session_id', 'cs_fake'),
+            ('session_key', 'abc'),
+        ]:
+            response = self.client.post(
+                _m5_checkout_url('m5-shop'), self.body(**{field: value}), format='json',
+            )
+            self.assertEqual(response.status_code, 400, field)
+
+    @patch('stripe.checkout.Session.create')
+    def test_the_price_comes_from_the_product_even_if_it_changed(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+        self.product.price = Decimal('4500.00')
+        self.product.save(update_fields=['price'])
+
+        response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(Order.objects.get(pk=response.json()['order_id']).total,
+                         Decimal('4500.00'))
+
+    def test_insufficient_stock_is_refused(self):
+        _m5_stock(self.product, self.branch, 1)
+
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(items=[{'product_slug': 'iphone-15-m5', 'quantity': 5}]),
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_an_inactive_product_is_refused(self):
+        self.product.is_active = False
+        self.product.save(update_fields=['is_active'])
+
+        response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_product_of_ANOTHER_company_does_not_resolve(self):
+        # Scoped to the company first, so a foreign slug matches nothing rather
+        # than matching and then being filtered.
+        other = _saas_company('Otra', 'm5-otra-2', tax_id='20781000003')
+        _prod(other, 'Ajeno', 'producto-ajeno-m5')
+
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(items=[{'product_slug': 'producto-ajeno-m5', 'quantity': 1}]),
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+
+    @patch('stripe.checkout.Session.create')
+    def test_a_coupon_of_another_company_is_refused(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+        other = _saas_company('Otra', 'm5-otra-3', tax_id='20781000004')
+        Coupon.objects.create(company=other, code='AJENO50', discount_percent=50)
+
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(coupon_code='AJENO50'), format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch('stripe.checkout.Session.create')
+    def test_a_coupon_of_THIS_company_is_applied_by_the_server(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+        Coupon.objects.create(company=self.company, code='M5DIEZ', discount_percent=10)
+
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(coupon_code='M5DIEZ'), format='json',
+        )
+
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual(order.discount_amount, Decimal('400.00'))
+        self.assertEqual(order.total, Decimal('3600.00'))
+
+    @patch('stripe.checkout.Session.create')
+    def test_the_same_slug_twice_becomes_ONE_line(self, mock_create):
+        # Summing is what the shopper meant; taking the last would drop the first.
+        mock_create.return_value = _m5_stripe_session()
+
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(items=[
+                {'product_slug': 'iphone-15-m5', 'quantity': 1},
+                {'product_slug': 'iphone-15-m5', 'quantity': 2},
+            ]),
+            format='json',
+        )
+
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual(order.items.count(), 1)
+        self.assertEqual(order.items.first().quantity, 3)
+
+    @patch('stripe.checkout.Session.create')
+    def test_it_stamps_the_fulfillment_branch_and_company_snapshot(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+
+        response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual(order.fulfillment_branch, self.branch)
+        self.assertTrue(order.company_snapshot)
+
+
+class M5CheckoutOwnershipTest(M5CheckoutBase):
+    """The order must belong to the person who bought it."""
+
+    @patch('stripe.checkout.Session.create')
+    def test_order_user_is_the_authenticated_user(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+
+        response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(Order.objects.get(pk=response.json()['order_id']).user, self.user)
+
+    @patch('stripe.checkout.Session.create')
+    def test_the_new_order_APPEARS_in_customer_orders(self, mock_create):
+        # The end-to-end claim of this phase: buy in the app, see it in "mis
+        # pedidos" without any further wiring.
+        mock_create.return_value = _m5_stripe_session()
+        created = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(), format='json',
+        ).json()['order_id']
+
+        rows = self.client.get('/api/v1/customer/m5-shop/orders/').json()
+
+        self.assertIn(created, [row['id'] for row in rows])
+
+    @patch('stripe.checkout.Session.create')
+    def test_it_links_the_CRM_record(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+
+        response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertIsNotNone(order.customer)
+        self.assertEqual(order.customer.user, self.user)
+
+    @patch('stripe.checkout.Session.create')
+    def test_a_contact_email_does_NOT_change_ownership(self, mock_create):
+        # A buyer may want the receipt elsewhere. That is contact information,
+        # never a claim about whose order it is.
+        mock_create.return_value = _m5_stripe_session()
+
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(contact_email='otra.persona@example.com'),
+            format='json',
+        )
+
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual(order.user, self.user)
+        self.assertEqual(order.customer_email, 'otra.persona@example.com')
+
+    @patch('stripe.checkout.Session.create')
+    def test_another_customer_cannot_read_the_resulting_order(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+        created = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(), format='json',
+        ).json()['order_id']
+
+        intruder = User.objects.create_user(
+            username='curiosa', email='curiosa@example.com', password='Pass123!',
+        )
+        _v1_customer(self.company, intruder)
+        client = APIClient()
+        token = client.post(
+            '/api/v1/auth/login/', {'email': 'curiosa@example.com', 'password': 'Pass123!'},
+            format='json',
+        ).json()['access']
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+
+        self.assertEqual(
+            client.get(f'/api/v1/customer/m5-shop/orders/{created}/').status_code, 404,
+        )
+
+
+class M5CheckoutIdempotencyTest(M5CheckoutBase):
+    """A retry must not cost anyone twice."""
+
+    @patch('stripe.checkout.Session.retrieve')
+    @patch('stripe.checkout.Session.create')
+    def test_the_same_key_and_basket_yields_ONE_order(self, mock_create, mock_retrieve):
+        mock_create.return_value = _m5_stripe_session()
+        mock_retrieve.return_value = _m5_stripe_session()
+
+        first = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+        second = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()['order_id'], second.json()['order_id'])
+        self.assertEqual(Order.objects.count(), 1)
+
+    @patch('stripe.checkout.Session.retrieve')
+    @patch('stripe.checkout.Session.create')
+    def test_stripe_is_asked_to_CREATE_only_once(self, mock_create, mock_retrieve):
+        mock_create.return_value = _m5_stripe_session()
+        mock_retrieve.return_value = _m5_stripe_session()
+
+        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(mock_create.call_count, 1)
+
+    @patch('stripe.checkout.Session.create')
+    def test_stripe_receives_its_OWN_idempotency_key(self, mock_create):
+        # A second layer, for the case where the order was created, Stripe
+        # accepted the call, and the response never arrived.
+        mock_create.return_value = _m5_stripe_session()
+
+        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertIn('idempotency_key', mock_create.call_args.kwargs)
+
+    @patch('stripe.checkout.Session.create')
+    def test_the_same_key_with_a_DIFFERENT_basket_is_409(self, mock_create):
+        # Returning the first order would tell the client its new basket was
+        # accepted when it was not.
+        mock_create.return_value = _m5_stripe_session()
+        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        conflict = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(items=[{'product_slug': 'iphone-15-m5', 'quantity': 3}]),
+            format='json',
+        )
+
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(Order.objects.count(), 1)
+
+    @patch('stripe.checkout.Session.retrieve')
+    @patch('stripe.checkout.Session.create')
+    def test_a_DIFFERENT_key_creates_a_second_order(self, mock_create, mock_retrieve):
+        # Distinct session ids per call: `Order.stripe_session_id` is unique, as
+        # it should be, and real Stripe never returns the same id twice.
+        mock_create.side_effect = [_m5_stripe_session('cs_a'), _m5_stripe_session('cs_b')]
+        mock_retrieve.return_value = _m5_stripe_session()
+
+        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+        self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(idempotency_key='req-0000000002'),
+            format='json',
+        )
+
+        self.assertEqual(Order.objects.count(), 2)
+
+    @patch('stripe.checkout.Session.create')
+    def test_two_users_may_use_the_SAME_key(self, mock_create):
+        # The constraint is scoped to company AND user. A global one would make
+        # one customer's checkout fail because of another's.
+        mock_create.side_effect = [_m5_stripe_session('cs_u1'), _m5_stripe_session('cs_u2')]
+        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        other = User.objects.create_user(
+            username='otra', email='otra@example.com', password='Pass123!',
+        )
+        _v1_customer(self.company, other)
+        client = APIClient()
+        token = client.post(
+            '/api/v1/auth/login/', {'email': 'otra@example.com', 'password': 'Pass123!'},
+            format='json',
+        ).json()['access']
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+
+        response = client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Order.objects.count(), 2)
+
+    def test_the_idempotency_key_is_REQUIRED(self):
+        body = self.body()
+        del body['idempotency_key']
+
+        response = self.client.post(_m5_checkout_url('m5-shop'), body, format='json')
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch('stripe.checkout.Session.retrieve')
+    @patch('stripe.checkout.Session.create')
+    def test_a_replay_never_echoes_a_stripe_identifier(self, mock_create, mock_retrieve):
+        mock_create.return_value = _m5_stripe_session()
+        mock_retrieve.return_value = _m5_stripe_session()
+        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        replay = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertNotIn('cs_test_m5', str(replay.json().get('order_id')))
+        self.assertEqual(set(replay.json()), {'order_id', 'checkout_url'})
+
+
+class M5CheckoutDoesNotConsumeTest(M5CheckoutBase):
+    """Nothing is spent before Stripe confirms."""
+
+    @patch('stripe.checkout.Session.create')
+    def test_stock_is_NOT_decremented_at_checkout(self, mock_create):
+        # An order that never gets paid must not cost the shop its inventory.
+        mock_create.return_value = _m5_stripe_session()
+
+        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(
+            _M5BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 10,
+        )
+
+    @patch('stripe.checkout.Session.create')
+    def test_the_order_is_not_marked_paid(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+
+        response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertFalse(order.paid)
+        self.assertIsNone(order.paid_at)
+
+    @patch('stripe.checkout.Session.create')
+    def test_a_stripe_failure_marks_the_order_failed_and_answers_502(self, mock_create):
+        mock_create.side_effect = stripe_lib.StripeError('boom')
+
+        response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(Order.objects.first().status, Order.Status.FAILED)
+
+    @patch('stripe.checkout.Session.create')
+    def test_a_stripe_failure_does_not_leak_the_provider_message(self, mock_create):
+        mock_create.side_effect = stripe_lib.StripeError('api key rotated: sk_live_xxx')
+
+        response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        self.assertNotIn('sk_live', response.content.decode())
+
+
+class M5CheckoutValidationTest(M5CheckoutBase):
+    """The form rules, matched to the web where the business is the same."""
+
+    def test_terms_must_be_accepted(self):
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(accepted_terms=False), format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_warranty_policy_must_be_accepted(self):
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(accepted_warranty_policy=False), format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_delivery_needs_an_address(self):
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(delivery_method='delivery_arequipa'), format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('address_line', response.json())
+
+    @patch('stripe.checkout.Session.create')
+    def test_a_delivery_WITH_an_address_is_accepted(self, mock_create):
+        mock_create.return_value = _m5_stripe_session()
+
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(
+                delivery_method='delivery_arequipa',
+                address_line='Calle 1', city='Arequipa', district='Cercado',
+            ),
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+    def test_a_factura_requires_a_RUC(self):
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(receipt_type='factura', document_type='dni'), format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_dni_must_have_eight_digits(self):
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(document_number='123'), format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_invalid_phone_is_refused_exactly_as_on_the_web(self):
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(customer_phone='12'), format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_empty_basket_is_refused(self):
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(items=[]), format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_zero_quantity_is_refused(self):
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(items=[{'product_slug': 'iphone-15-m5', 'quantity': 0}]),
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_negative_quantity_is_refused(self):
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'),
+            self.body(items=[{'product_slug': 'iphone-15-m5', 'quantity': -3}]),
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+class M5WebCheckoutRegressionTest(TestCase):
+    """The browser checkout must behave exactly as it did before the extraction."""
+
+    def test_it_is_still_AllowAny(self):
+        # Guest orders are the storefront's normal case. The native rule does
+        # not apply here and must not be imported by accident.
+        from .views import CreateCheckoutSessionView
+
+        self.assertEqual(
+            [p.__name__ for p in CreateCheckoutSessionView.permission_classes], ['AllowAny'],
+        )
+
+    def test_the_native_checkout_requires_authentication(self):
+        from .v1_checkout_views import V1CustomerCheckoutView
+
+        self.assertEqual(
+            [p.__name__ for p in V1CustomerCheckoutView.permission_classes], ['IsAuthenticated'],
+        )
+
+    def test_the_two_surfaces_share_the_pricing_code(self):
+        # If these ever diverge, a customer is charged one price by the web and
+        # another by the app.
+        import inspect
+
+        from . import checkout_services
+        from .views import CreateCheckoutSessionView
+
+        source = inspect.getsource(CreateCheckoutSessionView)
+        self.assertIn('checkout.price_checkout', source)
+        self.assertIn('checkout.validate_lines_and_subtotal', source)
+        self.assertTrue(hasattr(checkout_services, 'create_pending_order'))
+
+    def test_the_native_surface_does_not_accept_a_session_key(self):
+        from .v1_checkout_serializers import V1CheckoutSerializer
+
+        self.assertNotIn('session_key', V1CheckoutSerializer().fields)
+
+
+class M5OrderIdempotencyModelTest(TestCase):
+    """The constraint that actually holds under a race."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Modelo', 'm5-modelo', tax_id='20782000001')
+        self.user = User.objects.create_user(
+            username='modelo', email='modelo@example.com', password='Pass123!',
+        )
+
+    def test_two_orders_cannot_share_a_key_for_one_customer(self):
+        _order(self.company, user=self.user, idempotency_key='dup-key-1')
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _order(self.company, user=self.user, idempotency_key='dup-key-1')
+
+    def test_the_constraint_does_NOT_bind_orders_without_a_key(self):
+        # Every browser order has a null key. A non-partial constraint would let
+        # exactly one guest order exist per company, which is absurd.
+        _order(self.company, user=None)
+        _order(self.company, user=None)
+
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 2)
+
+    def test_two_customers_may_use_the_same_key(self):
+        other = User.objects.create_user(
+            username='modelo2', email='modelo2@example.com', password='Pass123!',
+        )
+        _order(self.company, user=self.user, idempotency_key='shared-key')
+        _order(self.company, user=other, idempotency_key='shared-key')
+
+        self.assertEqual(Order.objects.filter(idempotency_key='shared-key').count(), 2)
+
+
+# =============================================================================
+# C1.4 — hardening of what C1.3 left soft
+# =============================================================================
+#
+# Three defects, all of the same shape: a value arrives from a request, is
+# assigned straight onto a model field, and Django agrees until the database
+# does not. The window on a promotion is not decoration — it decides whether a
+# discount fires at a till — so getting it wrong is a wrong price on a real
+# receipt, not a cosmetic 500.
+
+
+class C14PromotionDateTimeTest(TestCase):
+    """§6, §7 — request dates are parsed, never assigned raw."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-dates', 'Empresa Fechas')
+        self.p1 = _c1_product(self.company, 'Fechas Uno', '100.00')
+        self.p2 = _c1_product(self.company, 'Fechas Dos', '50.00')
+        self.admin, _ = _p2d_member(
+            self.company, 'c14_dates_admin',
+            ['company.view', _C13_PROMO_VIEW, _C13_PROMO_MANAGE],
+        )
+        self.client_ = APIClient()
+        self.client_.force_authenticate(user=self.admin)
+
+    def _body(self, **kw):
+        body = {
+            'name': 'Combo Fechas',
+            'promotion_type': 'bundle_fixed_price',
+            'fixed_price': '120.00',
+            'items': [
+                {'product': self.p1.pk, 'quantity': 1},
+                {'product': self.p2.pk, 'quantity': 1},
+            ],
+        }
+        body.update(kw)
+        return body
+
+    def _create(self, **kw):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/', self._body(**kw), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        return Promotion.objects.get(pk=res.data['id'])
+
+    # --- the defect itself ------------------------------------------------
+
+    def test_an_unparseable_start_is_a_400_not_a_500(self):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/',
+            self._body(starts_at='mañana por la tarde'), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('starts_at', res.data)
+        self.assertFalse(Promotion.objects.filter(company=self.company).exists())
+
+    def test_an_unparseable_end_is_a_400_not_a_500(self):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/',
+            self._body(ends_at='31/02/2026'), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('ends_at', res.data)
+
+    def test_a_number_is_not_a_date(self):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/', self._body(starts_at=20260301),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # --- what must keep working -------------------------------------------
+
+    def test_a_naive_local_datetime_is_stored_aware(self):
+        """
+        The obvious HTML control — `<input type="datetime-local">` — sends no
+        timezone. Rejecting it would make the natural widget unusable, so a
+        naive value is read as local time (America/Lima) rather than refused or,
+        worse, stored naive and interpreted as UTC five hours away.
+        """
+        promotion = self._create(starts_at='2026-03-01T20:00')
+        self.assertTrue(timezone.is_aware(promotion.starts_at))
+        local = timezone.localtime(promotion.starts_at)
+        self.assertEqual((local.hour, local.minute), (20, 0))
+
+    def test_an_explicit_offset_is_respected(self):
+        promotion = self._create(starts_at='2026-03-01T20:00:00+00:00')
+        self.assertEqual(promotion.starts_at.utcoffset().total_seconds(), 0)
+
+    def test_a_bare_date_becomes_local_midnight(self):
+        promotion = self._create(starts_at='2026-03-01')
+        local = timezone.localtime(promotion.starts_at)
+        self.assertEqual((local.hour, local.minute), (0, 0))
+
+    def test_an_empty_string_clears_the_bound(self):
+        """An absent bound is a real answer: 'no start' means 'already running'."""
+        promotion = self._create(starts_at='2026-03-01T20:00')
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'starts_at': ''}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        promotion.refresh_from_db()
+        self.assertIsNone(promotion.starts_at)
+
+    # --- ordering, including the PATCH case that is easy to get wrong -----
+
+    def test_a_window_that_closes_before_it_opens_is_refused(self):
+        res = self.client_.post(
+            '/api/admin/sales/promotions/',
+            self._body(starts_at='2026-03-10T00:00', ends_at='2026-03-01T00:00'),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('ends_at', res.data)
+
+    def test_patching_only_the_end_is_checked_against_the_stored_start(self):
+        """
+        The case a naive implementation misses. Send only `ends_at` and there is
+        no `starts_at` in the request to compare against — so the comparison has
+        to use the bound ALREADY STORED. Without that, this PATCH would be
+        accepted and leave a window that can never be open: a promotion that
+        silently never fires and never says why.
+        """
+        promotion = self._create(starts_at='2026-03-10T00:00')
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'ends_at': '2026-03-01T00:00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        promotion.refresh_from_db()
+        self.assertIsNone(promotion.ends_at)
+
+    def test_patching_only_the_start_is_checked_against_the_stored_end(self):
+        promotion = self._create(ends_at='2026-03-01T00:00')
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'starts_at': '2026-03-10T00:00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patching_both_at_once_is_accepted_when_ordered(self):
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'starts_at': '2026-03-01T00:00', 'ends_at': '2026-03-10T00:00'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        promotion.refresh_from_db()
+        self.assertLess(promotion.starts_at, promotion.ends_at)
+
+    def test_archiving_sends_only_is_active_and_that_must_work(self):
+        """
+        The regression that mattered. The promotions screen archives with
+        `PATCH {is_active: false}` and nothing else. The write path used to read
+        an absent key as "set this to None", so the combo's price was blanked
+        and `Promotion.clean()` rejected the request: the archive button
+        returned 400 every time it was pressed.
+
+        C1.3's only PATCH-with-is_active test aimed at ANOTHER company's
+        promotion and asserted 404 — it passed on the tenant check and never
+        reached this code.
+        """
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        promotion.refresh_from_db()
+        self.assertFalse(promotion.is_active)
+        self.assertEqual(promotion.fixed_price, Decimal('120.00'))
+
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'is_active': True}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        promotion.refresh_from_db()
+        self.assertTrue(promotion.is_active)
+
+    def test_patching_only_the_priority_leaves_the_price_alone(self):
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'priority': 7}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        promotion.refresh_from_db()
+        self.assertEqual(promotion.priority, 7)
+        self.assertEqual(promotion.fixed_price, Decimal('120.00'))
+        self.assertEqual(promotion.items.count(), 2)
+
+    def test_switching_type_without_the_new_field_is_refused(self):
+        """
+        Partial does not mean permissive. Changing a fixed-price combo into a
+        percentage one without saying what percentage leaves the promotion
+        undefined, so it is a 400 — not a silent 0%.
+        """
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'promotion_type': 'bundle_percent'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        promotion.refresh_from_db()
+        self.assertEqual(promotion.promotion_type, 'bundle_fixed_price')
+        self.assertEqual(promotion.fixed_price, Decimal('120.00'))
+
+    def test_a_bad_date_does_not_half_apply_the_rest_of_the_patch(self):
+        """The 400 happens before the transaction, so nothing else moved."""
+        promotion = self._create()
+        res = self.client_.patch(
+            f'/api/admin/sales/promotions/{promotion.pk}/',
+            {'name': 'Renombrado', 'starts_at': 'no es fecha'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        promotion.refresh_from_db()
+        self.assertEqual(promotion.name, 'Combo Fechas')
+
+    # --- coupons, same discipline ----------------------------------------
+
+    def test_a_coupon_with_an_unparseable_expiry_is_a_400(self):
+        res = self.client_.post(
+            '/api/admin/sales/coupons/',
+            {'code': 'BAD', 'discount_percent': 10, 'expires_at': 'el viernes'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('expires_at', res.data)
+        self.assertFalse(Coupon.objects.filter(company=self.company).exists())
+
+    def test_a_coupon_expiry_is_stored_aware(self):
+        res = self.client_.post(
+            '/api/admin/sales/coupons/',
+            {'code': 'OK10', 'discount_percent': 10, 'expires_at': '2026-12-31T23:59'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        coupon = Coupon.objects.get(company=self.company, code='OK10')
+        self.assertTrue(timezone.is_aware(coupon.expires_at))
+
+    def test_patching_a_coupon_expiry_with_rubbish_is_a_400(self):
+        self.client_.post(
+            '/api/admin/sales/coupons/',
+            {'code': 'PAT10', 'discount_percent': 10}, format='json',
+        )
+        coupon = Coupon.objects.get(company=self.company, code='PAT10')
+        res = self.client_.patch(
+            f'/api/admin/sales/coupons/{coupon.pk}/',
+            {'expires_at': '????'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        coupon.refresh_from_db()
+        self.assertIsNone(coupon.expires_at)
+
+
+class C14PromotionTenantInvariantTest(TestCase):
+    """§8, §9 — defence in depth under the API's own validation."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c14-inv-a', 'Invariante A')
+        self.b = _p3_company('c14-inv-b', 'Invariante B')
+        self.branch_a = _p2d_branch(self.a, 'Sucursal A')
+        self.branch_b = _p2d_branch(self.b, 'Sucursal B')
+        self.pa1 = _c1_product(self.a, 'Inv A Uno', '100.00')
+        self.pa2 = _c1_product(self.a, 'Inv A Dos', '50.00')
+        self.pb1 = _c1_product(self.b, 'Inv B Uno', '100.00')
+        self.promotion = Promotion.objects.create(
+            company=self.a, name='Combo Invariante',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE,
+            fixed_price=Decimal('120.00'),
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+
+    # --- ORM level --------------------------------------------------------
+
+    def test_a_foreign_branch_cannot_be_attached_to_a_promotion(self):
+        with self.assertRaises(DjangoValidationError):
+            PromotionBranch.objects.create(
+                promotion=self.promotion, branch=self.branch_b,
+            )
+
+    def test_the_own_branch_still_attaches(self):
+        row = PromotionBranch.objects.create(
+            promotion=self.promotion, branch=self.branch_a,
+        )
+        self.assertEqual(row.branch.company_id, self.promotion.company_id)
+
+    def test_the_bulk_path_refuses_a_foreign_branch(self):
+        """
+        `bulk_create()` never calls `save()`, so `clean()` never runs — which is
+        exactly why a set-level check has to exist for the code that writes
+        these rows in bulk, and that is all of it.
+        """
+        rows = [
+            PromotionBranch(promotion=self.promotion, branch=self.branch_a),
+            PromotionBranch(promotion=self.promotion, branch=self.branch_b),
+        ]
+        with self.assertRaises(DjangoValidationError):
+            PromotionBranch.assert_all_match_promotion(rows)
+
+    def test_the_bulk_path_accepts_a_clean_set(self):
+        PromotionBranch.assert_all_match_promotion(
+            [PromotionBranch(promotion=self.promotion, branch=self.branch_a)]
+        )
+
+    def test_a_foreign_product_cannot_be_a_component(self):
+        with self.assertRaises(DjangoValidationError):
+            PromotionItem.objects.create(
+                promotion=self.promotion, product=self.pb1, quantity=1,
+            )
+
+    def test_the_bulk_item_path_refuses_a_foreign_product(self):
+        rows = [
+            PromotionItem(promotion=self.promotion, product=self.pa1, quantity=1),
+            PromotionItem(promotion=self.promotion, product=self.pb1, quantity=1),
+        ]
+        with self.assertRaises(DjangoValidationError):
+            PromotionItem.assert_all_match_promotion(rows)
+
+    def test_an_applied_promotion_cannot_carry_a_foreign_order(self):
+        """
+        `AppliedPromotion.company` is denormalised so the reporting index can
+        slice by tenant without joining `Order`. Denormalisation is precisely
+        what makes this check necessary: the column can now disagree with the
+        row it was copied from, and a wrong value files one tenant's discount
+        under another tenant's promotion report.
+        """
+        foreign_order = _order(self.b)
+        with self.assertRaises(DjangoValidationError):
+            AppliedPromotion.objects.create(
+                company=self.a, order=foreign_order, promotion=self.promotion,
+                promotion_name_snapshot='Combo Invariante',
+                promotion_type_snapshot=Promotion.BUNDLE_FIXED_PRICE,
+                applications=1,
+                regular_amount=Decimal('150.00'),
+                discount_amount=Decimal('30.00'),
+            )
+
+    def test_an_applied_promotion_cannot_carry_a_foreign_promotion(self):
+        own_order = _order(self.a)
+        foreign_promotion = Promotion.objects.create(
+            company=self.b, name='Combo Ajeno',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE,
+            fixed_price=Decimal('90.00'),
+        )
+        with self.assertRaises(DjangoValidationError):
+            AppliedPromotion.objects.create(
+                company=self.a, order=own_order, promotion=foreign_promotion,
+                promotion_name_snapshot='Combo Ajeno',
+                promotion_type_snapshot=Promotion.BUNDLE_FIXED_PRICE,
+                applications=1,
+                regular_amount=Decimal('150.00'),
+                discount_amount=Decimal('30.00'),
+            )
+
+    def test_the_bulk_snapshot_path_refuses_a_mismatched_set(self):
+        foreign_order = _order(self.b)
+        rows = [AppliedPromotion(
+            company_id=self.a.pk, order=foreign_order, promotion=self.promotion,
+            promotion_name_snapshot='X', promotion_type_snapshot='bundle_fixed_price',
+            applications=1, regular_amount=Decimal('1.00'),
+            discount_amount=Decimal('0.50'),
+        )]
+        with self.assertRaises(DjangoValidationError):
+            AppliedPromotion.assert_all_match_company(rows)
+
+    # --- API level, which validated first ---------------------------------
+
+    def test_the_api_refuses_a_foreign_branch_before_the_model_has_to(self):
+        admin, _ = _p2d_member(
+            self.a, 'c14_inv_admin',
+            ['company.view', _C13_PROMO_VIEW, _C13_PROMO_MANAGE],
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        res = client.post('/api/admin/sales/promotions/', {
+            'name': 'Combo Cruzado',
+            'promotion_type': 'bundle_fixed_price',
+            'fixed_price': '120.00',
+            'items': [
+                {'product': self.pa1.pk, 'quantity': 1},
+                {'product': self.pa2.pk, 'quantity': 1},
+            ],
+            'branch_scope': 'selected',
+            'branches': [self.branch_b.pk],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('branches', res.data)
+        self.assertFalse(
+            PromotionBranch.objects.filter(branch=self.branch_b).exists()
+        )

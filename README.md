@@ -317,6 +317,35 @@ endpoint interno las vuelve a validar en el servidor.
 
 Detalle en `docs/saas-multiempresa.md` § 8-undevicies.
 
+### API v1 — checkout autenticado y config pública
+
+| Método | Endpoint | Auth | Notas |
+|--------|----------|------|-------|
+| GET | `/api/v1/storefront/<slug>/config/` | pública | Marca, contacto y políticas. **BR-006** |
+| POST | `/api/v1/customer/<slug>/checkout/` | **Bearer v1** | Crea pedido + sesión de Stripe. Idempotente |
+
+**El checkout web no cambia.** `/api/payments/create-checkout-session/` sigue
+siendo `AllowAny` y sigue aceptando pedidos de invitados: esta tienda los toma
+desde antes de que existieran las cuentas.
+
+Lo que ambas superficies comparten es **`checkout_services.py`**: precios, stock,
+cupón, sucursal de despacho y creación del `Order`. Dos copias derivarían, y la
+deriva sería un cliente al que la web cobra un precio y la app otro.
+
+**El cliente no fija precios.** El serializer v1 **rechaza** `price`, `total`,
+`discount_amount`, `stock`, `company_id`, `branch_id`, `status`, `paid` y
+`session_key` — no los ignora. Cada línea se resuelve por slug dentro de la
+empresa.
+
+**Idempotencia** en tres capas: búsqueda previa, `UniqueConstraint(company, user,
+idempotency_key)` parcial en la base de datos, y la clave de idempotencia de
+Stripe. Misma clave con distinto contenido → **409**.
+
+**Nada se consume antes de pagar**: ni carrito ni stock. Eso sigue ocurriendo en
+el webhook.
+
+Detalle en `docs/saas-multiempresa.md` § 8-vicies.
+
 ### Reglas de contraseña (registro)
 
 - Mínimo 8 caracteres (Django `MinimumLengthValidator`)

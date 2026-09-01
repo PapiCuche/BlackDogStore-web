@@ -2981,6 +2981,105 @@ lo que la empresa está regalando es información de gestión.
 
 ---
 
+## 8-vicies. Checkout nativo autenticado y configuración pública por slug
+
+**Estado: IMPLEMENTADO.** Migración **0034**. Aditiva.
+
+### Dos transportes, un solo conjunto de reglas comerciales — DEC-API-002
+
+| Superficie | Quién | Carrito | Tenant |
+|---|---|---|---|
+| `POST /api/payments/create-checkout-session/` | **anónimo** | de sesión, en servidor | Host |
+| `POST /api/v1/customer/<slug>/checkout/` | **Bearer v1** | intenciones en el cuerpo | ruta |
+
+Lo que difiere es cómo se identifica una petición y de dónde salen sus ítems. Lo
+que **no** puede diferir es cuánto cuesta algo, si hay stock, qué sucursal
+despacha, cuánto vale el cupón y qué aspecto tiene el `Order` después.
+
+Por eso el razonamiento comercial se extrajo a **`checkout_services.py`** y
+ambas superficies lo llaman. Dos copias derivarían, y la deriva sería un cliente
+al que la web cobra un precio y la app otro.
+
+`CreateCheckoutSessionView` **sigue siendo `AllowAny`**. Esta tienda acepta
+pedidos de invitados desde antes de que existieran las cuentas; exigir login ahí
+echaría a todo comprador que no quiera una. La regla del móvil es distinta
+porque una app ya sabe quién la sostiene y el pedido necesita dueño para
+aparecer en «mis pedidos».
+
+### El cliente no es autoridad comercial
+
+`V1CheckoutSerializer` **rechaza** —no ignora— `price`, `subtotal`, `total`,
+`discount_amount`, `stock`, `company_id`, `branch_id`, `status`, `paid`,
+`user_id`, `stripe_session_id` y `session_key`. Un cliente que manda un precio
+cree que fija precios; el silencio le dejaría seguir creyéndolo hasta el día en
+que los importes no cuadraran.
+
+Cada línea se resuelve **por slug dentro de la empresa**. Un id es un entero
+pequeño que existe en todos los tenants, así que uno filtrado es una conjetura
+plausible en otro; un slug resuelto dentro de la empresa del llamante existe
+ahí o no existe.
+
+### Idempotencia durable — DEC-API-003
+
+Un doble toque, un reintento o una respuesta que nunca llegó no pueden crear dos
+pedidos ni dos sesiones de pago. Tres capas, y cada una cubre lo que las otras
+no:
+
+1. **Búsqueda previa** — barata, resuelve el reintento común.
+2. **`UniqueConstraint(company, user, idempotency_key)`** con condición
+   `idempotency_key__isnull=False` — lo único que aguanta una carrera, porque
+   decide la base de datos. Parcial a propósito: cada pedido de navegador tiene
+   la clave nula, y una constraint no parcial permitiría exactamente **un**
+   pedido de invitado por empresa.
+3. **`idempotency_key` de Stripe** — para cuando el pedido se creó, Stripe
+   aceptó la llamada y la respuesta se perdió.
+
+Acotada a **empresa + usuario**, no a la clave sola: dos clientes pueden generar
+la misma clave, y una constraint global haría fallar el checkout de uno por
+culpa del otro.
+
+**Misma clave, distinto contenido → 409.** Devolver el primer pedido en silencio
+le diría al cliente que su nueva cesta se aceptó cuando no fue así. Se compara
+un **hash SHA-256** del payload canónico, no el payload: nada del comprador se
+guarda dos veces.
+
+### Nada se consume antes de pagar
+
+Ni se vacía el carrito ni se descuenta stock al crear el checkout. Un pedido que
+nunca se pague no debe haberle costado a nadie su cesta ni a la tienda su
+inventario. Ambas cosas ocurren en el webhook, cuando Stripe confirma —
+exactamente como ya hacía la web.
+
+### Configuración pública por slug — BR-006
+
+```
+GET /api/v1/storefront/<company_slug>/config/
+```
+
+Anónimo. **El mismo constructor de payload** que `/api/storefront/config/`, ahora
+extraído a `build_storefront_config_payload(company)`: dos constructores
+derivarían, y la deriva sería una tienda cuya app enseña un teléfono y cuya web
+enseña otro. Hay un test que compara ambas respuestas byte a byte.
+
+Devuelve `company` (name, slug, legal_name, tax_id — los tres últimos aparecen en
+cada boleta y factura), `branding`, `contact` (incluido `whatsapp_link`) y
+`policies`. **Nada operativo**: ni `order_notification_email`, ni configuración
+de sucursal, ni credenciales, ni capabilities.
+
+Empresa desconocida e inactiva devuelven el mismo 404 que el catálogo.
+
+### Estado de los requerimientos de Mobile
+
+| ID | Estado |
+|---|---|
+| BR-003 | **IMPLEMENTADO para v1** |
+| BR-006 marca pública | **IMPLEMENTADO** |
+| BR-002 | **PARCIAL** — público, cliente y checkout resueltos; interno pendiente |
+| BR-007 | **PARCIAL** — falta la superficie interna |
+| BR-001B · BR-005 · BR-008 | PENDIENTE |
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

@@ -27,6 +27,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import promotion_services
+from .api_parsing import DateTimeParseError, parse_optional_datetime, parse_window
 from .models import (
     AdminAuditLog,
     AppliedPromotion,
@@ -271,6 +272,17 @@ def _write_promotion(request, company, *, promotion):
             if set(branch_ids) != owned:
                 errors['branches'] = ['Alguna sucursal no pertenece a esta empresa.']
 
+    # --- window -----------------------------------------------------------
+    # Parsed HERE, in the validation pass, not at assignment time: a bad date
+    # must join the other field errors in one 400, and must never reach the
+    # transaction below where the failure would surface as a 500.
+    starts_at, ends_at, window_touched = parse_window(
+        data,
+        errors=errors,
+        current_start=promotion.starts_at if promotion else None,
+        current_end=promotion.ends_at if promotion else None,
+    )
+
     if errors:
         return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -288,36 +300,64 @@ def _write_promotion(request, company, *, promotion):
                     promotion.priority = 0
             if 'is_active' in data:
                 promotion.is_active = bool(data.get('is_active'))
-            if 'starts_at' in data:
-                promotion.starts_at = data.get('starts_at') or None
-            if 'ends_at' in data:
-                promotion.ends_at = data.get('ends_at') or None
+            if 'starts_at' in window_touched:
+                promotion.starts_at = starts_at
+            if 'ends_at' in window_touched:
+                promotion.ends_at = ends_at
             if 'max_applications_per_order' in data:
                 raw = data.get('max_applications_per_order')
-                promotion.max_applications_per_order = int(raw) if raw else None
+                try:
+                    promotion.max_applications_per_order = int(raw) if raw else None
+                except (TypeError, ValueError):
+                    return Response(
+                        {'max_applications_per_order': ['Valor numérico inválido.']},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             promotion.branch_scope = branch_scope
+
+            # PATCH is a PARTIAL update, and this is where that stopped being
+            # true. An absent key used to mean "set it to None", so a request
+            # carrying only `{"is_active": false}` — which is exactly what the
+            # archive button sends — blanked the combo's price and was then
+            # rejected by `Promotion.clean()`. The button could never work.
+            #
+            # An absent key now means "leave it alone"; only a key that is
+            # actually present changes anything. The field belonging to the
+            # OTHER promotion type is still cleared, because a fixed-price
+            # combo holding a leftover percentage is a contradiction the engine
+            # would have to resolve at a till.
             if promotion_type == Promotion.BUNDLE_FIXED_PRICE:
-                promotion.fixed_price = fixed_price
+                if creating or 'fixed_price' in data:
+                    promotion.fixed_price = fixed_price
                 promotion.discount_percent = None
             else:
-                promotion.discount_percent = discount_percent
+                if creating or 'discount_percent' in data:
+                    promotion.discount_percent = discount_percent
                 promotion.fixed_price = None
 
             promotion.save()
 
+            # `bulk_create()` skips `save()` and therefore `clean()`, so the
+            # tenant invariant is asserted over the whole set first. The API
+            # already validated both above; this is the check that survives a
+            # future caller that does not.
             if components is not None:
-                promotion.items.all().delete()
-                PromotionItem.objects.bulk_create([
+                rows = [
                     PromotionItem(promotion=promotion, product_id=p, quantity=q)
                     for p, q in components
-                ])
+                ]
+                PromotionItem.assert_all_match_promotion(rows)
+                promotion.items.all().delete()
+                PromotionItem.objects.bulk_create(rows)
             if branch_ids is not None:
-                promotion.branches.all().delete()
-                PromotionBranch.objects.bulk_create([
+                rows = [
                     PromotionBranch(promotion=promotion, branch_id=b)
                     for b in branch_ids
-                ])
+                ]
+                PromotionBranch.assert_all_match_promotion(rows)
+                promotion.branches.all().delete()
+                PromotionBranch.objects.bulk_create(rows)
     except DjangoValidationError as exc:
         return Response(
             getattr(exc, 'message_dict', {'detail': exc.messages}),
@@ -410,9 +450,17 @@ class AdminCouponView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
+        try:
+            expires_at = parse_optional_datetime(
+                request.data.get('expires_at'), label='Vencimiento',
+            )
+        except DateTimeParseError as exc:
+            return Response({'expires_at': [str(exc)]},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         coupon = Coupon.objects.create(
             company=company, code=code, discount_percent=percent,
-            expires_at=request.data.get('expires_at') or None,
+            expires_at=expires_at,
         )
         AdminAuditLog.log(
             actor=request.user, action='coupon_created', target_type='coupon',
@@ -446,7 +494,13 @@ class AdminCouponView(APIView):
             coupon.discount_percent = percent
             changed.append('discount_percent')
         if 'expires_at' in request.data:
-            coupon.expires_at = request.data['expires_at'] or None
+            try:
+                coupon.expires_at = parse_optional_datetime(
+                    request.data['expires_at'], label='Vencimiento',
+                )
+            except DateTimeParseError as exc:
+                return Response({'expires_at': [str(exc)]},
+                                status=status.HTTP_400_BAD_REQUEST)
             changed.append('expires_at')
 
         if changed:

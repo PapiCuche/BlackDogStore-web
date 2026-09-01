@@ -9,6 +9,67 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase Comercial C1.4 — Reconciliación del grafo de migraciones y hardening de promociones
+
+**Estado: IMPLEMENTADO.** Migración **0041** (merge, sin operaciones).
+
+### El grafo tenía dos hojas
+
+Dos líneas de trabajo salieron de la 0033 sin saber una de otra: `0034_checkout_idempotency`
+(checkout nativo, en master) y `0034_commercial_pos_barcode → … → 0040` (POS y
+promociones). Django se niega a ejecutar un grafo con dos hojas, y hace bien: la
+respuesta no está en los archivos.
+
+Se creó una **migración de merge real** (`0041`), vacía, que depende de ambas
+hojas. No se renumeró nada. Renumerar la rama comercial habría hecho que Django
+viera siete migraciones nunca ejecutadas contra tablas que ya existen, y de eso
+se sale a mano.
+
+### Dos idempotencias, y el merge automático casi se lleva una
+
+El auto-merge de `models.py` dejó **dos asignaciones `constraints = [...]`** en
+`Order.Meta`; la segunda tapaba a la primera en silencio. Python válido, semántica
+equivocada: la unicidad de `pos_idempotency_key` desaparecía, y con ella la
+garantía de que un reintento del POS no duplica una venta. Se unificaron en una
+sola lista. **No se fusionan** las dos idempotencias: la del POS es única por
+empresa (un mostrador tiene una sola secuencia de ventas), la del checkout es
+única por empresa **y usuario** (dos clientes pueden generar la misma clave).
+
+### Fechas de promociones y cupones
+
+`promotion.starts_at = request.data['starts_at']` parecía validar. No validaba:
+un `DateTimeField` acepta cualquier cosa en Python y sólo se convierte al llegar
+a la base de datos, ya dentro de la transacción. `"mañana"` daba **500**, y
+`"2026-01-01 10:00"` se guardaba naive, con una hora que significaba lo que
+dijera el reloj del servidor. Una ventana de promoción decide si un descuento se
+dispara en una caja: equivocarse cinco horas es un precio equivocado en un recibo
+real.
+
+Nuevo `store/api_parsing.py`: `parse_optional_datetime()` y `parse_window()`.
+Vacío → `None`; ISO-8601 → aware; naive → hora local (America/Lima), porque el
+control HTML obvio no manda zona horaria; inválido → **400**, nunca 500. Un
+número JSON **no** es una fecha: `20260301` se rechaza en vez de adivinar entre
+fecha compacta y epoch.
+
+### El botón de archivar nunca funcionó
+
+`PATCH` no era parcial. Una clave ausente significaba «ponlo en None», así que
+`PATCH {is_active: false}` —exactamente lo que manda el botón de archivar—
+borraba el precio del combo y `Promotion.clean()` rechazaba la petición con 400.
+El único test de C1.3 que mandaba `is_active` apuntaba a la promoción de **otra**
+empresa y esperaba 404: pasaba por el control de tenant y nunca llegaba a este
+código. Ahora una clave ausente significa «déjalo como está».
+
+### Invariantes de tenant
+
+`PromotionBranch`, `PromotionItem` y `AppliedPromotion` validan en `clean()` que
+promoción, sucursal, producto y pedido pertenezcan a la misma empresa. Como
+`bulk_create()` **no** llama a `save()` —y es justo el camino que escribe estas
+filas—, cada uno tiene además un `assert_all_match_*()` de conjunto, resuelto en
+una consulta, que los caminos masivos invocan antes de escribir.
+
+---
+
 ## Fase Comercial C1.3 — Hardening C1.2 + promociones automáticas y combos
 
 **Estado: IMPLEMENTADO PARCIALMENTE.** Migraciones **0038, 0039, 0040**.
@@ -289,6 +350,39 @@ acaba el jueves».
 - Caja / arqueo · devoluciones y anulaciones compensatorias · compras y
   proveedores · costo real y rentabilidad · descuentos manuales en POS ·
   pronóstico estacional · lector por cámara.
+
+---
+
+## API v1 — checkout autenticado y config pública por slug (M5)
+
+**Estado: IMPLEMENTADO.** Migración **0034**. Aditiva.
+
+### Entregado
+
+- `POST /api/v1/customer/<company_slug>/checkout/` — idempotente, Bearer v1
+- `GET /api/v1/storefront/<company_slug>/config/` — público, cierra **BR-006**
+- `checkout_services.py` — dominio comercial compartido por ambas superficies
+- `build_storefront_config_payload()` — un solo constructor para web y app
+- `Order.idempotency_key` + `idempotency_fingerprint` + constraint parcial única
+- 61 tests nuevos
+
+### Decisiones
+
+- **DEC-API-002** — el checkout nativo y el del navegador comparten servicios de
+  dominio, no contrato de transporte ni de sesión.
+- **DEC-API-003** — la creación de checkout es idempotente por empresa + cliente
+  autenticado + clave de petición.
+
+### Reglas
+
+- El cliente propone ítems; **el servidor calcula todo** y rechaza cualquier
+  campo comercial que llegue del cliente.
+- Nada se consume antes del pago: ni carrito ni stock.
+- Misma clave con distinto contenido → **409**, nunca el pedido anterior.
+- El checkout web sigue **AllowAny**: acepta invitados como siempre.
+
+---
+
 ## API v1 — superficie de cliente y contexto de acceso (M4)
 
 **Estado: IMPLEMENTADO (pedidos de cliente).** Sin migraciones. Aditiva.
