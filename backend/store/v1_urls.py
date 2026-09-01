@@ -10,9 +10,22 @@ from rest_framework.routers import DefaultRouter
 
 from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
 from .v1_checkout_views import V1CustomerCheckoutView
-from .v1_customer_views import V1CustomerOrderViewSet, V1CustomerRepairViewSet
+from .v1_customer_views import (
+    V1CustomerOrderViewSet,
+    V1CustomerRepairQuoteDecisionView,
+    V1CustomerRepairQuoteView,
+    V1CustomerRepairViewSet,
+)
 from .v1_service_views import (
     V1ServiceContextView,
+    V1ServiceDiagnosticDetailView,
+    V1ServiceQuoteItemDetailView,
+    V1ServiceDiagnosticListView,
+    V1ServiceQuoteCancelView,
+    V1ServiceQuoteDetailView,
+    V1ServiceQuoteItemView,
+    V1ServiceQuoteListView,
+    V1ServiceQuotePublishView,
     V1ServiceCustomerSearchView,
     V1ServiceDeviceDetailView,
     V1ServiceDeviceListView,
@@ -70,6 +83,18 @@ urlpatterns = [
     path(
         'customer/<slug:company_slug>/checkout/',
         V1CustomerCheckoutView.as_view(), name='v1-customer-checkout',
+    ),
+    # CUSTOMER — the quote on my own repair, and my answer to it. Literal
+    # sub-paths on the `customer/` prefix, registered BEFORE the router
+    # include() on that same prefix, following the file's existing ordering.
+    path(
+        'customer/<slug:company_slug>/repairs/<int:pk>/quote/',
+        V1CustomerRepairQuoteView.as_view(), name='v1-customer-repair-quote',
+    ),
+    path(
+        'customer/<slug:company_slug>/repairs/<int:pk>/quotes/<int:quote_id>/decision/',
+        V1CustomerRepairQuoteDecisionView.as_view(),
+        name='v1-customer-repair-quote-decision',
     ),
     path(
         'customer/<slug:company_slug>/',
@@ -151,6 +176,43 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/assignment/',
         V1ServiceOrderAssignmentView.as_view(), name='v1-internal-service-order-assignment',
+    ),
+    # BR-005B — diagnosis and quotes hang off an order, because that is what
+    # they are about. Reaching one goes through the order's own lookup, so the
+    # branch gate applies without a second check.
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/diagnostics/',
+        V1ServiceDiagnosticListView.as_view(),
+        name='v1-internal-service-diagnostics',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/diagnostics/<int:diagnostic_id>/',
+        V1ServiceDiagnosticDetailView.as_view(),
+        name='v1-internal-service-diagnostic-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/',
+        V1ServiceQuoteListView.as_view(), name='v1-internal-service-quotes',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/',
+        V1ServiceQuoteDetailView.as_view(), name='v1-internal-service-quote-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/items/',
+        V1ServiceQuoteItemView.as_view(), name='v1-internal-service-quote-items',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/items/<int:item_id>/',
+        V1ServiceQuoteItemDetailView.as_view(), name='v1-internal-service-quote-item-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/publish/',
+        V1ServiceQuotePublishView.as_view(), name='v1-internal-service-quote-publish',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/cancel/',
+        V1ServiceQuoteCancelView.as_view(), name='v1-internal-service-quote-cancel',
     ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),

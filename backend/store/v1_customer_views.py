@@ -21,8 +21,12 @@ from the two ownership FKs and cannot be widened by any parameter this view
 accepts. A member of staff who signs in here sees their own purchases and
 nothing else — being an employee is not a customer relation.
 """
-from rest_framework import permissions, viewsets
+from rest_framework import permissions, status, viewsets
 from rest_framework.exceptions import NotFound
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .throttles import AdminOrdersThrottle, AdminOrderStatusChangeThrottle
 
 from .tenancy import (
     customer_owned_orders,
@@ -147,3 +151,133 @@ class V1CustomerRepairViewSet(V1CustomerSurfaceMixin, viewsets.ReadOnlyModelView
             .select_related('device')
             .order_by('-received_at', '-pk')
         )
+
+
+class V1CustomerRepairQuoteView(V1CustomerSurfaceMixin, APIView):
+    """
+    GET — the quote on MY repair. BR-005B, M9.
+
+    OWNERSHIP FIRST, ALWAYS. The repair order is looked up through
+    `customer_owned_repair_orders`, which matches `Customer.user` and nothing
+    else. A repair that is not this person's is not found — and neither is its
+    quote, because the quote is only ever reached through the order.
+
+    Being staff of the company grants nothing here. Company-wide access to
+    quotes is `service.orders.view` on the internal surface, and a platform
+    master does not become somebody's customer by being one.
+
+    A DRAFT IS NEVER RETURNED. It is the shop thinking out loud. An EXPIRED or
+    already-decided quote IS returned, because hiding it would make somebody
+    believe it never existed — the app renders it as settled or lapsed.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def _order(self, company, pk):
+        from . import service_services
+
+        order = (
+            service_services.customer_owned_repair_orders(self.request.user, company)
+            .filter(pk=pk).first()
+        )
+        if order is None:
+            raise NotFound('No encontrado.')
+        return order
+
+    def _context(self, company):
+        from . import service_services
+        from .models import RepairStatusCode
+
+        settings_by_code = service_services.status_settings(company)
+        return {
+            'request': self.request,
+            'status_labels': {
+                code: service_services.status_label(company, code, settings_by_code)
+                for code, _label in RepairStatusCode.choices
+            },
+        }
+
+    def get(self, request, company_slug=None, pk=None):
+        from . import service_services
+        from .v1_service_serializers import V1CustomerQuoteSerializer
+
+        company = self.get_customer_company()
+        order = self._order(company, pk)
+
+        quote = service_services.customer_visible_quote(order)
+        if quote is None:
+            # Not an error: most of a repair's life has no quote on it.
+            return Response({'quote': None})
+
+        return Response({
+            'quote': V1CustomerQuoteSerializer(quote, context=self._context(company)).data,
+        })
+
+
+class V1CustomerRepairQuoteDecisionView(V1CustomerRepairQuoteView):
+    """
+    POST — approve or reject the quote on MY repair.
+
+    THE ONLY WAY AN ORDER REACHES `approved` OR `rejected`. Staff cannot assert
+    a customer's decision through the internal transition endpoint; that is the
+    invariant M9 exists to establish.
+
+    IDEMPOTENT FOR THE SAME ANSWER. A double tap on a slow connection is one
+    decision, so a repeat returns 200 with the record that already exists. The
+    OPPOSITE answer arriving later is a 409: somebody — possibly the same person
+    on another device — already decided, and silently overwriting it would let
+    whichever request happened to be second win.
+
+    The quote is re-checked under a lock inside the service: expired, cancelled
+    or already-decided quotes are refused there, whatever the app drew.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None, quote_id=None):
+        from . import service_services
+        from .models import Customer, RepairQuote
+        from .v1_service_serializers import (
+            V1CustomerQuoteDecisionSerializer, V1CustomerQuoteSerializer,
+        )
+
+        company = self.get_customer_company()
+        order = self._order(company, pk)
+
+        # Reached only through the order, so a quote id from somebody else's
+        # repair is not found rather than found-then-refused.
+        quote = order.quotes.filter(pk=quote_id).first()
+        if quote is None:
+            raise NotFound('No encontrado.')
+
+        serializer = V1CustomerQuoteDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        customer = Customer.objects.filter(
+            company=company, user=request.user, pk=order.customer_id,
+        ).first()
+        if customer is None:
+            # The ownership helper already matched on this, so reaching here
+            # means the relation changed mid-request. Same answer as always.
+            raise NotFound('No encontrado.')
+
+        try:
+            service_services.record_quote_decision(
+                quote=quote,
+                customer=customer,
+                user=request.user,
+                decision=serializer.validated_data['decision'],
+                reason=serializer.validated_data.get('reason', ''),
+                request=request,
+            )
+        except service_services.QuoteDecisionConflict as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except service_services.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        fresh = RepairQuote.objects.prefetch_related('items').select_related(
+            'decision',
+        ).get(pk=quote.pk)
+        return Response({
+            'quote': V1CustomerQuoteSerializer(fresh, context=self._context(company)).data,
+        })

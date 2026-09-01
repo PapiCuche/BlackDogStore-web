@@ -25278,10 +25278,8 @@ class M6CapabilityStatusTest(TestCase):
         # modules nobody has written.
         from .capabilities import CAPABILITIES, STATUS_RESERVED
 
-        for code in (
-            'service.diagnostic.manage', 'service.repair.manage',
-            'service.quality.manage',
-        ):
+        # `service.diagnostic.manage` left this list in M9, which built it.
+        for code in ('service.repair.manage', 'service.quality.manage'):
             self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
 
     def test_a_bare_module_prefix_is_still_not_an_endpoint(self):
@@ -26882,9 +26880,14 @@ class M8ProvisioningTest(M8ServiceBase):
         row.refresh_from_db()
         self.assertEqual(row.label, 'En recepción')
 
-    def test_the_migration_and_the_runtime_defaults_agree(self):
-        # They are allowed to drift later — the migration is a record. Today is
-        # the only day they must match, so this asserts it today.
+    def test_the_migration_still_seeds_what_the_runtime_says_for_those_codes(self):
+        # Was an equality of the whole tuple. M9 added two statuses to the
+        # runtime constant, which is not drift — it is a later phase seeding
+        # more, and its own migration freezes its own copy.
+        #
+        # What must still hold is that the four codes THIS migration seeded are
+        # unchanged: a silent edit to one of them would rewrite what companies
+        # provisioned in M8 were given.
         import importlib
 
         from .company_provisioning import PRESET_REPAIR_STATUSES
@@ -26892,7 +26895,12 @@ class M8ProvisioningTest(M8ServiceBase):
         module = importlib.import_module(
             'store.migrations.0036_seed_repair_statuses_and_series',
         )
-        self.assertEqual(tuple(module.REPAIR_STATUSES), tuple(PRESET_REPAIR_STATUSES))
+        runtime = {
+            code: (label, visible, order)
+            for code, label, visible, order in PRESET_REPAIR_STATUSES
+        }
+        for code, label, visible, order in module.REPAIR_STATUSES:
+            self.assertEqual(runtime[code], (label, visible, order), code)
 
     def test_the_technician_preset_can_actually_run_the_module(self):
         # The role existed before the module did, reserving authority. Now that
@@ -26905,10 +26913,11 @@ class M8ProvisioningTest(M8ServiceBase):
             self.assertIn(code, role.capabilities, code)
 
     def test_the_technician_preset_does_not_gain_reserved_capabilities(self):
+        # `service.diagnostic.manage` left this list in M9, which built the
+        # module it names. The two that remain still describe absent code, and a
+        # preset must never carry authority over something nobody wrote.
         role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
-        for code in (
-            'service.diagnostic.manage', 'service.repair.manage', 'service.quality.manage',
-        ):
+        for code in ('service.repair.manage', 'service.quality.manage'):
             self.assertNotIn(code, role.capabilities, code)
 
 
@@ -26924,13 +26933,13 @@ class M8CapabilityCatalogueTest(TestCase):
         ):
             self.assertEqual(CAPABILITIES[code].status, STATUS_ACTIVE, code)
 
-    def test_capabilities_for_modules_M8_did_not_build_stay_RESERVED(self):
+    def test_capabilities_for_modules_nobody_has_built_stay_RESERVED(self):
         # The rule that has held since Phase 2A: no permission over absent code.
+        # `service.diagnostic.manage` was on this list until M9 built diagnosis
+        # and quoting; the rule did not change, the set of absent modules did.
         from .capabilities import CAPABILITIES, STATUS_RESERVED
 
-        for code in (
-            'service.diagnostic.manage', 'service.repair.manage', 'service.quality.manage',
-        ):
+        for code in ('service.repair.manage', 'service.quality.manage'):
             self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
 
     def test_M8_invented_no_capability(self):
@@ -27206,29 +27215,40 @@ class M8TransitionTest(M8ServiceBase):
         )
         self.assertIsNotNone(closed.closed_at)
 
-    def test_states_M8_cannot_support_do_not_exist(self):
-        # Shipping the word without the module would let an order enter a state
-        # no code can act on — a status that lies.
+    def test_states_no_module_supports_yet_do_not_exist(self):
+        # Was `test_states_M8_cannot_support_do_not_exist`. `approved` and
+        # `rejected` left this list in M9, which built the quote and the
+        # decision that give them meaning. The RULE has not changed: a state
+        # arrives with its module, because shipping the word without the module
+        # lets an order enter a state no code can act on.
         codes = {code for code, _label in _M8Status.choices}
         for absent in (
-            'approved', 'rejected', 'in_repair', 'waiting_parts', 'repaired',
+            'in_repair', 'waiting_parts', 'repaired',
             'quality_control', 'ready_for_pickup', 'delivered', 'warranty',
         ):
             self.assertNotIn(absent, codes, absent)
 
-    def test_the_machine_stops_where_M9_begins(self):
+    def test_the_generic_path_to_waiting_approval_closed_in_M9(self):
+        # Was `test_the_machine_stops_where_M9_begins`. In M8 a person moved an
+        # order to `waiting_approval` with a button, because there was nothing
+        # to wait FOR. M9 built the quote and closed that path: the state now
+        # means "a frozen, published quote is waiting", and only publishing one
+        # can produce it. The lesson is unchanged — the machine has an edge —
+        # but the edge moved and the generic route to it is gone.
         order = self.make_order()
         _m8_service.transition_repair_order(
             repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
         )
-        _m8_service.transition_repair_order(
-            repair_order=order, to_status=_M8Status.WAITING_APPROVAL, actor=self.staff,
-        )
         order.refresh_from_db()
-        # Approval needs a quote, and a quote needs a diagnosis. Neither exists.
+
         self.assertEqual(
             _m8_service.available_transitions(order), [_M8Status.CANCELLED],
         )
+        with self.assertRaises(_m8_service.InvalidTransitionError):
+            _m8_service.transition_repair_order(
+                repair_order=order, to_status=_M8Status.WAITING_APPROVAL,
+                actor=self.staff,
+            )
 
     def test_two_transitions_from_one_state_cannot_both_win(self):
         order = self.make_order()
@@ -28677,3 +28697,1036 @@ class P0CServiceTransitionIsolationTest(M8ServiceBase):
             _m8_service.assign_technician(
                 repair_order=order, technician=colleague, actor=self.staff,
             )
+# M9 / BR-005B — DIAGNOSIS, VERSIONED QUOTES AND CUSTOMER APPROVAL
+# =============================================================================
+
+from .models import (  # noqa: E402
+    RepairDiagnostic as _M9Diagnostic,
+    RepairQuote as _M9Quote,
+    RepairQuoteDecision as _M9Decision,
+    RepairQuoteItem as _M9Item,
+)
+
+
+def _m9_quote_url(slug, order_id, tail=''):
+    return f'/api/v1/internal/{slug}/service/orders/{order_id}/quotes/{tail}'
+
+
+def _m9_diag_url(slug, order_id, tail=''):
+    return f'/api/v1/internal/{slug}/service/orders/{order_id}/diagnostics/{tail}'
+
+
+class M9ServiceBase(M8ServiceBase):
+    """M8's fixture, plus an order already in diagnosis and a full-authority role."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.with_capabilities(
+            'service.orders.view', 'service.orders.create', 'service.orders.manage',
+            'service.devices.view', 'service.devices.manage', 'service.customers.view',
+            'service.diagnostic.manage',
+            slug='m9-rol',
+        )
+        self.order = self.make_order()
+        _m8_service.transition_repair_order(
+            repair_order=self.order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+
+    def make_diagnostic(self, **overrides):
+        payload = {
+            'description': 'Puerto de carga suelto.',
+            'recommended_action': 'Reemplazar el puerto.',
+        }
+        payload.update(overrides)
+        return _m8_service.create_diagnostic(
+            repair_order=self.order, actor=self.staff, **payload,
+        )
+
+    def make_quote(self, *, diagnostic=None, with_item=True, **overrides):
+        quote = _m8_service.create_quote(
+            repair_order=self.order,
+            diagnostic=diagnostic if diagnostic is not None else self.make_diagnostic(),
+            actor=self.staff,
+            **overrides,
+        )
+        if with_item:
+            _m8_service.add_quote_item(
+                quote=quote, description='Mano de obra', quantity=1, unit_price='120.00',
+            )
+            quote.refresh_from_db()
+        return quote
+
+    def published_quote(self, **kwargs):
+        quote = self.make_quote(**kwargs)
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        quote.refresh_from_db()
+        self.order.refresh_from_db()
+        return quote
+
+
+class M9LifecycleTest(M9ServiceBase):
+    """The machine grew two states, and neither is reachable by pressing a button."""
+
+    def test_the_new_codes_exist(self):
+        codes = {code for code, _label in _M8Status.choices}
+        self.assertIn('approved', codes)
+        self.assertIn('rejected', codes)
+
+    def test_states_M9_still_cannot_support_do_not_exist(self):
+        codes = {code for code, _label in _M8Status.choices}
+        for absent in (
+            'in_repair', 'waiting_parts', 'repaired', 'quality_control',
+            'ready_for_pickup', 'delivered', 'warranty',
+        ):
+            self.assertNotIn(absent, codes, absent)
+
+    def test_the_generic_endpoint_no_longer_offers_waiting_approval(self):
+        # It was M8's only way there. From M9 the state means "a frozen quote is
+        # waiting", and only publishing one can produce that.
+        self.assertEqual(
+            _m8_service.available_transitions(self.order), [_M8Status.CANCELLED],
+        )
+
+    def test_the_generic_service_refuses_to_set_waiting_approval(self):
+        with self.assertRaises(_m8_service.InvalidTransitionError):
+            _m8_service.transition_repair_order(
+                repair_order=self.order, to_status=_M8Status.WAITING_APPROVAL,
+                actor=self.staff,
+            )
+
+    def test_the_generic_service_refuses_to_fake_a_customer_decision(self):
+        self.published_quote()
+        for target in ('approved', 'rejected'):
+            with self.assertRaises(_m8_service.InvalidTransitionError, msg=target):
+                _m8_service.transition_repair_order(
+                    repair_order=self.order, to_status=target, actor=self.staff,
+                )
+
+    def test_the_generic_ENDPOINT_refuses_them_too(self):
+        for target in ('waiting_approval', 'approved', 'rejected'):
+            response = self.client.post(
+                _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+                {'status': target}, format='json',
+            )
+            self.assertEqual(response.status_code, 400, target)
+
+    def test_a_rejected_order_can_be_diagnosed_again(self):
+        # A rejection is not the end of the conversation: the usual next move is
+        # a cheaper second quote.
+        quote = self.published_quote()
+        _m8_service.record_quote_decision(
+            quote=quote, customer=self.customer, user=self.client_user, decision='reject',
+        )
+        self.order.refresh_from_db()
+        self.assertIn(_M8Status.DIAGNOSING, _m8_service.available_transitions(self.order))
+
+    def test_an_approved_order_does_not_advance_to_repair(self):
+        # There is no execution module. M9 stops at approved.
+        quote = self.published_quote()
+        _m8_service.record_quote_decision(
+            quote=quote, customer=self.customer, user=self.client_user, decision='approve',
+        )
+        self.order.refresh_from_db()
+        self.assertEqual(
+            _m8_service.available_transitions(self.order), [_M8Status.CANCELLED],
+        )
+
+
+class M9DiagnosticTest(M9ServiceBase):
+    """A diagnosis is a draft until a quote built on it goes out."""
+
+    def test_a_draft_is_created_with_revision_one(self):
+        diagnostic = self.make_diagnostic()
+        self.assertEqual(diagnostic.revision, 1)
+        self.assertEqual(diagnostic.status, _M9Diagnostic.STATUS_DRAFT)
+
+    def test_the_actor_is_the_server_side_user(self):
+        self.assertEqual(self.make_diagnostic().diagnosed_by_id, self.staff.pk)
+
+    def test_revisions_increment_per_order(self):
+        self.assertEqual(self.make_diagnostic().revision, 1)
+        self.assertEqual(self.make_diagnostic().revision, 2)
+
+    def test_root_cause_is_optional(self):
+        # A technician often knows a laptop does not charge long before they
+        # know why. A required field turns "I do not know yet" into a guess.
+        self.assertEqual(self.make_diagnostic().root_cause, '')
+
+    def test_description_and_action_are_required(self):
+        with self.assertRaises(DjangoValidationError):
+            _M9Diagnostic.objects.create(
+                company=self.company, repair_order=self.order, revision=99,
+                description='  ', recommended_action='  ',
+            )
+
+    def test_a_draft_can_be_edited(self):
+        diagnostic = self.make_diagnostic()
+        updated = _m8_service.update_diagnostic(
+            diagnostic=diagnostic, description='Otra cosa.',
+        )
+        self.assertEqual(updated.description, 'Otra cosa.')
+
+    def test_publishing_freezes_it(self):
+        diagnostic = self.make_diagnostic()
+        self.published_quote(diagnostic=diagnostic)
+        diagnostic.refresh_from_db()
+        self.assertTrue(diagnostic.is_finalized)
+        self.assertIsNotNone(diagnostic.finalized_at)
+
+    def test_a_finalized_diagnostic_cannot_be_edited_by_the_service(self):
+        diagnostic = self.make_diagnostic()
+        self.published_quote(diagnostic=diagnostic)
+        diagnostic.refresh_from_db()
+        with self.assertRaises(_m8_service.DiagnosticError):
+            _m8_service.update_diagnostic(diagnostic=diagnostic, description='Editado.')
+
+    def test_a_finalized_diagnostic_cannot_be_edited_by_the_model_either(self):
+        # The service gives the friendly error; the model is the guarantee.
+        diagnostic = self.make_diagnostic()
+        self.published_quote(diagnostic=diagnostic)
+        diagnostic.refresh_from_db()
+        diagnostic.description = 'Reescrito.'
+        with self.assertRaises(DjangoValidationError):
+            diagnostic.save()
+
+    def test_diagnosing_requires_the_order_to_be_in_diagnosis(self):
+        other = self.make_order()  # still `received`
+        with self.assertRaises(_m8_service.DiagnosticError):
+            _m8_service.create_diagnostic(
+                repair_order=other, description='x', recommended_action='y',
+                actor=self.staff,
+            )
+
+    def test_no_evidence_field_was_introduced(self):
+        # DEC-016: the storage provider is still undecided.
+        from django.db import models as dj_models
+
+        for field in _M9Diagnostic._meta.get_fields():
+            self.assertNotIsInstance(field, dj_models.FileField, field.name)
+
+
+class M9QuoteTest(M9ServiceBase):
+    """Money is the server's arithmetic, and a sent quote is evidence."""
+
+    def test_a_draft_is_created_with_revision_one(self):
+        quote = self.make_quote(with_item=False)
+        self.assertEqual(quote.revision, 1)
+        self.assertEqual(quote.status, _M9Quote.STATUS_DRAFT)
+
+    def test_revisions_increment_and_survive(self):
+        first = self.published_quote()
+        _m8_service.record_quote_decision(
+            quote=first, customer=self.customer, user=self.client_user, decision='reject',
+        )
+        self.order.refresh_from_db()
+        _m8_service.transition_repair_order(
+            repair_order=self.order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        second = self.make_quote(with_item=False)
+
+        self.assertEqual(second.revision, first.revision + 1)
+        first.refresh_from_db()
+        self.assertEqual(first.status, _M9Quote.STATUS_REJECTED)
+
+    def test_the_currency_comes_from_the_company_not_the_caller(self):
+        quote = self.make_quote(with_item=False)
+        self.assertEqual(quote.currency, _m8_service.company_currency(self.company))
+
+    def test_line_totals_are_computed_server_side(self):
+        quote = self.make_quote(with_item=False)
+        _m8_service.add_quote_item(
+            quote=quote, description='Repuesto', quantity=3, unit_price='25.50',
+            item_type=_M9Item.TYPE_PART,
+        )
+        quote.refresh_from_db()
+        self.assertEqual(quote.items.first().line_total, Decimal('76.50'))
+        self.assertEqual(quote.subtotal, Decimal('76.50'))
+        self.assertEqual(quote.total, Decimal('76.50'))
+
+    def test_the_discount_lowers_the_total_and_cannot_exceed_the_subtotal(self):
+        quote = self.make_quote(with_item=False)
+        _m8_service.add_quote_item(
+            quote=quote, description='Mano de obra', quantity=1, unit_price='100.00',
+        )
+        _m8_service.update_quote(quote=quote, discount_amount=Decimal('30.00'))
+        quote.refresh_from_db()
+        self.assertEqual(quote.total, Decimal('70.00'))
+
+        with self.assertRaises(_m8_service.QuoteError):
+            _m8_service.update_quote(quote=quote, discount_amount=Decimal('500.00'))
+
+    def test_tax_is_zero_because_the_platform_models_none(self):
+        # Not a bug and not an oversight: there is no tax rate, no regime and no
+        # configuration anywhere in this backend, and inventing 18% because the
+        # pilot is Peruvian would write one country's law into a SaaS schema.
+        quote = self.make_quote()
+        self.assertEqual(quote.tax_amount, Decimal('0.00'))
+
+    def test_a_zero_total_quote_is_allowed(self):
+        # A courtesy assessment is a real thing a shop does, and requiring
+        # `total > 0` would make somebody type a cent to describe free work.
+        quote = self.make_quote(with_item=False)
+        _m8_service.add_quote_item(
+            quote=quote, description='Diagnóstico de cortesía', quantity=1,
+            unit_price='0.00',
+        )
+        published = _m8_service.publish_quote(quote=quote, actor=self.staff)
+        self.assertEqual(published.total, Decimal('0.00'))
+        self.assertEqual(published.status, _M9Quote.STATUS_SENT)
+
+    def test_a_negative_quantity_is_refused(self):
+        quote = self.make_quote(with_item=False)
+        with self.assertRaises(_m8_service.QuoteError):
+            _m8_service.add_quote_item(
+                quote=quote, description='x', quantity=0, unit_price='10.00',
+            )
+
+    def test_a_product_from_another_tenant_is_refused(self):
+        quote = self.make_quote(with_item=False)
+        foreign = _prod(self.other, 'Ajeno', 'ajeno-m9')
+        with self.assertRaises(_m8_service.QuoteError):
+            _m8_service.add_quote_item(
+                quote=quote, description='x', quantity=1, unit_price='1.00',
+                product=foreign,
+            )
+
+    def test_a_product_price_change_does_not_rewrite_a_sent_quote(self):
+        product = _prod(self.company, 'Puerto', 'puerto-m9', price='50.00')
+        quote = self.make_quote(with_item=False)
+        _m8_service.add_quote_item(
+            quote=quote, description='Puerto de carga', quantity=1,
+            unit_price=product.price, product=product, item_type=_M9Item.TYPE_PART,
+        )
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+
+        product.price = Decimal('999.00')
+        product.save(update_fields=['price'])
+
+        quote.refresh_from_db()
+        self.assertEqual(quote.items.first().unit_price, Decimal('50.00'))
+        self.assertEqual(quote.total, Decimal('50.00'))
+
+    def test_quoting_a_part_moves_no_stock(self):
+        before = StockMovement.objects.count()
+        product = _prod(self.company, 'Batería', 'bateria-m9', price='80.00')
+        quote = self.make_quote(with_item=False)
+        _m8_service.add_quote_item(
+            quote=quote, description='Batería', quantity=1, unit_price='80.00',
+            product=product, item_type=_M9Item.TYPE_PART,
+        )
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+
+        self.assertEqual(StockMovement.objects.count(), before)
+
+    def test_a_sent_quote_cannot_be_edited(self):
+        quote = self.published_quote()
+        with self.assertRaises(_m8_service.QuoteError):
+            _m8_service.update_quote(quote=quote, customer_notes='Otra cosa.')
+
+    def test_a_sent_quote_cannot_be_edited_through_the_model_either(self):
+        quote = self.published_quote()
+        quote.total = Decimal('1.00')
+        with self.assertRaises(DjangoValidationError):
+            quote.save()
+
+    def test_the_lines_of_a_sent_quote_are_frozen(self):
+        quote = self.published_quote()
+        item = quote.items.first()
+        item.unit_price = Decimal('1.00')
+        with self.assertRaises(DjangoValidationError):
+            item.save()
+        with self.assertRaises(DjangoValidationError):
+            item.delete()
+
+    def test_a_quote_has_no_payment_field(self):
+        # Approval authorises work. It settles nothing.
+        fields = {f.name for f in _M9Quote._meta.get_fields()}
+        for forbidden in (
+            'paid', 'paid_at', 'payment_status', 'stripe_session_id', 'order',
+        ):
+            self.assertNotIn(forbidden, fields, forbidden)
+
+
+class M9PublishTest(M9ServiceBase):
+    """Publishing is the one operation that produces `waiting_approval`."""
+
+    def test_publishing_moves_the_order_and_writes_history(self):
+        before = self.order.status_history.count()
+        quote = self.published_quote()
+
+        self.assertEqual(quote.status, _M9Quote.STATUS_SENT)
+        self.assertIsNotNone(quote.sent_at)
+        self.assertEqual(self.order.status, _M8Status.WAITING_APPROVAL)
+        self.assertEqual(self.order.status_history.count(), before + 1)
+
+    def test_the_history_event_is_internal_in_origin(self):
+        self.published_quote()
+        last = self.order.status_history.order_by('-pk').first()
+        self.assertEqual(last.origin, _M8History.ORIGIN_INTERNAL)
+
+    def test_an_empty_quote_cannot_be_published(self):
+        quote = self.make_quote(with_item=False)
+        with self.assertRaises(_m8_service.QuoteError):
+            _m8_service.publish_quote(quote=quote, actor=self.staff)
+
+    def test_publishing_twice_is_refused_rather_than_duplicated(self):
+        quote = self.published_quote()
+        with self.assertRaises(_m8_service.QuoteError):
+            _m8_service.publish_quote(quote=quote, actor=self.staff)
+
+    def test_publishing_from_the_wrong_state_is_refused(self):
+        quote = self.make_quote()
+        _m8_service.transition_repair_order(
+            repair_order=self.order, to_status=_M8Status.CANCELLED, actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.QuoteError):
+            _m8_service.publish_quote(quote=quote, actor=self.staff)
+
+    def test_publishing_writes_an_audit_entry(self):
+        self.published_quote()
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='service_quote_published', company=self.company,
+            ).exists()
+        )
+
+    def test_a_failure_rolls_the_whole_thing_back(self):
+        # The order must never sit in `waiting_approval` with a draft quote.
+        from unittest.mock import patch
+
+        quote = self.make_quote()
+        with patch.object(
+            _m8_service, '_apply_transition', side_effect=RuntimeError('boom'),
+        ):
+            with self.assertRaises(RuntimeError):
+                _m8_service.publish_quote(quote=quote, actor=self.staff)
+
+        quote.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(quote.status, _M9Quote.STATUS_DRAFT)
+        self.assertEqual(self.order.status, _M8Status.DIAGNOSING)
+
+    def test_cancelling_a_sent_quote_returns_the_order_to_diagnosis(self):
+        quote = self.published_quote()
+        _m8_service.cancel_quote(quote=quote, actor=self.staff)
+
+        quote.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(quote.status, _M9Quote.STATUS_CANCELLED)
+        self.assertEqual(self.order.status, _M8Status.DIAGNOSING)
+
+
+def _m9_customer_quote_url(slug, order_id):
+    return f'/api/v1/customer/{slug}/repairs/{order_id}/quote/'
+
+
+def _m9_decision_url(slug, order_id, quote_id):
+    return f'/api/v1/customer/{slug}/repairs/{order_id}/quotes/{quote_id}/decision/'
+
+
+class M9CustomerQuoteTest(M9ServiceBase):
+    """A client reads the quote on their own repair, and only that."""
+
+    def setUp(self):
+        super().setUp()
+        self.quote = self.published_quote()
+        self.customer_client = _m7_login('cliente_m8')
+
+    def test_anonymous_gets_401(self):
+        self.assertEqual(
+            APIClient().get(_m9_customer_quote_url('m8-taller', self.order.pk)).status_code,
+            401,
+        )
+
+    def test_the_owner_sees_the_sent_quote(self):
+        body = self.customer_client.get(
+            _m9_customer_quote_url('m8-taller', self.order.pk),
+        ).json()
+        self.assertIsNotNone(body['quote'])
+        self.assertEqual(body['quote']['status'], _M9Quote.STATUS_SENT)
+        self.assertEqual(body['quote']['total'], '120.00')
+
+    def test_a_draft_is_never_returned(self):
+        # A draft is the shop thinking out loud.
+        _m8_service.cancel_quote(quote=self.quote, actor=self.staff)
+        self.order.refresh_from_db()
+        draft = self.make_quote()
+
+        body = self.customer_client.get(
+            _m9_customer_quote_url('m8-taller', self.order.pk),
+        ).json()
+        self.assertIsNone(body['quote'])
+        del draft
+
+    def test_no_quote_is_not_an_error(self):
+        other = self.make_order()
+        response = self.customer_client.get(
+            _m9_customer_quote_url('m8-taller', other.pk),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()['quote'])
+
+    def test_another_customers_repair_is_404(self):
+        device = _M8Device.objects.create(
+            company=self.company, customer=self.other_customer, brand='G', model='Z',
+        )
+        theirs = self.make_order(customer=self.other_customer, device=device)
+        self.assertEqual(
+            self.customer_client.get(
+                _m9_customer_quote_url('m8-taller', theirs.pk),
+            ).status_code,
+            404,
+        )
+
+    def test_another_tenant_is_404(self):
+        self.assertEqual(
+            self.customer_client.get(
+                _m9_customer_quote_url('m8-otra', self.order.pk),
+            ).status_code,
+            404,
+        )
+
+    def test_being_staff_does_not_grant_the_customer_surface(self):
+        self.assertEqual(
+            self.client.get(
+                _m9_customer_quote_url('m8-taller', self.order.pk),
+            ).status_code,
+            404,
+        )
+
+    def test_the_payload_hides_everything_internal(self):
+        _m8_service.update_quote  # documented: a sent quote cannot be edited
+        body = self.customer_client.get(
+            _m9_customer_quote_url('m8-taller', self.order.pk),
+        ).json()['quote']
+        raw = json.dumps(body, ensure_ascii=False)
+
+        for leaked in (
+            'internal_notes', 'diagnostic', 'created_by_name', 'is_editable',
+            'cancelled_at', 'repair_order', 'company',
+        ):
+            self.assertNotIn(leaked, body, leaked)
+        # And no staff identity anywhere in the serialised bytes.
+        self.assertNotIn('recepcion', raw)
+        self.assertNotIn('@', raw)
+
+    def test_the_line_hides_the_internal_catalogue_handle(self):
+        product = _prod(self.company, 'Puerto', 'puerto-cust-m9', price='10.00')
+        _m8_service.transition_repair_order(
+            repair_order=self.order, to_status=_M8Status.CANCELLED, actor=self.staff,
+        )
+        fresh = self.make_order()
+        _m8_service.transition_repair_order(
+            repair_order=fresh, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        quote = _m8_service.create_quote(repair_order=fresh, actor=self.staff)
+        _m8_service.add_quote_item(
+            quote=quote, description='Puerto', quantity=1, unit_price='10.00',
+            product=product, item_type=_M9Item.TYPE_PART,
+        )
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+
+        body = self.customer_client.get(
+            _m9_customer_quote_url('m8-taller', fresh.pk),
+        ).json()['quote']
+        self.assertNotIn('product', body['items'][0])
+        self.assertNotIn('sort_order', body['items'][0])
+
+    def test_an_expired_quote_is_still_visible_but_not_decidable(self):
+        # Hiding it would make somebody believe it never existed.
+        _M9Quote.objects.filter(pk=self.quote.pk).update(
+            valid_until=timezone.now() - timedelta(days=1),
+        )
+        body = self.customer_client.get(
+            _m9_customer_quote_url('m8-taller', self.order.pk),
+        ).json()['quote']
+
+        self.assertTrue(body['is_expired'])
+        self.assertFalse(body['can_be_decided'])
+
+
+class M9ApprovalTest(M9ServiceBase):
+    """The decision is the customer's, once, and the server records it."""
+
+    def setUp(self):
+        super().setUp()
+        self.quote = self.published_quote()
+        self.customer_client = _m7_login('cliente_m8')
+
+    def decide(self, decision, **extra):
+        payload = {'decision': decision}
+        payload.update(extra)
+        return self.customer_client.post(
+            _m9_decision_url('m8-taller', self.order.pk, self.quote.pk),
+            payload, format='json',
+        )
+
+    def test_approving_settles_the_quote_and_the_order(self):
+        response = self.decide('approve')
+        self.assertEqual(response.status_code, 200)
+
+        self.quote.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(self.quote.status, _M9Quote.STATUS_APPROVED)
+        self.assertIsNotNone(self.quote.approved_at)
+        self.assertEqual(self.order.status, _M8Status.APPROVED)
+
+    def test_rejecting_settles_them_the_other_way(self):
+        self.assertEqual(self.decide('reject', reason='Muy caro.').status_code, 200)
+
+        self.quote.refresh_from_db()
+        self.order.refresh_from_db()
+        self.assertEqual(self.quote.status, _M9Quote.STATUS_REJECTED)
+        self.assertEqual(self.order.status, _M8Status.REJECTED)
+
+    def test_the_decision_record_snapshots_what_was_agreed(self):
+        self.decide('approve')
+        record = _M9Decision.objects.get(quote=self.quote)
+
+        self.assertEqual(record.decision, 'approve')
+        self.assertEqual(record.quoted_total, Decimal('120.00'))
+        self.assertEqual(record.currency, self.quote.currency)
+        self.assertEqual(record.customer_id, self.customer.pk)
+        self.assertEqual(record.user_id, self.client_user.pk)
+
+    def test_the_channel_is_the_servers(self):
+        # A future endpoint may record "approved by phone". It will have its own
+        # authority, not a string in a body.
+        self.decide('approve', channel='whatsapp')
+        self.assertEqual(
+            _M9Decision.objects.get(quote=self.quote).channel,
+            _M9Decision.CHANNEL_CUSTOMER_ACCOUNT,
+        )
+
+    def test_the_client_cannot_spoof_who_decided_or_for_how_much(self):
+        self.decide(
+            'approve', customer_id=self.other_customer.pk, user_id=self.staff.pk,
+            company_id=self.other.pk, quoted_total='1.00', amount='1.00',
+        )
+        record = _M9Decision.objects.get(quote=self.quote)
+
+        self.assertEqual(record.customer_id, self.customer.pk)
+        self.assertEqual(record.user_id, self.client_user.pk)
+        self.assertEqual(record.company_id, self.company.pk)
+        self.assertEqual(record.quoted_total, Decimal('120.00'))
+
+    def test_the_history_event_comes_from_the_customer(self):
+        self.decide('approve')
+        last = self.order.status_history.order_by('-pk').first()
+        self.assertEqual(last.origin, _M8History.ORIGIN_CUSTOMER)
+
+    def test_the_rejection_reason_never_reaches_the_timeline(self):
+        # It lives on the decision record, where the internal surface reads it.
+        # A free-text reason inside a customer-visible timeline is one policy
+        # change away from being published.
+        self.decide('reject', reason='El técnico fue grosero.')
+
+        raw = json.dumps(
+            [
+                {'c': e.comment, 'v': e.is_customer_visible}
+                for e in self.order.status_history.all()
+            ],
+            ensure_ascii=False,
+        )
+        self.assertNotIn('grosero', raw)
+        self.assertEqual(
+            _M9Decision.objects.get(quote=self.quote).reason, 'El técnico fue grosero.',
+        )
+
+    def test_repeating_the_same_decision_is_idempotent(self):
+        first = self.decide('approve')
+        second = self.decide('approve')
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(_M9Decision.objects.filter(quote=self.quote).count(), 1)
+        self.assertEqual(self.order.status_history.filter(to_status='approved').count(), 1)
+
+    def test_the_opposite_decision_afterwards_is_a_conflict(self):
+        self.decide('approve')
+        response = self.decide('reject')
+
+        self.assertEqual(response.status_code, 409)
+        self.quote.refresh_from_db()
+        self.assertEqual(self.quote.status, _M9Quote.STATUS_APPROVED)
+
+    def test_an_expired_quote_cannot_be_approved(self):
+        _M9Quote.objects.filter(pk=self.quote.pk).update(
+            valid_until=timezone.now() - timedelta(days=1),
+        )
+        response = self.decide('approve')
+
+        self.assertEqual(response.status_code, 400)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.WAITING_APPROVAL)
+        self.assertFalse(_M9Decision.objects.filter(quote=self.quote).exists())
+
+    def test_a_cancelled_quote_cannot_be_decided(self):
+        _m8_service.cancel_quote(quote=self.quote, actor=self.staff)
+        self.assertEqual(self.decide('approve').status_code, 400)
+
+    def test_a_draft_quote_cannot_be_decided(self):
+        self.order.refresh_from_db()
+        _m8_service.cancel_quote(quote=self.quote, actor=self.staff)
+        self.order.refresh_from_db()
+        draft = self.make_quote()
+
+        response = self.customer_client.post(
+            _m9_decision_url('m8-taller', self.order.pk, draft.pk),
+            {'decision': 'approve'}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_quote_from_another_repair_is_404(self):
+        other = self.make_order()
+        response = self.customer_client.post(
+            _m9_decision_url('m8-taller', other.pk, self.quote.pk),
+            {'decision': 'approve'}, format='json',
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_staff_cannot_approve_on_the_customers_behalf(self):
+        response = self.client.post(
+            _m9_decision_url('m8-taller', self.order.pk, self.quote.pk),
+            {'decision': 'approve'}, format='json',
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_decision_record_is_append_only(self):
+        self.decide('approve')
+        record = _M9Decision.objects.get(quote=self.quote)
+
+        record.decision = 'reject'
+        with self.assertRaises(DjangoValidationError):
+            record.save()
+        with self.assertRaises(DjangoValidationError):
+            record.delete()
+
+    def test_one_decision_per_quote_at_the_database_level(self):
+        # A rule implemented only in Python is a rule a race walks through.
+        self.decide('approve')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                _M9Decision.objects.create(
+                    company=self.company, repair_order=self.order, quote=self.quote,
+                    customer=self.customer, user=self.client_user, decision='reject',
+                    quoted_total=Decimal('1.00'), currency='PEN',
+                )
+
+    def test_approval_writes_an_audit_entry(self):
+        self.decide('approve')
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='service_quote_approved', company=self.company,
+            ).exists()
+        )
+
+    def test_the_audit_ip_comes_from_the_platform_authority(self):
+        # P0-B. A spoofed X-Forwarded-For must not choose the recorded address
+        # under the default `TRUSTED_PROXY_COUNT = 0`.
+        self.customer_client.post(
+            _m9_decision_url('m8-taller', self.order.pk, self.quote.pk),
+            {'decision': 'approve'}, format='json',
+            HTTP_X_FORWARDED_FOR='203.0.113.7',
+        )
+        record = _M9Decision.objects.get(quote=self.quote)
+        self.assertNotEqual(record.ip_address, '203.0.113.7')
+
+        entry = AdminAuditLog.objects.filter(action='service_quote_approved').first()
+        self.assertNotEqual(entry.ip_address, '203.0.113.7')
+
+    def test_approval_creates_no_order_payment_or_stock_movement(self):
+        orders_before = Order.objects.count()
+        movements_before = StockMovement.objects.count()
+
+        self.decide('approve')
+
+        self.assertEqual(Order.objects.count(), orders_before)
+        self.assertEqual(StockMovement.objects.count(), movements_before)
+
+
+class M9InternalApiTest(M9ServiceBase):
+    """The internal surface, its capability split and its scope."""
+
+    def test_reading_needs_orders_view_and_writing_needs_diagnostic_manage(self):
+        # Narrowed rather than stacked: capabilities are the UNION of the roles
+        # a membership holds, so adding a read-only role on top of a full one
+        # would prove nothing.
+        CompanyRole.objects.filter(company=self.company, slug='m9-rol').update(
+            capabilities=['service.orders.view'],
+        )
+        reader = _m7_login('recepcion')
+
+        self.assertEqual(
+            reader.get(_m9_diag_url('m8-taller', self.order.pk)).status_code, 200,
+        )
+        self.assertEqual(
+            reader.post(
+                _m9_diag_url('m8-taller', self.order.pk),
+                {'description': 'x', 'recommended_action': 'y'}, format='json',
+            ).status_code,
+            403,
+        )
+
+    def test_the_whole_flow_over_http(self):
+        created = self.client.post(
+            _m9_diag_url('m8-taller', self.order.pk),
+            {
+                'description': 'Puerto suelto.', 'recommended_action': 'Reemplazar.',
+                'internal_notes': 'Cliente impaciente.',
+            },
+            format='json',
+        )
+        self.assertEqual(created.status_code, 201)
+        diagnostic_id = created.json()['id']
+
+        quote = self.client.post(
+            _m9_quote_url('m8-taller', self.order.pk),
+            {'diagnostic_id': diagnostic_id, 'customer_notes': 'Incluye garantía.'},
+            format='json',
+        )
+        self.assertEqual(quote.status_code, 201)
+        quote_id = quote.json()['id']
+
+        item = self.client.post(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote_id}/items/'),
+            {
+                'item_type': 'part', 'description': 'Puerto de carga',
+                'quantity': '2', 'unit_price': '45.00',
+            },
+            format='json',
+        )
+        self.assertEqual(item.status_code, 201)
+        self.assertEqual(item.json()['total'], '90.00')
+
+        published = self.client.post(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote_id}/publish/'),
+            {}, format='json',
+        )
+        self.assertEqual(published.status_code, 200)
+        self.assertEqual(published.json()['status'], _M9Quote.STATUS_SENT)
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.WAITING_APPROVAL)
+
+    def test_the_client_cannot_send_its_own_totals(self):
+        quote = _m8_service.create_quote(repair_order=self.order, actor=self.staff)
+        self.client.post(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/items/'),
+            {
+                'item_type': 'labor', 'description': 'Mano de obra',
+                'quantity': '2', 'unit_price': '50.00', 'line_total': '1.00',
+            },
+            format='json',
+        )
+        quote.refresh_from_db()
+        self.assertEqual(quote.items.first().line_total, Decimal('100.00'))
+        self.assertEqual(quote.total, Decimal('100.00'))
+
+    def test_a_line_can_be_removed_from_a_draft_and_totals_follow(self):
+        quote = _m8_service.create_quote(repair_order=self.order, actor=self.staff)
+        self.client.post(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/items/'),
+            {
+                'item_type': 'labor', 'description': 'Mano de obra',
+                'quantity': '1', 'unit_price': '60.00',
+            },
+            format='json',
+        )
+        quote.refresh_from_db()
+        item_id = quote.items.first().pk
+
+        response = self.client.delete(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/items/{item_id}/'),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['total'], '0.00')
+
+    def test_posting_to_a_line_url_does_not_create_a_second_line(self):
+        # The item URL names one line. Sharing a view class with the collection
+        # would have left POST reachable here, silently adding another.
+        quote = _m8_service.create_quote(repair_order=self.order, actor=self.staff)
+        _m8_service.add_quote_item(
+            quote=quote, description='Mano de obra', quantity=1, unit_price='60.00',
+        )
+        quote.refresh_from_db()
+        item_id = quote.items.first().pk
+
+        response = self.client.post(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/items/{item_id}/'),
+            {
+                'item_type': 'labor', 'description': 'Otra', 'quantity': '1',
+                'unit_price': '10.00',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(quote.items.count(), 1)
+
+    def test_a_line_of_a_sent_quote_cannot_be_removed(self):
+        quote = self.published_quote()
+        item_id = quote.items.first().pk
+
+        response = self.client.delete(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/items/{item_id}/'),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(quote.items.count(), 1)
+
+    def test_a_quote_of_another_order_is_not_found(self):
+        quote = self.published_quote()
+        other = self.make_order()
+        self.assertEqual(
+            self.client.get(
+                _m9_quote_url('m8-taller', other.pk, f'{quote.pk}/'),
+            ).status_code,
+            404,
+        )
+
+    def test_a_quote_in_another_branch_is_not_found(self):
+        self.order.branch = self.branch_b
+        self.order.save(update_fields=['branch'])
+        quote = self.published_quote()
+
+        client = self.restrict_to_branch_a()
+        self.assertEqual(
+            client.get(
+                _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/'),
+            ).status_code,
+            404,
+        )
+
+    def test_a_foreign_product_on_a_line_is_not_found(self):
+        quote = _m8_service.create_quote(repair_order=self.order, actor=self.staff)
+        foreign = _prod(self.other, 'Ajeno', 'ajeno-api-m9')
+        response = self.client.post(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/items/'),
+            {
+                'item_type': 'part', 'description': 'x', 'quantity': '1',
+                'unit_price': '1.00', 'product_id': foreign.pk,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_internal_payload_carries_what_the_customer_one_does_not(self):
+        quote = self.published_quote()
+        _m8_service.record_quote_decision(
+            quote=quote, customer=self.customer, user=self.client_user,
+            decision='reject', reason='Prefiero comprar uno nuevo.',
+        )
+        body = self.client.get(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/'),
+        ).json()
+
+        self.assertIn('internal_notes', body)
+        self.assertEqual(body['decision']['reason'], 'Prefiero comprar uno nuevo.')
+
+
+class M9StructuralTest(M9ServiceBase):
+    """Claims that must keep holding after somebody else edits this module."""
+
+    def test_the_customer_serializer_cannot_grow_an_internal_field(self):
+        from .v1_service_serializers import V1CustomerQuoteSerializer
+
+        declared = set(V1CustomerQuoteSerializer().get_fields())
+        for forbidden in (
+            'internal_notes', 'diagnostic', 'created_by_name', 'is_editable',
+            'cancelled_at', 'repair_order', 'company',
+        ):
+            self.assertNotIn(forbidden, declared, forbidden)
+
+    def test_the_decision_payload_accepts_only_two_fields(self):
+        from .v1_service_serializers import V1CustomerQuoteDecisionSerializer
+
+        self.assertEqual(
+            set(V1CustomerQuoteDecisionSerializer().get_fields()),
+            {'decision', 'reason'},
+        )
+
+    def test_the_quote_write_payload_has_no_money_the_server_owns(self):
+        from .v1_service_serializers import V1ServiceQuoteWriteSerializer
+
+        declared = set(V1ServiceQuoteWriteSerializer().get_fields())
+        for forbidden in ('subtotal', 'total', 'tax_amount', 'currency', 'revision', 'status'):
+            self.assertNotIn(forbidden, declared, forbidden)
+
+    def test_the_item_payload_cannot_send_a_line_total(self):
+        from .v1_service_serializers import V1ServiceQuoteItemWriteSerializer
+
+        self.assertNotIn('line_total', set(V1ServiceQuoteItemWriteSerializer().get_fields()))
+
+    def test_no_module_reads_the_forwarded_header_by_hand(self):
+        # P0-B is the platform's single authority on who the caller is.
+        import ast
+        import inspect
+        import textwrap
+
+        from . import service_services, v1_customer_views, v1_service_views
+
+        for module in (service_services, v1_service_views, v1_customer_views):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(module)))
+            code = ast.unparse(tree)
+            self.assertNotIn('HTTP_X_FORWARDED_FOR', code, module.__name__)
+            self.assertNotIn('REMOTE_ADDR', code, module.__name__)
+
+    def test_the_quote_module_never_writes_an_ecommerce_order(self):
+        import ast
+        import inspect
+        import textwrap
+
+        from . import service_services
+
+        import re
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(service_services)))
+        code = ast.unparse(tree)
+
+        # `RepairOrder.objects` legitimately contains the substring
+        # `Order.objects`, so the check is anchored on a word boundary: what is
+        # forbidden is touching the SALE, not the repair.
+        self.assertIsNone(
+            re.search(r'(?<![A-Za-z])Order\.objects', code),
+            'el módulo de servicio no debe tocar Order de e-commerce',
+        )
+        for forbidden in ('CartItem', 'stripe', 'StockMovement', 'OrderItem'):
+            self.assertNotIn(forbidden, code, forbidden)
+
+    def test_the_diagnostic_and_quote_models_hold_no_file_field(self):
+        from django.db import models as dj_models
+
+        for model in (_M9Diagnostic, _M9Quote, _M9Item, _M9Decision):
+            for field in model._meta.get_fields():
+                self.assertNotIsInstance(
+                    field, dj_models.FileField, f'{model.__name__}.{field.name}',
+                )
+
+    def test_the_capability_catalogue_moved_only_what_M9_enforces(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE, STATUS_RESERVED
+
+        self.assertEqual(CAPABILITIES['service.diagnostic.manage'].status, STATUS_ACTIVE)
+        for code in ('service.repair.manage', 'service.quality.manage'):
+            self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
+
+    def test_the_migration_and_the_runtime_status_defaults_agree(self):
+        import importlib
+
+        from .company_provisioning import PRESET_REPAIR_STATUSES
+
+        module = importlib.import_module('store.migrations.0039_seed_approval_statuses')
+        runtime = {
+            code: (label, visible, order)
+            for code, label, visible, order in PRESET_REPAIR_STATUSES
+        }
+        for code, label, visible, order in module.NEW_STATUSES:
+            self.assertEqual(runtime[code], (label, visible, order), code)
+
+    def test_provisioning_seeds_the_new_states_for_a_new_company(self):
+        fresh = _saas_company('Nueva M9', 'm9-nueva', tax_id='20999000999')
+        provision_company_access_defaults(fresh)
+
+        codes = set(
+            _M8StatusSetting.objects.filter(company=fresh).values_list('code', flat=True)
+        )
+        self.assertEqual(codes, {code for code, _l in _M8Status.choices})

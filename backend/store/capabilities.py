@@ -227,8 +227,17 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     # diagnosis needs a diagnosis record, a repair needs parts and execution,
     # quality control needs a checklist. A capability that can be granted but
     # that no endpoint consults is authority over absent code.
-    _cap('service.diagnostic.manage', 'service', 'Diagnóstico',
-         'RESERVADO — diagnóstico y cotización no implementados.', STATUS_RESERVED),
+    # M9 — BR-005B. The module exists: a diagnosis, a versioned quote and the
+    # customer's decision on it. ACTIVE for the same reason the M8 five are —
+    # `/api/v1/internal/<slug>/service/` checks `has_capability` and nothing
+    # else, with no legacy role path behind it.
+    #
+    # It covers composing and publishing, not reading: a colleague who may see
+    # an order may see the quote on it, and requiring a second capability to
+    # read what the order already shows would be authority theatre.
+    _cap('service.diagnostic.manage', 'service', 'Diagnóstico y cotización',
+         'Registrar diagnósticos y componer, publicar o anular cotizaciones.',
+         STATUS_ACTIVE),
     _cap('service.repair.manage', 'service', 'Reparación',
          'RESERVADO — ejecución de reparación no implementada.', STATUS_RESERVED),
     _cap('service.quality.manage', 'service', 'Control de calidad',

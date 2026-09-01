@@ -14,11 +14,17 @@ The temptation is always to write `if request.user.is_staff` inside one
 serializer. That is one refactor away from returning a technician's private note
 to a customer, and the failure is silent.
 """
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from .models import (
     Device,
+    RepairDiagnostic,
     RepairOrder,
+    RepairQuote,
+    RepairQuoteDecision,
+    RepairQuoteItem,
     RepairStatusHistory,
     RepairStatusSetting,
     TechnicianAssignment,
@@ -420,3 +426,259 @@ def _user_display(user) -> str:
         return ''
     full = (user.get_full_name() or '').strip()
     return full or user.username
+
+
+# ---------------------------------------------------------------------------
+# BR-005B — diagnosis, quotes and the customer's decision
+# ---------------------------------------------------------------------------
+
+class V1ServiceDiagnosticSerializer(serializers.ModelSerializer):
+    """The INTERNAL view of a diagnosis. Everything, including the private notes."""
+
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+    diagnosed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RepairDiagnostic
+        fields = (
+            'id', 'revision', 'status', 'status_label',
+            'description', 'root_cause', 'recommended_action', 'internal_notes',
+            'diagnosed_by_name', 'created_at', 'updated_at', 'finalized_at',
+        )
+        read_only_fields = fields
+
+    def get_diagnosed_by_name(self, obj) -> str:
+        return _user_display(obj.diagnosed_by)
+
+    # ── Absent on purpose ────────────────────────────────────────────────────
+    # `company`, `repair_order`  both are in the URL that reached this row.
+    # evidence / attachments     no storage provider exists (DEC-016), so there
+    #                            is no field to serialise and none invented.
+
+
+class V1ServiceQuoteItemSerializer(serializers.ModelSerializer):
+    item_type_label = serializers.CharField(source='get_item_type_display', read_only=True)
+
+    class Meta:
+        model = RepairQuoteItem
+        fields = (
+            'id', 'item_type', 'item_type_label', 'description',
+            'quantity', 'unit_price', 'line_total', 'product', 'sort_order',
+        )
+        read_only_fields = fields
+
+
+class V1ServiceQuoteSerializer(serializers.ModelSerializer):
+    """The INTERNAL view of a quote."""
+
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+    items = V1ServiceQuoteItemSerializer(many=True, read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+    is_expired = serializers.BooleanField(read_only=True)
+    is_editable = serializers.BooleanField(read_only=True)
+    decision = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RepairQuote
+        fields = (
+            'id', 'revision', 'status', 'status_label', 'diagnostic',
+            'currency', 'subtotal', 'discount_amount', 'tax_amount', 'total',
+            'valid_until', 'is_expired', 'is_editable',
+            'customer_notes', 'internal_notes',
+            'items', 'decision', 'created_by_name',
+            'created_at', 'updated_at', 'sent_at',
+            'approved_at', 'rejected_at', 'cancelled_at',
+        )
+        read_only_fields = fields
+
+    def get_created_by_name(self, obj) -> str:
+        return _user_display(obj.created_by)
+
+    def get_decision(self, obj):
+        """
+        What the customer answered, for the people who need to act on it.
+
+        The REASON is here and nowhere near the customer timeline: free text
+        from a client is theirs, and a future visibility policy must not be able
+        to publish it by accident.
+        """
+        record = getattr(obj, 'decision', None)
+        if record is None:
+            return None
+        return {
+            'decision': record.decision,
+            'reason': record.reason,
+            'channel': record.channel,
+            'decided_at': record.decided_at,
+        }
+
+
+class V1ServiceDiagnosticWriteSerializer(serializers.Serializer):
+    """
+    Compose or edit a diagnosis.
+
+    `root_cause` is optional on purpose: a technician often knows a laptop does
+    not charge long before they know why, and a required field turns "I do not
+    know yet" into a guess written down as fact.
+    """
+
+    description = serializers.CharField(max_length=4000, trim_whitespace=True)
+    recommended_action = serializers.CharField(max_length=4000, trim_whitespace=True)
+    root_cause = serializers.CharField(
+        max_length=2000, required=False, allow_blank=True,
+    )
+    internal_notes = serializers.CharField(
+        max_length=2000, required=False, allow_blank=True,
+    )
+
+    # ── Absent on purpose ────────────────────────────────────────────────────
+    # `diagnosed_by` / `technician_id`  the authenticated actor, always. "I am
+    #                 recording this" is the only claim M9 supports; recording a
+    #                 diagnosis in somebody else's name is a business decision
+    #                 nobody has made.
+    # `status`        finalising happens by publishing a quote, not by asking.
+    # `revision`      allocated server-side, under a lock.
+
+
+class V1ServiceQuoteWriteSerializer(serializers.Serializer):
+    """Compose or edit a DRAFT quote's header."""
+
+    diagnostic_id = serializers.IntegerField(required=False, allow_null=True)
+    valid_until = serializers.DateTimeField(required=False, allow_null=True)
+    customer_notes = serializers.CharField(
+        max_length=2000, required=False, allow_blank=True,
+    )
+    internal_notes = serializers.CharField(
+        max_length=2000, required=False, allow_blank=True,
+    )
+    discount_amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=Decimal('0.00'), required=False,
+    )
+
+    # ── Absent on purpose, and this list is the contract ─────────────────────
+    # `revision`   server-side, under a lock.
+    # `currency`   frozen from the company's settings. A currency chosen by the
+    #              caller is a price in a unit nobody agreed to.
+    # `subtotal`, `tax_amount`, `total`  the server's arithmetic. A client that
+    #              could post its own total could post one its own lines do not
+    #              add up to.
+    # `status`, `sent_at`, `approved_at`, `rejected_at`  outcomes, not inputs.
+
+
+class V1ServiceQuoteItemWriteSerializer(serializers.Serializer):
+    """One line. `line_total` is computed, never sent."""
+
+    item_type = serializers.ChoiceField(choices=RepairQuoteItem.TYPE_CHOICES)
+    description = serializers.CharField(max_length=300, trim_whitespace=True)
+    quantity = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=Decimal('0.01'),
+    )
+    unit_price = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=Decimal('0.00'),
+    )
+    product_id = serializers.IntegerField(required=False, allow_null=True)
+    sort_order = serializers.IntegerField(required=False, min_value=0, max_value=32767)
+
+    # ── Absent on purpose ────────────────────────────────────────────────────
+    # `line_total`  quantity × unit_price, computed by the server. Accepting it
+    #               would let a line say one thing and cost another.
+
+
+# ---------------------------------------------------------------------------
+# CUSTOMER
+# ---------------------------------------------------------------------------
+
+class V1CustomerQuoteItemSerializer(serializers.ModelSerializer):
+    """One line, as the person paying for it needs to read it."""
+
+    item_type_label = serializers.CharField(source='get_item_type_display', read_only=True)
+
+    class Meta:
+        model = RepairQuoteItem
+        fields = (
+            'id', 'item_type', 'item_type_label', 'description',
+            'quantity', 'unit_price', 'line_total',
+        )
+        read_only_fields = fields
+
+    # ── Absent on purpose ────────────────────────────────────────────────────
+    # `product`  an internal catalogue id. A customer reading their quote has no
+    #            use for it, and it is a handle into a catalogue they cannot see.
+    # `sort_order`  presentation state of the internal editor.
+
+
+class V1CustomerQuoteSerializer(serializers.ModelSerializer):
+    """
+    The quote as the customer sees it.
+
+    A SEPARATE CLASS from the internal one, not a mode of it. The temptation is
+    a single serializer with `if staff`; that is one refactor away from putting
+    a technician's private note in front of a client, and the failure is silent.
+    """
+
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+    items = V1CustomerQuoteItemSerializer(many=True, read_only=True)
+    is_expired = serializers.BooleanField(read_only=True)
+    can_be_decided = serializers.BooleanField(read_only=True)
+    decision = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RepairQuote
+        fields = (
+            'id', 'revision', 'status', 'status_label',
+            'currency', 'subtotal', 'discount_amount', 'tax_amount', 'total',
+            'valid_until', 'is_expired', 'can_be_decided',
+            'customer_notes', 'items', 'decision', 'sent_at',
+        )
+        read_only_fields = fields
+
+    def get_decision(self, obj):
+        """
+        Their own answer, echoed back so the app can render a settled quote.
+
+        Only the answer and when — not the reason. The customer typed the reason
+        and does not need it read back; leaving it out means no future change to
+        this contract can start showing one person's words to another.
+        """
+        record = getattr(obj, 'decision', None)
+        if record is None:
+            return None
+        return {'decision': record.decision, 'decided_at': record.decided_at}
+
+    # ── Absent on purpose, and every omission is a decision ──────────────────
+    # `internal_notes`     where the shop writes what it would not say aloud.
+    # `diagnostic`         the diagnosis carries `internal_notes` and a staff
+    #                      identity; the customer gets the RESULT, which is the
+    #                      quote, not the working notes behind it.
+    # `created_by_name`    a staff identity.
+    # `is_editable`        internal editor state.
+    # `cancelled_at`       a cancelled quote is not shown to a customer at all.
+    # `repair_order`, `company`  both are in the URL that reached this row.
+
+
+class V1CustomerQuoteDecisionSerializer(serializers.Serializer):
+    """
+    The customer's answer. Two fields, and one of them is optional.
+
+    Everything else about the decision — who made it, for which customer, in
+    which company, through which channel, at what total, from which IP — the
+    server already knows, and a client that could state any of them could state
+    a better-looking version of what happened.
+    """
+
+    decision = serializers.ChoiceField(
+        choices=RepairQuoteDecision.DECISION_CHOICES,
+    )
+    reason = serializers.CharField(
+        max_length=1000, required=False, allow_blank=True,
+    )
+
+    # ── Absent on purpose ────────────────────────────────────────────────────
+    # `customer_id`, `company_id`, `user_id`  resolved from the session.
+    # `amount`, `quoted_total`, `currency`    read from the frozen quote.
+    # `status`, `approved_at`, `decided_at`   outcomes, not inputs.
+    # `channel`                               `customer_account`, decided by the
+    #                                         surface being used. A future
+    #                                         endpoint may record "approved by
+    #                                         phone"; it will have its own
+    #                                         authority, not a string in a body.
