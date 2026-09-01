@@ -346,6 +346,36 @@ el webhook.
 
 Detalle en `docs/saas-multiempresa.md` § 8-vicies.
 
+### API v1 — superficie INTERNA
+
+Cuarta audiencia. Staff leyendo los registros de **la empresa**, bajo capability.
+
+| Método | Endpoint | Requiere |
+|--------|----------|----------|
+| GET | `/api/v1/internal/<slug>/context/` | membresía activa |
+| GET | `/api/v1/internal/<slug>/orders/` | `sales.orders.view` |
+| GET | `/api/v1/internal/<slug>/orders/<id>/` | `sales.orders.view` |
+| PATCH | `/api/v1/internal/<slug>/orders/<id>/fulfillment/` | `sales.orders.manage` |
+
+**Dos puertas, y responden distinto.** Sin membresía activa → **404**,
+indistinguible de una empresa desconocida: otro código dejaría a cualquier login
+válido mapear los tenants de la plataforma. Con membresía y sin capability →
+**403**: el servidor ya admitió que la empresa existe y que trabajas ahí.
+
+**Una relación de cliente no abre el área interna.** Comprarle a un negocio no es
+trabajar en él.
+
+**`context/` se llama al entrar**, no se lee de la sesión: los roles cambian
+mientras una sesión sigue viva.
+
+**Una sola máquina de estados.** `order_fulfillment_services.py` la comparten el
+admin web y v1. Cambiar fulfillment no toca el pago, no manda correo y no mueve
+stock.
+
+`/api/admin/` **no cambia**.
+
+Detalle en `docs/saas-multiempresa.md` § 8-unvicies.
+
 ### Reglas de contraseña (registro)
 
 - Mínimo 8 caracteres (Django `MinimumLengthValidator`)

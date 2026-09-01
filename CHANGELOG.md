@@ -9,6 +9,41 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## API v1 — superficie interna y pedidos de venta (M6)
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Aditiva.
+
+### Entregado
+
+- `GET /api/v1/internal/<slug>/context/` — capabilities frescas al entrar
+- `GET /api/v1/internal/<slug>/orders/` y `/<id>/` — requieren `sales.orders.view`
+- `PATCH .../orders/<id>/fulfillment/` — requiere `sales.orders.manage`
+- `order_fulfillment_services.py` — una sola máquina de estados, compartida con
+  el admin web
+- Serializers internos propios, separados de los de cliente
+- 59 tests nuevos
+
+### Reglas
+
+- **Dos puertas**: sin membresía activa → 404 indistinguible; con membresía y sin
+  capability → 403.
+- Una relación de cliente **no** abre el área interna.
+- Un platform master solo opera sobre el tenant **nombrado en la ruta**.
+- El detalle devuelve `available_fulfillment_transitions` desde el servidor.
+- Cambiar fulfillment no toca el pago, no manda correo y no mueve stock.
+
+### Capabilities
+
+`sales.orders.view` y `sales.orders.manage` → **ACTIVE**, porque v1 las impone
+sin ruta de rol legacy. `sales.notes.manage` sigue AVAILABLE (no implementada).
+Las de servicio técnico siguen RESERVED.
+
+### No tocado
+
+`/api/admin/`, cookie + CSRF, Stripe, inventario, catálogo público, cliente.
+
+---
+
 ## API v1 — checkout autenticado y config pública por slug (M5)
 
 **Estado: IMPLEMENTADO.** Migración **0034**. Aditiva.
