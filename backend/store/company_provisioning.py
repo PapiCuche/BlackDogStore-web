@@ -132,6 +132,10 @@ _TECHNICIAN_CAPS = (
     'service.orders.view',
     'service.orders.create',
     'service.orders.manage',
+    # M9. Diagnosing and quoting is the job the role is named after; a
+    # technical-service role that can receive a device and not say what is wrong
+    # with it is half a role.
+    'service.diagnostic.manage',
 )
 
 # (name, slug, description, capabilities)
@@ -172,6 +176,11 @@ PRESET_REPAIR_STATUSES: tuple[tuple[str, str, bool, int], ...] = (
     ('received', 'Recibido', True, 10),
     ('diagnosing', 'En diagnóstico', True, 20),
     ('waiting_approval', 'Esperando aprobación', True, 30),
+    # M9 — the two outcomes of a customer deciding on a quote. Visible by
+    # default: the answer is theirs, and hiding their own decision from them
+    # would be a strange default for a shop to inherit.
+    ('approved', 'Aprobado', True, 40),
+    ('rejected', 'Rechazado', True, 50),
     ('cancelled', 'Cancelado', True, 90),
 )
 
