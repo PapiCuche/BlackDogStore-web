@@ -1349,3 +1349,49 @@ en ese instante.
   declara en `inventory_value_basis` en lugar de dejarlo implícito.
 - **Sin reserva de stock**: no cambió nada de esa semántica en esta fase.
 
+
+
+---
+
+## Fase 0.3 / P0-A — Dependencias y cadena de suministro
+
+Primera subfase del hardening de seguridad, sobre `master` (que ya integra C1 y
+M7). Verificado hoy contra OSV/GHSA, PyPI y npm.
+
+### Clasificación de los hallazgos
+
+| Hallazgo | Clasificación | Acción |
+|---|---|---|
+| next 16.2.9 — 9 advisories | CONFIRMADO | → 16.3.4 |
+| `hostname: "**"` en next.config | CONFIRMADO | allowlist por env, fail-closed |
+| sharp 0.32.6 — CVE de libvips | CONFIRMADO | → 0.35.4 (libvips 8.18.6) |
+| postcss ≤8.5.22 | CONFIRMADO | vía next 16.3.4 + audit fix |
+| Django 5.2.15 — 4 CVE | CONFIRMADO (2 sin superficie) | → 5.2.17 |
+| Pillow 12.2.0 — 13 CVE | CONFIRMADO, **sin superficie alcanzable** | → 12.3.0 igualmente |
+| sqlparse 0.5.5 — 4 CVE | CONFIRMADO (transitiva) | fijado a 0.6.0 |
+| `openpyxl` ausente de requirements | CONFIRMADO — rompe despliegue limpio | añadido |
+| DRF, SimpleJWT, Stripe, gunicorn, reportlab, psycopg2, cors-headers, django-environ | sin advisories | ninguna |
+
+### Por qué la «mínima segura» no fue la mínima obvia
+
+16.2.11 es la primera versión que cierra los nueve advisories de Next, pero
+16.2.12 seguía dejando `postcss@8.4.31` y `sharp@0.34.5` **anidados dentro de
+`node_modules/next/`**, fuera del alcance de una subida en la raíz. La mínima que
+realmente cierra el conjunto es 16.3.4.
+
+### Análisis de superficie, no sólo de versión
+
+Dos de los cuatro CVE de Django y los trece de Pillow no tienen camino de
+explotación en este código: no hay middleware de caché, no hay GIS, no hay
+`ImageField`/`FileField` y nada importa PIL. Se actualizó igual, pero la
+prioridad real del lote estaba en Next y en el comodín de imágenes.
+
+### Deuda que deja P0-A
+
+- El lint pasa de 18 a **19 warnings**: Next 16.3 añade la regla
+  `no-location-assign-relative-destination`, que marca un
+  `window.location.href = "/"` **preexistente** en `Header.tsx:60`. No es una
+  regresión de esta fase y no se toca aquí para no mezclar un refactor de
+  navegación con correcciones de seguridad.
+- `NEXT_PUBLIC_IMAGE_HOSTS` debe configurarse en producción antes de que ninguna
+  imagen remota vuelva a cargar. Sin ella no hay hosts remotos permitidos.

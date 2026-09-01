@@ -9,6 +9,68 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase 0.3 / P0-A — Dependencias y cadena de suministro
+
+**Estado: IMPLEMENTADO.** Sin migraciones.
+
+Primera subfase del hardening de seguridad. Todo lo de aquí se verificó hoy
+contra OSV/GHSA y PyPI/npm, no contra memoria.
+
+### Frontend — de 7 vulnerabilidades a 0
+
+`next 16.2.9 → 16.3.4` · `sharp 0.32.6 → 0.35.4` · `eslint-config-next 16.3.4`,
+más `npm audit fix` para las transitivas de build.
+
+La versión mínima que cierra los **nueve** advisories de Next es 16.2.11, pero
+16.2.12 **no bastaba**: Next empaqueta sus propias copias anidadas de
+`postcss@8.4.31` y `sharp@0.34.5`, ambas vulnerables, que una subida de `sharp`
+en la raíz no alcanza. `16.3.4` trae `postcss@8.5.23` y ya no depende de sharp.
+Por eso la «actualización mínima segura» acabó siendo 16.3.4 y no 16.2.12.
+
+`npm audit`: **0 vulnerabilidades**.
+
+### El proxy de imágenes abierto
+
+`next.config.ts` tenía `{ protocol: "https", hostname: "**" }`. La documentación
+de la propia versión de Next dice que `**` casa cualquier subdominio y que omitir
+`pathname`/`search` implica comodín, «which may allow malicious actors to
+optimize urls you did not intend».
+
+Como la tienda renderiza con `next/image`, `/_next/image` era un **proxy de
+imágenes abierto**: cualquiera podía hacer que el servidor descargara cualquier
+URL HTTPS, con su IP y su ancho de banda. Era además la superficie del DoS de la
+Image Optimization API.
+
+Ahora los hosts salen de `NEXT_PUBLIC_IMAGE_HOSTS`, y **si no se configura no se
+permite ninguno**. Es deliberado: una imagen que no carga se ve y se corrige; un
+comodín restaurado en silencio, no. Un `**` puesto en la variable se descarta.
+Verificado en vivo: `169.254.169.254` (metadatos de AWS) y cualquier otro host
+responden 400.
+
+### Backend
+
+`Django 5.2.15 → 5.2.17` (sólo parches de seguridad en la línea LTS; 5.2.16
+corrige tres CVE y 5.2.17 una) · `Pillow 12.2.0 → 12.3.0` · `sqlparse` fijado a
+`0.6.0`.
+
+De los cuatro CVE de Django, **dos no aplicaban** a este proyecto: no se usa el
+middleware de caché (CVE-2026-48588) ni GIS/GDALRaster (CVE-2026-53877). Sí
+aplica el de `DomainNameValidator`, porque `image_url`, `website_url`,
+`facebook_url` e `instagram_url` son `URLField`. Se sube igual a la última.
+
+Los **trece** CVE de Pillow **no tienen superficie alcanzable**: no hay un solo
+`ImageField` ni `FileField` en el proyecto y nada bajo `backend/` importa PIL.
+Se actualiza porque es gratis, no porque estuviera expuesto.
+
+### `openpyxl` faltaba en `requirements.txt`
+
+Estaba instalado en desarrollo y todo el importador de la Fase C1.4 depende de
+él, así que localmente funcionaba mientras un despliegue limpio habría reventado
+con `ModuleNotFoundError` al abrir la carga masiva. Una dependencia que sólo
+existe en la máquina donde se escribió no es una dependencia.
+
+---
+
 ## Fase Comercial C1.5 — Hardening de la carga masiva previo al merge
 
 **Estado: IMPLEMENTADO.** Sin migraciones nuevas.

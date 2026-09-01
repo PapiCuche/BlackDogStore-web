@@ -25,6 +25,21 @@ STRIPE_SECRET_KEY=sk_test_xxx  # clave de test Stripe
 STRIPE_WEBHOOK_SECRET=whsec_xxx
 STRIPE_CURRENCY=pen             # Soles peruanos — NO cambiar a usd
 STRIPE_DOMAIN=http://localhost:3000
+
+### Hosts de imágenes remotas — obligatorio en producción (Fase 0.3 / P0-A)
+
+```
+NEXT_PUBLIC_IMAGE_HOSTS=cdn.tudominio.com,*.cloudfront.net
+```
+
+`next/image` sólo optimiza imágenes de los dominios listados aquí. **Si la
+variable está vacía no se permite ningún host remoto** — sólo `localhost` en
+desarrollo.
+
+Antes esto era `hostname: "**"` en `next.config.ts`, es decir cualquier host de
+internet, lo que convertía `/_next/image` en un proxy abierto: cualquiera podía
+hacer que el servidor descargara cualquier URL. Si tras desplegar no cargan las
+imágenes de producto, es esta variable la que falta.
 ```
 
 Para producción, genera un SECRET_KEY real:
