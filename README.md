@@ -341,6 +341,8 @@ Tercera audiencia, en su propio espacio de URL (**DEC-API-001**):
 | GET | `/api/v1/customer/<company_slug>/orders/<id>/` | 404 si no es suyo |
 | GET | `/api/v1/customer/<company_slug>/repairs/` | Solo las reparaciones del llamante |
 | GET | `/api/v1/customer/<company_slug>/repairs/<id>/` | 404 si no es suya |
+| GET | `/api/v1/customer/<slug>/repairs/<id>/quote/` | La cotización de SU reparación |
+| POST | `/api/v1/customer/<slug>/repairs/<id>/quotes/<id>/decision/` | Aprobar o rechazar |
 
 **La propiedad son dos FKs**: `Order.user` (compró con sesión) o
 `Order.customer.user` (compra anónima que el negocio emparejó por documento con
@@ -424,6 +426,13 @@ Cuarta audiencia. Staff leyendo los registros de **la empresa**, bajo capability
 | GET | `/api/v1/internal/<slug>/service/orders/<id>/history/` | `service.orders.view` |
 | POST | `/api/v1/internal/<slug>/service/orders/<id>/transition/` | `service.orders.manage` |
 | GET · POST | `/api/v1/internal/<slug>/service/orders/<id>/assignment/` | `service.orders.manage` |
+| GET · POST | `.../service/orders/<id>/diagnostics/` | `service.orders.view` · `service.diagnostic.manage` |
+| GET · PATCH | `.../service/orders/<id>/diagnostics/<id>/` | idem |
+| GET · POST | `.../service/orders/<id>/quotes/` | `service.orders.view` · `service.diagnostic.manage` |
+| GET · PATCH | `.../service/orders/<id>/quotes/<id>/` | idem |
+| POST · DELETE | `.../service/orders/<id>/quotes/<id>/items/` | `service.diagnostic.manage` |
+| POST | `.../service/orders/<id>/quotes/<id>/publish/` | `service.diagnostic.manage` |
+| POST | `.../service/orders/<id>/quotes/<id>/cancel/` | `service.diagnostic.manage` |
 
 **Dos puertas, y responden distinto.** Sin membresía activa → **404**,
 indistinguible de una empresa desconocida: otro código dejaría a cualquier login
@@ -499,6 +508,34 @@ de credenciales sin política de cifrado, de acceso, de retención ni de borrado
 accesorios, asignaciones, identidad del técnico, sucursal y comentarios de los
 eventos no viajan a `/api/v1/customer/<slug>/repairs/`. Los serializers son
 clases distintas, no una con un flag.
+
+### Diagnóstico, cotización y aprobación (M9 · BR-005B)
+
+**`waiting_approval` dejó de ser un botón.** Antes significaba «alguien movió la
+orden ahí». Ahora significa «existe una cotización concreta, congelada,
+publicada y vigente esperando una decisión del cliente», y solo publicarla puede
+producir ese estado. `approved` y `rejected` solo los produce el cliente
+decidiendo. El endpoint genérico de transición rechaza los tres.
+
+**Una cotización enviada es evidencia.** Ni ella ni sus líneas se pueden editar
+—ni por el servicio ni por el modelo— y un cambio de opinión produce la revisión
+2 con la 1 intacta. El diagnóstico que la respaldó se congela en el mismo
+movimiento.
+
+**El servidor hace la aritmética.** El interno elige cantidad y precio; los
+totales y la moneda son del servidor. Todo en `Decimal`.
+
+**Una decisión por cotización, garantizada por la base** (`OneToOne`). Repetir la
+misma respuesta es idempotente; la contraria devuelve **409**. El canal y la IP
+los fija el servidor, y la IP sale de `client_ip.get_client_ip()` respetando
+`TRUSTED_PROXY_COUNT`.
+
+**Impuestos = 0, y está documentado.** Esta plataforma no modela impuestos en
+ninguna parte. Inventar un 18% porque el piloto es peruano sería escribir la ley
+de un país en el esquema de un SaaS.
+
+**Aprobar no es pagar** y **cotizar una pieza no la reserva**: sin `Order`, sin
+Stripe, sin `StockMovement`.
 
 ### Reglas de contraseña (registro)
 

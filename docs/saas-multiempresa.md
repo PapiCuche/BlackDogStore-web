@@ -2230,7 +2230,7 @@ existiera, y hay tests de regresión que lo demuestran.
 | BR-007 | Superficie versionada `/api/v1/` | **PARCIAL** — existe el slice de catálogo; auth y superficie privada, PENDIENTE |
 | BR-001 | Contrato de autenticación nativo | `API_PENDING` |
 | BR-003 | `fulfillment_status` en pedidos | PENDIENTE |
-| BR-005 | Dominio de reparaciones | **PARCIAL** — núcleo en M8 (§ 8-tervicies) |
+| BR-005 | Dominio de reparaciones | **PARCIAL** — núcleo M8 + flujo comercial M9 (§ 8-tervicies, § 8-quatervicies) |
 | BR-006 | Endpoint público de marca | PENDIENTE |
 | BR-008 | Seguimiento seguro por enlace | `API_PENDING` — `RepairOrder` ya existe; falta el token |
 
@@ -3602,6 +3602,154 @@ cookie + CSRF. M8 **no descuenta repuestos** y no vincula `RepairOrder` a
 - **Sin scope por sucursal para la serie de servicio.** Se numera por empresa.
   Se añade cuando un negocio lo pida.
 - **BR-008 sigue `API_PENDING`.** Ahora tiene contra qué diseñarse.
+
+---
+
+## 8-quatervicies. Diagnóstico, cotización y aprobación (M9 / BR-005B)
+
+**Estado: IMPLEMENTADO (núcleo comercial).** Migraciones **0038–0040**.
+
+M8 dejó `waiting_approval` como el borde deliberado de su alcance. M9 le da el
+significado que le faltaba.
+
+### El principio, y lo que cambia
+
+Antes, `waiting_approval` quería decir «alguien movió la orden ahí». Eso es un
+estado sin contenido: no había nada que el cliente pudiera aprobar y nada contra
+lo que el negocio pudiera reclamar.
+
+Desde M9 significa: **existe una cotización concreta, congelada, publicada y
+vigente esperando una decisión del cliente**. Para que eso sea cierto y no una
+aspiración, el estado se protege en el dominio:
+
+- **`waiting_approval` solo lo produce `publish_quote()`.**
+- **`approved` y `rejected` solo los produce la decisión del cliente.**
+- El endpoint genérico de transición rechaza los tres, y también rechaza el paso
+  `waiting_approval → diagnosing`, que existe únicamente para servir a
+  `cancel_quote()`: mover la orden a mano dejaría una cotización viva que el
+  cliente todavía puede responder contra una orden que ya no la espera.
+
+`EVENT_ONLY_STATES` y `EVENT_ONLY_EDGES` son esa protección, y `available_transitions()`
+las filtra, así que la app no puede ni dibujar el botón.
+
+### Cuatro modelos
+
+| Modelo | Qué es |
+|---|---|
+| `RepairDiagnostic` | Lo que encontró el técnico. Versionado, DRAFT → FINALIZED |
+| `RepairQuote` | Una **revisión** de lo que costará. DRAFT → SENT → APPROVED/REJECTED/CANCELLED |
+| `RepairQuoteItem` | Una línea: mano de obra, repuesto o servicio |
+| `RepairQuoteDecision` | La respuesta del cliente. **Una por cotización**, con `OneToOne` |
+
+### Versionado, no edición
+
+Una cotización enviada es evidencia comercial: el cliente aprobó **una revisión
+exacta**, no «el precio actual de la orden». Así que una cotización que salió de
+DRAFT no se puede modificar, ni ella ni sus líneas, ni por el servicio ni por el
+modelo. Un cambio de opinión produce la revisión 2, y la 1 se queda donde está.
+
+El diagnóstico se congela en el mismo movimiento: el que respaldó una cotización
+enviada no se reescribe.
+
+### El servidor hace la aritmética
+
+El usuario interno elige `quantity` y `unit_price` —eso es escribir un
+presupuesto— pero `line_total`, `subtotal` y `total` los calcula el servidor.
+Un cliente que pudiera enviar su propio total podría enviar uno que sus propias
+líneas no suman. Todo en `Decimal`, nunca en float.
+
+La **moneda** se congela desde `CompanySettings` al componer. Una moneda elegida
+por quien llama es un precio en una unidad que nadie acordó.
+
+### Impuestos: cero, y es una decisión registrada
+
+Esta plataforma **no modela impuestos en ninguna parte**: no hay tasa, ni
+régimen, ni configuración en `CompanySettings`, ni campo en `SalesNote`, ni nada
+en el POS. Calcular un 18% aquí porque el piloto es peruano sería escribir la ley
+tributaria de un país dentro del esquema de un SaaS.
+
+La columna `tax_amount` existe para que una cotización ya enviada conserve lo que
+llevaba el día que el impuesto llegue —congelar sirve de poco si el esquema
+cambia debajo— pero nada la calcula y ningún cliente puede fijarla. **Deuda
+registrada.**
+
+### Descuentos
+
+`discount_amount` en la cabecera, bajo `service.diagnostic.manage` — la misma
+autoridad que compone la cotización. **No** se conectó `sales.discounts.apply`:
+esa capability es del mostrador, y quien puede descontar una venta no es
+necesariamente quien puede descontar una reparación. Conectarlas habría ampliado
+en silencio lo que significa un permiso que ya existía.
+
+El descuento nunca supera el subtotal y el total nunca es negativo, con
+`CheckConstraint` además de la validación.
+
+### Cotización a cero
+
+**Permitida.** Un diagnóstico de cortesía y una evaluación sin cargo son cosas
+que un taller hace de verdad, y exigir `total > 0` obligaría a alguien a escribir
+un céntimo para describir trabajo gratis.
+
+### Vigencia sin scheduler
+
+`valid_until` más un `is_expired` **derivado**. No hay infraestructura de tareas
+en este proyecto y añadir Celery para que una fila cambie su propio estado es
+mucha máquina para una comparación. Un GET que mutara la base «para mantener el
+estado fresco» convertiría leer en escribir.
+
+Una cotización vencida **se sigue mostrando** al cliente —ocultarla le haría
+creer que nunca existió— pero no se puede aprobar.
+
+### La decisión del cliente
+
+Una por cotización, y lo garantiza la base con un `OneToOne`. Una regla escrita
+solo en Python es una regla por la que una carrera pasa caminando.
+
+- Repetir la **misma** respuesta es idempotente: devuelve la que ya existe.
+- La respuesta **contraria** después es un **409**. Sobrescribir en silencio
+  dejaría que decidiera el segundo toque de dos dispositivos en carrera.
+- El `channel` lo fija el servidor: `customer_account`. Un futuro endpoint
+  registrará «aprobó por teléfono» con su propia autoridad, no con una cadena
+  en un cuerpo.
+- La **IP** sale de `client_ip.get_client_ip()`, que respeta
+  `TRUSTED_PROXY_COUNT` (P0-B). Leer `X-Forwarded-For` a mano dejaría que quien
+  llama eligiera bajo qué dirección queda registrada su aprobación, que es
+  exactamente el agujero que P0-B cerró.
+
+### El motivo del rechazo no llega al timeline
+
+Vive en `RepairQuoteDecision.reason`, donde lo lee la superficie interna. Un
+texto libre del cliente dentro de un historial visible para el cliente está a un
+cambio de política de acabar publicado.
+
+### Aprobar no es pagar
+
+No se crea `Order`, ni carrito, ni sesión de Stripe, ni pago. **Y cotizar una
+pieza no la reserva**: sin `StockMovement`, sin reserva, sin `PartUsage`. La
+línea puede apuntar a un `Product` como referencia, y el precio queda congelado
+aunque el catálogo cambie mañana.
+
+### Capabilities
+
+`service.diagnostic.manage` pasa a **ACTIVE**: la componen y la publican los
+endpoints, que consultan `has_capability` sin ruta de rol legacy.
+
+**Leer** una cotización usa `service.orders.view`: quien puede abrir la orden
+puede ver la cotización que hay en ella, y pedir una segunda capability para ver
+lo que la orden ya muestra sería teatro.
+
+Siguen **RESERVED** `service.repair.manage` y `service.quality.manage`.
+
+### Deuda registrada
+
+- **Sin política tributaria.** `tax_amount` siempre 0.
+- **Sin notificaciones.** `sent` significa «disponible para el cliente», no
+  «correo enviado»: no existe ningún canal, y afirmar una entrega que el
+  producto no realiza sería peor que no decir nada.
+- **Sin evidencias** (DEC-016).
+- **Asimetría de presets**: una empresa registrada antes de M9 no recibe
+  `service.diagnostic.manage` en su rol `Servicio Técnico`, solo en
+  `Administrador` y solo si no lo editó. Misma decisión que 0033 y que M8.
 
 ---
 

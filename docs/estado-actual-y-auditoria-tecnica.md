@@ -1534,3 +1534,54 @@ servicio por sucursal porque alguien configuró así sus notas.
   un negocio lo pida.
 - BR-008 sigue `API_PENDING`, pero ahora tiene contra qué diseñarse.
 
+---
+
+## Actualización — diagnóstico, cotización y aprobación (M9 / BR-005B)
+
+M8 se detuvo en `waiting_approval` a propósito. M9 le da contenido.
+
+### La invariante
+
+`waiting_approval` ⇒ existe una cotización SENT.
+`approved` ⇒ existe una cotización APPROVED y una decisión del cliente.
+`rejected` ⇒ lo mismo del otro lado.
+
+Se sostiene porque los tres estados son inalcanzables por el endpoint genérico
+de transición: `EVENT_ONLY_STATES` los rechaza y `available_transitions()` no los
+ofrece, así que la app ni siquiera puede dibujar el botón. El paso
+`waiting_approval → diagnosing` es un **borde** de evento por la misma razón:
+existe solo para `cancel_quote()`, porque moverlo a mano dejaría una cotización
+viva contra una orden que ya no la espera.
+
+### Decisiones que conviene poder defender
+
+- **Impuestos cero, no inventados.** No hay tasa, régimen ni configuración en
+  ninguna parte de este backend. La columna existe para congelar; nada la
+  calcula.
+- **Descuento bajo `service.diagnostic.manage`**, no bajo `sales.discounts.apply`:
+  quien puede descontar una venta de mostrador no es necesariamente quien puede
+  descontar una reparación, y conectarlas habría ampliado en silencio lo que
+  significa un permiso existente.
+- **Cotización a cero permitida.** Un diagnóstico de cortesía es real, y exigir
+  `total > 0` obligaría a escribir un céntimo para describir trabajo gratis.
+- **Vigencia derivada, sin scheduler.** Un GET que mutara la base para
+  «refrescar» un estado convertiría leer en escribir.
+- **El motivo del rechazo no toca el historial.** Vive en la decisión, donde lo
+  lee la superficie interna; en un timeline visible para el cliente estaría a un
+  cambio de política de acabar publicado.
+
+### P0-B preservado
+
+La IP de una decisión sale de `client_ip.get_client_ip()`, y `AdminAuditLog` ya
+la usaba. Un test estructural comprueba que ningún módulo de M9 nombra
+`HTTP_X_FORWARDED_FOR` ni `REMOTE_ADDR`, y un test funcional comprueba que una
+cabecera falsificada no elige la dirección registrada bajo la configuración por
+defecto.
+
+### Deuda
+
+- Sin notificaciones: `sent` significa «disponible», no «correo enviado».
+- Sin evidencias (DEC-016).
+- Sin política tributaria.
+- Asimetría de presets, igual que en 0033 y en M8.
+

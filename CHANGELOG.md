@@ -9,6 +9,65 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Servicio técnico — diagnóstico, cotización y aprobación (M9 / BR-005B)
+
+**Estado: IMPLEMENTADO (núcleo comercial).** Migraciones **0038–0040**. Aditiva.
+
+### Entregado
+
+- `RepairDiagnostic` — versionado, congelado al publicar
+- `RepairQuote` + `RepairQuoteItem` — revisiones, totales del servidor
+- `RepairQuoteDecision` — una por cotización, garantizada por la base
+- Estados `approved` y `rejected`
+- `publish_quote()` y `record_quote_decision()` — las dos operaciones de evento
+- 8 rutas internas y 2 de cliente
+- 76 tests nuevos
+
+### La invariante de M9
+
+`waiting_approval` dejó de significar «alguien pulsó un botón». Ahora significa
+«existe una cotización concreta, congelada, publicada y vigente esperando una
+decisión del cliente», y **solo publicarla puede producir ese estado**.
+
+`approved` y `rejected` son el resultado registrado de que un cliente decida.
+El endpoint genérico de transición los rechaza los tres.
+
+### Reglas
+
+- La cotización enviada es evidencia: ni ella ni sus líneas se pueden editar.
+  Un cambio de opinión es una **revisión nueva**.
+- El servidor calcula `line_total`, `subtotal` y `total`. El interno elige
+  cantidad y precio; la aritmética no es suya.
+- La moneda se congela desde `CompanySettings`, nunca desde el cliente.
+- Una decisión por cotización, con `OneToOne` en la base. Repetir la misma
+  respuesta es idempotente; la contraria devuelve **409**.
+- Una cotización vencida se puede seguir viendo pero no aprobar.
+- El `channel` y la IP los fija el servidor — la IP por `client_ip.get_client_ip()`,
+  respetando `TRUSTED_PROXY_COUNT` (P0-B).
+
+### Impuestos: cero, y documentado
+
+Esta plataforma **no modela impuestos en ninguna parte** — sin tasa, sin régimen,
+sin configuración. Inventar un 18% porque el piloto es peruano sería escribir la
+ley de un país en un esquema SaaS. La columna existe para que una cotización ya
+enviada conserve lo que llevaba cuando el impuesto llegue; nada lo calcula.
+
+### Lo que NO se implementó
+
+Ejecución, repuestos, reserva de stock, control de calidad, entrega, garantía,
+evidencias, tracking público y pagos de reparación. Cotizar una pieza **no la
+reserva**.
+
+### Capabilities
+
+`service.diagnostic.manage` → **ACTIVE**. Siguen RESERVED `service.repair.manage`
+y `service.quality.manage`.
+
+### No tocado
+
+`Order`, carrito, checkout, Stripe, POS, inventario, `/api/admin/`, P0-B.
+
+---
 ## Fase 0.3 / P0-B — Trusted proxy, IP del cliente y rate limiting
 
 **Estado: PARCIAL — REQUIERE INFRA.** Sin migraciones.
