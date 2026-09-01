@@ -356,3 +356,16 @@ historial reescribe el principio de una historia ya contada.
 La diferencia se recalcula **bajo lock al aplicar**, no se toma de la
 previsualización: si la caja vendió dos unidades mientras alguien revisaba la
 pantalla, el ajuste sigue dejando el estante en la cifra contada.
+
+
+### Hardening C1.5
+
+- **Archivos de más de 5000 filas se rechazan enteros**, no se recortan. Un
+  recorte silencioso daba una importación parcial que informaba de cero errores.
+- **La carga inicial se vuelve a validar al aplicar**, con todos los locks
+  tomados: stock en cero y sin Kardex. Si cambió, falla todo; nunca se convierte
+  en una corrección.
+- **Sucursal inactiva rechazada**, igual que en conteos y transferencias.
+- **Las cantidades se leen como enteros exactos.** Nada pasa por `float`.
+- Una fila preparada cuyo producto o sucursal ya no existe **aborta el trabajo**
+  en vez de omitirse.

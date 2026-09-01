@@ -23,6 +23,8 @@ operation anybody should be one mis-click away from.
 
 from __future__ import annotations
 
+import logging
+
 from django.db import transaction
 from django.http import HttpResponse
 from rest_framework import permissions, status
@@ -45,12 +47,73 @@ from .models import (
     ImportMappingProfile,
 )
 from .pos_views import _NOT_FOUND, _context
-from .tenancy import has_branch_access, visible_branches
+from .tenancy import (
+    CrossTenantError,
+    NoTenantError,
+    has_branch_access,
+    has_capability,
+    resolve_company_for_user,
+    visible_branches,
+)
+
+logger = logging.getLogger(__name__)
 
 CAP_PRODUCTS = 'products.manage'
 CAP_STOCK = 'inventory.adjust'
 
 MAX_PREVIEW_ROWS = 300
+
+
+def _import_context(request):
+    """
+    Resolve the company, and which KINDS of import this caller may see.
+
+    Returns `(company, granted, error_response)` where `granted` is a subset of
+    `{'products', 'stock'}`.
+
+    WHY THE CAPABILITY IS NOT DECIDED BY THE URL
+    --------------------------------------------
+    The history endpoint used to pick its capability from `?type=` and then
+    query without filtering by type, so `products.manage` alone returned stock
+    jobs — filenames, row counts, branch names and who ran them. The two
+    authorities are separate on purpose (moving stock is not editing a
+    catalogue), and neither implies the other.
+
+    Callers get 403 only when they hold NEITHER. Holding one is enough to reach
+    the endpoint; what they then see is filtered by what they hold.
+    """
+    raw = request.query_params.get('company')
+    requested_id = None
+    if raw not in (None, ''):
+        try:
+            requested_id = int(raw)
+        except (TypeError, ValueError):
+            return None, set(), Response(
+                {'detail': 'Parámetro "company" inválido.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    try:
+        company = resolve_company_for_user(request.user, requested_id)
+    except CrossTenantError:
+        return None, set(), Response(
+            {'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND,
+        )
+    except NoTenantError as exc:
+        return None, set(), Response(
+            {'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN,
+        )
+
+    granted = set()
+    if has_capability(request.user, company, CAP_PRODUCTS):
+        granted.add(BulkImportJob.PRODUCTS)
+    if has_capability(request.user, company, CAP_STOCK):
+        granted.add(BulkImportJob.STOCK)
+    if not granted:
+        return None, set(), Response(
+            {'detail': 'No tienes permisos para esta operación.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return company, granted, None
 
 
 def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS):
@@ -132,8 +195,15 @@ class AdminImportInspectView(APIView):
         sheets = []
         for name in workbook.sheetnames:
             for header_row in (1, 2):
-                headers, rows, _t = xlsx_reader.read_rows(
-                    workbook, name, header_row=header_row, max_rows=25,
+                # SAMPLE, deliberately: this endpoint answers "what does this
+                # file look like", so stopping after a handful of rows is the
+                # point. Its truncation flag means "there is more of this file",
+                # NOT "the file is too long" — that judgement belongs to the
+                # preview, which reads in FULL_IMPORT mode and refuses the whole
+                # file rather than trimming it.
+                headers, rows, _sampled = xlsx_reader.read_rows(
+                    workbook, name, header_row=header_row,
+                    limit=xlsx_reader.SAMPLE_ROWS, mode=xlsx_reader.SAMPLE,
                 )
                 detected = import_formats.detect(import_type, name, headers)
                 if detected:
@@ -337,37 +407,40 @@ class AdminImportHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        import_type = request.query_params.get('type') or ''
-        capability = CAP_STOCK if import_type == BulkImportJob.STOCK else CAP_PRODUCTS
-        company, error = _context(request, capability)
+        company, granted, error = _import_context(request)
         if error:
             return error
-        queryset = BulkImportJob.objects.filter(company=company)
-        if import_type in dict(BulkImportJob.TYPE_CHOICES):
-            queryset = queryset.filter(import_type=import_type)
-        return Response({
-            'results': [
-                _job_payload(job)
-                for job in queryset.select_related('created_by', 'applied_by')[:50]
-            ],
-        })
+
+        import_type = request.query_params.get('type') or ''
+        if import_type:
+            if import_type not in dict(BulkImportJob.TYPE_CHOICES):
+                return _error('Tipo de importación inválido.')
+            if import_type not in granted:
+                return Response(
+                    {'detail': 'No tienes permisos para esta operación.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            visible = {import_type}
+        else:
+            # No type asked for: show what this caller is entitled to and
+            # nothing else. Never the union of both because they hold one.
+            visible = granted
+
+        queryset = (
+            BulkImportJob.objects
+            .filter(company=company, import_type__in=sorted(visible))
+            .select_related('created_by', 'applied_by')
+        )
+        return Response({'results': [_job_payload(job) for job in queryset[:50]]})
 
 
 class AdminImportJobView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        job = BulkImportJob.objects.filter(pk=pk).first()
-        if job is None:
-            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
-        capability = (
-            CAP_PRODUCTS if job.import_type == BulkImportJob.PRODUCTS else CAP_STOCK
-        )
-        company, error = _context(request, capability)
+        company, job, error = _job_or_error(request, pk)
         if error:
             return error
-        if job.company_id != company.pk:
-            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         return Response(_job_payload(job, rows=True))
 
 
@@ -375,17 +448,9 @@ class AdminImportErrorReportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        job = BulkImportJob.objects.filter(pk=pk).first()
-        if job is None:
-            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
-        capability = (
-            CAP_PRODUCTS if job.import_type == BulkImportJob.PRODUCTS else CAP_STOCK
-        )
-        company, error = _context(request, capability)
+        company, job, error = _job_or_error(request, pk)
         if error:
             return error
-        if job.company_id != company.pk:
-            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         response = HttpResponse(
             import_exports.error_report_csv(job), content_type='text/csv; charset=utf-8',
@@ -442,6 +507,40 @@ class AdminInventoryExportView(APIView):
 # =============================================================================
 # helpers
 # =============================================================================
+
+def _job_or_error(request, pk):
+    """
+    Resolve one import job without leaking whether it exists elsewhere.
+
+    ORDER MATTERS, AND THIS IS WHY
+    ------------------------------
+    The obvious version looks up the job by primary key FIRST, then decides
+    which capability to demand from the job it found. That turns the endpoint
+    into an oracle: probing an id you have no right to gets 403 when a job of
+    that kind exists somewhere and 404 when nothing does — so a caller can
+    enumerate other tenants' job ids by reading the difference.
+
+    So: resolve the company from the CALLER, look for the job INSIDE it (a job
+    belonging to anyone else is simply not there, and answers 404 exactly like
+    an id nobody ever used), and only then check the capability for that job's
+    kind — a question about a record already known to be theirs.
+    """
+    company, granted, error = _import_context(request)
+    if error:
+        return None, None, error
+
+    job = BulkImportJob.objects.filter(company=company, pk=pk).first()
+    if job is None:
+        return None, None, Response(
+            {'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND,
+        )
+    if job.import_type not in granted:
+        return None, None, Response(
+            {'detail': 'No tienes permisos para esta operación.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return company, job, None
+
 
 def _xlsx(payload: bytes, filename: str) -> HttpResponse:
     response = HttpResponse(
@@ -533,4 +632,13 @@ def _remember_profile(company, actor, job, import_type):
                 },
             )
     except Exception:
-        pass
+        # Best-effort on purpose: a remembered mapping is a convenience, and
+        # losing a preview the operator is about to act on to protect it would
+        # be the wrong trade. But swallowing it entirely means the feature can
+        # be broken for months with nobody able to tell, so the failure is
+        # logged — WITHOUT the file's contents, which are the tenant's data and
+        # have no business in a log line.
+        logger.warning(
+            'No se pudo guardar el perfil de mapeo (empresa=%s, tipo=%s, '
+            'trabajo=%s).', company.pk, import_type, job.pk, exc_info=True,
+        )

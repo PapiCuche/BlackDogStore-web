@@ -53,6 +53,20 @@ MAX_ZIP_ENTRIES = 512
 MAX_COMPRESSION_RATIO = 200
 MAX_DATA_ROWS = 5000                          # per job
 MAX_COLUMNS = 128
+SAMPLE_ROWS = 25                              # what an inspection needs to see
+
+# Two ways to read a sheet, and confusing them is how a file gets half-imported.
+#
+#   SAMPLE       "show me what this file looks like".  Stopping early is the
+#                POINT, and the caller must present it as a sample.
+#   FULL_IMPORT  "read this file so it can be applied".  Stopping early is a
+#                CORRECTNESS FAILURE: the rows past the cut would silently not
+#                be imported while the job still reported zero errors.
+#
+# So FULL_IMPORT never truncates. It reads one row PAST the limit purely to
+# find out whether the limit was exceeded, and then refuses the whole file.
+SAMPLE = 'sample'
+FULL_IMPORT = 'full_import'
 
 SPREADSHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 
@@ -63,6 +77,10 @@ class XlsxError(Exception):
 
 class XlsxTooLarge(XlsxError):
     pass
+
+
+class XlsxTooManyRows(XlsxError):
+    """More data rows than one job may import. Refused whole, never trimmed."""
 
 
 class FormulaCell(Exception):
@@ -313,23 +331,46 @@ def normalize_scalar(value):
 
 
 def read_rows(workbook, sheet_name: str, *, header_row: int = 1,
-              max_rows: int = MAX_DATA_ROWS):
+              limit: int = MAX_DATA_ROWS, mode: str = FULL_IMPORT):
     """
-    Read one sheet as `(headers, rows)`.
+    Read one sheet as `(headers, rows, truncated)`.
 
-    `headers` is the normalised header row; `rows` is a list of
-    `(row_number, {column_index: value_or_FORMULA_marker})` for the data rows
-    below it. Blank rows are kept, with an empty mapping, so the caller can
-    report "row 34" and mean the row the operator sees in Excel — off-by-one
-    row numbers in an import report are how people fix the wrong line.
+    `headers` is the normalised header row. `rows` is a list of
+    `(row_number, values, numeric_columns)`:
+
+      · `row_number`     the line the OPERATOR sees in Excel. Off-by-one here
+                         means they go and fix the wrong row.
+      · `values`         `{column_index: text}` for the cells that had content.
+      · `numeric_columns` the subset of those whose SOURCE CELL was a number.
+                         Kept because "this looks like digits" and "Excel stored
+                         this as a number" are different facts, and only the
+                         second one justifies warning that a leading zero may
+                         have been eaten.
+
+    `truncated` is meaningful ONLY in SAMPLE mode, where it means "there is more
+    of this file". In FULL_IMPORT mode it is always False, because exceeding the
+    limit raises `XlsxTooManyRows` instead — see the note on the mode constants.
+
+    THE OFF-BY-ONE THAT MATTERS FOR THE LIMIT
+    -----------------------------------------
+    Blank rows are collected while reading (a blank row between records is
+    normal and must keep its number) and only trimmed from the END afterwards.
+    So the limit is applied AFTER trimming: a sheet with 5000 records followed
+    by 200 rows of leftover template formatting is a 5000-row file, not a
+    5200-row one, and must not be refused for rows that contain nothing.
     """
     if sheet_name not in workbook.sheetnames:
         raise XlsxError(f'La hoja «{sheet_name}» no existe en el archivo.')
+    if mode not in (SAMPLE, FULL_IMPORT):
+        raise XlsxError(f'Modo de lectura desconocido: {mode}')
     sheet = workbook[sheet_name]
 
+    # One row past the limit, so "exactly at the limit" and "over it" are
+    # distinguishable. In SAMPLE mode the extra row is what proves there is more.
+    hard_stop = limit + 1
+
     headers: list[str] = []
-    rows: list[tuple[int, dict[int, object]]] = []
-    truncated = False
+    rows: list[tuple[int, dict[int, object], set[int]]] = []
 
     previous = 0
     for row in sheet.iter_rows(min_row=1, max_col=MAX_COLUMNS):
@@ -355,28 +396,44 @@ def read_rows(workbook, sheet_name: str, *, header_row: int = 1,
                 headers.pop()
             continue
 
-        if len(rows) >= max_rows:
-            truncated = True
+        if len(rows) >= hard_stop:
             break
 
         values: dict[int, object] = {}
+        numeric: set[int] = set()
         for index, cell in enumerate(row):
             try:
                 raw = _cell_value(cell)
-            except FormulaCell as formula:
+            except FormulaCell:
                 values[index] = FORMULA
                 continue
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                numeric.add(index)
             text = normalize_scalar(raw)
             if text != '':
                 values[index] = text
-        rows.append((number, values))
+            else:
+                numeric.discard(index)
+        rows.append((number, values, numeric))
 
-    # Trailing all-blank rows are an artefact of the template's formatting
-    # (the owner's inventory sheet declares 202 rows and contains 0), not data.
+    # Trailing all-blank rows are an artefact of the template's formatting (the
+    # owner's product sheet declares 202 rows and contains 0), not data.
     while rows and not rows[-1][1]:
         rows.pop()
 
-    return headers, rows, truncated
+    if len(rows) > limit:
+        if mode == FULL_IMPORT:
+            # Refused WHOLE. Trimming to the limit would stage 5000 rows, report
+            # zero errors and apply cleanly, while the rest of the file silently
+            # never arrived — a half-imported catalogue that looks complete.
+            raise XlsxTooManyRows(
+                f'La hoja «{sheet_name}» tiene más de {limit} filas de datos. '
+                f'Divide el archivo en partes de {limit} filas o menos y súbelas '
+                f'por separado: no se importa un archivo a medias.'
+            )
+        return headers, rows[:limit], True
+
+    return headers, rows, False
 
 
 class _Formula:

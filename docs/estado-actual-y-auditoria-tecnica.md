@@ -1242,3 +1242,57 @@ fecha sin zona horaria se guardaba naive. Nuevo `api_parsing.py`.
 una auditoría: la previsualización no escribe nada de negocio, aplicar lee del
 staging y no del navegador, el archivo original no se guarda, el stock se escribe
 únicamente por `inventory_services`, y **una celda vacía nunca es un cero**.
+
+---
+
+---
+
+## Actualización — superficie interna (M6)
+
+`/api/v1/internal/<slug>/` es la cuarta audiencia del contrato v1. Dos puertas:
+pertenencia (404 indistinguible) y permiso (403).
+
+`order_fulfillment_services.py` extraído de `AdminOrderFulfillmentView`; ambas
+superficies lo llaman, con comportamiento idéntico. La restricción del rol de
+inventario se preservó **exacta**, aunque siga clavada al `UserProfile.role`
+legacy en lugar de a una capability.
+
+`sales.orders.view` y `sales.orders.manage` promovidas a **ACTIVE**: v1 las
+impone sin ruta de rol legacy, que es la definición de ACTIVE en el catálogo.
+
+### Deuda registrada
+
+- **La restricción de inventario usa `UserProfile.role`, no una capability.** Es
+  la regla vigente y se conservó tal cual; convertirla en capability es una
+  decisión de negocio, no un refactor.
+- **Sin superficie interna de inventario v1**, aunque `inventory.*` lleve
+  ACTIVE desde la Fase 2D. Mobile no debe llamar `/api/admin/inventory/`.
+- **`sales.notes.manage` sigue AVAILABLE**: el módulo no se implementó.
+- **Servicio técnico sigue RESERVED**: `RepairOrder` no existe.
+
+
+---
+
+## Fase Comercial C1.5 — cierre de la auditoría de C1.4
+
+Seis defectos, todos en los bordes del importador:
+
+1. **Truncamiento silencioso.** 5001 filas → 5000 preparadas, 0 errores, trabajo
+   aplicable. Ahora `FULL_IMPORT` rechaza el archivo entero con 400 y sin crear
+   trabajo; `SAMPLE` (la inspección) sigue leyendo 25 filas y eso significa
+   «muestra», no «el archivo tiene 25».
+2. **Identidad en mayúsculas.** El importador fusionaba `AbC123` y `abc123`, que
+   el POS distingue. Eliminado todo `upper()` de la identidad.
+3. **Códigos inactivos invisibles.** `UNIQUE(company, code)` no filtra por
+   `is_active`, así que un código retirado sigue ocupando su cadena. El índice
+   ahora carga propiedad completa y distingue propiedad de escaneo.
+4. **Deriva entre preview y apply.** Aplicar exige el mismo producto que se
+   aprobó; si no, aborta todo pidiendo re-previsualizar.
+5. **INITIAL sin revalidar.** Ahora: locks → revalidación del conjunto →
+   escritura. Nunca se degrada a corrección.
+6. **Fuga de permisos en el historial.** `products.manage` veía trabajos de
+   inventario. Y el detalle era un oráculo de enumeración (403 vs 404).
+
+Además: enteros exactos para stock, sucursal inactiva rechazada, aviso de celda
+numérica basado en el tipo real de la celda, filas obsoletas que abortan en vez de
+omitirse, y el fallo al guardar un perfil de mapeo registrado en el log.

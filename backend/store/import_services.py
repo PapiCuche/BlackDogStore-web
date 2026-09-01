@@ -36,6 +36,7 @@ from .models import (
     Category,
     Product,
     ProductBarcode,
+    normalize_barcode,
 )
 
 
@@ -132,7 +133,7 @@ def detect_symbology(code: str) -> str:
     return ProductBarcode.UNKNOWN
 
 
-def barcode_warnings(code: str, raw_was_numeric: bool) -> list[str]:
+def barcode_warnings(code: str, *, cell_was_numeric: bool) -> list[str]:
     """
     Say when a code may have lost a leading zero — and never restore one.
 
@@ -140,14 +141,27 @@ def barcode_warnings(code: str, raw_was_numeric: bool) -> list[str]:
     `750123456789`. The missing digit is part of what identifies the physical
     article. Reconstructing it would be inventing the identity of a product, so
     the import warns and imports what the file actually says.
+
+    WHY THE CELL TYPE, AND NOT "IT LOOKS LIKE DIGITS"
+    ------------------------------------------------
+    This used to test a "looks like digits" regex and then tell the operator
+    that "Excel stored it as a number". That was a claim about the FILE inferred
+    from the VALUE, and it is wrong for the commonest good case: a column
+    correctly formatted as text, holding `750123456789`, is all digits and lost
+    nothing. Telling that person their file may be damaged sends them to
+    re-check a shelf for no reason, and an alarm that cries wolf gets ignored on
+    the day it is right.
+
+    So the caller passes what the reader actually observed about the cell.
     """
     notes = []
-    if raw_was_numeric and len(code) in (7, 11, 12):
+    if cell_was_numeric and code.isdigit() and len(code) in (7, 11, 12):
         notes.append(
-            f'«{code}» tiene {len(code)} dígitos y el Excel lo guardó como '
-            f'número. Si el código original empezaba por cero, Excel lo perdió; '
-            f'esta plataforma NO lo repone porque adivinar un dígito cambia de '
-            f'qué producto se trata. Verifícalo contra la etiqueta física.'
+            f'«{code}» tiene {len(code)} dígitos y en el Excel la celda es '
+            f'numérica. Si el código original empezaba por cero, Excel ya lo '
+            f'había perdido antes de subir el archivo; esta plataforma NO lo '
+            f'repone, porque adivinar un dígito cambia de qué producto se '
+            f'trata. Verifícalo contra la etiqueta física.'
         )
     return notes
 
@@ -193,15 +207,49 @@ class CatalogueIndex:
     Built once per job. §74: the naive implementation issues a `filter()` per
     row per identifier, which for the owner's file is several thousand queries
     and a preview that takes minutes.
+
+    TWO DIFFERENT QUESTIONS ABOUT A BARCODE
+    ---------------------------------------
+    `ProductBarcode` is unique on `(company, code)` with NO condition on
+    `is_active`, so a deactivated code still RESERVES that string. That makes
+    two distinct questions:
+
+      OWNERSHIP    "does anything in this company already hold this code?"
+                   Answered over ALL barcodes, active or not. This is what an
+                   importer needs: writing a code that an inactive row already
+                   holds is an IntegrityError, and identifying the product a
+                   retired label belongs to is correct.
+
+      SCANNING     "will this code resolve at a till?"
+                   Answered over ACTIVE barcodes only. That is the POS's
+                   question, and it is not this class's.
+
+    Loading only the active ones — which is what this did — made the preview
+    blind to exactly the rows that would explode at apply time.
+
+    IDENTITY IS CASE-SENSITIVE, DELIBERATELY
+    ----------------------------------------
+    `normalize_barcode()` trims and does nothing else, because a barcode is a
+    string of symbols and Code128 carries mixed case that a scanner reproduces
+    faithfully. The POS resolves a scan with an exact `code=` lookup. This index
+    used to upper-case its keys, which meant the importer could merge two
+    products the till keeps apart — one semantics of identity for scanning and a
+    different one for importing, which is one too many.
     """
 
     def __init__(self, company):
         self.company = company
-        self.by_barcode = {}
-        for code, product_id in ProductBarcode.objects.filter(
-            company=company, is_active=True,
-        ).values_list('code', 'product_id'):
-            self.by_barcode[code.strip().upper()] = product_id
+        # code -> product_id, for EVERY barcode of the company (ownership).
+        self.by_barcode: dict[str, int] = {}
+        # the subset that is deactivated, so the preview can say so.
+        self.inactive_codes: set[str] = set()
+        for code, product_id, is_active in ProductBarcode.objects.filter(
+            company=company,
+        ).values_list('code', 'product_id', 'is_active'):
+            key = normalize_barcode(code)
+            self.by_barcode[key] = product_id
+            if not is_active:
+                self.inactive_codes.add(key)
 
         self.by_name = {}
         self.ambiguous_names = set()
@@ -220,11 +268,18 @@ class CatalogueIndex:
             .values_list('pk', 'name')
         }
 
+    def owner_of(self, code: str):
+        """Which product holds this exact code, active or not."""
+        return self.by_barcode.get(normalize_barcode(code))
+
+    def is_inactive(self, code: str) -> bool:
+        return normalize_barcode(code) in self.inactive_codes
+
     def match(self, *, barcode='', code='', name=''):
         """
         Resolve a row to a product, or explain the ambiguity.
 
-        Returns `(product_id_or_None, error_or_None, matched_by)`.
+        Returns `(product_id_or_None, error_or_None, matched_by, warnings)`.
 
         §30 — when two identifiers on the SAME row point at DIFFERENT products,
         that is an error and not a preference. Choosing one would either update
@@ -232,22 +287,27 @@ class CatalogueIndex:
         exists, and both are silent.
         """
         hits = {}
-        if barcode:
-            found = self.by_barcode.get(barcode.strip().upper())
+        warnings: list[str] = []
+        for label, value in (('barcode', barcode), ('code', code)):
+            if not value:
+                continue
+            found = self.owner_of(value)
             if found:
-                hits['barcode'] = found
-        if code:
-            found = self.by_barcode.get(code.strip().upper())
-            if found:
-                hits['code'] = found
+                hits[label] = found
+                if self.is_inactive(value):
+                    warnings.append(
+                        f'El código «{normalize_barcode(value)}» está '
+                        f'desactivado para escaneo, pero sigue asignado a este '
+                        f'producto. Se usa para identificarlo y NO se reactiva.'
+                    )
 
         distinct = set(hits.values())
         if len(distinct) > 1:
             return None, (
                 'Los identificadores de esta fila apuntan a productos distintos.'
-            ), ''
+            ), '', warnings
         if distinct:
-            return distinct.pop(), None, ','.join(sorted(hits))
+            return distinct.pop(), None, ','.join(sorted(hits)), warnings
 
         if name:
             key = ' '.join(name.split()).lower()
@@ -255,11 +315,11 @@ class CatalogueIndex:
                 return None, (
                     'Hay más de un producto con este nombre; añade el código o '
                     'el código de barras para identificarlo.'
-                ), ''
+                ), '', warnings
             found = self.by_name.get(key)
             if found:
-                return found, None, 'name'
-        return None, None, ''
+                return found, None, 'name', warnings
+        return None, None, '', warnings
 
 
 # =============================================================================
@@ -300,8 +360,12 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
     sheet_name = sheet_name or workbook.sheetnames[0]
     detected = None
     if mapping is None or header_row is None:
+        # SAMPLE: format detection only needs the header row. Reading the whole
+        # file here would also mean a too-large file was refused from a probe
+        # rather than from the real read, with a confusing message.
         probe_headers, _rows, _t = xlsx_reader.read_rows(
             workbook, sheet_name, header_row=header_row or 1,
+            limit=xlsx_reader.SAMPLE_ROWS, mode=xlsx_reader.SAMPLE,
         )
         detected = import_formats.detect(
             BulkImportJob.PRODUCTS, sheet_name, probe_headers,
@@ -309,7 +373,10 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
         if detected is None and header_row is None:
             # The banner-row layout: try row 2 before giving up, because the
             # owner's own template puts its headers there.
-            probe2, _r2, _t2 = xlsx_reader.read_rows(workbook, sheet_name, header_row=2)
+            probe2, _r2, _t2 = xlsx_reader.read_rows(
+                workbook, sheet_name, header_row=2,
+                limit=xlsx_reader.SAMPLE_ROWS, mode=xlsx_reader.SAMPLE,
+            )
             detected = import_formats.detect(BulkImportJob.PRODUCTS, sheet_name, probe2)
         if detected:
             header_row = header_row or detected['header_row']
@@ -324,8 +391,10 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
     if 'name' not in mapping:
         raise ImportError_('Falta asignar la columna del nombre del producto.')
 
-    headers, rows, truncated = xlsx_reader.read_rows(
-        workbook, sheet_name, header_row=header_row,
+    # FULL_IMPORT, and deliberately BEFORE the job is created: a file that is
+    # too long must leave nothing behind, not a job somebody could later apply.
+    headers, rows, _truncated = xlsx_reader.read_rows(
+        workbook, sheet_name, header_row=header_row, mode=xlsx_reader.FULL_IMPORT,
     )
 
     job = BulkImportJob.objects.create(
@@ -347,7 +416,7 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
     seen_barcodes: dict[str, int] = {}
     seen_names: dict[str, int] = {}
 
-    for row_number, values in rows:
+    for row_number, values, numeric_columns in rows:
         if not values:
             staged.append(BulkImportRow(
                 job=job, sheet_name=sheet_name, row_number=row_number,
@@ -379,23 +448,25 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
                 errors.append(price_error)
 
         if barcode:
-            was_numeric = bool(re.fullmatch(r'\d+', barcode))
-            warnings.extend(barcode_warnings(barcode, was_numeric))
+            warnings.extend(barcode_warnings(
+                barcode,
+                cell_was_numeric=mapping.get('barcode') in numeric_columns,
+            ))
             errors.extend(_barcode_shape_errors(barcode, 'código de barras'))
-            previous = seen_barcodes.get(barcode.upper())
+            previous = seen_barcodes.get(normalize_barcode(barcode))
             if previous:
                 errors.append(
                     f'El código de barras «{barcode}» ya aparece en la fila {previous}.'
                 )
             else:
-                seen_barcodes[barcode.upper()] = row_number
+                seen_barcodes[normalize_barcode(barcode)] = row_number
         if code and options['code_as_barcode']:
             errors.extend(_barcode_shape_errors(code, 'código interno'))
-            previous = seen_barcodes.get(code.upper())
+            previous = seen_barcodes.get(normalize_barcode(code))
             if previous and previous != row_number:
                 errors.append(f'El código «{code}» ya aparece en la fila {previous}.')
             else:
-                seen_barcodes[code.upper()] = row_number
+                seen_barcodes[normalize_barcode(code)] = row_number
 
         category_id = None
         category_name = fields.get('category', '').strip()
@@ -408,11 +479,33 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
                     f'activa «crear categorías que falten».'
                 )
 
-        product_id, match_error, matched_by = index.match(
+        product_id, match_error, matched_by, match_warnings = index.match(
             barcode=barcode, code=code, name=name,
         )
+        warnings.extend(match_warnings)
         if match_error:
             errors.append(match_error)
+
+        # §18 — a code this row would WRITE that another product already holds.
+        #
+        # Ownership matching normally resolves this first: if a code is held,
+        # `match()` returns its owner, and two identifiers held by two different
+        # products come back as a conflict. This is the net under that, for the
+        # case where the row resolved to one product while a code it also
+        # carries belongs to another. The database would refuse the write —
+        # unique on (company, code), with no exception for deactivated rows — so
+        # without this the failure arrives as an IntegrityError from the middle
+        # of apply, after the preview said the file was clean.
+        if not match_error:
+            for candidate in (barcode, code):
+                if not candidate:
+                    continue
+                owner = index.owner_of(candidate)
+                if owner is not None and owner != product_id:
+                    errors.append(
+                        f'El código «{normalize_barcode(candidate)}» ya '
+                        f'pertenece a otro producto de esta empresa.'
+                    )
 
         if not errors and product_id is None and not (barcode or code):
             # §31 — with no stable identifier, only creation is defensible.
@@ -473,7 +566,6 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
         'detected': (detected or {}).get('label', ''),
         'format_notes': (detected or {}).get('notes', []),
         'unmapped': import_formats.unmapped_notes(headers, mapping),
-        'truncated': truncated,
         'sheets': list(workbook.sheetnames),
     }
     job.save(update_fields=[
@@ -517,18 +609,45 @@ def apply_products(*, job, actor):
         .order_by('row_number')
     )
 
+    # §19 — VALIDATE THE WHOLE SET FIRST, then write.
+    #
+    # Preview recorded which product each row resolved to (or that it resolved
+    # to none, meaning "create"). If that has changed, the file no longer
+    # describes the catalogue in front of us, and there is no safe way to guess
+    # what was intended: a row approved as "create a new article" whose code is
+    # now held by something else would, if applied, rename and reprice that
+    # other article. Nothing in the data distinguishes "the same product arrived
+    # by another route" from "an unrelated product took this code" — only a
+    # person can, by reading a fresh preview.
+    #
+    # Done in a pass of its own, against the catalogue as it stands BEFORE this
+    # job writes anything. Interleaving it with the writes made the job trip
+    # over itself: the second of two rows creating articles with the same name
+    # would re-match the product the first row had just created, and abort a
+    # perfectly valid import.
+    for row in rows:
+        data = row.normalized_data or {}
+        product_id, match_error, _by, _warn = index.match(
+            barcode=data.get('barcode', ''), code=data.get('code', ''),
+            name=data.get('name', ''),
+        )
+        if match_error:
+            raise ImportError_(f'Fila {row.row_number}: {match_error}')
+        if data.get('product_id') != product_id:
+            raise ImportError_(
+                f'El catálogo cambió desde la previsualización (fila '
+                f'{row.row_number}, «{data.get("name", "")}»). Vuelve a '
+                f'previsualizar antes de aplicar.'
+            )
+
     for row in rows:
         data = row.normalized_data or {}
         name = data.get('name', '')
         barcode = data.get('barcode', '')
         code = data.get('code', '')
-
-        # Re-resolve: between preview and apply somebody may have created this.
-        product_id, match_error, _by = index.match(
-            barcode=barcode, code=code, name=name,
-        )
-        if match_error:
-            raise ImportError_(f'Fila {row.row_number}: {match_error}')
+        # The APPROVED resolution, re-verified above. Not re-derived here, so
+        # products this same job creates cannot capture later rows.
+        product_id = data.get('product_id')
 
         category_id = data.get('category_id')
         category_name = data.get('category', '')
@@ -592,15 +711,19 @@ def apply_products(*, job, actor):
             index.by_name.setdefault(key, product.pk)
 
         for candidate, symbology in _barcodes_for(data, options):
-            upper = candidate.strip().upper()
-            if not upper or upper in index.by_barcode:
+            key = normalize_barcode(candidate)
+            # Already held — by THIS product (the row matched on it, possibly a
+            # deactivated label). Not rewritten and not reactivated: turning a
+            # retired code back on is a decision somebody made once, and an
+            # import is not the place to reverse it silently.
+            if not key or key in index.by_barcode:
                 continue
             ProductBarcode.objects.create(
-                company=company, product=product, code=candidate.strip(),
+                company=company, product=product, code=key,
                 symbology=symbology,
                 is_primary=not product.barcodes.filter(is_primary=True).exists(),
             )
-            index.by_barcode[upper] = product.pk
+            index.by_barcode[key] = product.pk
 
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
@@ -652,7 +775,7 @@ def _barcodes_for(data, options):
     if barcode:
         out.append((barcode, detect_symbology(barcode)))
     code = (data.get('code') or '').strip()
-    if code and options.get('code_as_barcode') and code.upper() != barcode.upper():
+    if code and options.get('code_as_barcode') and normalize_barcode(code) != normalize_barcode(barcode):
         out.append((code, ProductBarcode.INTERNAL))
     return out
 

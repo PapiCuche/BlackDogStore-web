@@ -346,6 +346,36 @@ el webhook.
 
 Detalle en `docs/saas-multiempresa.md` § 8-vicies.
 
+### API v1 — superficie INTERNA
+
+Cuarta audiencia. Staff leyendo los registros de **la empresa**, bajo capability.
+
+| Método | Endpoint | Requiere |
+|--------|----------|----------|
+| GET | `/api/v1/internal/<slug>/context/` | membresía activa |
+| GET | `/api/v1/internal/<slug>/orders/` | `sales.orders.view` |
+| GET | `/api/v1/internal/<slug>/orders/<id>/` | `sales.orders.view` |
+| PATCH | `/api/v1/internal/<slug>/orders/<id>/fulfillment/` | `sales.orders.manage` |
+
+**Dos puertas, y responden distinto.** Sin membresía activa → **404**,
+indistinguible de una empresa desconocida: otro código dejaría a cualquier login
+válido mapear los tenants de la plataforma. Con membresía y sin capability →
+**403**: el servidor ya admitió que la empresa existe y que trabajas ahí.
+
+**Una relación de cliente no abre el área interna.** Comprarle a un negocio no es
+trabajar en él.
+
+**`context/` se llama al entrar**, no se lee de la sesión: los roles cambian
+mientras una sesión sigue viva.
+
+**Una sola máquina de estados.** `order_fulfillment_services.py` la comparten el
+admin web y v1. Cambiar fulfillment no toca el pago, no manda correo y no mueve
+stock.
+
+`/api/admin/` **no cambia**.
+
+Detalle en `docs/saas-multiempresa.md` § 8-unvicies.
+
 ### Reglas de contraseña (registro)
 
 - Mínimo 8 caracteres (Django `MinimumLengthValidator`)
@@ -1005,6 +1035,14 @@ a cero. Todo cambio pasa por `inventory_services` y genera Kardex.
 El formato de 18 columnas del POS del propietario y su export de inventario de 5
 columnas se reconocen solos, por la **forma** del archivo (firma de encabezados),
 no por la empresa: cualquier inquilino con el mismo export queda cubierto.
+
+Límites y garantías (C1.5): un archivo de más de **5000 filas de datos se rechaza
+entero** —no se recorta—, los códigos distinguen mayúsculas de minúsculas igual
+que en el POS, un código de barras desactivado **sigue ocupando su código**, y la
+«carga inicial» se vuelve a validar en el momento de aplicar: si el stock dejó de
+estar en cero, falla toda la operación en lugar de convertirse en una corrección.
+El historial de importaciones muestra sólo el tipo de trabajo cuya capacidad
+tienes.
 
 **Migración:** con una sola sucursal activa por empresa se resuelve sola. Con
 varias y ninguna indicada, la migración **falla ruidosamente** y pide

@@ -1272,7 +1272,6 @@ export type ImportJob = {
     format_notes?: string[];
     unmapped?: { column: string; reason: string }[];
     branches?: { column: string; branch_id: number; branch_name: string }[];
-    truncated?: boolean;
     sheets?: string[];
     applied?: Record<string, number>;
   };

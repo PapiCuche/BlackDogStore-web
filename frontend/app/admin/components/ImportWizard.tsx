@@ -110,24 +110,14 @@ export function Notices({ job }: { job: ImportJob }) {
   const reader = job.summary?.reader_notes ?? [];
   const format = job.summary?.format_notes ?? [];
   const unmapped = job.summary?.unmapped ?? [];
-  const truncated = job.summary?.truncated ?? false;
-  if (!reader.length && !format.length && !unmapped.length && !truncated) {
-    return null;
-  }
+  if (!reader.length && !format.length && !unmapped.length) return null;
+  // There is no "the preview was truncated" case any more, and that is the
+  // point: a file over the row limit is now REFUSED outright by the backend
+  // with a 400, instead of being trimmed into a job that reported no errors and
+  // could be applied. A warning here would have been a cap announced after the
+  // fact; the refusal happens before anything is staged.
   return (
     <div className="mb-4 space-y-2 text-xs">
-      {/*
-        A cap that is not announced reads as "everything was covered". If the
-        file was longer than one job may read, the operator has to know that
-        the rest of it is simply not here.
-      */}
-      {truncated && (
-        <p className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 font-semibold text-amber-200">
-          El archivo tiene más filas de las que se procesan en una sola carga.
-          Sólo se leyeron las primeras y el resto NO está en esta
-          previsualización: divide el archivo y súbelo por partes.
-        </p>
-      )}
       {[...reader, ...format].map((note) => (
         <p
           key={note}

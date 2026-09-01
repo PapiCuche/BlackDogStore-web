@@ -9,6 +9,95 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase Comercial C1.5 — Hardening de la carga masiva previo al merge
+
+**Estado: IMPLEMENTADO.** Sin migraciones nuevas.
+
+Cierra los defectos de la auditoría remota de C1.4. Todos son de la misma
+familia: el importador era correcto en el camino feliz y demasiado confiado en
+los bordes.
+
+### 5000 filas no puede significar «recorta y sigue»
+
+El lector paraba en 5000 filas y marcaba `truncated`, pero el preview seguía
+adelante: un archivo de 5001 filas producía **5000 filas preparadas, cero
+errores y un trabajo aplicable**. Eso es una importación parcial que se presenta
+como completa.
+
+Ahora hay dos modos explícitos. `SAMPLE` (la inspección) para de leer a
+propósito y eso significa «hay más». `FULL_IMPORT` **no recorta nunca**: lee una
+fila más que el límite sólo para saber si se pasó, y si se pasó **rechaza el
+archivo entero con 400**, antes de crear ningún trabajo. Las filas vacías del
+final no cuentan: una hoja con 5000 registros y 200 filas de formato sobrante es
+un archivo de 5000.
+
+### Una sola semántica de identidad
+
+`normalize_barcode()` recorta y nada más, porque Code128 lleva mayúsculas y
+minúsculas que el lector reproduce. El importador **ponía todo en mayúsculas**,
+así que fusionaba dos artículos que la caja distingue. `AbC123` y `abc123` vuelven
+a ser dos códigos distintos, en el import igual que en el POS.
+
+### Un código desactivado sigue ocupando su código
+
+`UNIQUE(company, code)` no tiene condición sobre `is_active`. El índice cargaba
+sólo los activos, así que era ciego justo a las filas que iban a reventar al
+aplicar. Ahora se distinguen dos preguntas: **propiedad** (todos los códigos,
+activos o no — la que necesita un importador) y **escaneo** (sólo activos — la
+del POS). Un código retirado identifica a su producto, con aviso, **no se
+reactiva** y **no se duplica**; si pertenece a otro producto, es error de fila.
+
+### Preview y apply tienen que coincidir
+
+Si entre las dos pantallas alguien ocupa un código, aplicar ya no adivina: el
+trabajo **aborta entero** pidiendo volver a previsualizar. Antes actualizaba
+silenciosamente el producto que hubiera aparecido — seguro cuando es el mismo
+artículo, y un renombrado de un producto ajeno cuando no lo es. Nada en los datos
+distingue los dos casos; una persona sí.
+
+### La carga inicial se revalida al aplicar
+
+«Stock inicial» afirma que antes no había nada. El preview lo comprobaba y luego
+el operador se iba a almorzar. Ahora, **bajo todos los locks y antes de escribir
+un solo movimiento**, se vuelve a exigir: stock en cero y sin Kardex previo. Si
+cambió, **falla todo** — no se degrada a corrección, porque eso convertiría «esto
+es con lo que empezamos» en «esto es un ajuste» sin decirlo. También se rechaza
+stock existente sin Kardex: es un estado que este sistema no produce y cuya
+procedencia se desconoce.
+
+### El stock es un entero exacto
+
+`int(float(text))` convertía `9007199254740993` en `…992`: la cuenta volvía corta,
+en silencio. Se parsea como entero exacto y se valida contra el techo real de la
+columna; una cifra imposible es error de fila, no un 500.
+
+### El historial filtraba entre capacidades
+
+`/api/admin/imports/` elegía la capacidad según `?type` pero **no filtraba la
+consulta**: con sólo `products.manage` se veían los trabajos de inventario —
+nombres de archivo, sucursales, filas y quién los ejecutó. Ahora cada tipo exige
+su capacidad y sin `?type` se ve exactamente lo que se tiene. Sin ninguna: 403.
+
+El detalle y el reporte de errores buscaban el trabajo **por pk global** y luego
+elegían la capacidad según lo encontrado, lo que convertía el endpoint en un
+oráculo: 403 si existía un trabajo de ese tipo en algún sitio, 404 si no. Ahora se
+resuelve primero la empresa, se busca dentro de ella, y otro inquilino recibe 404
+indistinguible.
+
+### Además
+
+- Una fila preparada que ya no resuelve (producto o sucursal desaparecidos) **aborta
+  el trabajo**, no se salta en silencio.
+- Sucursal inactiva: rechazada en preview y en apply, igual que ya hacían los
+  conteos físicos y las transferencias.
+- El aviso de «posible cero perdido» ya no afirma que Excel guardó la celda como
+  número salvo que **la celda fuera realmente numérica**; una columna de texto con
+  dígitos ya no se marca.
+- El fallo al guardar un perfil de mapeo se registra en el log (sin contenido del
+  archivo) en vez de tragarse por completo.
+
+---
+
 ## Fase Comercial C1.4 — Carga masiva de productos e inventario desde Excel
 
 **Estado: IMPLEMENTADO.** Migración **0042**.
@@ -429,6 +518,41 @@ acaba el jueves».
 - Caja / arqueo · devoluciones y anulaciones compensatorias · compras y
   proveedores · costo real y rentabilidad · descuentos manuales en POS ·
   pronóstico estacional · lector por cámara.
+
+---
+
+## API v1 — superficie interna y pedidos de venta (M6)
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Aditiva.
+
+### Entregado
+
+- `GET /api/v1/internal/<slug>/context/` — capabilities frescas al entrar
+- `GET /api/v1/internal/<slug>/orders/` y `/<id>/` — requieren `sales.orders.view`
+- `PATCH .../orders/<id>/fulfillment/` — requiere `sales.orders.manage`
+- `order_fulfillment_services.py` — una sola máquina de estados, compartida con
+  el admin web
+- Serializers internos propios, separados de los de cliente
+- 59 tests nuevos
+
+### Reglas
+
+- **Dos puertas**: sin membresía activa → 404 indistinguible; con membresía y sin
+  capability → 403.
+- Una relación de cliente **no** abre el área interna.
+- Un platform master solo opera sobre el tenant **nombrado en la ruta**.
+- El detalle devuelve `available_fulfillment_transitions` desde el servidor.
+- Cambiar fulfillment no toca el pago, no manda correo y no mueve stock.
+
+### Capabilities
+
+`sales.orders.view` y `sales.orders.manage` → **ACTIVE**, porque v1 las impone
+sin ruta de rol legacy. `sales.notes.manage` sigue AVAILABLE (no implementada).
+Las de servicio técnico siguen RESERVED.
+
+### No tocado
+
+`/api/admin/`, cookie + CSRF, Stripe, inventario, catálogo público, cliente.
 
 ---
 

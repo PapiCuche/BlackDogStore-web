@@ -61,6 +61,8 @@ _MAX_PAGE_SIZE = 100
 
 CAP_PRODUCTS_VIEW = 'products.view'
 CAP_PRODUCTS_MANAGE = 'products.manage'
+from . import order_fulfillment_services as fulfillment
+
 CAP_ORDERS_VIEW = 'sales.orders.view'
 CAP_ORDERS_MANAGE = 'sales.orders.manage'
 CAP_SALES_NOTES = 'sales.notes.manage'
@@ -922,34 +924,15 @@ class AdminOrderFulfillmentView(APIView):
         # Scoped: an admin of company A can never move company B's order.
         order = get_object_or_404(Order.objects.filter(company=company), pk=pk)
 
-        role = get_user_role(request.user)
-        if role == UserProfile.ROLE_INVENTORY and new_fs not in _INVENTORY_ALLOWED_FULFILLMENT:
-            allowed = ', '.join(sorted(_INVENTORY_ALLOWED_FULFILLMENT))
-            return Response(
-                {'detail': f'El rol de inventario no puede establecer el estado "{new_fs}". '
-                           f'Estados permitidos: {allowed}.'},
-                status=status.HTTP_403_FORBIDDEN,
+        # M6 — the rule and the audit entry moved to a shared service, so the
+        # native surface cannot drift from this one. Behaviour is unchanged.
+        try:
+            fulfillment.change_fulfillment_status(
+                order=order, new_status=new_fs, actor=request.user,
+                company=company, note=note, request=request,
             )
-
-        old_fs = order.fulfillment_status
-        with transaction.atomic():
-            order.fulfillment_status = new_fs
-            order.save(update_fields=['fulfillment_status'])
-            AdminAuditLog.log(
-                actor=request.user,
-                action='order_fulfillment_status_changed',
-                target_type='order',
-                target_id=order.pk,
-                company=company,
-                metadata={
-                    'order_id': order.pk,
-                    'customer_email': order.customer_email,
-                    'old_fulfillment_status': old_fs,
-                    'new_fulfillment_status': new_fs,
-                    'note': note[:200] if note else '',
-                },
-                request=request,
-            )
+        except fulfillment.FulfillmentNotAllowed as exc:
+            return Response({'detail': exc.detail}, status=status.HTTP_403_FORBIDDEN)
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(AdminOrderDetailSerializer(order).data)

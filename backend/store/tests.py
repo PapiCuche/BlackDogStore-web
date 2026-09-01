@@ -23448,10 +23448,16 @@ class C14ProductImportTest(TestCase):
                  Category.objects.count())
         self.assertEqual(before, after)
 
-    def test_a_product_created_between_preview_and_apply_is_updated_not_duplicated(self):
+    def test_a_product_that_appears_between_preview_and_apply_aborts_the_job(self):
         """
-        A preview is a forecast, not a promise. Apply re-resolves every match
-        because the catalogue may have moved between the two clicks.
+        A preview is a forecast, not a promise — and when the forecast stops
+        matching, the job stops.
+
+        C1.4 let apply quietly re-resolve and UPDATE whatever now held the code.
+        That is safe only while the thing that appeared is the same article; if
+        an unrelated product took the code, the same path renames and reprices
+        it. Nothing in the data distinguishes the two cases, so apply refuses
+        both and asks for a fresh preview — which a person can read.
         """
         job = self._preview([self._row()])
         self.assertEqual(job.rows_create, 1)
@@ -23459,8 +23465,13 @@ class C14ProductImportTest(TestCase):
         ProductBarcode.objects.create(
             company=self.company, product=sneaked, code='7751234567892',
         )
-        _c14_products.apply_products(job=job, actor=self.user)
+        with self.assertRaises(_c14_products.ImportError_) as caught:
+            _c14_products.apply_products(job=job, actor=self.user)
+        self.assertIn('previsualización', str(caught.exception))
+        # Nothing written, and the product that appeared is untouched.
         self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+        sneaked.refresh_from_db()
+        self.assertEqual(sneaked.price, Decimal('10.00'))
 
     def test_the_original_file_is_not_stored(self):
         """
@@ -23724,6 +23735,25 @@ class C14StockImportTest(TestCase):
         already been told.
         """
         self._set_stock(4)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 10})],
+                            mode=_BulkImportJob.MODE_INITIAL)
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('carga inicial', job.rows.first().errors[0].lower())
+
+    def test_initial_mode_refuses_history_even_when_the_shelf_is_now_empty(self):
+        """
+        The subtler half of the same rule. Stock back at zero does not mean
+        nothing ever happened here: an entry and a matching exit leave a Kardex
+        and an empty shelf. Writing INITIAL_STOCK on top would insert an opening
+        balance into the middle of a story that had already started.
+        """
+        self._set_stock(4)
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=4, reason='venta',
+        )
+        self.assertEqual(self._quantity(), 0)
+
         job = self._preview([self._row(**{'ALMACEN 1 - 11416': 10})],
                             mode=_BulkImportJob.MODE_INITIAL)
         self.assertEqual(job.rows_error, 1)
@@ -24525,4 +24555,1424 @@ class C14ImportedProductIsUsableTest(TestCase):
         )
         self.assertEqual(
             inventory_services.branch_quantity(self.branch, product), 4,
+        )
+
+
+# =============================================================================
+# M6 — the INTERNAL surface: /api/v1/internal/<company_slug>/
+# =============================================================================
+#
+# Four audiences now. Most of what follows exists to pin down that the third
+# never becomes the second and the second never becomes the third: a client
+# asking for orders gets theirs, an employee asking gets the company's, and no
+# endpoint decides which by looking at who called it.
+
+
+def _m6_ctx_url(slug):
+    return f'/api/v1/internal/{slug}/context/'
+
+
+def _m6_orders_url(slug):
+    return f'/api/v1/internal/{slug}/orders/'
+
+
+def _m6_order_url(slug, pk):
+    return f'/api/v1/internal/{slug}/orders/{pk}/'
+
+
+def _m6_fulfillment_url(slug, pk):
+    return f'/api/v1/internal/{slug}/orders/{pk}/fulfillment/'
+
+
+def _m6_user(username, password='Pass123!'):
+    return User.objects.create_user(
+        username=username, email=f'{username}@example.com', password=password,
+    )
+
+
+def _m6_login(username, password='Pass123!'):
+    client = APIClient()
+    token = client.post(
+        '/api/v1/auth/login/',
+        {'email': f'{username}@example.com', 'password': password},
+        format='json',
+    ).json()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {token['access']}")
+    return client, token
+
+
+class M6InternalBase(TestCase):
+    """One company, one staff member with full sales capability, one order."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Interna', 'm6-shop', tax_id='20790000001')
+        self.other = _saas_company('Ajena', 'm6-otra', tax_id='20790000002')
+
+        self.staff = _m6_user('vendedora')
+        self.membership = Membership.objects.create(
+            user=self.staff, company=self.company, role='sales',
+        )
+
+        self.buyer = _m6_user('compradora')
+        _v1_customer(self.company, self.buyer)
+        self.order = _order(self.company, user=self.buyer, total='500.00', paid=True)
+
+        self.client, _ = _m6_login('vendedora')
+
+
+class M6InternalContextTest(M6InternalBase):
+    """Who am I inside this company, RIGHT NOW."""
+
+    def test_anonymous_is_401(self):
+        self.assertEqual(APIClient().get(_m6_ctx_url('m6-shop')).status_code, 401)
+
+    def test_a_member_gets_their_context(self):
+        payload = self.client.get(_m6_ctx_url('m6-shop')).json()
+
+        self.assertEqual(payload['company']['slug'], 'm6-shop')
+        self.assertTrue(payload['member'])
+        self.assertIn('sales.orders.view', payload['capabilities'])
+
+    def test_a_CUSTOMER_ONLY_user_is_404(self):
+        # Buying from a business is not working for it, and never will be.
+        client, _ = _m6_login('compradora')
+
+        self.assertEqual(client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+
+    def test_an_INACTIVE_membership_is_404(self):
+        Membership.objects.filter(pk=self.membership.pk).update(is_active=False)
+
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+
+    def test_an_inactive_COMPANY_is_404(self):
+        self.company.is_active = False
+        self.company.save(update_fields=['is_active'])
+
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+
+    def test_a_member_of_A_asking_for_B_is_404(self):
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-otra')).status_code, 404)
+
+    def test_unknown_company_and_not_a_member_are_INDISTINGUISHABLE(self):
+        # Otherwise any valid login maps the platform's tenants, one at a time.
+        unknown = self.client.get(_m6_ctx_url('no-existe'))
+        foreign = self.client.get(_m6_ctx_url('m6-otra'))
+
+        self.assertEqual(unknown.status_code, foreign.status_code)
+        self.assertEqual(unknown.json(), foreign.json())
+
+    def test_a_member_of_TWO_companies_gets_each_context(self):
+        Membership.objects.create(user=self.staff, company=self.other, role='inventory')
+
+        here = self.client.get(_m6_ctx_url('m6-shop')).json()
+        there = self.client.get(_m6_ctx_url('m6-otra')).json()
+
+        self.assertEqual(here['company']['slug'], 'm6-shop')
+        self.assertEqual(there['company']['slug'], 'm6-otra')
+        self.assertIn('sales.orders.view', here['capabilities'])
+        self.assertNotIn('sales.orders.view', there['capabilities'])
+
+    def test_a_CUSTOM_role_decides_the_capabilities(self):
+        # Once a company models someone with custom roles, restricting them
+        # actually restricts them — the legacy role matrix is not consulted.
+        role = _role(self.company, 'Solo lectura', capabilities=['sales.orders.view'])
+        _assign(self.membership, role)
+
+        capabilities = self.client.get(_m6_ctx_url('m6-shop')).json()['capabilities']
+
+        self.assertIn('sales.orders.view', capabilities)
+        self.assertNotIn('sales.orders.manage', capabilities)
+
+    def test_it_reports_platform_master_SEPARATELY(self):
+        self.staff.is_superuser = True
+        self.staff.save(update_fields=['is_superuser'])
+        client, _ = _m6_login('vendedora')
+
+        self.assertTrue(client.get(_m6_ctx_url('m6-shop')).json()['platform']['is_master'])
+
+    def test_a_platform_master_must_NAME_the_tenant(self):
+        master = _m6_user('plataforma')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        client, _ = _m6_login('plataforma')
+
+        # The explicit slug works; there is no implicit tenant anywhere.
+        self.assertEqual(client.get(_m6_ctx_url('m6-shop')).status_code, 200)
+        self.assertEqual(client.get(_m6_ctx_url('no-existe')).status_code, 404)
+
+    def test_it_returns_NOTHING_but_access_information(self):
+        # Only the four access keys. Checked structurally rather than by
+        # substring: capability CODES legitimately contain words like "orders",
+        # and grepping for those would fail on a correct response.
+        payload = self.client.get(_m6_ctx_url('m6-shop')).json()
+
+        self.assertEqual(set(payload), {'company', 'member', 'capabilities', 'platform'})
+        self.assertEqual(set(payload['company']), {'slug', 'name'})
+
+        body = self.client.get(_m6_ctx_url('m6-shop')).content.decode().lower()
+        for leaked in ('customer_email', 'stripe', 'token', 'secret', 'tax_id', 'total'):
+            self.assertNotIn(leaked, body)
+
+    def test_a_web_cookie_does_not_open_it(self):
+        web = APIClient()
+        web.post(
+            '/api/auth/login/', {'username': 'vendedora', 'password': 'Pass123!'}, format='json',
+        )
+
+        self.assertEqual(web.get(_m6_ctx_url('m6-shop')).status_code, 401)
+
+    def test_a_body_or_header_cannot_change_the_company(self):
+        payload = self.client.get(
+            f"{_m6_ctx_url('m6-shop')}?company=m6-otra", HTTP_X_COMPANY_SLUG='m6-otra',
+        ).json()
+
+        self.assertEqual(payload['company']['slug'], 'm6-shop')
+
+
+class M6InternalOrdersViewTest(M6InternalBase):
+    """The COMPANY's orders, behind `sales.orders.view`."""
+
+    def test_a_member_with_the_capability_sees_the_company_orders(self):
+        rows = self.client.get(_m6_orders_url('m6-shop')).json()
+
+        self.assertEqual(rows['count'], 1)
+        self.assertEqual(rows['results'][0]['id'], self.order.id)
+
+    def test_it_shows_orders_the_caller_did_NOT_buy(self):
+        # The point of an internal surface. These are someone else's purchases,
+        # and staff are supposed to see them.
+        self.assertEqual(
+            self.client.get(_m6_orders_url('m6-shop')).json()['results'][0]['customer_name'],
+            self.order.customer_name,
+        )
+
+    def test_WITHOUT_the_capability_it_is_403(self):
+        role = _role(self.company, 'Sin ventas', capabilities=['company.view'])
+        _assign(self.membership, role)
+
+        self.assertEqual(self.client.get(_m6_orders_url('m6-shop')).status_code, 403)
+
+    def test_a_customer_only_user_is_404_not_403(self):
+        # 404 because they do not belong here at all; the capability question
+        # never arises, and answering it would confirm the company exists.
+        client, _ = _m6_login('compradora')
+
+        self.assertEqual(client.get(_m6_orders_url('m6-shop')).status_code, 404)
+
+    def test_a_member_of_another_company_is_404(self):
+        outsider = _m6_user('ajeno')
+        Membership.objects.create(user=outsider, company=self.other, role='admin')
+        client, _ = _m6_login('ajeno')
+
+        self.assertEqual(client.get(_m6_orders_url('m6-shop')).status_code, 404)
+
+    def test_orders_of_another_company_NEVER_appear(self):
+        foreign = _order(self.other, total='999.00')
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        rows = self.client.get(_m6_orders_url('m6-shop')).json()
+
+        self.assertNotIn(foreign.id, [row['id'] for row in rows['results']])
+
+    def test_SEARCH_cannot_reach_another_company(self):
+        _order(self.other, total='999.00', customer_name='Buscame')
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?search=Buscame").json()
+
+        self.assertEqual(rows['count'], 0)
+
+    def test_an_ID_search_cannot_reach_another_company(self):
+        foreign = _order(self.other, total='999.00')
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?search={foreign.id}").json()
+
+        self.assertEqual(rows['count'], 0)
+
+    def test_filters_stay_inside_the_company(self):
+        _order(self.other, total='999.00', paid=True)
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        for query in ('status=paid', 'fulfillment_status=pending', 'date_from=2000-01-01'):
+            rows = self.client.get(f"{_m6_orders_url('m6-shop')}?{query}").json()
+            for row in rows['results']:
+                self.assertEqual(Order.objects.get(pk=row['id']).company, self.company)
+
+    def test_pagination_cannot_reach_another_company(self):
+        for _ in range(3):
+            _order(self.other, total='10.00')
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?page=1&page_size=100").json()
+
+        self.assertEqual(rows['count'], 1)
+
+    def test_an_unparseable_date_is_ignored_rather_than_fatal(self):
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?date_from=no-es-fecha")
+
+        self.assertEqual(rows.status_code, 200)
+
+    def test_a_page_size_beyond_the_cap_is_clamped(self):
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?page_size=100000").json()
+
+        self.assertLessEqual(rows['page_size'], 100)
+
+
+class M6InternalOrderDetailTest(M6InternalBase):
+    """One order, and everything the response must not contain."""
+
+    def setUp(self):
+        super().setUp()
+        self.order.stripe_session_id = 'cs_interno_secreto'
+        self.order.stripe_payment_intent_id = 'pi_interno_secreto'
+        self.order.payment_error = 'fallo interno del proveedor'
+        self.order.cart_session_key = 'session-secreta'
+        self.order.customer_phone = '987654321'
+        self.order.save()
+
+    def test_it_returns_the_order(self):
+        payload = self.client.get(_m6_order_url('m6-shop', self.order.id)).json()
+
+        self.assertEqual(payload['id'], self.order.id)
+        self.assertIn('items', payload)
+
+    def test_it_DOES_carry_contact_and_delivery_details(self):
+        # Unlike the customer contract: someone has to phone the buyer and
+        # someone has to ship it.
+        payload = self.client.get(_m6_order_url('m6-shop', self.order.id)).json()
+
+        self.assertIn('customer_phone', payload)
+        self.assertIn('delivery_method', payload)
+        self.assertIn('document_number', payload)
+
+    def test_NO_stripe_identifier_reaches_it(self):
+        body = self.client.get(_m6_order_url('m6-shop', self.order.id)).content.decode()
+
+        self.assertNotIn('cs_interno_secreto', body)
+        self.assertNotIn('pi_interno_secreto', body)
+        self.assertNotIn('stripe', body.lower())
+
+    def test_NO_raw_operational_string_reaches_it(self):
+        body = self.client.get(_m6_order_url('m6-shop', self.order.id)).content.decode()
+
+        self.assertNotIn('fallo interno del proveedor', body)
+        self.assertNotIn('session-secreta', body)
+
+    def test_an_order_of_ANOTHER_company_is_404(self):
+        foreign = _order(self.other, total='999.00')
+
+        self.assertEqual(
+            self.client.get(_m6_order_url('m6-shop', foreign.id)).status_code, 404,
+        )
+
+    def test_it_reports_the_allowed_transitions_FROM_THE_SERVER(self):
+        # So the app does not carry a second copy of the state machine.
+        payload = self.client.get(_m6_order_url('m6-shop', self.order.id)).json()
+
+        self.assertIn('available_fulfillment_transitions', payload)
+        self.assertIn('delivered', payload['available_fulfillment_transitions'])
+
+    def test_without_the_capability_it_is_403(self):
+        role = _role(self.company, 'Sin ventas', capabilities=['company.view'])
+        _assign(self.membership, role)
+
+        self.assertEqual(
+            self.client.get(_m6_order_url('m6-shop', self.order.id)).status_code, 403,
+        )
+
+
+class M6InternalFulfillmentTest(M6InternalBase):
+    """Moving a state, and who may."""
+
+    def _manage_client(self):
+        role = _role(
+            self.company, 'Gestión',
+            capabilities=['sales.orders.view', 'sales.orders.manage'],
+        )
+        _assign(self.membership, role)
+        client, _ = _m6_login('vendedora')
+        return client
+
+    def test_a_manager_can_move_the_state(self):
+        client = self._manage_client()
+
+        response = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.fulfillment_status, 'shipped')
+
+    def test_VIEW_alone_cannot_move_it(self):
+        # `manage` is checked, not `view`, and the catalogue declares them
+        # separately. Nothing here assumes one implies the other.
+        role = _role(self.company, 'Solo lectura', capabilities=['sales.orders.view'])
+        _assign(self.membership, role)
+        client, _ = _m6_login('vendedora')
+
+        response = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.order.refresh_from_db()
+        self.assertNotEqual(self.order.fulfillment_status, 'shipped')
+
+    def test_it_writes_an_AUDIT_entry_with_the_company_and_the_actor(self):
+        client = self._manage_client()
+        before = self.order.fulfillment_status
+
+        client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped', 'note': 'salió hoy'}, format='json',
+        )
+
+        entry = AdminAuditLog.objects.filter(
+            action='order_fulfillment_status_changed', target_id=self.order.pk,
+        ).latest('id')
+        self.assertEqual(entry.actor, self.staff)
+        self.assertEqual(entry.company, self.company)
+        self.assertEqual(entry.metadata['old_fulfillment_status'], before)
+        self.assertEqual(entry.metadata['new_fulfillment_status'], 'shipped')
+
+    def test_an_INVENTORY_role_is_limited_to_moving_goods(self):
+        # Warehouse staff move goods; they do not cancel sales. Preserved
+        # exactly from the web admin.
+        inventory = _m6_user('almacen')
+        Membership.objects.create(user=inventory, company=self.company, role='inventory')
+        profile, _ = UserProfile.objects.get_or_create(user=inventory)
+        profile.role = UserProfile.ROLE_INVENTORY
+        profile.save(update_fields=['role'])
+        role = _role(
+            self.company, 'Almacén',
+            capabilities=['sales.orders.view', 'sales.orders.manage'], slug='almacen-m6',
+        )
+        _assign(Membership.objects.get(user=inventory, company=self.company), role)
+        client, _ = _m6_login('almacen')
+
+        allowed = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+        refused = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'cancelled'}, format='json',
+        )
+
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(refused.status_code, 403)
+
+    def test_it_reports_the_transitions_that_actor_may_use(self):
+        inventory = _m6_user('almacen2')
+        Membership.objects.create(user=inventory, company=self.company, role='inventory')
+        profile, _ = UserProfile.objects.get_or_create(user=inventory)
+        profile.role = UserProfile.ROLE_INVENTORY
+        profile.save(update_fields=['role'])
+        role = _role(
+            self.company, 'Almacén 2',
+            capabilities=['sales.orders.view'], slug='almacen2-m6',
+        )
+        _assign(Membership.objects.get(user=inventory, company=self.company), role)
+        client, _ = _m6_login('almacen2')
+
+        payload = client.get(_m6_order_url('m6-shop', self.order.id)).json()
+
+        self.assertNotIn('cancelled', payload['available_fulfillment_transitions'])
+
+    def test_an_invalid_status_is_400(self):
+        client = self._manage_client()
+
+        response = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'inventado'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_order_of_another_company_is_404(self):
+        client = self._manage_client()
+        foreign = _order(self.other, total='999.00')
+
+        response = client.patch(
+            _m6_fulfillment_url('m6-shop', foreign.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_it_does_NOT_touch_payment_state(self):
+        # Whether money arrived is Stripe's answer, delivered by the webhook —
+        # never a staff member saying so.
+        client = self._manage_client()
+        before = self.order.status
+
+        client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'delivered'}, format='json',
+        )
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, before)
+
+    def test_it_sends_no_email(self):
+        client = self._manage_client()
+        mail.outbox.clear()
+
+        client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class M6CapabilityRevocationTest(M6InternalBase):
+    """A permission taken away must take effect on the NEXT request."""
+
+    def test_a_live_session_loses_access_when_the_role_changes(self):
+        # The reason `context/` exists: an access context minted at login is a
+        # snapshot, and a token stays valid for thirty minutes.
+        self.assertEqual(self.client.get(_m6_orders_url('m6-shop')).status_code, 200)
+
+        role = _role(self.company, 'Recortado', capabilities=['company.view'])
+        _assign(self.membership, role)
+
+        self.assertEqual(self.client.get(_m6_orders_url('m6-shop')).status_code, 403)
+
+    def test_a_live_session_loses_the_area_when_the_membership_ends(self):
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 200)
+
+        Membership.objects.filter(pk=self.membership.pk).update(is_active=False)
+
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+
+    def test_losing_internal_access_does_NOT_end_the_customer_session(self):
+        # Their token is still good, and they may still be a customer.
+        _v1_customer(self.company, self.staff)
+        Membership.objects.filter(pk=self.membership.pk).update(is_active=False)
+
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+        self.assertEqual(self.client.get('/api/v1/auth/me/').status_code, 200)
+        self.assertEqual(
+            self.client.get('/api/v1/customer/m6-shop/orders/').status_code, 200,
+        )
+
+
+class M6AudiencesStayApartTest(M6InternalBase):
+    """Customer and internal are different questions with different answers."""
+
+    def test_a_dual_user_sees_DIFFERENT_things_on_each_surface(self):
+        # The explicit case: someone who works here and also shops here.
+        _v1_customer(self.company, self.staff)
+        own = _order(self.company, user=self.staff, total='50.00', paid=True)
+
+        customer_rows = self.client.get('/api/v1/customer/m6-shop/orders/').json()
+        internal_rows = self.client.get(_m6_orders_url('m6-shop')).json()
+
+        self.assertEqual([r['id'] for r in customer_rows], [own.id])
+        self.assertEqual(
+            sorted(r['id'] for r in internal_rows['results']),
+            sorted([own.id, self.order.id]),
+        )
+
+    def test_the_customer_surface_never_becomes_a_staff_view(self):
+        _v1_customer(self.company, self.staff)
+
+        rows = self.client.get('/api/v1/customer/m6-shop/orders/').json()
+
+        self.assertNotIn(self.order.id, [row['id'] for row in rows])
+
+    def test_the_two_serializers_expose_different_fields(self):
+        _v1_customer(self.company, self.staff)
+        own = _order(self.company, user=self.staff, total='50.00', paid=True)
+
+        customer = self.client.get(f'/api/v1/customer/m6-shop/orders/{own.id}/').json()
+        internal = self.client.get(_m6_order_url('m6-shop', own.id)).json()
+
+        self.assertNotIn('customer_phone', customer)
+        self.assertIn('customer_phone', internal)
+
+    def test_an_employee_does_not_gain_customer_checkout(self):
+        # M5's rule still holds: being staff is not being a client.
+        staff_only = _m6_user('solo-staff')
+        Membership.objects.create(user=staff_only, company=self.company, role='sales')
+        client, _ = _m6_login('solo-staff')
+
+        self.assertEqual(
+            client.get('/api/v1/customer/m6-shop/orders/').status_code, 404,
+        )
+        self.assertEqual(client.get(_m6_ctx_url('m6-shop')).status_code, 200)
+
+    def test_a_platform_master_does_not_become_a_customer(self):
+        master = _m6_user('master')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        client, _ = _m6_login('master')
+
+        self.assertEqual(client.get(_m6_ctx_url('m6-shop')).status_code, 200)
+        self.assertEqual(client.get('/api/v1/customer/m6-shop/orders/').status_code, 404)
+
+
+class M6LegacyRegressionTest(TestCase):
+    """Adding an internal surface moved nothing else."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Regresión', 'm6-reg', tax_id='20791000001')
+        self.user = _m6_user('regresion')
+        Membership.objects.create(user=self.user, company=self.company, role='admin')
+        profile, _ = UserProfile.objects.get_or_create(user=self.user)
+        profile.role = UserProfile.ROLE_ADMIN
+        profile.save(update_fields=['role'])
+
+    def test_the_web_admin_orders_endpoint_still_works(self):
+        client = APIClient()
+        client.post(
+            '/api/auth/login/', {'username': 'regresion', 'password': 'Pass123!'},
+            format='json',
+        )
+
+        self.assertEqual(
+            client.get(f'/api/admin/orders/?company={self.company.id}').status_code, 200,
+        )
+
+    def test_the_project_default_authentication_is_still_cookie_only(self):
+        from django.conf import settings
+
+        self.assertEqual(
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_every_internal_view_declares_bearer_explicitly(self):
+        from .v1_authentication import V1BearerAuthentication
+        from .v1_internal_views import (
+            V1InternalContextView, V1InternalOrderDetailView,
+            V1InternalOrderFulfillmentView, V1InternalOrderListView,
+        )
+
+        for view in (
+            V1InternalContextView, V1InternalOrderListView,
+            V1InternalOrderDetailView, V1InternalOrderFulfillmentView,
+        ):
+            self.assertEqual(view.authentication_classes, [V1BearerAuthentication], view)
+
+    def test_the_public_catalogue_is_still_anonymous(self):
+        _prod(self.company, 'Producto', 'producto-m6')
+
+        self.assertEqual(
+            APIClient().get('/api/v1/storefront/m6-reg/products/').status_code, 200,
+        )
+
+    def test_the_fulfillment_rule_is_ONE_service_shared_by_both(self):
+        # If these ever diverge, an operation becomes possible from a phone that
+        # is refused on a desk.
+        import inspect
+
+        from . import order_fulfillment_services
+        from .admin_views import AdminOrderFulfillmentView
+        from .v1_internal_views import V1InternalOrderFulfillmentView
+
+        for view in (AdminOrderFulfillmentView, V1InternalOrderFulfillmentView):
+            self.assertIn('change_fulfillment_status', inspect.getsource(view), view)
+        self.assertTrue(hasattr(order_fulfillment_services, 'allowed_fulfillment_statuses'))
+
+
+class M6CapabilityStatusTest(TestCase):
+    """The catalogue must stay honest about what is actually enforced."""
+
+    def test_sales_orders_capabilities_are_now_ACTIVE(self):
+        # Promoted because `/api/v1/internal/` enforces them with no legacy role
+        # path at all — not to make a table look better.
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+
+        self.assertEqual(CAPABILITIES['sales.orders.view'].status, STATUS_ACTIVE)
+        self.assertEqual(CAPABILITIES['sales.orders.manage'].status, STATUS_ACTIVE)
+
+    def test_sales_notes_stays_AVAILABLE_because_M6_did_not_build_it(self):
+        from .capabilities import CAPABILITIES, STATUS_AVAILABLE
+
+        self.assertEqual(CAPABILITIES['sales.notes.manage'].status, STATUS_AVAILABLE)
+
+    def test_service_capabilities_stay_RESERVED(self):
+        # RepairOrder does not exist. No fake permissions for absent features.
+        from .capabilities import CAPABILITIES, STATUS_RESERVED
+
+        for code in (
+            'service.orders.view', 'service.orders.manage',
+            'service.devices.view', 'service.diagnostic.manage',
+        ):
+            self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
+
+    def test_there_is_no_internal_inventory_or_service_surface_yet(self):
+        client = APIClient()
+        for path in (
+            '/api/v1/internal/m6-x/inventory/',
+            '/api/v1/internal/m6-x/service/',
+            '/api/v1/internal/m6-x/customers/',
+        ):
+            self.assertEqual(client.get(path).status_code, 404, path)
+
+
+# =============================================================================
+# C1.5 — what the remote audit of C1.4 found
+# =============================================================================
+
+
+class C15RowLimitTest(TestCase):
+    """§6–10 — a file over the limit is refused whole, never trimmed."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-limit', 'Limite')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.user, _ = _p2d_member(
+            self.company, 'c15_limit_admin',
+            ['company.view', 'products.manage', 'inventory.adjust'],
+        )
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+        )
+
+    def _product_rows(self, count):
+        return [{
+            'Código de barras': f'{7751234500000 + i}', 'Código': f'P{i:06d}',
+            'Nombre': f'Producto {i}', 'Precio venta - 11834': 10,
+        } for i in range(count)]
+
+    def _stock_rows(self, count):
+        return [{
+            'ID': i, 'CODIGO': f'S{i:06d}', 'CODIGO EAN': '',
+            'NOMBRE': f'Articulo {i}', 'ALMACEN 1 - 11416': 1,
+        } for i in range(count)]
+
+    # --- the reader itself ------------------------------------------------
+
+    def test_exactly_the_limit_is_allowed(self):
+        payload = _c14_stock_workbook(self._stock_rows(_c14_reader.MAX_DATA_ROWS))
+        workbook, _n = _c14_reader.load_workbook(payload)
+        _h, rows, truncated = _c14_reader.read_rows(
+            workbook, 'Worksheet', header_row=1, mode=_c14_reader.FULL_IMPORT,
+        )
+        self.assertEqual(len(rows), _c14_reader.MAX_DATA_ROWS)
+        self.assertFalse(truncated)
+
+    def test_one_row_over_the_limit_is_refused(self):
+        payload = _c14_stock_workbook(self._stock_rows(_c14_reader.MAX_DATA_ROWS + 1))
+        workbook, _n = _c14_reader.load_workbook(payload)
+        with self.assertRaises(_c14_reader.XlsxTooManyRows):
+            _c14_reader.read_rows(
+                workbook, 'Worksheet', header_row=1, mode=_c14_reader.FULL_IMPORT,
+            )
+
+    def test_trailing_blank_rows_do_not_push_a_file_over_the_limit(self):
+        """
+        §8. A sheet with the limit's worth of records followed by rows of
+        leftover template formatting is a file AT the limit, not over it.
+        Counting the blanks would refuse a perfectly importable file.
+        """
+        rows = self._stock_rows(_c14_reader.MAX_DATA_ROWS)
+        payload = _c14_stock_workbook(rows + [{} for _ in range(30)])
+        workbook, _n = _c14_reader.load_workbook(payload)
+        _h, read, truncated = _c14_reader.read_rows(
+            workbook, 'Worksheet', header_row=1, mode=_c14_reader.FULL_IMPORT,
+        )
+        self.assertEqual(len(read), _c14_reader.MAX_DATA_ROWS)
+        self.assertFalse(truncated)
+
+    def test_sample_mode_stops_early_and_says_so(self):
+        """§10 — for an inspection, stopping early is the point, not a failure."""
+        payload = _c14_stock_workbook(self._stock_rows(200))
+        workbook, _n = _c14_reader.load_workbook(payload)
+        _h, rows, truncated = _c14_reader.read_rows(
+            workbook, 'Worksheet', header_row=1,
+            limit=_c14_reader.SAMPLE_ROWS, mode=_c14_reader.SAMPLE,
+        )
+        self.assertEqual(len(rows), _c14_reader.SAMPLE_ROWS)
+        self.assertTrue(truncated)
+
+    # --- the services -----------------------------------------------------
+
+    def test_an_oversized_product_file_leaves_no_job_behind(self):
+        """
+        The defect this closes: 5001 rows produced 5000 staged rows, zero
+        errors and an applicable job — a partial import that reported success.
+        """
+        before = _BulkImportJob.objects.count()
+        with self.assertRaises(_c14_reader.XlsxTooManyRows):
+            _c14_products.preview_products(
+                company=self.company, actor=self.user,
+                upload=_c14_upload(_c14_products_workbook(
+                    self._product_rows(_c14_reader.MAX_DATA_ROWS + 1))),
+                filename='grande.xlsx',
+            )
+        self.assertEqual(_BulkImportJob.objects.count(), before)
+
+    def test_an_oversized_stock_file_leaves_no_job_behind(self):
+        """§9 — the same rule on both importers, not just one."""
+        before = _BulkImportJob.objects.count()
+        with self.assertRaises(_c14_reader.XlsxTooManyRows):
+            _c14_stock.preview_stock(
+                company=self.company, actor=self.user,
+                upload=_c14_upload(_c14_stock_workbook(
+                    self._stock_rows(_c14_reader.MAX_DATA_ROWS + 1))),
+                filename='grande.xlsx', branch_map={4: self.branch.pk},
+            )
+        self.assertEqual(_BulkImportJob.objects.count(), before)
+
+    def test_the_api_reports_an_oversized_file_as_a_400(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        res = client.post(
+            '/api/admin/products/import/preview/',
+            {'file': _c14_upload(_c14_products_workbook(
+                self._product_rows(_c14_reader.MAX_DATA_ROWS + 1)))},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('5000', res.data['detail'])
+
+
+class C15BarcodeIdentityTest(TestCase):
+    """§11–19 — one semantics of identity, shared with the till."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-ident', 'Identidad')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.user, _ = _p2d_member(
+            self.company, 'c15_ident_admin',
+            ['company.view', 'products.manage', 'inventory.adjust',
+             'inventory.view', _C1_POS],
+        )
+
+    def _preview(self, rows, **kw):
+        return _c14_products.preview_products(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_products_workbook(rows)), filename='p.xlsx',
+            **kw,
+        )
+
+    def _row(self, **kw):
+        base = {'Código de barras': '7751234567892', 'Código': 'C000001',
+                'Nombre': 'Cable', 'Precio venta - 11834': 10}
+        base.update(kw)
+        return base
+
+    # --- case sensitivity -------------------------------------------------
+
+    def test_two_codes_differing_only_in_case_are_two_products(self):
+        """
+        §12, §13. `normalize_barcode()` trims and nothing else, because Code128
+        carries mixed case a scanner reproduces faithfully. The importer used to
+        upper-case its index, which meant it merged two articles the till keeps
+        apart.
+        """
+        a = _c1_product(self.company, 'Producto A', '10.00')
+        b = _c1_product(self.company, 'Producto B', '20.00')
+        ProductBarcode.objects.create(company=self.company, product=a, code='AbC123')
+        ProductBarcode.objects.create(company=self.company, product=b, code='abc123')
+
+        index = _c14_products.CatalogueIndex(self.company)
+        self.assertEqual(index.owner_of('AbC123'), a.pk)
+        self.assertEqual(index.owner_of('abc123'), b.pk)
+
+        upper, _e, _by, _w = index.match(barcode='AbC123')
+        lower, _e, _by, _w = index.match(barcode='abc123')
+        self.assertEqual(upper, a.pk)
+        self.assertEqual(lower, b.pk)
+
+    def test_the_import_agrees_with_the_pos_on_the_same_two_codes(self):
+        """
+        §14 — one semantics of identity. If the scanner and the importer
+        disagree about what a code means, one of them is quietly editing the
+        wrong article.
+        """
+        a = _c1_product(self.company, 'Producto A', '10.00')
+        b = _c1_product(self.company, 'Producto B', '20.00')
+        ProductBarcode.objects.create(company=self.company, product=a, code='AbC123')
+        ProductBarcode.objects.create(company=self.company, product=b, code='abc123')
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        for code, expected in (('AbC123', a), ('abc123', b)):
+            res = client.get(
+                f'/api/admin/pos/products/lookup/?code={code}&branch={self.branch.pk}'
+            )
+            self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+            self.assertEqual(res.data['id'], expected.pk, code)
+
+            index = _c14_products.CatalogueIndex(self.company)
+            matched, _e, _by, _w = index.match(barcode=code)
+            self.assertEqual(matched, expected.pk, code)
+
+    def test_a_file_holding_both_cases_is_not_a_duplicate(self):
+        """§13 — if the database keeps them apart, the preview must too."""
+        job = self._preview([
+            self._row(**{'Código de barras': 'AbC12345', 'Código': 'C000001',
+                         'Nombre': 'Uno'}),
+            self._row(**{'Código de barras': 'abc12345', 'Código': 'C000002',
+                         'Nombre': 'Dos'}),
+        ])
+        self.assertEqual(job.rows_error, 0, [r.errors for r in job.rows.all()])
+        self.assertEqual(job.rows_create, 2)
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertEqual(
+            set(ProductBarcode.objects.filter(company=self.company)
+                .values_list('code', flat=True)),
+            {'AbC12345', 'abc12345', 'C000001', 'C000002'},
+        )
+
+    # --- inactive barcodes hold their code --------------------------------
+
+    def test_an_inactive_barcode_still_identifies_its_product(self):
+        """
+        §15–17. `UNIQUE(company, code)` has no condition on `is_active`, so a
+        retired label still RESERVES the string. Loading only active codes made
+        the preview blind to exactly the rows that would explode at apply.
+        """
+        product = _c1_product(self.company, 'Con código retirado', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=product, code='XYZ123', is_active=False,
+        )
+        index = _c14_products.CatalogueIndex(self.company)
+        self.assertEqual(index.owner_of('XYZ123'), product.pk)
+        self.assertTrue(index.is_inactive('XYZ123'))
+
+        matched, error, _by, warnings = index.match(barcode='XYZ123')
+        self.assertEqual(matched, product.pk)
+        self.assertIsNone(error)
+        self.assertTrue(any('desactivado' in w for w in warnings))
+
+    def test_an_import_row_does_not_reactivate_or_duplicate_it(self):
+        product = _c1_product(self.company, 'Retirado', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=product, code='XYZ123', is_active=False,
+        )
+        job = self._preview([self._row(**{
+            'Código de barras': 'XYZ123', 'Código': 'XYZ123',
+            'Nombre': 'Retirado', 'Precio venta - 11834': 15,
+        })])
+        self.assertEqual(job.rows_error, 0, [r.errors for r in job.rows.all()])
+        self.assertTrue(any('desactivado' in w for w in job.rows.first().warnings))
+
+        _c14_products.apply_products(job=job, actor=self.user)
+        codes = ProductBarcode.objects.filter(company=self.company, code='XYZ123')
+        self.assertEqual(codes.count(), 1)
+        self.assertFalse(codes.first().is_active)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+
+    def test_an_inactive_code_owned_by_another_product_is_an_error(self):
+        """
+        §18 — never wait for `UNIQUE(company, code)` to explode during apply.
+        """
+        owner = _c1_product(self.company, 'Dueño', '10.00')
+        other = _c1_product(self.company, 'Otro', '20.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=owner, code='XYZ123', is_active=False,
+        )
+        ProductBarcode.objects.create(
+            company=self.company, product=other, code='7751234567892',
+        )
+        job = self._preview([self._row(**{
+            'Código de barras': '7751234567892', 'Código': 'XYZ123',
+            'Nombre': 'Otro',
+        })])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_the_stock_importer_can_identify_by_an_inactive_code(self):
+        product = _c1_product(self.company, 'Retirado', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=product, code='XYZ123', is_active=False,
+        )
+        job = _c14_stock.preview_stock(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'XYZ123', 'CODIGO EAN': '',
+                'NOMBRE': 'Retirado', 'ALMACEN 1 - 11416': 5,
+            }])),
+            filename='inv.xlsx', branch_map={4: self.branch.pk},
+        )
+        self.assertEqual(job.rows_error, 0, [r.errors for r in job.rows.all()])
+        row = job.rows.first()
+        self.assertEqual(row.normalized_data['product_id'], product.pk)
+        self.assertTrue(any('desactivado' in w for w in row.warnings))
+
+    def test_a_code_taken_between_preview_and_apply_aborts_cleanly(self):
+        """§19 — a controlled rollback, never an IntegrityError as a 500."""
+        job = self._preview([self._row()])
+        self.assertEqual(job.rows_create, 1)
+
+        squatter = _c1_product(self.company, 'Se adelantó', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=squatter, code='C000001',
+        )
+        with self.assertRaises(_c14_products.ImportError_) as caught:
+            _c14_products.apply_products(job=job, actor=self.user)
+        self.assertIn('previsualización', str(caught.exception))
+        self.assertFalse(
+            Product.objects.filter(company=self.company, name='Cable').exists()
+        )
+
+
+class C15NumericCellWarningTest(TestCase):
+    """§20–21 — do not assert a cell type the file did not report."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-num', 'Numerico')
+        self.user, _ = _p2d_member(
+            self.company, 'c15_num_admin', ['company.view', 'products.manage'],
+        )
+
+    def _preview(self, value):
+        return _c14_products.preview_products(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_products_workbook([{
+                'Código de barras': value, 'Código': 'C000001',
+                'Nombre': 'Cable', 'Precio venta - 11834': 10,
+            }])),
+            filename='p.xlsx',
+        )
+
+    def test_a_genuinely_numeric_cell_warns(self):
+        job = self._preview(310000000001)
+        self.assertTrue(any('numérica' in w for w in job.rows.first().warnings))
+
+    def test_a_text_cell_of_digits_does_not_claim_excel_converted_it(self):
+        """
+        The defect: the warning was driven by a digits-only regex, so a column
+        correctly formatted as TEXT was told it might be damaged. An alarm that
+        cries wolf gets ignored on the day it is right.
+        """
+        job = self._preview('750123456789')
+        row = job.rows.first()
+        self.assertEqual(row.normalized_data['barcode'], '750123456789')
+        self.assertEqual(row.warnings, [])
+
+    def test_neither_case_ever_restores_a_leading_zero(self):
+        for value in (310000000001, '310000000001'):
+            job = self._preview(value)
+            self.assertEqual(
+                job.rows.first().normalized_data['barcode'], '310000000001',
+            )
+
+
+class C15ExactIntegerTest(TestCase):
+    """§33–35 — a count is an exact integer, never a float."""
+
+    def test_whole_numbers_written_in_excels_many_ways(self):
+        for text, expected in (('7', 7), ('7.0', 7), ('7.000', 7), (' 7 ', 7),
+                               ('0', 0), (7.0, 7), (7, 7)):
+            kind, value, error = _c14_stock.parse_quantity(text)
+            self.assertEqual((kind, value, error), ('value', expected, None), text)
+
+    def test_a_count_beyond_double_precision_is_not_silently_rounded(self):
+        """
+        `int(float('9007199254740993'))` is 9007199254740992 — one short, with
+        no error anywhere. A stock figure parsed through a float can come back
+        wrong and look right.
+        """
+        kind, value, error = _c14_stock.parse_quantity('9007199254740993')
+        self.assertEqual(kind, 'value')
+        self.assertIsNone(value)
+        self.assertIsNotNone(error)
+        self.assertNotIn('9007199254740992', str(error))
+
+    def test_a_quantity_that_would_overflow_the_column_is_a_row_error(self):
+        kind, value, error = _c14_stock.parse_quantity(
+            str(_c14_stock.MAX_STOCK_QUANTITY + 1)
+        )
+        self.assertIsNone(value)
+        self.assertIn('máxima', error)
+
+    def test_the_column_ceiling_itself_is_accepted(self):
+        _kind, value, error = _c14_stock.parse_quantity(
+            str(_c14_stock.MAX_STOCK_QUANTITY)
+        )
+        self.assertEqual(value, _c14_stock.MAX_STOCK_QUANTITY)
+        self.assertIsNone(error)
+
+    def test_the_shapes_that_are_not_counts(self):
+        for text in ('7.1', '1e3', 'NaN', 'Infinity', '-1', 'abc', '0x10', '½'):
+            _kind, value, error = _c14_stock.parse_quantity(text)
+            self.assertIsNone(value, text)
+            self.assertIsNotNone(error, text)
+
+    def test_blank_is_still_not_a_quantity_at_all(self):
+        for blank in (None, '', '   '):
+            kind, value, error = _c14_stock.parse_quantity(blank)
+            self.assertEqual((kind, value, error), ('blank', None, None))
+
+
+class C15ImportAuthorizationTest(TestCase):
+    """§22–25, §45, §46 — one capability must not reveal the other's work."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c15-auth-a', 'Auth A')
+        self.b = _p3_company('c15-auth-b', 'Auth B')
+        self.branch = _p2d_branch(self.a, 'Principal')
+        self.product = _c1_product(self.a, 'Cable', '10.00')
+        ProductBarcode.objects.create(
+            company=self.a, product=self.product, code='C000001',
+        )
+
+        self.both, _ = _p2d_member(
+            self.a, 'c15_auth_both',
+            ['company.view', 'products.manage', 'inventory.adjust', 'inventory.view'],
+        )
+        self.products_only, _ = _p2d_member(
+            self.a, 'c15_auth_products', ['company.view', 'products.manage'],
+        )
+        self.stock_only, _ = _p2d_member(
+            self.a, 'c15_auth_stock',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.neither, _ = _p2d_member(self.a, 'c15_auth_none', ['company.view'])
+        self.stranger, _ = _p2d_member(
+            self.b, 'c15_auth_stranger',
+            ['company.view', 'products.manage', 'inventory.adjust', 'inventory.view'],
+        )
+
+        self.product_job = self._make_product_job()
+        self.stock_job = self._make_stock_job()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _make_product_job(self):
+        return _c14_products.preview_products(
+            company=self.a, actor=self.both,
+            upload=_c14_upload(_c14_products_workbook([{
+                'Código de barras': '7751234567892', 'Código': 'C000002',
+                'Nombre': 'Nuevo', 'Precio venta - 11834': 10,
+            }])),
+            filename='productos-secretos.xlsx',
+        )
+
+    def _make_stock_job(self):
+        return _c14_stock.preview_stock(
+            company=self.a, actor=self.both,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+                'NOMBRE': 'Cable', 'ALMACEN 1 - 11416': 3,
+            }])),
+            filename='inventario-secreto.xlsx', branch_map={4: self.branch.pk},
+        )
+
+    def _ids(self, response):
+        return {row['id'] for row in response.data['results']}
+
+    # --- history ----------------------------------------------------------
+
+    def test_a_products_only_user_never_sees_stock_jobs(self):
+        """
+        The leak this closes: without `?type`, the view demanded
+        `products.manage` and then listed EVERY job — filenames, row counts,
+        branch names and who ran them — including inventory work the caller has
+        no authority over.
+        """
+        res = self._as(self.products_only).get('/api/admin/imports/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._ids(res), {self.product_job.pk})
+        self.assertNotIn(
+            'inventario-secreto.xlsx',
+            json.dumps(res.data, default=str),
+        )
+
+    def test_a_stock_only_user_never_sees_product_jobs(self):
+        res = self._as(self.stock_only).get('/api/admin/imports/')
+        self.assertEqual(self._ids(res), {self.stock_job.pk})
+
+    def test_holding_both_shows_both(self):
+        res = self._as(self.both).get('/api/admin/imports/')
+        self.assertEqual(self._ids(res), {self.product_job.pk, self.stock_job.pk})
+
+    def test_asking_for_a_type_you_do_not_hold_is_a_403(self):
+        res = self._as(self.products_only).get('/api/admin/imports/?type=stock')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        res = self._as(self.stock_only).get('/api/admin/imports/?type=products')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_asking_for_a_type_you_do_hold_narrows_the_list(self):
+        res = self._as(self.both).get('/api/admin/imports/?type=stock')
+        self.assertEqual(self._ids(res), {self.stock_job.pk})
+
+    def test_neither_capability_is_a_403(self):
+        res = self._as(self.neither).get('/api/admin/imports/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_another_tenant_sees_none_of_it(self):
+        res = self._as(self.stranger).get('/api/admin/imports/')
+        self.assertEqual(res.data['results'], [])
+
+    # --- detail and error report -----------------------------------------
+
+    def test_a_products_user_cannot_open_a_stock_job(self):
+        res = self._as(self.products_only).get(
+            f'/api/admin/imports/{self.stock_job.pk}/'
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_products_user_can_open_a_product_job(self):
+        res = self._as(self.products_only).get(
+            f'/api/admin/imports/{self.product_job.pk}/'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_another_tenants_job_is_indistinguishable_from_one_that_never_existed(self):
+        """
+        §24. Looking the job up by primary key FIRST and then choosing the
+        capability from what was found made the endpoint an oracle: probing an
+        id answered 403 when a job of that kind existed somewhere and 404 when
+        nothing did, so ids could be enumerated by reading the difference.
+        """
+        missing = _BulkImportJob.objects.order_by('-pk').first().pk + 5000
+        for path in (f'/api/admin/imports/{self.product_job.pk}/',
+                     f'/api/admin/imports/{self.stock_job.pk}/',
+                     f'/api/admin/imports/{missing}/'):
+            res = self._as(self.stranger).get(path)
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, path)
+
+    def test_the_error_report_follows_the_same_rules(self):
+        missing = _BulkImportJob.objects.order_by('-pk').first().pk + 5000
+        self.assertEqual(
+            self._as(self.products_only)
+            .get(f'/api/admin/imports/{self.stock_job.pk}/errors.csv').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        for pk in (self.stock_job.pk, self.product_job.pk, missing):
+            self.assertEqual(
+                self._as(self.stranger)
+                .get(f'/api/admin/imports/{pk}/errors.csv').status_code,
+                status.HTTP_404_NOT_FOUND,
+            )
+
+    def test_an_invalid_type_is_a_400_not_a_silent_full_listing(self):
+        res = self._as(self.both).get('/api/admin/imports/?type=todo')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class C15InitialRaceTest(TransactionTestCase):
+    """§26–31 — INITIAL means INITIAL at the moment it is written."""
+
+    reset_sequences = True
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-initial', 'Carga Inicial')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.user, _ = _p2d_member(
+            self.company, 'c15_initial_admin',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+        )
+
+    def _preview(self, quantity=10):
+        return _c14_stock.preview_stock(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+                'NOMBRE': 'Cable', 'ALMACEN 1 - 11416': quantity,
+            }])),
+            filename='inv.xlsx', branch_map={4: self.branch.pk},
+            mode=_BulkImportJob.MODE_INITIAL,
+        )
+
+    def test_stock_arriving_between_preview_and_apply_aborts_the_load(self):
+        """
+        §30. The preview saw an empty shelf with no history. Then a delivery was
+        booked in. Applying INITIAL_STOCK now would insert an opening balance
+        into the middle of a story that had already started, and the Kardex
+        would stop adding up to the stock it describes.
+        """
+        job = self._preview()
+        self.assertEqual(job.rows_error, 0)
+
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=3,
+            reason='llegó mercadería',
+        )
+
+        with self.assertRaises(_c14_stock.StockImportError) as caught:
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertIn('carga inicial', str(caught.exception).lower())
+
+        # Nothing of the import was written, and the delivery is untouched.
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 3,
+        )
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+        job.refresh_from_db()
+        self.assertEqual(job.status, _BulkImportJob.PREVIEWED)
+
+    def test_it_is_never_downgraded_to_a_correction(self):
+        """
+        §28. The tempting shortcut is `INITIAL if current == 0 else CORRECTION`.
+        That silently turns "this is what we started with" into "this is an
+        adjustment" — two different claims about where the units came from.
+        """
+        job = self._preview()
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=3, reason='x',
+        )
+        with self.assertRaises(_c14_stock.StockImportError):
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertFalse(
+            StockMovement.objects.filter(
+                movement_type__in=[StockMovement.CORRECTION_POSITIVE,
+                                   StockMovement.CORRECTION_NEGATIVE],
+            ).exists()
+        )
+
+    def test_history_that_nets_back_to_zero_still_blocks_it(self):
+        """An empty shelf is not the same as a shelf that never had anything."""
+        job = self._preview()
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=3, reason='x',
+        )
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=3, reason='y',
+        )
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 0,
+        )
+        with self.assertRaises(_c14_stock.StockImportError):
+            _c14_stock.apply_stock(job=job, actor=self.user)
+
+    def test_an_untouched_shelf_still_loads(self):
+        """The rule must not become "INITIAL never works"."""
+        job = self._preview(quantity=12)
+        _job, changed, movements = _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertTrue(changed)
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.INITIAL_STOCK)
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 12,
+        )
+
+    def test_a_deactivated_branch_stops_the_apply(self):
+        """
+        §37 — the same rule the rest of inventory enforces. A physical count
+        refuses an inactive branch and a transfer refuses one; arriving from a
+        spreadsheet is not a reason to be the one path that writes stock into a
+        closed shop.
+        """
+        job = self._preview(quantity=12)
+        self.branch.is_active = False
+        self.branch.save(update_fields=['is_active'])
+        with self.assertRaises(_c14_stock.StockImportError):
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+
+    def test_a_deactivated_branch_is_refused_at_preview_too(self):
+        self.branch.is_active = False
+        self.branch.save(update_fields=['is_active'])
+        with self.assertRaises(_c14_stock.StockImportError):
+            self._preview()
+
+    def test_a_product_deleted_between_preview_and_apply_aborts_everything(self):
+        """
+        §36 — a staged row that no longer resolves is NOT skipped. Skipping
+        would apply most of the file and quietly drop the rest: the partial
+        import this whole design exists to prevent.
+        """
+        job = _c14_stock.preview_stock(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+                'NOMBRE': 'Cable', 'ALMACEN 1 - 11416': 5,
+            }])),
+            filename='inv.xlsx', branch_map={4: self.branch.pk},
+            mode=_BulkImportJob.MODE_RECONCILE,
+        )
+        row = job.rows.get(action=_BulkImportRow.UPDATE)
+        row.normalized_data = {**row.normalized_data, 'product_id': 10 ** 7}
+        row.save(update_fields=['normalized_data'])
+
+        with self.assertRaises(_c14_stock.StockImportError) as caught:
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertIn('cambiaron desde la previsualización', str(caught.exception))
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+
+
+class C15BranchAccessRevocationTest(TestCase):
+    """§47 — branch access is re-checked at APPLY, the call that moves stock."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c15-revoke', 'Revocacion')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.other = _p2d_branch(self.company, 'Secundaria')
+        self.user, membership = _p2d_member(
+            self.company, 'c15_revoke_user',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.membership = membership
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        return client
+
+    def test_revoking_access_between_preview_and_apply_blocks_the_write(self):
+        res = self._client().post(
+            '/api/admin/inventory/import/preview/',
+            {'file': _c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+                'NOMBRE': 'Cable', 'ALMACEN 1 - 11416': 6,
+            }])),
+             'branch_map': json.dumps({'4': self.branch.pk})},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        job_id = res.data['id']
+
+        # Access narrowed to the OTHER branch after the preview was approved.
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.filter(membership=self.membership).delete()
+        MembershipBranchAccess.objects.create(
+            membership=self.membership, branch=self.other,
+        )
+        cache.clear()
+
+        res = self._client().post(
+            f'/api/admin/inventory/import/{job_id}/apply/', {}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 0,
+        )
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+        self.assertEqual(
+            _BulkImportJob.objects.get(pk=job_id).status, _BulkImportJob.PREVIEWED,
         )

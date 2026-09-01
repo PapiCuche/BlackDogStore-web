@@ -32,6 +32,7 @@ resurrect stock that has already left the building.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from django.db import transaction
 from django.utils import timezone
@@ -50,6 +51,11 @@ from .models import (
 IMPORT_REASON = 'Carga masiva de inventario'
 REFERENCE_TYPE = 'bulk_import'
 
+# The ceiling of PositiveIntegerField on the supported backends. Not a business
+# rule about how much a shop may hold — a limit of the column, enforced here so
+# a typo is a row error instead of a database exception.
+MAX_STOCK_QUANTITY = 2_147_483_647
+
 
 class StockImportError(Exception):
     pass
@@ -65,6 +71,15 @@ def parse_quantity(raw):
     than as `None` versus `0`, because a `None` that means "skip" and a `0` that
     means "set to zero" are one careless `or` away from becoming the same thing.
     Making them different kinds means that mistake does not typecheck.
+
+    WHY NOT `int(float(text))`
+    --------------------------
+    That is what this did, and it is wrong for a counting number. `float` has 53
+    bits of mantissa, so `int(float('9007199254740993'))` is 9007199254740992 —
+    the count comes back one short, silently, with no error anywhere. A stock
+    figure is an exact integer and is parsed as one. `Decimal` is used only to
+    accept the shapes Excel legitimately produces for a whole number (`7`,
+    `7.0`, `7.000`), never to admit a fractional count.
     """
     if raw is None:
         return 'blank', None, None
@@ -75,17 +90,33 @@ def parse_quantity(raw):
     text = str(raw).strip()
     if text == '':
         return 'blank', None, None
-    if not re.fullmatch(r'-?\d+(\.0+)?', text):
-        if re.fullmatch(r'-?\d+\.\d+', text):
+
+    # Explicitly refused before Decimal sees them: Decimal('NaN') and
+    # Decimal('Infinity') are perfectly valid Decimals and neither is a number
+    # of things on a shelf. `1e3` is refused too — it is a number, but a stock
+    # sheet written by a person does not say `1e3`, and accepting notation
+    # nobody types is how a typo becomes a thousand units.
+    if not re.fullmatch(r'\d+(\.\d+)?', text):
+        if re.fullmatch(r'-\d+(\.\d+)?', text):
             return 'value', None, (
-                f'«{text}» no es una cantidad entera. El inventario se lleva en '
-                f'unidades enteras.'
+                f'«{text}» es negativo. Una existencia física no puede ser negativa.'
             )
         return 'value', None, f'«{text}» no es una cantidad válida.'
-    value = int(float(text))
-    if value < 0:
+
+    quantity = Decimal(text)
+    if quantity != quantity.to_integral_value():
         return 'value', None, (
-            f'«{text}» es negativo. Una existencia física no puede ser negativa.'
+            f'«{text}» no es una cantidad entera. El inventario se lleva en '
+            f'unidades enteras.'
+        )
+    value = int(quantity)
+    if value > MAX_STOCK_QUANTITY:
+        # PositiveIntegerField is a 32-bit unsigned column on the backends this
+        # runs on. A larger number would either overflow at write time — a 500
+        # from a spreadsheet typo — or be silently truncated by the driver.
+        return 'value', None, (
+            f'«{text}» excede la cantidad máxima admitida ({MAX_STOCK_QUANTITY}). '
+            f'Revisa la celda: casi seguro es un error de tecleo.'
         )
     return 'value', value, None
 
@@ -117,6 +148,7 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
 
     probe, _rows, _t = xlsx_reader.read_rows(
         workbook, sheet_name, header_row=header_row or 1,
+        limit=xlsx_reader.SAMPLE_ROWS, mode=xlsx_reader.SAMPLE,
     )
     detected = import_formats.detect(BulkImportJob.STOCK, sheet_name, probe)
     if detected:
@@ -132,8 +164,10 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
             'No se reconoció el formato del archivo. Asigna las columnas a mano.'
         )
 
-    headers, rows, truncated = xlsx_reader.read_rows(
-        workbook, sheet_name, header_row=header_row,
+    # FULL_IMPORT, and before the job exists: a file over the limit is refused
+    # whole rather than trimmed into a job that looks complete.
+    headers, rows, _truncated = xlsx_reader.read_rows(
+        workbook, sheet_name, header_row=header_row, mode=xlsx_reader.FULL_IMPORT,
     )
 
     branch_map = {int(k): int(v) for k, v in (branch_map or {}).items()}
@@ -149,6 +183,16 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
         # Walking DOWN from the company: another tenant's branch is simply not
         # in the set, so it cannot be selected by guessing an id.
         raise StockImportError('Alguna sucursal no pertenece a esta empresa.')
+    # §37 — the same rule the rest of inventory already enforces: a physical
+    # count refuses an inactive branch, a transfer refuses one, and
+    # `company_branches()` does not list one. Arriving from a spreadsheet is not
+    # a reason to be the one path that writes stock into a closed shop.
+    closed = [b.name for b in branches.values() if not b.is_active]
+    if closed:
+        raise StockImportError(
+            f'No se puede cargar inventario en una sucursal inactiva: '
+            f'{", ".join(sorted(closed))}.'
+        )
 
     job = BulkImportJob.objects.create(
         company=company, import_type=BulkImportJob.STOCK, stock_mode=mode,
@@ -169,7 +213,7 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
     counts = dict(create=0, update=0, no_change=0, skip=0, error=0)
     seen_pairs: dict[tuple[int, int], int] = {}
 
-    for row_number, values in rows:
+    for row_number, values, _numeric in rows:
         if not values:
             staged.append(BulkImportRow(
                 job=job, sheet_name=sheet_name, row_number=row_number,
@@ -184,7 +228,7 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
         name = str(values.get(mapping.get('name'), '') or '').strip()
         external_id = str(values.get(mapping.get('external_id'), '') or '').strip()
 
-        product_id, match_error, matched_by = index.match(
+        product_id, match_error, matched_by, match_warnings = index.match(
             barcode=barcode, code=code, name=name,
         )
 
@@ -192,7 +236,7 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
             branch = branches[branch_id]
             kind, quantity, quantity_error = parse_quantity(values.get(column_index))
 
-            errors, warnings = [], []
+            errors, warnings = [], list(match_warnings)
             if quantity_error:
                 errors.append(quantity_error)
 
@@ -251,7 +295,16 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
             delta = (quantity - now) if quantity is not None else 0
 
             if not errors and mode == BulkImportJob.MODE_INITIAL and product_id:
-                if _has_history(branch_id, product_id):
+                if now != 0:
+                    # §31 — stock with no Kardex behind it is a state this system
+                    # does not produce, so its provenance is unknown. INITIAL
+                    # would assert an origin for units nobody can account for.
+                    errors.append(
+                        f'Ya hay {now} unidad(es) en esta sucursal. La carga '
+                        f'inicial sólo se aplica sobre existencias en cero; usa '
+                        f'el modo de ajuste a stock objetivo.'
+                    )
+                elif _has_history(branch_id, product_id):
                     errors.append(
                         'Esta sucursal ya tiene historial de Kardex para este '
                         'producto. Usa el modo de ajuste a stock objetivo.'
@@ -292,7 +345,6 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
         'reader_notes': reader_notes,
         'detected': (detected or {}).get('label', ''),
         'format_notes': (detected or {}).get('notes', []),
-        'truncated': truncated,
         'branches': [
             {'column': str(headers[c]) if c < len(headers) else str(c),
              'branch_id': b, 'branch_name': branches[b].name}
@@ -320,6 +372,49 @@ def _has_history(branch_id, product_id) -> bool:
     return StockMovement.objects.filter(
         branch_id=branch_id, product_id=product_id,
     ).exists()
+
+
+def _assert_initial_still_valid(rows, locked):
+    """
+    Re-establish, under the locks, everything INITIAL claims about the world.
+
+    WHY THE PREVIEW'S CHECK IS NOT ENOUGH
+    -------------------------------------
+    "Initial stock" is a statement that nothing was there before. The preview
+    verified it, and then the operator went to lunch. In between, a sale, a
+    transfer or a manual entry can have given that shelf a history — and writing
+    an INITIAL_STOCK movement on top of it would insert an opening balance in
+    the middle of a story that had already started, leaving a Kardex whose rows
+    no longer add up to the stock they describe.
+
+    So the precondition is checked again here, after every lock is held, and a
+    failure aborts the WHOLE job rather than downgrading the operation.
+
+    §31 — stock present with no Kardex at all is refused too. It is a state this
+    system does not produce, so its provenance is unknown, and INITIAL would be
+    asserting an origin for units nobody can account for.
+    """
+    offending = []
+    for row in rows:
+        data = row.normalized_data
+        branch_id, product_id = data['branch_id'], data['product_id']
+        current = locked[(branch_id, product_id)]
+        if current != 0:
+            offending.append((row.row_number, data.get('name', ''), 'stock actual distinto de cero'))
+        elif _has_history(branch_id, product_id):
+            offending.append((row.row_number, data.get('name', ''), 'ya tiene historial de Kardex'))
+
+    if offending:
+        detail = '; '.join(
+            f'fila {number} ({name or "sin nombre"}): {why}'
+            for number, name, why in offending[:5]
+        )
+        more = '' if len(offending) <= 5 else f' y {len(offending) - 5} más'
+        raise StockImportError(
+            f'El inventario cambió desde la previsualización y la carga inicial '
+            f'ya no es válida — {detail}{more}. Usa «Ajuste a stock objetivo» o '
+            f'vuelve a previsualizar.'
+        )
 
 
 # =============================================================================
@@ -378,29 +473,69 @@ def apply_stock(*, job, actor):
         )
     }
 
+    # §36 — every actionable row must still be resolvable. A staged row whose
+    # branch or product has vanished (deleted, deactivated, moved) is NOT
+    # skipped: skipping would apply most of the file and quietly drop the rest,
+    # which is the partial import this design exists to prevent.
+    for row in ordered:
+        data = row.normalized_data or {}
+        if (branches.get(data.get('branch_id')) is None
+                or products.get(data.get('product_id')) is None
+                or data.get('target') is None):
+            raise StockImportError(
+                f'El catálogo o las sucursales cambiaron desde la '
+                f'previsualización (fila {row.row_number}). Vuelve a '
+                f'previsualizar antes de aplicar.'
+            )
+
+    closed = [b.name for b in branches.values() if not b.is_active]
+    if closed:
+        raise StockImportError(
+            f'La sucursal {", ".join(sorted(closed))} se desactivó desde la '
+            f'previsualización. Vuelve a previsualizar.'
+        )
+
+    # §29 — take EVERY lock first, in (branch_id, product_id) order, then
+    # revalidate the whole set, then write. Locking row A, writing A and only
+    # then discovering that row B is invalid is protected by the transaction,
+    # but it does useless work and — for INITIAL — makes the precondition
+    # depend on the order rows happen to be in.
+    locked: dict[tuple[int, int], int] = {}
+    for row in ordered:
+        data = row.normalized_data
+        branch = branches[data['branch_id']]
+        product = products[data['product_id']]
+        stock = inventory_services.get_or_create_branch_stock(branch, product)
+        locked[(branch.pk, product.pk)] = (
+            BranchStock.objects.select_for_update().get(pk=stock.pk).quantity
+        )
+
+    if mode == BulkImportJob.MODE_INITIAL:
+        _assert_initial_still_valid(ordered, locked)
+
     movements = []
     applied = skipped = 0
     for row in ordered:
-        data = row.normalized_data or {}
-        branch = branches.get(data.get('branch_id'))
-        product = products.get(data.get('product_id'))
-        product_id = data.get('product_id')
-        target = data.get('target')
-        if branch is None or product is None or target is None:
-            continue
+        data = row.normalized_data
+        branch = branches[data['branch_id']]
+        product = products[data['product_id']]
+        target = data['target']
 
-        # The delta is recomputed HERE, under the lock create_stock_movement
-        # takes, from the CURRENT quantity — never from `delta_preview`. The
-        # preview said "+5"; if the till has since sold two, the truth is "+7",
-        # and applying +5 would leave the shelf permanently two short.
-        stock = inventory_services.get_or_create_branch_stock(branch, product)
-        current = BranchStock.objects.select_for_update().get(pk=stock.pk).quantity
+        # The delta is recomputed HERE, from the quantity read under the lock
+        # taken above — never from `delta_preview`. The preview said "+5"; if
+        # the till has since sold two, the truth is "+7", and applying +5 would
+        # leave the shelf permanently two short.
+        current = locked[(branch.pk, product.pk)]
         delta = target - current
         if delta == 0:
             skipped += 1
             continue
 
-        if mode == BulkImportJob.MODE_INITIAL and current == 0:
+        # §28 — INITIAL is INITIAL or it fails. Degrading it to a correction
+        # when the shelf turns out not to be empty would silently turn "this is
+        # what we started with" into "this is an adjustment", and the Kardex
+        # would then claim an opening balance that never happened.
+        if mode == BulkImportJob.MODE_INITIAL:
             movement_type = StockMovement.INITIAL_STOCK
         else:
             movement_type = (
@@ -409,7 +544,7 @@ def apply_stock(*, job, actor):
             )
 
         movement = inventory_services.create_stock_movement(
-            branch=branch, product_id=product_id,
+            branch=branch, product_id=product.pk,
             movement_type=movement_type, quantity=abs(delta),
             reason=IMPORT_REASON, actor=actor,
             reference_type=REFERENCE_TYPE, reference_id=str(job.pk),
