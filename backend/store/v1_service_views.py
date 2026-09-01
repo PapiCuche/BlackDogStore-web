@@ -35,6 +35,7 @@ from .models import (
     Branch,
     Customer,
     Device,
+    Product,
     RepairOrder,
     RepairStatusCode,
     RepairStatusSetting,
@@ -45,6 +46,11 @@ from .throttles import AdminOrdersThrottle, AdminOrderStatusChangeThrottle
 from .v1_internal_views import V1InternalSurfaceMixin
 from .v1_service_serializers import (
     V1RepairStatusSettingSerializer,
+    V1ServiceDiagnosticSerializer,
+    V1ServiceDiagnosticWriteSerializer,
+    V1ServiceQuoteItemWriteSerializer,
+    V1ServiceQuoteSerializer,
+    V1ServiceQuoteWriteSerializer,
     V1ServiceAssignmentSerializer,
     V1ServiceAssignmentWriteSerializer,
     V1ServiceCustomerSerializer,
@@ -543,3 +549,315 @@ class V1ServiceOrderAssignmentView(V1ServiceSurfaceMixin, APIView):
         return Response(V1ServiceOrderDetailSerializer(
             self.get_order(company, pk), context=self.serializer_context(company),
         ).data)
+
+
+# ---------------------------------------------------------------------------
+# BR-005B — diagnosis and quotes, internal surface
+# ---------------------------------------------------------------------------
+
+CAP_DIAGNOSTIC_MANAGE = 'service.diagnostic.manage'
+
+
+class V1ServiceQuotingMixin(V1ServiceSurfaceMixin):
+    """
+    Lookups for the diagnosis/quote surface.
+
+    READING uses `service.orders.view`, WRITING uses `service.diagnostic.manage`.
+    A colleague who may open an order may read the quote on it — requiring a
+    second capability to see what the order already shows would be authority
+    theatre. Composing one is a different act and needs its own permission.
+
+    Every lookup is SCOPED FROM THE START, through `get_order`, which already
+    applies the branch gate. A quote id belonging to another order, another
+    branch or another tenant is simply not found — never found-then-refused.
+    """
+
+    def get_diagnostic(self, company, order, pk):
+        diagnostic = order.diagnostics.filter(pk=pk).first()
+        if diagnostic is None:
+            raise NotFound('No encontrado.')
+        return diagnostic
+
+    def get_quote(self, company, order, pk):
+        quote = (
+            order.quotes.filter(pk=pk)
+            .select_related('diagnostic')
+            .prefetch_related('items')
+            .first()
+        )
+        if quote is None:
+            raise NotFound('No encontrado.')
+        return quote
+
+
+class V1ServiceDiagnosticListView(V1ServiceQuotingMixin, APIView):
+    """GET — every revision, newest first. POST — open a new draft."""
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        rows = order.diagnostics.select_related('diagnosed_by').order_by('-revision', '-pk')
+        return Response({
+            'count': rows.count(),
+            'results': V1ServiceDiagnosticSerializer(rows, many=True).data,
+        })
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+
+        serializer = V1ServiceDiagnosticWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            diagnostic = service.create_diagnostic(
+                repair_order=order,
+                actor=request.user,
+                request=request,
+                **serializer.validated_data,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            V1ServiceDiagnosticSerializer(diagnostic).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class V1ServiceDiagnosticDetailView(V1ServiceQuotingMixin, APIView):
+    """GET — one revision. PATCH — edit it, while it is still a draft."""
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None, diagnostic_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+        return Response(V1ServiceDiagnosticSerializer(
+            self.get_diagnostic(company, order, diagnostic_id),
+        ).data)
+
+    def patch(self, request, company_slug=None, pk=None, diagnostic_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+        diagnostic = self.get_diagnostic(company, order, diagnostic_id)
+
+        serializer = V1ServiceDiagnosticWriteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            updated = service.update_diagnostic(
+                diagnostic=diagnostic, actor=request.user, request=request,
+                **serializer.validated_data,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(V1ServiceDiagnosticSerializer(updated).data)
+
+
+class V1ServiceQuoteListView(V1ServiceQuotingMixin, APIView):
+    """GET — every revision. POST — open a new draft."""
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        rows = (
+            order.quotes.select_related('created_by', 'decision')
+            .prefetch_related('items').order_by('-revision', '-pk')
+        )
+        return Response({
+            'count': rows.count(),
+            'results': V1ServiceQuoteSerializer(rows, many=True).data,
+        })
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+
+        serializer = V1ServiceQuoteWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+
+        diagnostic = None
+        raw_diagnostic = data.pop('diagnostic_id', None)
+        if raw_diagnostic is not None:
+            diagnostic = self.get_diagnostic(company, order, raw_diagnostic)
+
+        try:
+            quote = service.create_quote(
+                repair_order=order, diagnostic=diagnostic,
+                actor=request.user, request=request, **data,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            V1ServiceQuoteSerializer(quote).data, status=status.HTTP_201_CREATED,
+        )
+
+
+class V1ServiceQuoteDetailView(V1ServiceQuotingMixin, APIView):
+    """GET — one revision. PATCH — edit its header while it is a draft."""
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None, quote_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+        return Response(V1ServiceQuoteSerializer(
+            self.get_quote(company, order, quote_id),
+        ).data)
+
+    def patch(self, request, company_slug=None, pk=None, quote_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        serializer = V1ServiceQuoteWriteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+
+        if 'diagnostic_id' in data:
+            raw = data.pop('diagnostic_id')
+            data['diagnostic'] = (
+                None if raw is None else self.get_diagnostic(company, order, raw)
+            )
+
+        try:
+            updated = service.update_quote(
+                quote=quote, actor=request.user, request=request, **data,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(V1ServiceQuoteSerializer(updated).data)
+
+
+class V1ServiceQuoteItemView(V1ServiceQuotingMixin, APIView):
+    """POST — add a line to a draft quote."""
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def post(self, request, company_slug=None, pk=None, quote_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        serializer = V1ServiceQuoteItemWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+
+        product = None
+        raw_product = data.pop('product_id', None)
+        if raw_product is not None:
+            # Resolved WITHIN the tenant, so a product id from another company
+            # is not found rather than found-then-refused.
+            product = Product.objects.filter(company=company, pk=raw_product).first()
+            if product is None:
+                raise NotFound('No encontrado.')
+
+        try:
+            service.add_quote_item(quote=quote, product=product, **data)
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            V1ServiceQuoteSerializer(self.get_quote(company, order, quote_id)).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class V1ServiceQuoteItemDetailView(V1ServiceQuotingMixin, APIView):
+    """
+    DELETE — remove a line from a draft quote.
+
+    Its own class rather than a second method on the collection view: sharing
+    one class between `items/` and `items/<id>/` would leave POST reachable on
+    the item URL, where it would silently create a new line instead of touching
+    the one the URL names.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def delete(self, request, company_slug=None, pk=None, quote_id=None, item_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        item = quote.items.filter(pk=item_id).first()
+        if item is None:
+            raise NotFound('No encontrado.')
+
+        try:
+            service.remove_quote_item(item=item)
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            V1ServiceQuoteSerializer(self.get_quote(company, order, quote_id)).data,
+        )
+
+
+class V1ServiceQuotePublishView(V1ServiceQuotingMixin, APIView):
+    """
+    POST — send the quote to the customer.
+
+    THE ONLY WAY AN ORDER REACHES `waiting_approval`. The generic transition
+    endpoint refuses that state precisely so this one can guarantee what it
+    means: a frozen quote with lines, built on a finalized diagnosis, waiting.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None, quote_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        try:
+            service.publish_quote(quote=quote, actor=request.user, request=request)
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            V1ServiceQuoteSerializer(self.get_quote(company, order, quote_id)).data,
+        )
+
+
+class V1ServiceQuoteCancelView(V1ServiceQuotingMixin, APIView):
+    """POST — withdraw a quote the customer has not answered."""
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None, quote_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        try:
+            service.cancel_quote(quote=quote, actor=request.user, request=request)
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            V1ServiceQuoteSerializer(self.get_quote(company, order, quote_id)).data,
+        )
