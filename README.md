@@ -26,6 +26,25 @@ STRIPE_WEBHOOK_SECRET=whsec_xxx
 STRIPE_CURRENCY=pen             # Soles peruanos — NO cambiar a usd
 STRIPE_DOMAIN=http://localhost:3000
 
+### Autoridad de plataforma vs. de empresa (Fase 0.3 / P0-C)
+
+```
+PLATAFORMA                        EMPRESA
+User.is_superuser                 Membership + CompanyRole + capabilities
+   ↓                                 ↓
+/admin/users/{pk}/role/           /admin/memberships/
+todos los usuarios                sólo SU personal
+todo el registro de auditoría     sólo SU registro
+```
+
+`UserProfile.role` es una columna **global**: no contiene ninguna empresa y no
+concede autoridad sobre ninguna. Está **OBSOLETO / TRANSICIÓN** y se conserva por
+compatibilidad, pero ya no cruza la frontera multiempresa.
+
+Si tras esta fase un administrador de empresa deja de ver el listado completo de
+usuarios de la plataforma, es intencionado: su personal está en
+`/admin/memberships/`.
+
 ### Proxies de confianza — obligatorio si hay un edge (Fase 0.3 / P0-B)
 
 ```
@@ -922,7 +941,17 @@ Demo users de desarrollo                 IMPLEMENTADO / TEMPORAL
 Platform MASTER — UI                     PENDIENTE
 Legacy RBAC fallback                     IMPLEMENTADO / TRANSICIÓN
 Tenant resolution                        PARCIAL
-Servicio técnico                         PENDIENTE
+Servicio técnico — núcleo (M8)           IMPLEMENTADO
+  Device                                 IMPLEMENTADO
+  RepairOrder                            IMPLEMENTADO — núcleo
+  Historial de estados (append-only)     IMPLEMENTADO
+  Asignación de técnico                  IMPLEMENTADO
+  Diagnóstico                            PENDIENTE
+  Cotizaciones y aprobación              PENDIENTE
+  Reparación y repuestos                 PENDIENTE
+  Control de calidad                     PENDIENTE
+  Garantías                              PENDIENTE
+  Tracking público                       PENDIENTE
 Dashboard interno avanzado               PENDIENTE
 Membership Invitation Flow               PENDIENTE
 IMEI/Serial                              PENDIENTE

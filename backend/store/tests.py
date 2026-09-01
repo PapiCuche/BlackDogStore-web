@@ -2031,9 +2031,17 @@ class AdminUserListTest(TestCase):
         self.admin_user = User.objects.create_user(username='adm_admin', password='Pass123!')
         self.admin_user.profile.role = UserProfile.ROLE_ADMIN
         self.admin_user.profile.save()
+        # P0-C: la superficie GLOBAL es de plataforma. El rol legacy ya no la
+        # abre — eso era la vulnerabilidad — así que la fixture que la alcanza
+        # es ahora un administrador de plataforma. Lo que prueba este test no
+        # cambia; cambia quién tiene derecho a llegar hasta él.
+        self.admin_user.is_superuser = True
+        self.admin_user.save(update_fields=['is_superuser'])
         self.superadmin = User.objects.create_user(username='adm_superadmin', password='Pass123!')
         self.superadmin.profile.role = UserProfile.ROLE_SUPERADMIN
         self.superadmin.profile.save()
+        self.superadmin.is_superuser = True
+        self.superadmin.save(update_fields=['is_superuser'])
 
     def test_anon_gets_401(self):
         response = self.client.get('/api/admin/users/')
@@ -2092,6 +2100,12 @@ class AdminUserRoleChangeTest(TestCase):
         self.superadmin = User.objects.create_user(username='rc_superadmin', password='Pass123!')
         self.superadmin.profile.role = UserProfile.ROLE_SUPERADMIN
         self.superadmin.profile.save()
+        # P0-C: la superficie GLOBAL es de plataforma. El rol legacy ya no la
+        # abre — eso era la vulnerabilidad — así que la fixture que la alcanza
+        # es ahora un administrador de plataforma. Lo que prueba este test no
+        # cambia; cambia quién tiene derecho a llegar hasta él.
+        self.superadmin.is_superuser = True
+        self.superadmin.save(update_fields=['is_superuser'])
         self.target = User.objects.create_user(username='rc_target', password='Pass123!')
 
     def test_anon_gets_401(self):
@@ -2198,6 +2212,12 @@ class AdminAuditLogViewTest(TestCase):
         self.admin_user = User.objects.create_user(username='al_admin', password='Pass123!')
         self.admin_user.profile.role = UserProfile.ROLE_ADMIN
         self.admin_user.profile.save()
+        # P0-C: la superficie GLOBAL es de plataforma. El rol legacy ya no la
+        # abre — eso era la vulnerabilidad — así que la fixture que la alcanza
+        # es ahora un administrador de plataforma. Lo que prueba este test no
+        # cambia; cambia quién tiene derecho a llegar hasta él.
+        self.admin_user.is_superuser = True
+        self.admin_user.save(update_fields=['is_superuser'])
         AdminAuditLog.objects.create(
             actor=self.admin_user,
             action='role_change',
@@ -2369,6 +2389,12 @@ class AdminUserListSearchFilterTest(TestCase):
         self.admin_user = User.objects.create_user(username='sf_admin', password='Pass123!')
         self.admin_user.profile.role = UserProfile.ROLE_ADMIN
         self.admin_user.profile.save()
+        # P0-C: la superficie GLOBAL es de plataforma. El rol legacy ya no la
+        # abre — eso era la vulnerabilidad — así que la fixture que la alcanza
+        # es ahora un administrador de plataforma. Lo que prueba este test no
+        # cambia; cambia quién tiene derecho a llegar hasta él.
+        self.admin_user.is_superuser = True
+        self.admin_user.save(update_fields=['is_superuser'])
         # Extra users for search/filter
         self.u_alice = User.objects.create_user(username='alice_sf', email='alice@example.com', password='Pass123!')
         self.u_bob = User.objects.create_user(username='bob_sf', email='bob@example.com', password='Pass123!')
@@ -2433,6 +2459,12 @@ class AdminAuditLogFilterTest(TestCase):
         self.admin_user = User.objects.create_user(username='alf_admin', password='Pass123!')
         self.admin_user.profile.role = UserProfile.ROLE_ADMIN
         self.admin_user.profile.save()
+        # P0-C: la superficie GLOBAL es de plataforma. El rol legacy ya no la
+        # abre — eso era la vulnerabilidad — así que la fixture que la alcanza
+        # es ahora un administrador de plataforma. Lo que prueba este test no
+        # cambia; cambia quién tiene derecho a llegar hasta él.
+        self.admin_user.is_superuser = True
+        self.admin_user.save(update_fields=['is_superuser'])
         self.actor1 = User.objects.create_user(username='alf_actor1', password='Pass123!')
         self.actor2 = User.objects.create_user(username='alf_actor2', password='Pass123!')
         # Create entries with slight ordering guarantee
@@ -2486,6 +2518,12 @@ class Audit31PaginationEdgeCasesTest(TestCase):
         self.admin_user = User.objects.create_user(username='pe_admin', password='Pass123!')
         self.admin_user.profile.role = UserProfile.ROLE_ADMIN
         self.admin_user.profile.save()
+        # P0-C: la superficie GLOBAL es de plataforma. El rol legacy ya no la
+        # abre — eso era la vulnerabilidad — así que la fixture que la alcanza
+        # es ahora un administrador de plataforma. Lo que prueba este test no
+        # cambia; cambia quién tiene derecho a llegar hasta él.
+        self.admin_user.is_superuser = True
+        self.admin_user.save(update_fields=['is_superuser'])
 
     def test_page_size_exceeds_max_is_clamped_to_100(self):
         """?page_size=500 must be silently clamped to 100."""
@@ -2587,6 +2625,12 @@ class Audit31ExtraFieldsIgnoredTest(TestCase):
         self.superadmin = User.objects.create_user(username='ef_superadmin', password='Pass123!')
         self.superadmin.profile.role = UserProfile.ROLE_SUPERADMIN
         self.superadmin.profile.save()
+        # P0-C: la superficie GLOBAL es de plataforma. El rol legacy ya no la
+        # abre — eso era la vulnerabilidad — así que la fixture que la alcanza
+        # es ahora un administrador de plataforma. Lo que prueba este test no
+        # cambia; cambia quién tiene derecho a llegar hasta él.
+        self.superadmin.is_superuser = True
+        self.superadmin.save(update_fields=['is_superuser'])
         self.target = User.objects.create_user(username='ef_target', password='OriginalPass123!')
 
     def test_extra_fields_in_body_do_not_modify_user(self):
@@ -3211,18 +3255,24 @@ class Phase32RegressionTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_admin_users_still_works(self):
-        admin = User.objects.create_user(username='reg32_admin', password='Pass123!')
-        admin.profile.role = UserProfile.ROLE_ADMIN
-        admin.profile.save()
+        # P0-C: la lista GLOBAL es de plataforma. El rol legacy dejó de abrirla
+        # a propósito — abría además la de todos los demás inquilinos.
+        admin = User.objects.create_user(
+            username='reg32_admin', password='Pass123!', is_superuser=True,
+        )
         self.client.force_authenticate(user=admin)
         self.assertEqual(self.client.get('/api/admin/users/').status_code, status.HTTP_200_OK)
 
     def test_admin_audit_logs_still_works(self):
-        admin = User.objects.create_user(username='reg32_adminb', password='Pass123!')
-        admin.profile.role = UserProfile.ROLE_ADMIN
-        admin.profile.save()
+        # P0-C: ídem. El registro global sólo lo lee plataforma; el de cada
+        # empresa lo lee su propio personal con capacidad.
+        admin = User.objects.create_user(
+            username='reg32_adminb', password='Pass123!', is_superuser=True,
+        )
         self.client.force_authenticate(user=admin)
-        self.assertEqual(self.client.get('/api/admin/audit-logs/').status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.get('/api/admin/audit-logs/').status_code, status.HTTP_200_OK,
+        )
 
     def test_product_public_serializer_no_is_active_field(self):
         """Public ProductSerializer must NOT expose is_active to clients."""
@@ -3849,6 +3899,14 @@ class Phase33RegressionTest(TestCase):
         self.admin = User.objects.create_user(username='reg33_admin', password='Pass123!')
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
+        # P0-C: SÓLO para los dos endpoints globales de más abajo. Se mantiene
+        # aparte del `self.admin` de arriba porque promover la fixture
+        # compartida cambia además cómo la resuelve la capa de tenant — un
+        # administrador de plataforma debe elegir empresa explícitamente — y eso
+        # rompía las comprobaciones de catálogo y pedidos de esta misma clase.
+        self.platform_admin = User.objects.create_user(
+            username='reg33_platform', password='Pass123!', is_superuser=True,
+        )
 
     def test_public_product_list_still_works(self):
         self.assertEqual(self.client.get('/api/products/').status_code, status.HTTP_200_OK)
@@ -3858,11 +3916,13 @@ class Phase33RegressionTest(TestCase):
         self.assertEqual(self.client.get('/api/admin/products/').status_code, status.HTTP_200_OK)
 
     def test_admin_users_still_works(self):
-        self.client.force_authenticate(user=self.admin)
+        # P0-C: la lista global es de plataforma. El rol legacy dejó de abrirla
+        # a propósito — abría también la de los demás inquilinos.
+        self.client.force_authenticate(user=self.platform_admin)
         self.assertEqual(self.client.get('/api/admin/users/').status_code, status.HTTP_200_OK)
 
     def test_admin_audit_logs_still_works(self):
-        self.client.force_authenticate(user=self.admin)
+        self.client.force_authenticate(user=self.platform_admin)
         self.assertEqual(self.client.get('/api/admin/audit-logs/').status_code, status.HTTP_200_OK)
 
     def test_customer_orders_endpoint_still_works(self):
@@ -28335,6 +28395,308 @@ class P0BAuditIpTest(TestCase):
 
 
 # =============================================================================
+# FASE 0.3 / P0-C — legacy admin isolation and the cross-tenant matrix
+# =============================================================================
+#
+# THE SHAPE OF THE BUG THIS CLOSES
+# --------------------------------
+# `UserProfile.role` is a single global column. It was designed when there was
+# one shop, so it has no company in it and cannot acquire one by being read more
+# carefully. Three endpoints still authorised on it, over unfiltered querysets,
+# which meant "administrator" — of ONE tenant — meant administrator of the
+# platform: every user's email, every tenant's audit trail, and the ability to
+# grant the very role that granted it.
+#
+# The rule these tests hold to is that authority over a company's records comes
+# from a Membership in THAT company, and authority over the platform comes from
+# being a platform administrator. Never from a legacy label.
+
+
+class P0CLegacyAdminIsolationTest(TestCase):
+    """The three legacy surfaces, from every side of the boundary."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('p0c-a', 'Empresa A')
+        self.b = _p3_company('p0c-b', 'Empresa B')
+
+        # Staff with the real, company-scoped authority.
+        self.admin_a, _ = _p2d_member(
+            self.a, 'p0c_admin_a', ['company.view', 'memberships.view'],
+        )
+        self.admin_b, _ = _p2d_member(
+            self.b, 'p0c_admin_b', ['company.view', 'memberships.view'],
+        )
+        self.plain_a, _ = _p2d_member(self.a, 'p0c_plain_a', ['company.view'])
+
+        # A LEGACY administrator: the global role, and no membership anywhere.
+        # This is the account the old permission classes trusted platform-wide.
+        self.legacy_admin = self._with_legacy_role(
+            'p0c_legacy_admin', UserProfile.ROLE_ADMIN,
+        )
+        self.legacy_superadmin = self._with_legacy_role(
+            'p0c_legacy_super', UserProfile.ROLE_SUPERADMIN,
+        )
+
+        self.platform = User.objects.create_user(
+            username='p0c_platform', password='Pass123!', is_superuser=True,
+        )
+
+    @staticmethod
+    def _with_legacy_role(username, role):
+        """
+        A user carrying ONLY the legacy global role, and no membership.
+
+        The `refresh_from_db()` is load-bearing, not tidiness. Creating a user
+        fires a signal that makes a `UserProfile` with role `customer`, and
+        Django caches that object on the instance. Updating the row afterwards
+        does not touch the cached one, so `get_user_role()` on the in-memory
+        user keeps answering `customer` — and a test that then asserts "denied"
+        passes because the fixture never became an administrator, not because
+        the endpoint refused one. That is a green light for a door left open.
+        """
+        user = User.objects.create_user(username=username, password='Pass123!')
+        UserProfile.objects.update_or_create(user=user, defaults={'role': role})
+        user.refresh_from_db()
+        return user
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_the_legacy_fixture_really_carries_the_role(self):
+        """
+        Guards the guard: if this fixture silently stopped being an
+        administrator, every "legacy is refused" test below would pass for the
+        wrong reason and prove nothing.
+        """
+        from .permissions import get_user_role
+
+        self.assertEqual(get_user_role(self.legacy_admin), UserProfile.ROLE_ADMIN)
+        self.assertEqual(
+            get_user_role(self.legacy_superadmin), UserProfile.ROLE_SUPERADMIN,
+        )
+        self.assertFalse(self.legacy_admin.is_superuser)
+
+    # --- /api/admin/users/ ------------------------------------------------
+
+    def test_an_admin_of_one_company_does_not_see_another_companys_people(self):
+        res = self._as(self.admin_a).get('/api/admin/users/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        usernames = {row['username'] for row in res.data['results']}
+        self.assertIn('p0c_admin_a', usernames)
+        self.assertNotIn('p0c_admin_b', usernames)
+        self.assertNotIn('p0c_legacy_admin', usernames)
+
+    def test_and_not_their_email_addresses_either(self):
+        """The list carries emails, which is what made this a PII leak."""
+        self.admin_b.email = 'privado@empresa-b.test'
+        self.admin_b.save(update_fields=['email'])
+        res = self._as(self.admin_a).get('/api/admin/users/')
+        self.assertNotIn('privado@empresa-b.test', json.dumps(res.data, default=str))
+
+    def test_the_legacy_global_role_alone_grants_nothing(self):
+        """
+        `UserProfile.role == 'admin'` with no membership used to list every user
+        on the platform. It is a label from before there was more than one
+        company, and it cannot name which one.
+        """
+        res = self._as(self.legacy_admin).get('/api/admin/users/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_member_without_the_capability_is_refused(self):
+        res = self._as(self.plain_a).get('/api/admin/users/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_platform_administrator_still_sees_everyone(self):
+        res = self._as(self.platform).get('/api/admin/users/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        usernames = {row['username'] for row in res.data['results']}
+        self.assertTrue({'p0c_admin_a', 'p0c_admin_b'}.issubset(usernames))
+
+    def test_the_search_filter_cannot_reach_across_the_boundary(self):
+        """A filter narrows a set; it must not be able to widen it."""
+        res = self._as(self.admin_a).get('/api/admin/users/?search=p0c_admin_b')
+        self.assertEqual(res.data['results'], [])
+
+    # --- /api/admin/users/{pk}/role/ --------------------------------------
+
+    def test_a_legacy_superadmin_can_no_longer_grant_the_role_that_grants_it(self):
+        """
+        The escalation. `IsSuperAdminRole` was satisfied by
+        `UserProfile.role == 'superadmin'` — a value THIS endpoint writes. A
+        legacy superadmin who was not a Django superuser could hand that role to
+        anybody, including themselves, across every tenant. The ladder was the
+        endpoint itself.
+        """
+        res = self._as(self.legacy_superadmin).patch(
+            f'/api/admin/users/{self.admin_a.pk}/role/',
+            {'role': UserProfile.ROLE_SUPERADMIN}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.admin_a.profile.refresh_from_db()
+        self.assertNotEqual(self.admin_a.profile.role, UserProfile.ROLE_SUPERADMIN)
+
+    def test_a_company_administrator_cannot_change_a_global_role(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/users/{self.plain_a.pk}/role/',
+            {'role': UserProfile.ROLE_ADMIN}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_platform_administrator_still_can(self):
+        res = self._as(self.platform).patch(
+            f'/api/admin/users/{self.plain_a.pk}/role/',
+            {'role': UserProfile.ROLE_ADMIN}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    # --- /api/admin/audit-logs/ -------------------------------------------
+
+    def _seed_logs(self):
+        AdminAuditLog.log(
+            actor=self.admin_a, action='p0c_a', target_type='test', target_id='1',
+            metadata={'marca': 'SOLO-A'}, company=self.a,
+        )
+        AdminAuditLog.log(
+            actor=self.admin_b, action='p0c_b', target_type='test', target_id='2',
+            metadata={'marca': 'SOLO-B'}, company=self.b,
+        )
+        AdminAuditLog.log(
+            actor=self.platform, action='p0c_global', target_type='test',
+            target_id='3', metadata={'marca': 'SIN-EMPRESA'},
+        )
+
+    def test_an_admin_reads_only_their_own_companys_trail(self):
+        self._seed_logs()
+        res = self._as(self.admin_a).get('/api/admin/audit-logs/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        body = json.dumps(res.data, default=str)
+        self.assertIn('SOLO-A', body)
+        self.assertNotIn('SOLO-B', body)
+
+    def test_entries_with_no_company_are_not_everybodys(self):
+        """
+        A null company means "older than multi-tenancy, or platform-level". It
+        is not permission to read — a missing value must not open a door.
+        """
+        self._seed_logs()
+        res = self._as(self.admin_a).get('/api/admin/audit-logs/')
+        self.assertNotIn('SIN-EMPRESA', json.dumps(res.data, default=str))
+
+    def test_the_legacy_role_reads_no_trail_at_all(self):
+        self._seed_logs()
+        res = self._as(self.legacy_admin).get('/api/admin/audit-logs/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_platform_administrator_reads_everything(self):
+        self._seed_logs()
+        res = self._as(self.platform).get('/api/admin/audit-logs/')
+        body = json.dumps(res.data, default=str)
+        for marker in ('SOLO-A', 'SOLO-B', 'SIN-EMPRESA'):
+            self.assertIn(marker, body)
+
+    def test_the_action_filter_cannot_reach_across_the_boundary(self):
+        self._seed_logs()
+        res = self._as(self.admin_a).get('/api/admin/audit-logs/?action=p0c_b')
+        self.assertEqual(res.data['results'], [])
+
+
+class P0CServiceTransitionIsolationTest(M8ServiceBase):
+    """
+    §24, §18 — the gap in M8's own coverage.
+
+    M8 tests cross-tenant reads, intake and assignment thoroughly. What it did
+    not assert is that MOVING a foreign order along its lifecycle is refused —
+    and the state machine is the part that changes somebody else's records.
+
+    Built on `M8ServiceBase` rather than on new fixtures, so it exercises the
+    same wiring the rest of M8 does instead of a parallel arrangement that might
+    differ in some way that matters.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # An order that belongs to the OTHER tenant, built through the same
+        # service the real intake uses.
+        self.foreign_order = _m8_service.create_repair_order(
+            company=self.other,
+            branch=self.foreign_branch,
+            customer=self.foreign_customer,
+            device=self.foreign_device,
+            reported_issue='Ajena.',
+            actor=None,
+        )
+        self.client = self.full_service_role()
+
+    def test_moving_a_foreign_order_is_not_found(self):
+        response = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.foreign_order.pk}/transition/'),
+            {'status': 'in_diagnosis'}, format='json',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.foreign_order.refresh_from_db()
+        self.assertEqual(self.foreign_order.status, 'received')
+
+    def test_naming_the_other_tenants_slug_does_not_help(self):
+        """Membership grants, not the slug in the path."""
+        response = self.client.post(
+            _m8_url('m8-otra', f'orders/{self.foreign_order.pk}/transition/'),
+            {'status': 'in_diagnosis'}, format='json',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.foreign_order.refresh_from_db()
+        self.assertEqual(self.foreign_order.status, 'received')
+
+    def test_a_foreign_order_and_a_missing_one_are_indistinguishable(self):
+        """§25 — a 403 here would confirm the order exists."""
+        missing = self.client.post(
+            _m8_url('m8-taller', f'orders/{10 ** 7}/transition/'),
+            {'status': 'in_diagnosis'}, format='json',
+        )
+        foreign = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.foreign_order.pk}/transition/'),
+            {'status': 'in_diagnosis'}, format='json',
+        )
+        self.assertEqual(missing.status_code, foreign.status_code)
+        self.assertEqual(missing.status_code, 404)
+
+    def test_assigning_a_technician_to_a_foreign_order_is_not_found(self):
+        response = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.foreign_order.pk}/assignment/'),
+            {'technician': self.staff.pk}, format='json',
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_service_layer_refuses_a_foreign_technician_on_its_own(self):
+        """
+        Not only the view. `TechnicianAssignment` has a `clean()` that `save()`
+        never calls, so the guarantee has to live where the writing happens —
+        and the model's own docstring says it does. This asserts that claim
+        instead of trusting it.
+        """
+        outsider = _m7_user('tecnico_ajeno')
+        Membership.objects.create(
+            user=outsider, company=self.other, role='technician',
+        )
+        order = self.make_order()
+        with self.assertRaises(_m8_service.TechnicianNotEligibleError):
+            _m8_service.assign_technician(
+                repair_order=order, technician=outsider, actor=self.staff,
+            )
+
+    def test_an_inactive_membership_is_not_staff_either(self):
+        """§23 — inactive membership grants nothing, same as none at all."""
+        colleague = _m7_user('tecnico_inactivo')
+        Membership.objects.create(
+            user=colleague, company=self.company, role='technician', is_active=False,
+        )
+        order = self.make_order()
+        with self.assertRaises(_m8_service.TechnicianNotEligibleError):
+            _m8_service.assign_technician(
+                repair_order=order, technician=colleague, actor=self.staff,
+            )
 # M9 / BR-005B — DIAGNOSIS, VERSIONED QUOTES AND CUSTOMER APPROVAL
 # =============================================================================
 

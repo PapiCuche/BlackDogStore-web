@@ -20,12 +20,13 @@ from .models import (
 )
 from .tenancy import (
     BranchAccessError, CATALOG_SOURCE_LEGACY, NoBranchError,
-    has_capability, resolve_branch_for_user, resolve_catalog_company,
+    active_memberships, has_capability, is_platform_admin,
+    resolve_branch_for_user, resolve_catalog_company, visible_companies,
 )
 from .permissions import (
     CanManageInventory, CanManageOrderFulfillment, CanManageProducts,
     CanViewAdminOrders, CanViewAdminProducts,
-    IsAdminRole, IsSuperAdminRole, get_user_role,
+    HasCompanyMembership, IsPlatformAdmin, get_user_role,
 )
 from .serializers import (
     AdminCategoryWriteSerializer, AdminInventoryAdjustSerializer,
@@ -192,12 +193,62 @@ def _paginate(queryset, request):
 
 
 class AdminUserListView(APIView):
-    """GET /api/admin/users/ — paginated user list with search and role filter. Admin+ only."""
-    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+    """
+    GET /api/admin/users/ — the people this caller may see, with their roles.
+
+    P0-C — THE LEAK THIS CLOSES
+    ---------------------------
+    This was `IsAdminRole` over an unfiltered `User.objects`. `IsAdminRole`
+    reads `UserProfile.role`, which is a GLOBAL column with no company in it, so
+    anybody carrying the legacy `admin` role — an administrator of ONE tenant —
+    listed every user of the platform, with their email addresses. A tenant
+    administrator is not a platform administrator, and the legacy role cannot
+    tell the difference because it predates there being more than one company.
+
+    WHAT REPLACES IT
+    ----------------
+    Authority is a capability (`memberships.view`) held inside a company, and
+    the queryset is built DOWNWARDS from the companies the caller belongs to:
+    people who share an active membership with them, plus themselves. A user of
+    another tenant is not filtered out of the answer — they are never in it.
+
+    Platform administrators still see everyone, because operating the platform
+    is what that authority is for.
+
+    WHY NOT SIMPLY LOCK IT TO PLATFORM ADMINS
+    -----------------------------------------
+    Because a company administrator has a legitimate reason to see their own
+    staff, `/api/admin/memberships/` already serves exactly that, and this
+    screen is what the panel links to today. Scoping the queryset closes the
+    leak without removing a function somebody uses; moving the screen onto
+    memberships entirely is a UI change, not a security fix, and belongs in its
+    own phase.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, HasCompanyMembership]
     throttle_classes = [AdminUsersThrottle]
 
     def get(self, request):
         users = User.objects.select_related('profile').order_by('id')
+
+        if not is_platform_admin(request.user):
+            companies = list(
+                active_memberships(request.user).values_list('company_id', flat=True)
+            )
+            if not companies:
+                return Response({'count': 0, 'page': 1, 'page_size': 0, 'results': []})
+            if not any(
+                has_capability(request.user, company_id, 'memberships.view')
+                for company_id in companies
+            ):
+                return Response(
+                    {'detail': 'No tienes permisos para esta operación.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            users = users.filter(
+                Q(memberships__company_id__in=companies, memberships__is_active=True)
+                | Q(pk=request.user.pk)
+            ).distinct()
 
         search = request.query_params.get('search', '').strip()
         if search:
@@ -230,8 +281,27 @@ class AdminUserListView(APIView):
 
 
 class AdminUserRoleView(APIView):
-    """PATCH /api/admin/users/{pk}/role/ — change role. Superadmin only."""
-    permission_classes = [permissions.IsAuthenticated, IsSuperAdminRole]
+    """
+    PATCH /api/admin/users/{pk}/role/ — change the GLOBAL legacy role.
+
+    P0-C — PLATFORM AUTHORITY, NOT A TENANT ONE
+    -------------------------------------------
+    `UserProfile.role` has no company in it: it applies everywhere at once. So
+    changing it is a platform operation however it is reached, and it now
+    requires a platform administrator.
+
+    It used to require `IsSuperAdminRole`, which is satisfied by
+    `UserProfile.role == 'superadmin'` — a value THIS ENDPOINT can write. A
+    legacy superadmin who was not a Django superuser could therefore grant that
+    same role to anyone, including themselves, across every tenant on the
+    platform: a privilege escalation whose ladder was the endpoint itself.
+
+    Company-scoped authority is granted through `Membership` and
+    `/api/admin/memberships/`, which is where a company administrator manages
+    their own staff.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsPlatformAdmin]
     throttle_classes = [AdminRoleChangeThrottle]
 
     def patch(self, request, pk):
@@ -279,12 +349,42 @@ class AdminUserRoleView(APIView):
 
 
 class AdminAuditLogListView(APIView):
-    """GET /api/admin/audit-logs/ — paginated audit log with optional filters. Admin+ only."""
-    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+    """
+    GET /api/admin/audit-logs/ — administrative actions this caller may read.
+
+    P0-C — WHOSE LOG IS IT
+    ----------------------
+    This was `IsAdminRole` over an unfiltered `AdminAuditLog.objects`, so one
+    tenant's administrator read every tenant's audit trail: who did what, to
+    which record, from which address, with the metadata attached. An audit log
+    is a record of other people's conduct, which makes reading one across a
+    company boundary a worse leak than reading their catalogue.
+
+    Rows carry `company` since SaaS Phase 1. Entries with NO company are either
+    older than multi-tenancy or platform-level, and they stay visible ONLY to
+    platform administrators — a null is not permission to read.
+
+    This phase changes WHO SEES WHICH TENANT and nothing else. What the rows
+    contain — the PII duplicated into `metadata`, the retention — is P1-H.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, HasCompanyMembership]
     throttle_classes = [AdminAuditLogsThrottle]
 
     def get(self, request):
         logs = AdminAuditLog.objects.select_related('actor').order_by('-created_at')
+
+        if not is_platform_admin(request.user):
+            companies = list(visible_companies(request.user).values_list('pk', flat=True))
+            if not companies or not any(
+                has_capability(request.user, company_id, 'memberships.view')
+                for company_id in companies
+            ):
+                return Response(
+                    {'detail': 'No tienes permisos para esta operación.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            logs = logs.filter(company_id__in=companies)
 
         action_filter = request.query_params.get('action', '').strip()
         if action_filter:
