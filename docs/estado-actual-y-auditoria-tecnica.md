@@ -1395,3 +1395,87 @@ prioridad real del lote estaba en Next y en el comodín de imágenes.
   navegación con correcciones de seguridad.
 - `NEXT_PUBLIC_IMAGE_HOSTS` debe configurarse en producción antes de que ninguna
   imagen remota vuelva a cargar. Sin ella no hay hosts remotos permitidos.
+
+
+---
+
+## Fase 0.3 / P0-B — Trusted proxy, IP del cliente y rate limiting
+
+### El problema
+
+`X-Forwarded-For` es un header. Los headers vienen de quien nos habla, y quien
+nos habla puede ser el atacante. Antes de esta subfase había **tres respuestas
+distintas** a "¿cuál es la IP del cliente?":
+
+| Consumidor | Cómo la calculaba | Consecuencia |
+|---|---|---|
+| DRF throttling | `get_ident()` con `NUM_PROXIES` **sin configurar** | En DRF 3.17 eso significa «usa el header entero como identidad» → un valor distinto por petición = un cubo de rate limit nuevo por petición |
+| `AdminAuditLog.log()` | `xff.split(',')[0]` | La entrada **más a la izquierda**: la posición que el llamante controla del todo. Cualquiera elegía bajo qué IP quedaban registradas sus acciones |
+| El resto | `REMOTE_ADDR` | Correcto |
+
+Y el proxy de Next reenviaba **todos** los headers salvo hop-by-hop y `host`, así
+que el navegador podía escribir cualquiera de ellos.
+
+### Semántica real de DRF 3.17.1, leída del código instalado
+
+```python
+if num_proxies is not None:
+    if num_proxies == 0 or xff is None:
+        return remote_addr
+    addrs = xff.split(',')
+    return addrs[-min(num_proxies, len(addrs))].strip()
+return ''.join(xff.split()) if xff else remote_addr   # NUM_PROXIES=None
+```
+
+| `NUM_PROXIES` | Con `X-Forwarded-For` presente | Seguro |
+|---|---|---|
+| `None` (defecto de DRF) | devuelve **el header entero** | **NO** |
+| `0` | devuelve `REMOTE_ADDR` | Sí |
+| `N > 0` | N-ésima desde la derecha | Sólo si N proxies **añaden** de verdad |
+
+### La política
+
+Una sola variable, `TRUSTED_PROXY_COUNT` (por defecto **0**), alimenta a la vez
+`NUM_PROXIES` de DRF y a `store/client_ip.py`, que es la autoridad única que usa
+la auditoría. Que dos subsistemas discrepen sobre quién llama sería peor que
+equivocarse los dos igual: el log diría una cosa y el limitador otra.
+
+### Por qué el defecto es 0 y no 1
+
+Con 0 y un proxy no declarado delante, todos los clientes comparten contador:
+**demasiado estricto**, nunca evitable. Con 1 y un proxy que **no añade** nada a
+`X-Forwarded-For` —que es el caso del proxy de Next— la entrada más a la derecha
+es la que escribió el cliente: la configuración que parecía establecer confianza
+se la regala al atacante. Declarar un número de proxies es una afirmación sobre
+lo que el proxy **hace**, no sobre cuántos saltos hay.
+
+### Por qué el arreglo no puede vivir en Next
+
+`NextRequest` **no expone la IP de la conexión** en Next 16.3.4 (la propiedad
+`ip` se eliminó), así que el proxy sólo puede leer headers — justo lo que no se
+puede creer. Reconstruir ahí una IP sería inventarla. El proxy por tanto sólo
+**elimina** los headers de identidad; la autoridad es Django.
+
+Y tiene que ser Django, porque `docker-compose.yml` publica el backend en
+`ports: '8000:8000'`: **es alcanzable sin pasar por Next**. Verificado en vivo —
+hablando directo a Django con `X-Forwarded-For` variable, el límite sigue
+aplicando.
+
+### `SECURE_PROXY_SSL_HEADER`
+
+Estaba activo incondicionalmente en producción. Es un header: si el backend es
+alcanzable directamente, cualquiera puede enviarlo y Django creerá que una
+petición en claro fue segura, lo que anula `SECURE_SSL_REDIRECT` y permite poner
+cookies `Secure` sobre texto plano. Ahora sólo se activa cuando
+`TRUSTED_PROXY_COUNT > 0`.
+
+### Lo que NO resuelve esta subfase
+
+- **Cache del throttle**: no hay bloque `CACHES`, así que Django usa
+  `LocMemCache`, **por proceso**. Con varios workers o réplicas cada uno lleva su
+  propio contador y el límite efectivo se multiplica por el número de procesos.
+  `PENDIENTE INFRA` — requiere cache compartida antes de escalar horizontalmente.
+- **Rate limiting de borde / DDoS**: el throttle de DRF es control de abuso
+  aplicativo, no protección volumétrica.
+- **Credential stuffing distribuido**: limitar sólo por IP no lo cubre. Añadir
+  identidad de cuenta al cubo del login queda como `PROPUESTA / P1`.

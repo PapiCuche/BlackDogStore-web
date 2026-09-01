@@ -9,6 +9,67 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase 0.3 / P0-B — Trusted proxy, IP del cliente y rate limiting
+
+**Estado: PARCIAL — REQUIERE INFRA.** Sin migraciones.
+
+### El límite de peticiones era decorativo
+
+DRF 3.17 con `NUM_PROXIES` sin configurar usa **el header `X-Forwarded-For`
+entero** como identidad del throttle. El proxy de Next reenviaba ese header tal
+cual desde el navegador. Resultado: un valor distinto por petición era un cubo de
+rate limit nuevo por petición, y el límite de 5 logins/minuto no llegaba a
+dispararse nunca.
+
+Verificado con tests que **fallan sin el arreglo** (5 fallos) y pasan con él, y en
+vivo contra el servidor.
+
+### La auditoría registraba la IP que el sujeto eligiera
+
+`AdminAuditLog.log()` tomaba `xff.split(',')[0]` — la entrada más a la izquierda,
+la que el llamante controla por completo. Cualquiera podía decidir bajo qué IP
+quedaban registradas sus propias acciones administrativas. Un registro que anota
+la dirección que eligió el investigado es peor que uno que no anota ninguna,
+porque alguien acabará creyéndoselo.
+
+### Una sola autoridad
+
+Nuevo `store/client_ip.py` con `get_client_ip()`, y una única variable
+`TRUSTED_PROXY_COUNT` (por defecto **0**) que alimenta a la vez a `NUM_PROXIES`
+de DRF y a la auditoría.
+
+- **0** — se ignora `X-Forwarded-For`; el cliente es `REMOTE_ADDR`.
+- **N > 0** — el operador afirma que N proxies **añaden** su entrada, y el cliente
+  es la N-ésima desde la derecha.
+
+Poner 1 «porque hay un proxy» es la configuración peligrosa si ese proxy no añade
+nada: la entrada más a la derecha pasa a ser la que escribió el cliente.
+
+### El proxy de Next elimina, no reconstruye
+
+`NextRequest` no expone la IP de la conexión en Next 16.3.4, así que el proxy sólo
+puede leer headers. Reconstruir ahí una IP sería inventarla, de modo que
+simplemente **elimina** los headers de identidad de red y deja que Django use
+`REMOTE_ADDR`.
+
+Tiene que ser así porque `docker-compose.yml` publica Django en `8000:8000`: es
+alcanzable sin pasar por Next. Comprobado en vivo que el límite aplica también
+hablando directo al backend.
+
+### `SECURE_PROXY_SSL_HEADER`
+
+Sólo se activa si `TRUSTED_PROXY_COUNT > 0`. Antes estaba siempre puesto en
+producción, y siendo un header, un backend alcanzable directamente creería que una
+petición en claro fue HTTPS.
+
+### Por qué PARCIAL
+
+El throttle guarda sus contadores en `LocMemCache` (no hay bloque `CACHES`), que
+es **por proceso**: con varios workers cada uno lleva su propia cuenta. Cerrar eso
+requiere cache compartida, que es una decisión de infraestructura, no de código.
+
+---
+
 ## Fase 0.3 / P0-A — Dependencias y cadena de suministro
 
 **Estado: IMPLEMENTADO.** Sin migraciones.

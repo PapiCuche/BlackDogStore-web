@@ -684,11 +684,20 @@ class AdminAuditLog(models.Model):
     @classmethod
     def log(cls, actor, action, target_type, target_id='', metadata=None, request=None,
             company=None):
+        # P0-B — the IP comes from the single trust policy, not from a header.
+        #
+        # This used to read `xff.split(',')[0]`: the LEFTMOST entry of
+        # X-Forwarded-For, which is the position furthest from us and entirely
+        # under the caller's control. Anyone could therefore choose which IP
+        # address their own administrative actions were filed under — and an
+        # audit log that records an address the subject picked is worse than one
+        # that records nothing, because somebody will later believe it.
+        from .client_ip import get_client_ip
+
         ip = None
         ua = ''
         if request:
-            xff = request.META.get('HTTP_X_FORWARDED_FOR', '')
-            ip = xff.split(',')[0].strip() if xff else request.META.get('REMOTE_ADDR')
+            ip = get_client_ip(request)
             ua = request.META.get('HTTP_USER_AGENT', '')[:500]
         return cls.objects.create(
             actor=actor,

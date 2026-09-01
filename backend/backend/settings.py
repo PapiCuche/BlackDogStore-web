@@ -48,10 +48,33 @@ INSTALLED_APPS = [
     'store.apps.StoreConfig',
 ]
 
+# ---------------------------------------------------------------------------
+# Trusted proxy boundary — Phase 0.3 / P0-B
+# ---------------------------------------------------------------------------
+#
+# How many proxies in front of this process may be believed when they say who
+# the caller is. See `store/client_ip.py` for the full reasoning.
+#
+#   0  (default)  Ignore X-Forwarded-For entirely; the client is REMOTE_ADDR.
+#   N  > 0        EXACTLY N proxies append to X-Forwarded-For and the Nth entry
+#                 from the right is the client.
+#
+# Set this ONLY once the edge is known to strip the caller's own
+# X-Forwarded-For and append the real peer. Declaring a count while the proxy
+# appends nothing is worse than declaring zero: the rightmost entry is then
+# whatever the caller typed, and the setting that was supposed to establish
+# trust hands it to the attacker.
+TRUSTED_PROXY_COUNT = env.int('TRUSTED_PROXY_COUNT', default=0)
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'store.authentication.CookieJWTAuthentication',
     ),
+    # Drives DRF's BaseThrottle.get_ident(). Left unset it defaults to None,
+    # which makes DRF use the WHOLE X-Forwarded-For header as the throttle
+    # identity — so a client could mint a fresh rate-limit bucket per request
+    # just by varying a header. Pinned to the same policy the audit log uses.
+    'NUM_PROXIES': TRUSTED_PROXY_COUNT,
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.AllowAny',
     ),
@@ -252,7 +275,16 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = env.int('SECURE_HSTS_SECONDS', default=31536000)
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    # Only when a trusted proxy is actually declared.
+    #
+    # This header tells Django "the connection in front of you was HTTPS". It is
+    # a header, so if this process is reachable directly, any caller can send it
+    # and Django will believe a plaintext request was secure — which disables
+    # SECURE_SSL_REDIRECT and lets it set Secure cookies over cleartext. It is
+    # only meaningful when something trustworthy is in front, and that is
+    # exactly what TRUSTED_PROXY_COUNT declares.
+    if TRUSTED_PROXY_COUNT > 0:
+        SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # ---------------------------------------------------------------------------
 # Storefront tenant resolution — SaaS Phase 2B

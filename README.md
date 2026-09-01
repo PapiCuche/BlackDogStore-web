@@ -26,6 +26,44 @@ STRIPE_WEBHOOK_SECRET=whsec_xxx
 STRIPE_CURRENCY=pen             # Soles peruanos — NO cambiar a usd
 STRIPE_DOMAIN=http://localhost:3000
 
+### Proxies de confianza — obligatorio si hay un edge (Fase 0.3 / P0-B)
+
+```
+TRUSTED_PROXY_COUNT=0
+```
+
+Decide de dónde sale la IP que se usa para rate limiting y auditoría.
+
+**Contrato que debe cumplir producción antes de subirlo de 0:**
+
+```
+Cliente
+   ↓
+EDGE DE CONFIANZA (nginx / CDN / balanceador)
+   · ELIMINA el X-Forwarded-For que llegue del cliente
+   · AÑADE la IP real del par conectado
+   ↓
+Next  (elimina headers de identidad; no inventa ninguna)
+   ↓
+Django  · TRUSTED_PROXY_COUNT = nº de proxies que AÑADEN
+   ↓
+DRF throttling + AdminAuditLog  (misma IP, misma política)
+```
+
+Con `nginx` eso es `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`
+tras haber descartado el header entrante; con un CDN, la garantía equivalente de
+que reescribe el header y de que el origen **sólo** acepta tráfico del CDN.
+
+Poner 1 porque «hay un proxy delante» sin que ese proxy añada nada es peor que
+dejarlo en 0: la entrada más a la derecha sería la que escribió el propio cliente.
+
+Con 0 y Django detrás de un proxy no declarado, todos los clientes comparten
+contador de rate limit. Es demasiado estricto, nunca evitable.
+
+**Django no debe ser accesible públicamente de forma directa.** El
+`docker-compose.yml` de desarrollo publica el puerto 8000; un despliegue real no
+debe hacerlo.
+
 ### Hosts de imágenes remotas — obligatorio en producción (Fase 0.3 / P0-A)
 
 ```

@@ -26,6 +26,7 @@ from unittest.mock import patch, MagicMock
 import stripe as stripe_lib
 
 from django.core import mail
+from django.conf import settings
 from django.core.cache import cache
 from django.db import models
 from django.test import TestCase, TransactionTestCase, override_settings
@@ -26647,3 +26648,298 @@ class M7InventoryRegressionTest(M7InventoryBase):
             self.assertEqual(
                 self.client.get(_m7_url('m7-shop', resource)).status_code, 404, resource,
             )
+
+
+# =============================================================================
+# FASE 0.3 / P0-B — trusted proxy, client IP and rate limiting
+# =============================================================================
+#
+# The question these tests answer is not "does the rate limiter count?" but
+# "does the caller get to choose which counter they are counted in?". Before
+# this phase they did: DRF's `get_ident()` with `NUM_PROXIES` unset uses the
+# whole `X-Forwarded-For` header as the identity, and the Next proxy forwarded
+# that header verbatim from the browser. A different value per request meant a
+# fresh bucket per request, and the rate limit was decoration.
+
+from store.client_ip import get_client_ip as _p0b_client_ip  # noqa: E402
+
+
+class P0BClientIpPolicyTest(TestCase):
+    """The single authority, at each configured trust level."""
+
+    def _request(self, remote_addr='203.0.113.9', **headers):
+        from django.test import RequestFactory
+        return RequestFactory().get('/', REMOTE_ADDR=remote_addr, **headers)
+
+    # --- default: believe nobody -----------------------------------------
+
+    def test_by_default_the_forwarded_header_is_ignored_entirely(self):
+        request = self._request(HTTP_X_FORWARDED_FOR='1.2.3.4')
+        self.assertEqual(_p0b_client_ip(request), '203.0.113.9')
+
+    def test_by_default_a_chain_is_ignored_too(self):
+        request = self._request(
+            HTTP_X_FORWARDED_FOR='1.1.1.1, 2.2.2.2, 3.3.3.3',
+        )
+        self.assertEqual(_p0b_client_ip(request), '203.0.113.9')
+
+    def test_the_link_local_metadata_address_earns_no_special_treatment(self):
+        """
+        169.254.169.254 is the cloud metadata endpoint. It is interesting as a
+        SSRF target, not as a client address — and under the default policy it
+        is ignored for the same reason every other supplied value is.
+        """
+        request = self._request(HTTP_X_FORWARDED_FOR='169.254.169.254')
+        self.assertEqual(_p0b_client_ip(request), '203.0.113.9')
+
+    def test_no_remote_addr_and_no_trust_yields_none_not_a_guess(self):
+        """
+        A null in an audit row is a fact — "we do not know". A fabricated
+        address is a lie somebody will later act on.
+        """
+        request = self._request(remote_addr='', HTTP_X_FORWARDED_FOR='1.2.3.4')
+        self.assertIsNone(_p0b_client_ip(request))
+
+    # --- one declared proxy ----------------------------------------------
+
+    @override_settings(TRUSTED_PROXY_COUNT=1)
+    def test_with_one_declared_proxy_the_last_entry_is_the_client(self):
+        request = self._request(HTTP_X_FORWARDED_FOR='9.9.9.9, 198.51.100.7')
+        self.assertEqual(_p0b_client_ip(request), '198.51.100.7')
+
+    @override_settings(TRUSTED_PROXY_COUNT=1)
+    def test_entries_the_caller_prepended_are_discarded(self):
+        """
+        The caller can write anything to the LEFT of what our own proxy
+        appended. Reading from the right is what makes the value theirs to
+        supply and ours to trust.
+        """
+        request = self._request(
+            HTTP_X_FORWARDED_FOR='evil1, evil2, evil3, 198.51.100.7',
+        )
+        self.assertEqual(_p0b_client_ip(request), '198.51.100.7')
+
+    @override_settings(TRUSTED_PROXY_COUNT=2)
+    def test_two_declared_proxies_read_two_from_the_right(self):
+        request = self._request(
+            HTTP_X_FORWARDED_FOR='spoof, 198.51.100.7, 10.0.0.1',
+        )
+        self.assertEqual(_p0b_client_ip(request), '198.51.100.7')
+
+    @override_settings(TRUSTED_PROXY_COUNT=2)
+    def test_a_chain_shorter_than_declared_does_not_read_past_its_start(self):
+        request = self._request(HTTP_X_FORWARDED_FOR='198.51.100.7')
+        self.assertEqual(_p0b_client_ip(request), '198.51.100.7')
+
+    @override_settings(TRUSTED_PROXY_COUNT=1)
+    def test_a_declared_proxy_that_sent_no_header_falls_back_to_the_socket(self):
+        request = self._request()
+        self.assertEqual(_p0b_client_ip(request), '203.0.113.9')
+
+    # --- the configuration itself must fail closed ------------------------
+
+    @override_settings(TRUSTED_PROXY_COUNT='no soy un numero')
+    def test_an_unparseable_setting_falls_back_to_trusting_nobody(self):
+        request = self._request(HTTP_X_FORWARDED_FOR='1.2.3.4')
+        self.assertEqual(_p0b_client_ip(request), '203.0.113.9')
+
+    @override_settings(TRUSTED_PROXY_COUNT=-5)
+    def test_a_negative_setting_falls_back_to_trusting_nobody(self):
+        request = self._request(HTTP_X_FORWARDED_FOR='1.2.3.4')
+        self.assertEqual(_p0b_client_ip(request), '203.0.113.9')
+
+    def test_django_and_drf_resolve_the_client_the_same_way(self):
+        """
+        Two subsystems disagreeing about who the caller is would mean the audit
+        log says one thing and the rate limiter another — worse than either
+        being wrong alone. `NUM_PROXIES` is set from the same setting.
+        """
+        from rest_framework.settings import api_settings
+
+        self.assertEqual(api_settings.NUM_PROXIES, settings.TRUSTED_PROXY_COUNT)
+        self.assertEqual(api_settings.NUM_PROXIES, 0)
+
+
+class P0BThrottleSpoofingTest(TestCase):
+    """The bypass this phase closes, exercised through the real endpoints."""
+
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    def _login_attempts(self, count, forwarded=None):
+        """Fire `count` bad logins, optionally varying X-Forwarded-For."""
+        codes = []
+        client = APIClient()
+        for index in range(count):
+            extra = {}
+            if forwarded == 'varying':
+                extra['HTTP_X_FORWARDED_FOR'] = f'203.0.113.{index + 10}'
+            elif forwarded == 'chain':
+                extra['HTTP_X_FORWARDED_FOR'] = f'spoof{index}, 203.0.113.5'
+            elif forwarded:
+                extra['HTTP_X_FORWARDED_FOR'] = forwarded
+            res = client.post(
+                '/api/auth/login/',
+                {'username': 'nadie', 'password': 'incorrecta'},
+                format='json', **extra,
+            )
+            codes.append(res.status_code)
+        return codes
+
+    def test_login_is_throttled_at_all(self):
+        """The control case: without any header games the limit engages."""
+        codes = self._login_attempts(9)
+        self.assertIn(status.HTTP_429_TOO_MANY_REQUESTS, codes)
+
+    def test_a_varying_forwarded_header_no_longer_mints_fresh_buckets(self):
+        """
+        THE BYPASS. With `NUM_PROXIES` unset, DRF 3.17 uses the whole
+        X-Forwarded-For as the throttle identity, so a new value per request is
+        a new bucket per request and the 5/min login limit never fires. Every
+        one of these requests carries a different address.
+        """
+        codes = self._login_attempts(9, forwarded='varying')
+        self.assertIn(
+            status.HTTP_429_TOO_MANY_REQUESTS, codes,
+            'variar X-Forwarded-For permite evadir el límite de login',
+        )
+
+    def test_prepending_entries_to_a_chain_does_not_help_either(self):
+        codes = self._login_attempts(9, forwarded='chain')
+        self.assertIn(status.HTTP_429_TOO_MANY_REQUESTS, codes)
+
+    def test_a_fixed_spoofed_address_does_not_move_the_bucket(self):
+        """
+        Five real attempts, then five more claiming a different address. If the
+        header were believed the second batch would start a fresh count.
+        """
+        self._login_attempts(5)
+        codes = self._login_attempts(4, forwarded='198.51.100.200')
+        self.assertIn(status.HTTP_429_TOO_MANY_REQUESTS, codes)
+
+    def test_the_same_holds_for_a_commercial_endpoint(self):
+        """§15 — one authentication case and one commercial case."""
+        company = _p3_company('p0b-cart', 'Carrito P0B')
+        codes = []
+        client = APIClient()
+        with _storefront_of(company):
+            for index in range(70):
+                res = client.get(
+                    '/api/cart/',
+                    HTTP_X_FORWARDED_FOR=f'203.0.113.{index % 250 + 1}',
+                )
+                codes.append(res.status_code)
+                if res.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+                    break
+        self.assertIn(status.HTTP_429_TOO_MANY_REQUESTS, codes)
+
+    def test_the_alternative_identity_headers_have_no_effect(self):
+        """
+        §8 case H. DRF reads only X-Forwarded-For, so these were never an
+        avenue — asserted so that adding a reader later cannot open one
+        silently.
+        """
+        client = APIClient()
+        codes = []
+        for index in range(9):
+            res = client.post(
+                '/api/auth/login/',
+                {'username': 'nadie', 'password': 'incorrecta'}, format='json',
+                HTTP_X_REAL_IP=f'203.0.113.{index}',
+                HTTP_TRUE_CLIENT_IP=f'198.51.100.{index}',
+                HTTP_CF_CONNECTING_IP=f'192.0.2.{index}',
+                HTTP_FORWARDED=f'for=203.0.113.{index}',
+            )
+            codes.append(res.status_code)
+        self.assertIn(status.HTTP_429_TOO_MANY_REQUESTS, codes)
+
+
+class P0BAuditIpTest(TestCase):
+    """§16 — the subject of a log entry does not get to choose its IP."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p0b-audit', 'Auditoria P0B')
+        self.user, _ = _p2d_member(
+            self.company, 'p0b_audit_admin', ['company.view', 'products.manage'],
+        )
+
+    def _log_through_a_request(self, **headers):
+        from django.test import RequestFactory
+
+        request = RequestFactory().post(
+            '/', REMOTE_ADDR='203.0.113.9', **headers,
+        )
+        return AdminAuditLog.log(
+            actor=self.user, action='p0b_test', target_type='test',
+            target_id='1', request=request, company=self.company,
+        )
+
+    def test_a_forged_forwarded_header_is_not_recorded(self):
+        """
+        The old code took `xff.split(',')[0]` — the leftmost entry, the position
+        the caller controls completely. Anyone could file their own actions
+        under an address of their choosing.
+        """
+        entry = self._log_through_a_request(HTTP_X_FORWARDED_FOR='8.8.8.8')
+        self.assertEqual(entry.ip_address, '203.0.113.9')
+        self.assertNotEqual(entry.ip_address, '8.8.8.8')
+
+    def test_a_forged_chain_is_not_recorded_either(self):
+        entry = self._log_through_a_request(
+            HTTP_X_FORWARDED_FOR='8.8.8.8, 1.1.1.1, 9.9.9.9',
+        )
+        self.assertEqual(entry.ip_address, '203.0.113.9')
+
+    def test_a_value_that_is_not_an_address_cannot_break_the_write(self):
+        """
+        `ip_address` is a GenericIPAddressField. Before, an arbitrary header
+        went straight into it; the column would refuse the write and the audit
+        entry would be lost — losing the log is itself the failure.
+        """
+        entry = self._log_through_a_request(
+            HTTP_X_FORWARDED_FOR='no-soy-una-ip; DROP TABLE',
+        )
+        self.assertEqual(entry.ip_address, '203.0.113.9')
+
+    @override_settings(TRUSTED_PROXY_COUNT=1)
+    def test_with_a_declared_proxy_the_appended_entry_is_recorded(self):
+        entry = self._log_through_a_request(
+            HTTP_X_FORWARDED_FOR='evil, 198.51.100.7',
+        )
+        self.assertEqual(entry.ip_address, '198.51.100.7')
+
+    def test_the_audit_log_no_longer_reads_the_header_itself(self):
+        """
+        Asserted over the SYNTAX TREE, not by scanning text: the surrounding
+        comment necessarily mentions the header it stopped trusting, and a text
+        scan cannot tell an explanation from a read.
+        """
+        import ast
+        import inspect
+
+        import textwrap
+
+        source = textwrap.dedent(inspect.getsource(AdminAuditLog.log))
+        tree = ast.parse(source)
+        reads = [
+            node.slice.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        ]
+        calls = [
+            node.args[0].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'get'
+            and node.args and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ]
+        for key in (*reads, *calls):
+            self.assertNotIn('FORWARDED', key.upper())
