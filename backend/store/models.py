@@ -2335,13 +2335,15 @@ class InternalSequence(models.Model):
     choice from a leftover.
     """
 
-    # The only document type this phase implements. Others are named in the
-    # roadmap and deliberately absent: a choice for a document that does not
-    # exist is an invitation to write code for it, and there is nothing to
-    # allocate numbers for until the domain arrives.
+    # A choice exists here only when the document it names exists. 2E shipped
+    # one; M8 added the second when the technical-service domain arrived, which
+    # is exactly the condition this comment has always stated. The rest of the
+    # roadmap is still absent, and stays absent until its domain lands.
     DOCUMENT_SALES_NOTE = 'sales_note'
+    DOCUMENT_REPAIR_ORDER = 'repair_order'
     DOCUMENT_TYPE_CHOICES = [
         (DOCUMENT_SALES_NOTE, 'Nota de venta interna'),
+        (DOCUMENT_REPAIR_ORDER, 'Orden de servicio técnico'),
     ]
 
     MIN_PADDING = 1
@@ -3563,3 +3565,522 @@ class ImportMappingProfile(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.import_type})'
+
+# ===========================================================================
+# BR-005A — TECHNICAL SERVICE CORE (M8)
+# ===========================================================================
+#
+# A repair shop receives a device, opens an order for it, moves that order
+# through a lifecycle and assigns somebody to work on it. That is the whole of
+# M8. Diagnostics, quotes, approval, repair execution, parts, quality control
+# and warranty are named in the roadmap and DELIBERATELY ABSENT: an empty table
+# for a module nobody has written is an invitation to write code against a
+# semantics that has not been decided.
+#
+# WHY THIS IS NOT `Order`
+# -----------------------
+# `Order` is a SALE. It has a cart, a total, a payment status, a Stripe session
+# and a fulfilment state that ends in "delivered". A `RepairOrder` has none of
+# those: nothing is bought, there is no price at intake, and its lifecycle is
+# about a physical object somebody left on a counter. The two share the word
+# "order" in English and nothing else. Making one a subclass — or hanging a
+# ForeignKey between them — would mean every future change to a sale had to be
+# reasoned about twice, once for a sale and once for a repair.
+#
+# WHAT A CLIENT NEVER DECIDES
+# ---------------------------
+# The order number, the initial status, the company, who received the device,
+# and who may work on it. All five are set by the server, and the API has no
+# field for any of them.
+
+
+class Device(models.Model):
+    """
+    A physical object a customer left with the shop.
+
+    ONE CUSTOMER, ONE COMPANY, MANY VISITS. A device is registered once and
+    reused by every repair order that touches it, which is what makes "this
+    laptop has been here three times" a question the data can answer.
+
+    WHY THERE IS NO BRAND TABLE
+    ---------------------------
+    `brand` and `model` are normalised text, not foreign keys to a catalogue,
+    and that is a decision rather than a shortcut. A brand catalogue has to be
+    owned by somebody: platform-owned it goes stale the week a new phone ships
+    and no tenant can fix it; tenant-owned it is three tables of CRUD that
+    nobody asked for, standing between a receptionist and a device on the
+    counter. The fields are indexed, so search works today, and nothing here
+    prevents a later migration to a catalogue — the API shape would not change.
+
+    `device_type` IS a closed list, because it is small, stable, and drives
+    presentation rather than vocabulary. It is also deliberately generic: this
+    platform is not an Apple reseller's software, and a shop that repairs
+    consoles must be able to file a console.
+
+    WHAT THIS MODEL REFUSES TO STORE
+    --------------------------------
+    No unlock PIN, no pattern, no password, no Apple ID, no iCloud credential.
+    Repair shops do ask for them, and a field for one would make this table a
+    credential store with no encryption-at-rest decision, no access policy, no
+    retention rule and no deletion story. That policy does not exist yet, so
+    neither does the field. A structural test fails if one appears.
+    """
+
+    TYPE_PHONE = 'phone'
+    TYPE_TABLET = 'tablet'
+    TYPE_LAPTOP = 'laptop'
+    TYPE_DESKTOP = 'desktop'
+    TYPE_CONSOLE = 'console'
+    TYPE_WEARABLE = 'wearable'
+    TYPE_OTHER = 'other'
+    TYPE_CHOICES = [
+        (TYPE_PHONE, 'Teléfono'),
+        (TYPE_TABLET, 'Tablet'),
+        (TYPE_LAPTOP, 'Laptop'),
+        (TYPE_DESKTOP, 'Computadora de escritorio'),
+        (TYPE_CONSOLE, 'Consola'),
+        (TYPE_WEARABLE, 'Wearable'),
+        (TYPE_OTHER, 'Otro'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='devices',
+    )
+    # PROTECT, not CASCADE. Deleting a customer must not silently take their
+    # devices — and with them the repair history that references those devices.
+    # Archiving a customer is `is_active=False`; it is not a delete.
+    customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name='devices',
+    )
+
+    device_type = models.CharField(
+        max_length=16, choices=TYPE_CHOICES, default=TYPE_OTHER, db_index=True,
+    )
+    brand = models.CharField(max_length=80)
+    model = models.CharField(max_length=120)
+
+    # OPTIONAL, both of them, and no global unique constraint anywhere near
+    # them. See `service_services.find_possible_duplicate_devices` for why: a
+    # serial can be mistyped, absent, shared across tenants, or belong to a
+    # device that has legitimately been registered before.
+    serial_number = models.CharField(max_length=80, blank=True)
+    imei = models.CharField(max_length=32, blank=True)
+
+    color = models.CharField(max_length=40, blank=True)
+    storage_capacity = models.CharField(max_length=40, blank=True)
+
+    # INTERNAL. Physical quirks, prior interventions, what the cable looks like.
+    # Never returned by the customer surface.
+    notes = models.TextField(max_length=2000, blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='devices_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['brand', 'model', 'pk']
+        indexes = [
+            models.Index(fields=['company', 'customer']),
+            models.Index(fields=['company', 'serial_number']),
+            models.Index(fields=['company', 'imei']),
+            models.Index(fields=['company', 'brand', 'model']),
+            models.Index(fields=['company', 'created_at']),
+        ]
+
+    def __str__(self):
+        label = f'{self.brand} {self.model}'.strip()
+        return label or f'Equipo #{self.pk}'
+
+    @property
+    def display_name(self) -> str:
+        parts = [self.brand, self.model]
+        detail = ' '.join(p for p in parts if p).strip()
+        return detail or self.get_device_type_display()
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.customer_id and self.company_id and self.customer.company_id != self.company_id:
+            errors['customer'] = ['El cliente no pertenece a esta empresa.']
+        if not (self.brand or '').strip():
+            errors['brand'] = ['Indica la marca del equipo.']
+        if not (self.model or '').strip():
+            errors['model'] = ['Indica el modelo del equipo.']
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        # Normalised here rather than in a serializer, so the invariant holds
+        # for the admin, for a data migration and for a shell session too.
+        self.brand = (self.brand or '').strip()
+        self.model = (self.model or '').strip()
+        self.serial_number = (self.serial_number or '').strip().upper()
+        self.imei = (self.imei or '').strip()
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class RepairStatusCode(models.TextChoices):
+    """
+    The lifecycle's STABLE codes. Platform-owned, never tenant-editable.
+
+    A tenant renames what its staff read; it does not get to decide what
+    "delivered" means, because the machine, the reports and every future
+    integration are written against these strings. Separating the code from the
+    label is the whole of DEC-014: presentation adapts, semantics does not.
+
+    ONLY WHAT M8 CAN HONESTLY SUPPORT
+    ---------------------------------
+    Four states. `APPROVED`, `REJECTED`, `IN_REPAIR`, `WAITING_PARTS`,
+    `REPAIRED`, `QUALITY_CONTROL`, `READY_FOR_PICKUP`, `DELIVERED` and
+    `WARRANTY` are all real states of a real repair shop and none of them means
+    anything yet: approval needs a quote, repair needs parts and execution,
+    quality control needs a checklist, warranty needs a completed repair to
+    warrant. Shipping the words without the modules would let an order be moved
+    into a state no code can act on — a status that lies.
+
+    They arrive with the phases that give them meaning. `WAITING_APPROVAL` is
+    the deliberate edge: it is where M8 stops and M9 continues.
+    """
+
+    RECEIVED = 'received', 'Recibido'
+    DIAGNOSING = 'diagnosing', 'En diagnóstico'
+    WAITING_APPROVAL = 'waiting_approval', 'Esperando aprobación'
+    CANCELLED = 'cancelled', 'Cancelado'
+
+
+class RepairStatusSetting(models.Model):
+    """
+    How ONE company presents ONE lifecycle code.
+
+    THE CODE IS NOT HERE. `code` on this row names a `RepairStatusCode` the
+    platform defines; this row carries only what a tenant may safely change:
+    what the state is CALLED, whether the customer sees the event at all, and
+    the order the states are listed in.
+
+    What a tenant may NOT change, and why the fields do not exist:
+
+      · the meaning of a code — reports and integrations are written against it;
+      · which transitions are legal — that is the machine, in `service_services`;
+      · whether a state exists — deactivating `received` would leave new orders
+        with nowhere to be born.
+
+    Created for every company by provisioning, and re-ensured idempotently, so a
+    company registered tomorrow is as usable as one registered before the
+    migration ran.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='repair_status_settings',
+    )
+    code = models.CharField(max_length=32, choices=RepairStatusCode.choices, db_index=True)
+
+    label = models.CharField(max_length=60)
+    # Whether an event ARRIVING at this state is shown to the customer by
+    # default. The event carries the final answer — see RepairStatusHistory —
+    # but this is where a company sets its policy once.
+    is_customer_visible = models.BooleanField(default=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['company', 'sort_order', 'code']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'code'], name='unique_repair_status_per_company',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.label} ({self.code})'
+
+
+class RepairOrder(models.Model):
+    """
+    One visit of one device to the workshop.
+
+    NOT AN `Order`. Nothing is sold here. There is no total at intake, no
+    payment, no cart and no Stripe session — a price only exists once somebody
+    has diagnosed the fault and quoted it, which is M9. The two models share a
+    word in English and no fields, and there is deliberately no ForeignKey
+    between them: a repair that later becomes a sale is a decision with business
+    consequences, not a column somebody adds.
+
+    THE SERVER OWNS ITS IDENTITY. `number`, `sequence_value`, `status`,
+    `received_by` and `received_at` are written by
+    `service_services.create_repair_order()` and appear in no request payload.
+    A client that could choose its own order number could choose one that
+    already exists; a client that could choose its own status could open an
+    order that is already finished.
+
+    `status` IS A PROJECTION. The evidence is `RepairStatusHistory`, which is
+    append-only. This column exists so a list of two hundred orders does not
+    need a subquery per row, and it is written only by
+    `service_services.transition_repair_order()`, inside the same transaction as
+    the history row it is derived from.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='repair_orders',
+    )
+    # NOT NULL. Provisioning gives every company a branch, because stock,
+    # checkout and now intake all happen somewhere. A repair order with no
+    # location cannot answer "where is my laptop", which is the first question
+    # anybody asks.
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name='repair_orders',
+    )
+    customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name='repair_orders',
+    )
+    device = models.ForeignKey(
+        Device, on_delete=models.PROTECT, related_name='repair_orders',
+    )
+
+    # The human-readable identifier, allocated from `InternalSequence` — the
+    # same atomic, tenant-scoped machinery that numbers sales notes. A second
+    # numbering system would be a second race condition to get right.
+    number = models.CharField(max_length=32)
+    sequence_value = models.PositiveBigIntegerField()
+
+    status = models.CharField(
+        max_length=32, choices=RepairStatusCode.choices,
+        default=RepairStatusCode.RECEIVED, db_index=True,
+    )
+
+    # What the CUSTOMER said is wrong. Their words, not a diagnosis.
+    reported_issue = models.TextField(max_length=2000)
+    # What the counter SAW: scratches, a cracked back, missing screws. Recorded
+    # at intake because it is the only defence either side has later.
+    physical_condition = models.TextField(max_length=2000, blank=True)
+    # Charger, case, SIM tray, box. Free text in M8 on purpose: a configurable
+    # accessory catalogue is a subdomain, and inventing one here would freeze a
+    # vocabulary nobody has agreed on.
+    received_accessories = models.TextField(max_length=1000, blank=True)
+
+    # INTERNAL. Never serialised to the customer surface.
+    internal_notes = models.TextField(max_length=2000, blank=True)
+
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_orders_received',
+    )
+    received_at = models.DateTimeField(default=timezone.now)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-received_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'number'], name='unique_repair_order_number_per_company',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'branch', 'status']),
+            models.Index(fields=['company', 'customer']),
+            models.Index(fields=['company', 'received_at']),
+            models.Index(fields=['device']),
+        ]
+
+    def __str__(self):
+        return self.number or f'Orden de servicio #{self.pk}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            errors['branch'] = ['La sucursal no pertenece a esta empresa.']
+        if self.customer_id and self.company_id and self.customer.company_id != self.company_id:
+            errors['customer'] = ['El cliente no pertenece a esta empresa.']
+        if self.device_id and self.company_id and self.device.company_id != self.company_id:
+            errors['device'] = ['El equipo no pertenece a esta empresa.']
+        # The device must be THIS customer's. Otherwise one client's repair
+        # order would carry another client's property, and the customer surface
+        # would hand it to the wrong person.
+        if self.device_id and self.customer_id and self.device.customer_id != self.customer_id:
+            errors['device'] = ['El equipo no pertenece a este cliente.']
+        if not (self.reported_issue or '').strip():
+            errors['reported_issue'] = ['Describe el problema reportado.']
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    @property
+    def current_assignment(self):
+        """The technician working on this order, or None. Never a stored column."""
+        return self.assignments.filter(unassigned_at__isnull=True).select_related(
+            'technician',
+        ).first()
+
+
+class RepairStatusHistory(models.Model):
+    """
+    APPEND-ONLY evidence of everything that happened to an order.
+
+    `RepairOrder.status` says where the order is; this says how it got there,
+    and it is the half that cannot be rewritten. Rows are never updated and
+    never deleted — `save()` refuses a second write and `delete()` refuses at
+    all. A history that can be edited is not a history, it is a draft.
+
+    THE FIRST ROW IS THE INTAKE. Creating an order writes an event with
+    `from_status` empty and `to_status='received'`, so the timeline starts where
+    the device did rather than at the first change.
+
+    `comment` IS INTERNAL. Always, with no per-row exception: it is where a
+    technician writes what they actually think, and the customer surface has no
+    field for it. What the customer sees is the status and when it happened,
+    governed by `is_customer_visible`.
+    """
+
+    ORIGIN_INTERNAL = 'internal'
+    ORIGIN_CUSTOMER = 'customer'
+    ORIGIN_SYSTEM = 'system'
+    ORIGIN_INTEGRATION = 'integration'
+    ORIGIN_CHOICES = [
+        (ORIGIN_INTERNAL, 'Personal interno'),
+        (ORIGIN_CUSTOMER, 'Cliente'),
+        (ORIGIN_SYSTEM, 'Sistema'),
+        (ORIGIN_INTEGRATION, 'Integración'),
+    ]
+
+    # PROTECT, and it is doing real work: an order with history cannot be
+    # deleted at all. That is the intended answer. Losing the record of a device
+    # somebody handed over is not a cleanup operation.
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.PROTECT, related_name='status_history',
+    )
+    # Denormalised on purpose. A history query must be tenant-scoped without
+    # joining through the order, so a bug in one query cannot become a
+    # cross-tenant read.
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='repair_status_events',
+    )
+
+    # Empty for the intake event: nothing precedes the beginning.
+    from_status = models.CharField(
+        max_length=32, choices=RepairStatusCode.choices, blank=True,
+    )
+    to_status = models.CharField(max_length=32, choices=RepairStatusCode.choices)
+
+    # SET_NULL: deleting a staff account must not delete what they recorded.
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_status_events',
+    )
+    origin = models.CharField(
+        max_length=16, choices=ORIGIN_CHOICES, default=ORIGIN_INTERNAL,
+    )
+    comment = models.TextField(max_length=1000, blank=True)
+
+    # Decided when the event is written, from the company's setting for the
+    # target status, and stored so that changing a company's policy tomorrow
+    # does not retroactively reveal or hide what a customer was already shown.
+    is_customer_visible = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at', 'pk']
+        verbose_name_plural = 'repair status history'
+        indexes = [
+            models.Index(fields=['repair_order', 'created_at']),
+            models.Index(fields=['company', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.repair_order_id}: {self.from_status or "—"} → {self.to_status}'
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            raise ValidationError('El historial de servicio no se puede modificar.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('El historial de servicio no se puede borrar.')
+
+
+class TechnicianAssignment(models.Model):
+    """
+    Who was responsible for an order, and when.
+
+    A COLUMN WOULD HAVE BEEN SMALLER AND WRONG. `repair_order.technician_id`
+    answers "who has it now" and destroys the answer every time it changes. Who
+    had it last week is the question that matters when something was done badly,
+    and a column cannot answer it.
+
+    The current assignment is derived: the row whose `unassigned_at` is null. A
+    partial unique constraint guarantees there is at most one, so "reassign"
+    means closing the open row and opening another — never editing the old one.
+
+    WHO MAY BE ASSIGNED is not decided here. `service_services.assign_technician`
+    checks that the candidate has an ACTIVE membership in the same company; the
+    model only records the decision.
+    """
+
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.PROTECT, related_name='assignments',
+    )
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='technician_assignments',
+    )
+    # PROTECT: a technician's history is the order's history too.
+    technician = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='repair_assignments',
+    )
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_assignments_made',
+    )
+
+    assigned_at = models.DateTimeField(default=timezone.now)
+    unassigned_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-assigned_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['repair_order'],
+                condition=models.Q(unassigned_at__isnull=True),
+                name='unique_active_assignment_per_repair_order',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'technician']),
+            models.Index(fields=['repair_order', 'assigned_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.repair_order_id} → {self.technician_id}'
+
+    @property
+    def is_active(self) -> bool:
+        return self.unassigned_at is None
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.repair_order_id and self.company_id:
+            if self.repair_order.company_id != self.company_id:
+                raise ValidationError({'repair_order': ['La orden no pertenece a esta empresa.']})

@@ -10,7 +10,18 @@ from rest_framework.routers import DefaultRouter
 
 from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
 from .v1_checkout_views import V1CustomerCheckoutView
-from .v1_customer_views import V1CustomerOrderViewSet
+from .v1_customer_views import V1CustomerOrderViewSet, V1CustomerRepairViewSet
+from .v1_service_views import (
+    V1ServiceContextView,
+    V1ServiceCustomerSearchView,
+    V1ServiceDeviceDetailView,
+    V1ServiceDeviceListView,
+    V1ServiceOrderAssignmentView,
+    V1ServiceOrderDetailView,
+    V1ServiceOrderHistoryView,
+    V1ServiceOrderListView,
+    V1ServiceOrderTransitionView,
+)
 from .v1_inventory_views import (
     V1InventoryAdjustmentView, V1InventoryMovementsView,
     V1InventoryStockView, V1InventorySummaryView,
@@ -36,6 +47,11 @@ storefront_router.register(
 # questions with different answers (DEC-API-001).
 customer_router = DefaultRouter()
 customer_router.register(r'orders', V1CustomerOrderViewSet, basename='v1-customer-order')
+# BR-005A — a client's own repairs. `repairs`, not `service-orders`: it is the
+# word the customer uses for the thing they are waiting for, and the mobile app
+# has called it that since M0. The INTERNAL surface says `service/orders/`
+# because that is the word the shop uses. Two audiences, two vocabularies.
+customer_router.register(r'repairs', V1CustomerRepairViewSet, basename='v1-customer-repair')
 
 # The tenant is a path segment, so it is present in every route below by
 # construction. `[-a-z0-9_]+` matches the shape Company.slug is stored in;
@@ -94,6 +110,47 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/inventory/adjustments/',
         V1InventoryAdjustmentView.as_view(), name='v1-internal-inventory-adjustments',
+    ),
+    # INTERNAL technical service (BR-005A / M8). Tenant-scoped AND
+    # branch-scoped: an order lives in the shop that received the device.
+    path(
+        'internal/<slug:company_slug>/service/context/',
+        V1ServiceContextView.as_view(), name='v1-internal-service-context',
+    ),
+    # Intake needs to find the person at the counter. The CRM itself stays on
+    # the web admin surface; this is the narrowest slice that makes an order
+    # possible, under `service.customers.view`.
+    path(
+        'internal/<slug:company_slug>/service/customers/',
+        V1ServiceCustomerSearchView.as_view(), name='v1-internal-service-customers',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/devices/',
+        V1ServiceDeviceListView.as_view(), name='v1-internal-service-devices',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/devices/<int:pk>/',
+        V1ServiceDeviceDetailView.as_view(), name='v1-internal-service-device-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/',
+        V1ServiceOrderListView.as_view(), name='v1-internal-service-orders',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/',
+        V1ServiceOrderDetailView.as_view(), name='v1-internal-service-order-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/history/',
+        V1ServiceOrderHistoryView.as_view(), name='v1-internal-service-order-history',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/transition/',
+        V1ServiceOrderTransitionView.as_view(), name='v1-internal-service-order-transition',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/assignment/',
+        V1ServiceOrderAssignmentView.as_view(), name='v1-internal-service-order-assignment',
     ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),

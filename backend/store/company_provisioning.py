@@ -116,7 +116,23 @@ _INVENTORY_CAPS = (
 # membership-in-technical-service concept; letting it silently absorb every
 # capability the service module ever adds would make it exactly the kind of
 # implicit super-permission the capability catalogue exists to replace.
-_TECHNICIAN_CAPS = ('company.view', 'service.manage', 'service.customers.view')
+#
+# M8 — THE MODULE EXISTS NOW, so the role that reserved its authority receives
+# it. A technical-service role that cannot receive a device into the workshop,
+# read the order it opened or move that order forward is not a technical-service
+# role; it is a label. What it still does NOT get is `service.customers.manage`,
+# for the reason stated above, and none of the reserved capabilities, which name
+# modules that do not exist yet.
+_TECHNICIAN_CAPS = (
+    'company.view',
+    'service.manage',
+    'service.customers.view',
+    'service.devices.view',
+    'service.devices.manage',
+    'service.orders.view',
+    'service.orders.create',
+    'service.orders.manage',
+)
 
 # (name, slug, description, capabilities)
 PRESET_ROLES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
@@ -130,7 +146,7 @@ PRESET_ROLES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
      'Control de stock, movimientos y Kardex.',
      _INVENTORY_CAPS),
     ('Servicio Técnico', 'servicio-tecnico',
-     'Servicio técnico. El módulo aún no existe; el rol reserva la autoridad.',
+     'Recepción de equipos, órdenes de servicio y su seguimiento.',
      _TECHNICIAN_CAPS),
 )
 
@@ -139,6 +155,25 @@ PRESET_ROLES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
 for _name, _slug, _desc, _caps in PRESET_ROLES:
     _unknown = set(_caps) - ASSIGNABLE_CAPABILITY_CODES
     assert not _unknown, f'preset "{_slug}" referencia capacidades inválidas: {_unknown}'
+
+
+# M8 — how a company presents the repair lifecycle.
+#
+# THE CODES ARE THE PLATFORM'S; ONLY THESE THREE COLUMNS ARE THE TENANT'S. A
+# company renames "Recibido" to "En recepción" and its reports keep working,
+# because every query is written against `received`. What it may not do is
+# change what `received` means, which is why there is no such field.
+#
+# Seeded for every company, not just the ones that repair things: a row costs
+# nothing, and the alternative is a module that half-works for whoever enables
+# it later. Order matches the lifecycle rather than the alphabet.
+PRESET_REPAIR_STATUSES: tuple[tuple[str, str, bool, int], ...] = (
+    # (code, label, is_customer_visible, sort_order)
+    ('received', 'Recibido', True, 10),
+    ('diagnosing', 'En diagnóstico', True, 20),
+    ('waiting_approval', 'Esperando aprobación', True, 30),
+    ('cancelled', 'Cancelado', True, 90),
+)
 
 
 class ProvisioningError(Exception):
@@ -162,8 +197,14 @@ def provision_company_access_defaults(company, *, actor=None) -> dict:
     no user-linked record.
     """
     from .company_settings import NEUTRAL_THEME
-    from .models import Branch, CompanyArea, CompanyRole, CompanySettings, InternalSequence
-    from .sequences import DEFAULT_PADDING, DEFAULT_PREFIX
+    from .models import (
+        Branch, CompanyArea, CompanyRole, CompanySettings, InternalSequence,
+        RepairStatusSetting,
+    )
+    from .sequences import (
+        DEFAULT_PADDING, DEFAULT_PREFIX,
+        DEFAULT_REPAIR_PADDING, DEFAULT_REPAIR_PREFIX,
+    )
 
     if company is None or not company.pk:
         raise ProvisioningError('Se requiere una empresa guardada para aprovisionar.')
@@ -181,6 +222,21 @@ def provision_company_access_defaults(company, *, actor=None) -> dict:
         defaults={
             'prefix': DEFAULT_PREFIX,
             'padding': DEFAULT_PADDING,
+            'next_value': 1,
+        },
+    )
+
+    # M8 — the repair-order series. Its own row, its own counter and its own
+    # prefix: a company's service orders and its sales notes are different
+    # documents and must not share a number. `SRV-` is the seed value written
+    # into a row the tenant owns, not a constant any allocation reads.
+    _repair_sequence, repair_sequence_created = InternalSequence.objects.get_or_create(
+        company=company,
+        branch=None,
+        document_type=InternalSequence.DOCUMENT_REPAIR_ORDER,
+        defaults={
+            'prefix': DEFAULT_REPAIR_PREFIX,
+            'padding': DEFAULT_REPAIR_PADDING,
             'next_value': 1,
         },
     )
@@ -220,6 +276,21 @@ def provision_company_access_defaults(company, *, actor=None) -> dict:
         if created:
             areas_created.append(slug)
 
+    # M8 — the lifecycle's presentation. `get_or_create` by (company, code), so a
+    # company that renamed a state or hid it from customers is never reset.
+    repair_statuses_created: list[str] = []
+    for code, label, customer_visible, sort_order in PRESET_REPAIR_STATUSES:
+        _, created = RepairStatusSetting.objects.get_or_create(
+            company=company, code=code,
+            defaults={
+                'label': label,
+                'is_customer_visible': customer_visible,
+                'sort_order': sort_order,
+            },
+        )
+        if created:
+            repair_statuses_created.append(code)
+
     for name, slug, description, capabilities in PRESET_ROLES:
         _, created = CompanyRole.objects.get_or_create(
             company=company, slug=slug,
@@ -237,6 +308,8 @@ def provision_company_access_defaults(company, *, actor=None) -> dict:
         'company_id': company.pk,
         'settings_created': settings_created,
         'sequence_created': sequence_created,
+        'repair_sequence_created': repair_sequence_created,
+        'repair_statuses_created': repair_statuses_created,
         'branch_created': branch_created,
         'areas_created': areas_created,
         'roles_created': roles_created,

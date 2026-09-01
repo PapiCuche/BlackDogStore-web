@@ -85,3 +85,65 @@ class V1CustomerOrderViewSet(V1CustomerSurfaceMixin, viewsets.ReadOnlyModelViewS
             .prefetch_related('items__product')
             .order_by('-created_at')
         )
+
+
+class V1CustomerRepairViewSet(V1CustomerSurfaceMixin, viewsets.ReadOnlyModelViewSet):
+    """
+    A customer's own repair orders in one company. BR-005A, M8.
+
+    THE SIBLING OF `V1CustomerOrderViewSet`, and deliberately not an extension
+    of it: a purchase and a repair are different things to the person waiting,
+    and the only reason they appear together here is that both are "mine".
+
+    OWNERSHIP IS A FOREIGN KEY. `service_services.customer_owned_repair_orders`
+    matches `Customer.user`, and nothing else. Not the email on the record, not
+    the document number, not a name — a household shares an address and often a
+    phone, and matching on any of them would hand somebody else's device to
+    whoever typed it at the counter.
+
+    A repair belonging to another client, or to another tenant, is 404. Not 403:
+    "this order exists but is not yours" is an existence oracle, and an order
+    number is short enough to guess.
+    """
+
+    serializer_class = None  # resolved per action; see get_serializer_class
+    pagination_class = None
+    http_method_names = ['get', 'head', 'options']
+
+    def get_serializer_class(self):
+        from .v1_service_serializers import (
+            V1CustomerRepairDetailSerializer,
+            V1CustomerRepairListSerializer,
+        )
+
+        return (
+            V1CustomerRepairDetailSerializer if self.action == 'retrieve'
+            else V1CustomerRepairListSerializer
+        )
+
+    def get_serializer_context(self):
+        from . import service_services
+        from .models import RepairStatusCode
+
+        context = super().get_serializer_context()
+        company = getattr(self, '_company', None)
+        if company is not None:
+            settings_by_code = service_services.status_settings(company)
+            context['status_labels'] = {
+                code: service_services.status_label(company, code, settings_by_code)
+                for code, _label in RepairStatusCode.choices
+            }
+        return context
+
+    def get_queryset(self):
+        from . import service_services
+
+        company = self.get_customer_company()
+        # Stashed so the serializer context can resolve this tenant's own words
+        # for each lifecycle code without a second lookup.
+        self._company = company
+        return (
+            service_services.customer_owned_repair_orders(self.request.user, company)
+            .select_related('device')
+            .order_by('-received_at', '-pk')
+        )
