@@ -2509,9 +2509,101 @@ no hay permisos falsos para funciones ausentes.
 |---|---|
 | BR-002 | **RESUELTO** para público, cliente e interno |
 | BR-007 | **PARCIAL** — catálogo, auth, cliente, checkout e interno de ventas |
-| Inventario interno v1 | PENDIENTE |
+| Inventario interno v1 | **RESUELTO** (§ 8-duovicies) |
 | BR-005 servicio técnico | PENDIENTE |
 | BR-001B | PENDIENTE |
+
+---
+
+## 8-duovicies. Inventario interno v1 (`/api/v1/internal/<slug>/inventory/`)
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Aditivo. M6 dejó anotado que no había
+superficie de inventario v1 «aunque `inventory.*` lleve ACTIVE desde la Fase 2D».
+Esto la construye, sobre las capacidades que ya existían.
+
+### Superficie
+
+| Método | Ruta | Capability |
+|---|---|---|
+| GET | `inventory/summary/` | `inventory.view` |
+| GET | `inventory/stock/` | `inventory.view` |
+| GET | `inventory/movements/` | `inventory.view` |
+| POST | `inventory/adjustments/` | `inventory.adjust` |
+
+Ningún modelo nuevo, ninguna capability nueva, ningún campo nuevo. M7A es
+**exposición**, no dominio: todo lo que decide ya estaba escrito en
+`inventory_services.py` y en `tenancy.py` desde la Fase 2D.
+
+### Tres puertas
+
+Las dos de M6 no cambian:
+
+1. **Pertenencia** → sin `Membership` activa en la empresa de la ruta, **404**,
+   indistinguible de una empresa que no existe.
+2. **Capability** → con membresía y sin `inventory.view`, **403**.
+
+El inventario añade la tercera, y es la que hace distinto a este módulo:
+
+3. **Sucursal** → `MembershipBranchAccess`. Un `branch_id` que el miembro no
+   puede operar responde **404**.
+
+El 404 de la tercera puerta es deliberado y no es simetría gratuita: un 403
+confirmaría que esa sucursal existe. Un empleado con acceso a una sola sucursal
+podría entonces barrer ids y levantar el mapa de sucursales de su empresa —
+información de negocio que su rol no le concede. La regla del catálogo se
+mantiene: **404 es «no hay nada aquí para ti», 403 es «hay algo y no puedes».**
+
+Sin `branch_id`, la lectura se agrega sobre el conjunto visible. Ese conjunto
+puede ser **vacío** — `branch_access_mode=SELECTED` sin filas asignadas — y
+entonces la respuesta es 200 con cero resultados y un `available_branches` vacío,
+no un error. No tener sucursales asignadas es un estado legítimo de la empresa,
+no una falla de la petición.
+
+`available_branches` se devuelve en `summary/` para que la app pinte su selector
+**desde el servidor**. Si lo dedujera del contexto guardado, mostraría sucursales
+que le retiraron hace una hora.
+
+### El ajuste manda una intención, nunca un resultado
+
+`V1StockAdjustmentSerializer` acepta `product_slug`, `branch_id`,
+`movement_type`, `quantity` (positiva) y `reason`. **No tiene** `quantity_after`
+ni `new_quantity`, y esa ausencia es la decisión: un stock final calculado por el
+cliente es una afirmación sobre un número que otra persona puede estar cambiando
+en el mismo instante. El signo lo pone el tipo de movimiento; la aritmética, el
+servidor, bajo `select_for_update()`.
+
+Solo se aceptan los tipos de `StockMovement.MANUAL_TYPES`. `sale_exit` queda
+fuera porque lo produce el pipeline de pago, y `transfer_in`/`transfer_out`
+porque una transferencia escrita a mano por un solo lado es stock que se
+desvanece.
+
+La vista resuelve autoridad y delega. **No escribe `BranchStock`.** El lock, la
+línea de Kardex, el agregado de compatibilidad `Product.inventory` y la entrada
+de auditoría son de `inventory_services.apply_manual_stock_movement()` — el mismo
+servicio que llama el admin web, de modo que las dos superficies no pueden
+divergir en la regla. Un test estructural parsea el AST de la vista, descarta los
+docstrings y falla si `BranchStock` o `.save(` aparecen en código ejecutable.
+
+### Lo que NO se expone, y por qué
+
+**Transferencias y recuentos.** Ambos son flujos de varios pasos en el dominio
+(crear → cargar líneas → despachar → recibir; abrir → contar → cerrar). Un solo
+POST tendría que inventar una semántica que el negocio no tiene, y el resultado
+no sería «la versión móvil de una transferencia» sino una transferencia
+diferente. Se exponen cuando se diseñe el flujo, no antes.
+
+### Deuda registrada
+
+- **Puente legacy en `visible_branches()`** — un usuario sin `Membership` cae a
+  `legacy_catalog_company()` y recibe **todas** las sucursales de esa empresa. Es
+  inalcanzable desde v1, porque `get_internal_company()` exige Membership activa
+  antes de que nada consulte sucursales, pero el puente sigue vivo para el admin
+  web. Muere con el punto 18 de la deuda.
+- **`inventory_value` es a precio de venta**, no a costo. No se cambió el cálculo;
+  se hizo explícito en la respuesta con `inventory_value_basis`, para que ninguna
+  app lo presente como valor de costo.
+- **La restricción del rol `inventory` en fulfillment sigue en `UserProfile.role`**
+  (heredada de M6). No se tocó aquí.
 
 ---
 
@@ -2536,11 +2628,12 @@ no hay permisos falsos para funciones ausentes.
    la cadena de migraciones de la instalación en producción.
 8. **`bulk_create()` / `queryset.update()` saltan `Membership.clean()`** — hoy nadie
    los usa para Membership; código futuro debe llamar `assert_branch_in_company()`.
-9. **Capacidades `available` no aplicadas** — `products.*`, `inventory.*`,
-   `sales.*`, `reports.*`, `settings.*` y `service.manage` son asignables pero
-   ningún endpoint las consulta todavía: el dominio comercial sigue autorizando
-   por `UserProfile.role`. Un rol que las conceda no abre nada aún. Se conectan
-   en 2B/2C, cuando esos modelos tengan `company`.
+9. **Capacidades `available` no aplicadas** — quedan `products.*`,
+   `reports.*`, `settings.*` y `service.manage`: son asignables pero ningún
+   endpoint las consulta todavía, y el dominio comercial sigue autorizando por
+   `UserProfile.role`. Un rol que las conceda no abre nada aún.
+   `inventory.*` dejó de estar en esta lista en **2D** y `sales.orders.*` en
+   **M6**; ambas son ACTIVE y gobiernan sus endpoints v1.
 10. **Módulo de servicio técnico inexistente** — las 10 capacidades `service.*`
    detalladas están reservadas y no son asignables. El portal del cliente
    (Mis equipos, Reparaciones, Cotizaciones, Garantías, Seguimiento) está

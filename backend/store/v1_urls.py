@@ -11,6 +11,10 @@ from rest_framework.routers import DefaultRouter
 from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
 from .v1_checkout_views import V1CustomerCheckoutView
 from .v1_customer_views import V1CustomerOrderViewSet
+from .v1_inventory_views import (
+    V1InventoryAdjustmentView, V1InventoryMovementsView,
+    V1InventoryStockView, V1InventorySummaryView,
+)
 from .v1_internal_views import (
     V1InternalContextView, V1InternalOrderDetailView,
     V1InternalOrderFulfillmentView, V1InternalOrderListView,
@@ -73,6 +77,23 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/orders/<int:pk>/fulfillment/',
         V1InternalOrderFulfillmentView.as_view(), name='v1-internal-order-fulfillment',
+    ),
+    # INTERNAL inventory. Tenant-scoped AND branch-scoped.
+    path(
+        'internal/<slug:company_slug>/inventory/summary/',
+        V1InventorySummaryView.as_view(), name='v1-internal-inventory-summary',
+    ),
+    path(
+        'internal/<slug:company_slug>/inventory/stock/',
+        V1InventoryStockView.as_view(), name='v1-internal-inventory-stock',
+    ),
+    path(
+        'internal/<slug:company_slug>/inventory/movements/',
+        V1InventoryMovementsView.as_view(), name='v1-internal-inventory-movements',
+    ),
+    path(
+        'internal/<slug:company_slug>/inventory/adjustments/',
+        V1InventoryAdjustmentView.as_view(), name='v1-internal-inventory-adjustments',
     ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),

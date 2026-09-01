@@ -1180,3 +1180,54 @@ impone sin ruta de rol legacy, que es la definición de ACTIVE en el catálogo.
   ACTIVE desde la Fase 2D. Mobile no debe llamar `/api/admin/inventory/`.
 - **`sales.notes.manage` sigue AVAILABLE**: el módulo no se implementó.
 - **Servicio técnico sigue RESERVED**: `RepairOrder` no existe.
+
+---
+
+## Actualización — inventario interno (M7A)
+
+`/api/v1/internal/<slug>/inventory/` cierra la deuda que M6 dejó anotada: la app
+ya no tiene ningún motivo para mirar hacia `/api/admin/inventory/`.
+
+Cuatro endpoints, ninguna migración, ningún modelo nuevo:
+
+| Método | Ruta | Capability |
+|---|---|---|
+| GET | `inventory/summary/` | `inventory.view` |
+| GET | `inventory/stock/` | `inventory.view` |
+| GET | `inventory/movements/` | `inventory.view` |
+| POST | `inventory/adjustments/` | `inventory.adjust` |
+
+### Tres puertas, no dos
+
+Las dos de M6 siguen igual: pertenencia (404 indistinguible) y capability (403).
+El inventario añade una tercera, la **sucursal**, y responde **404** — no 403 —
+para un `branch_id` que el miembro no puede operar. Es deliberado: distinguir
+«esa sucursal no existe» de «existe pero no es tuya» le regalaría a cualquier
+empleado el mapa de sucursales de su empresa. Sin `branch_id`, la lectura se
+agrega sobre el conjunto visible, que puede ser vacío: un miembro con
+`branch_access_mode=SELECTED` y cero sucursales asignadas lee 200 con cero filas.
+
+### El ajuste no escribe stock
+
+La vista resuelve autoridad y delega. `inventory_services.apply_manual_stock_movement()`
+es dueño del lock, del `StockMovement`, del `BranchStock` y de la auditoría —
+exactamente el mismo servicio que usa el admin web, así que las dos superficies
+no pueden divergir. Un test estructural parsea el AST de la vista y falla si
+aparece `BranchStock` o `.save(` en su código ejecutable.
+
+El contrato **no tiene** campo de stock final. Un `quantity_after` enviado por el
+cliente es una afirmación sobre un número que otra persona puede estar cambiando
+en ese instante.
+
+### Deuda registrada
+
+- **`visible_branches()` conserva un puente legacy**: un usuario sin Membership
+  cae a `legacy_catalog_company()` y obtiene todas las sucursales. Es inalcanzable
+  desde v1 porque `get_internal_company()` exige Membership activa **antes**, pero
+  el puente sigue vivo para el admin web y desaparece cuando todo operador tenga
+  Membership.
+- **Transferencias y recuentos siguen sin superficie v1**, a propósito.
+- **`inventory_value` se calcula a precio de venta**, no a costo; la respuesta lo
+  declara en `inventory_value_basis` en lugar de dejarlo implícito.
+- **Sin reserva de stock**: no cambió nada de esa semántica en esta fase.
+
