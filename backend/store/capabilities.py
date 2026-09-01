@@ -145,24 +145,44 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          STATUS_ACTIVE),
     _cap('service.customers.manage', 'service', 'Administrar clientes',
          'Crear, editar y archivar clientes.', STATUS_ACTIVE),
-    # Everything below describes a module that DOES NOT EXIST. Reserved for
-    # design; not assignable, so no role can claim authority over absent code.
+    # M8 — BR-005A. THE CORE OF THE SERVICE MODULE NOW EXISTS, so these five
+    # stop being reserved. ACTIVE rather than AVAILABLE, and the distinction is
+    # load-bearing: AVAILABLE would mean the endpoints exist but are still
+    # authorised by the legacy `UserProfile.role`, and
+    # `/api/v1/internal/<slug>/service/` checks `has_capability` and nothing
+    # else. Granting or withholding one of these decides what actually happens.
+    #
+    # The split follows what the surface actually enforces: reading a device or
+    # an order is one authority, receiving a device into the workshop is
+    # another, and moving an order through its lifecycle — including who works
+    # on it — is a third.
     _cap('service.devices.view', 'service', 'Ver equipos',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
+         'Consultar los equipos registrados de los clientes.', STATUS_ACTIVE),
     _cap('service.devices.manage', 'service', 'Administrar equipos',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
+         'Registrar y editar los equipos de los clientes.', STATUS_ACTIVE),
     _cap('service.orders.view', 'service', 'Ver órdenes de servicio',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
+         'Consultar las órdenes de servicio y su historial.', STATUS_ACTIVE),
     _cap('service.orders.create', 'service', 'Crear órdenes de servicio',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
+         'Recibir un equipo y abrir su orden de servicio.', STATUS_ACTIVE),
+    # Deliberately covers BOTH moving an order through its lifecycle and
+    # deciding who works on it. A separate `service.orders.assign` would be a
+    # capability invented for a distinction the business has not made: whoever
+    # may move an order to "en diagnóstico" is whoever decides which technician
+    # is doing the diagnosing. When a company asks to separate them, that phase
+    # adds the code — this one does not guess.
     _cap('service.orders.manage', 'service', 'Administrar órdenes de servicio',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
+         'Cambiar el estado de una orden y asignar al técnico responsable.',
+         STATUS_ACTIVE),
+    # STILL RESERVED. Each of these names a module M8 did not build: a
+    # diagnosis needs a diagnosis record, a repair needs parts and execution,
+    # quality control needs a checklist. A capability that can be granted but
+    # that no endpoint consults is authority over absent code.
     _cap('service.diagnostic.manage', 'service', 'Diagnóstico',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
+         'RESERVADO — diagnóstico y cotización no implementados.', STATUS_RESERVED),
     _cap('service.repair.manage', 'service', 'Reparación',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
+         'RESERVADO — ejecución de reparación no implementada.', STATUS_RESERVED),
     _cap('service.quality.manage', 'service', 'Control de calidad',
-         'RESERVADO — módulo de servicio técnico no implementado.', STATUS_RESERVED),
+         'RESERVADO — control de calidad no implementado.', STATUS_RESERVED),
 )
 
 CAPABILITIES: dict[str, Capability] = {c.code: c for c in CAPABILITY_LIST}

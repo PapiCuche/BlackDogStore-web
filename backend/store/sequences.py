@@ -61,6 +61,13 @@ from .models import Branch, CompanySettings, InternalSequence
 DEFAULT_PREFIX = 'NV-'
 DEFAULT_PADDING = 6
 
+# M8 — the repair-order series. A SEED, exactly like the one above: it is
+# written into each company's own editable row at provisioning time, and no
+# allocation ever reads this constant. A tenant that wants `OT-`, `TALLER-` or
+# nothing at all changes its row.
+DEFAULT_REPAIR_PREFIX = 'SRV-'
+DEFAULT_REPAIR_PADDING = 6
+
 
 class SequenceError(Exception):
     """A numbering rule was broken. Views map this to HTTP 400."""
@@ -72,12 +79,29 @@ class SequenceError(Exception):
 
 def sequence_scope(company, document_type=InternalSequence.DOCUMENT_SALES_NOTE) -> str:
     """
-    Whether `company` numbers per company or per branch.
+    Whether `company` numbers `document_type` per company or per branch.
 
     Read from `CompanySettings`, never inferred from which rows exist: a branch
     row lying around cannot tell us whether somebody chose branch scope or
     changed their mind and left it behind.
+
+    M8 FIXED A LATENT DEFECT HERE. This function has always accepted
+    `document_type` and always ignored it, returning the SALES-NOTE scope
+    whatever it was asked about. Harmless while one document type existed;
+    the moment a second arrived it would have numbered repair orders per branch
+    because somebody configured their sales notes that way — a setting about
+    one document silently deciding another.
+
+    There is exactly one scope column, and it is named for the document it
+    governs. A type with no column of its own numbers at COMPANY scope, which
+    is the conservative answer: one series per company is legible, and a branch
+    series can be introduced later without renumbering anything. A document type
+    gets a scope switch when a business asks for one, not because the mechanism
+    could support it.
     """
+    if document_type != InternalSequence.DOCUMENT_SALES_NOTE:
+        return CompanySettings.SEQUENCE_SCOPE_COMPANY
+
     settings_row = getattr(company, 'settings', None)
     if settings_row is None:
         return CompanySettings.SEQUENCE_SCOPE_COMPANY
@@ -183,6 +207,38 @@ def resolve_sequence_for_order(
             return ensure_branch_sequence(company, branch, document_type)
 
     return ensure_company_sequence(company, document_type)
+
+
+def resolve_sequence_for_repair_order(repair_order) -> InternalSequence:
+    """
+    Which series must number `repair_order`.
+
+    A SIBLING OF `resolve_sequence_for_order`, not a generalisation of it. The
+    two look alike and mean different things: a sale derives its branch from
+    where it was fulfilled, a repair order from where the device was physically
+    received. Collapsing them into one function taking `(company, branch)` would
+    save six lines and lose the only interesting part — that each document type
+    knows where its own branch comes from.
+
+    Repair orders number at COMPANY scope in M8 (see `sequence_scope`), so this
+    resolves to the company series. It is written as a resolver anyway, rather
+    than inlining `ensure_company_sequence` at the call site, so that the day a
+    business asks for per-branch service numbering there is one place to change.
+    """
+    company = repair_order.company
+    if company is None:
+        raise SequenceError('La orden de servicio no pertenece a ninguna empresa.')
+
+    document_type = InternalSequence.DOCUMENT_REPAIR_ORDER
+    if sequence_scope(company, document_type) == CompanySettings.SEQUENCE_SCOPE_BRANCH:
+        branch = repair_order.branch
+        if branch is not None:
+            return ensure_branch_sequence(company, branch, document_type)
+
+    return ensure_company_sequence(
+        company, document_type,
+        prefix=DEFAULT_REPAIR_PREFIX, padding=DEFAULT_REPAIR_PADDING,
+    )
 
 
 # ---------------------------------------------------------------------------
