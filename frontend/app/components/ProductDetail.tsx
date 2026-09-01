@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { API_BASE } from "../lib/api";
+import { fetchWithAuth } from "../lib/auth";
 import { getSessionKey, emitCartChange } from "../lib/cart";
 import { formatMoney } from "../lib/format";
 import { ProductCard } from "./ProductCard";
@@ -70,7 +71,7 @@ export default function ProductDetail({ product }: { product: Product }) {
 
   const [reviews, setReviews] = useState<Review[]>([]);
   const [reviewRating, setReviewRating] = useState(5);
-  const [reviewName, setReviewName] = useState("");
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewComment, setReviewComment] = useState("");
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [reviewSuccess, setReviewSuccess] = useState(false);
@@ -121,27 +122,37 @@ export default function ProductDetail({ product }: { product: Product }) {
 
   async function handleReviewSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!reviewName.trim()) return;
     setReviewSubmitting(true);
+    setReviewError(null);
     try {
-      const res = await fetch(`${API_BASE}/reviews/`, {
+      // `fetchWithAuth`, not bare `fetch`. Posting a review requires a session,
+      // and a plain fetch sends neither the cookie nor the CSRF token — which is
+      // why this form answered 401 for every visitor who ever used it.
+      //
+      // `author_name` is no longer sent: the server takes the name from the
+      // account. It was free text on an authenticated endpoint, so anyone could
+      // publish under the shop's own support name.
+      const res = await fetchWithAuth(`${API_BASE}/reviews/`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           product: product.id,
-          author_name: reviewName,
           rating: reviewRating,
           comment: reviewComment,
         }),
       });
       if (res.ok) {
         setReviewSuccess(true);
-        setReviewName("");
         setReviewComment("");
         setReviewRating(5);
         fetchReviews();
+      } else if (res.status === 401 || res.status === 403) {
+        setReviewError("Inicia sesión para publicar una reseña.");
+      } else {
+        setReviewError("No se pudo publicar la reseña.");
       }
-    } catch {}
+    } catch {
+      setReviewError("No se pudo publicar la reseña.");
+    }
     setReviewSubmitting(false);
   }
 
@@ -360,16 +371,6 @@ export default function ProductDetail({ product }: { product: Product }) {
                   <StarPicker rating={reviewRating} onChange={setReviewRating} />
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-zinc-400">Tu nombre</label>
-                  <input
-                    value={reviewName}
-                    onChange={(e) => setReviewName(e.target.value)}
-                    placeholder="Ej: Juan Pérez"
-                    required
-                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white placeholder-zinc-700 focus:border-white/25 focus:outline-none"
-                  />
-                </div>
-                <div>
                   <label className="mb-1 block text-sm font-medium text-zinc-400">Comentario (opcional)</label>
                   <textarea
                     value={reviewComment}
@@ -379,6 +380,9 @@ export default function ProductDetail({ product }: { product: Product }) {
                     className="w-full resize-none rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white placeholder-zinc-700 focus:border-white/25 focus:outline-none"
                   />
                 </div>
+                {reviewError && (
+                  <p className="text-sm text-rose-300">{reviewError}</p>
+                )}
                 <button
                   type="submit"
                   disabled={reviewSubmitting}

@@ -131,7 +131,18 @@ class ReviewViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.Gen
         return []
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        """
+        The author is the account, not the payload.
+
+        `author_name` used to be free text on an authenticated endpoint, so a
+        signed-in customer could publish under the shop's own support name, or as
+        another shopper. It is read-only now and filled from the user here. The column
+        survives because reviews written before the login requirement carry a
+        name and no user, and that name is the only attribution they have.
+        """
+        user = self.request.user
+        display_name = (user.get_full_name() or '').strip() or user.get_username()
+        serializer.save(user=user, author_name=display_name[:100])
 
 
 class CouponValidateView(APIView):

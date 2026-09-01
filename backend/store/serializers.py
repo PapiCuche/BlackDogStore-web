@@ -23,12 +23,72 @@ class CategorySerializer(serializers.ModelSerializer):
 
 
 class ReviewSerializer(serializers.ModelSerializer):
+    """
+    Reviews, read and written — Phase 0.3 / P0-D.
+
+    THE ID IS A SELECTOR, NOT AN AUTHORITY
+    --------------------------------------
+    `product` is a writable relation on a ModelSerializer, and DRF resolves
+    those against the model's FULL default queryset. Reading was already scoped
+    by `storefront_products(request)`; writing was not, so a signed-in customer
+    browsing shop A could put shop B's product id in the body and land a review
+    on B's catalogue — visible to B's customers, counted in B's rating, written
+    by somebody who had never seen the shop.
+
+    The field's queryset is therefore narrowed to the products of the storefront
+    the SERVER resolved. The client still sends an id, so the API contract is
+    unchanged; what changed is the set that id is allowed to name.
+
+    IT FAILS CLOSED WITHOUT A REQUEST
+    ---------------------------------
+    With no request in context there is no storefront, and the queryset becomes
+    empty rather than global. A future caller who forgets the context gets a
+    serializer that can write nothing, instead of one that can write anywhere —
+    the failure is loud and local, not silent and cross-tenant.
+
+    `author_name` IS DERIVED, NOT SUPPLIED
+    --------------------------------------
+    It used to be free text on an authenticated endpoint, which let anyone
+    publish under the shop's own support name, or as another customer. The
+    column stays,
+    because reviews older than the login requirement carry a name and no user,
+    and deleting that would destroy the only attribution they have. Going
+    forward the name comes from the account (see `ReviewViewSet.perform_create`).
+    """
+
     comment = serializers.CharField(max_length=2000, required=False, allow_blank=True)
 
     class Meta:
         model = Review
         fields = ['id', 'product', 'author_name', 'rating', 'comment', 'created_at']
-        read_only_fields = ['created_at']
+        # `author_name` is read-only rather than absent so that existing
+        # responses keep the field and old clients keep rendering it.
+        read_only_fields = ['created_at', 'author_name']
+
+    # One message for a product of another tenant AND for one that does not
+    # exist. Two different answers would let a caller map another shop's
+    # catalogue by watching which ids are refused differently.
+    default_error_messages = {
+        'does_not_exist': 'Producto no disponible en esta tienda.',
+        'incorrect_type': 'Producto no disponible en esta tienda.',
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from .tenancy import storefront_products
+
+        product = self.fields.get('product')
+        if product is None or not hasattr(product, 'queryset'):
+            return
+        request = self.context.get('request')
+        product.queryset = (
+            storefront_products(request) if request is not None
+            else Product.objects.none()
+        )
+        product.error_messages.update({
+            'does_not_exist': self.default_error_messages['does_not_exist'],
+            'incorrect_type': self.default_error_messages['incorrect_type'],
+        })
 
     def validate_rating(self, value):
         if not 1 <= value <= 5:

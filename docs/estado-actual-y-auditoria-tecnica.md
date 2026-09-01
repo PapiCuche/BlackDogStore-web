@@ -1665,3 +1665,53 @@ defecto.
 - Sin política tributaria.
 - Asimetría de presets, igual que en 0033 y en M8.
 
+
+
+---
+
+## Fase 0.3 / P0-D — Reseñas tenant-safe
+
+### Hallazgos revalidados contra HEAD `36b8a8c`
+
+| ID | Hallazgo | Resultado | Severidad |
+|---|---|---|---|
+| P0-D-01 | Escritura cross-tenant: `product` escribible resuelto globalmente | **CONFIRMADO** | Alta |
+| P0-D-02 | Lectura acotada por `storefront_products` | **YA CORREGIDO** | — |
+| P0-D-03 | `author_name` texto libre → suplantación | **CONFIRMADO** | Media |
+| P0-D-04 | `user` inyectable por payload | **FALSO POSITIVO** — no está en `fields`; probado igualmente | — |
+| P0-D-05 | `id` / `created_at` inyectables | **FALSO POSITIVO** — read-only; probado | — |
+| P0-D-06 | Producto ajeno vs. inexistente distinguibles | **CONFIRMADO** | Media |
+| P0-D-07 | Producto inactivo aceptaba reseñas | **CONFIRMADO** | Baja |
+| P0-D-08 | `average_rating` / `review_count` cruzan inquilinos | **FALSO POSITIVO** — el agregado recorre `product.reviews` y el Product ya viene acotado; probado |
+| P0-D-09 | `ReviewCreateThrottle` roto por P0-B | **FALSO POSITIVO** — sigue activo en POST |
+| P0-D-10 | Formulario del navegador sin credenciales → 401 siempre | **CONFIRMADO** (preexistente, funcional) | Media |
+| P0-D-11 | Sin constraint `(user, product)` | **PROPUESTA** — no existe la regla |
+| P0-D-12 | Compra verificada | **PROPUESTA** |
+
+### Arquitectura de escritura resultante
+
+```
+POST /api/reviews/
+   ↓
+IsAuthenticatedOrReadOnly        (anónimo lee, no escribe)
+   ↓
+ReviewCreateThrottle
+   ↓
+resolve_storefront_company(request)      ← servidor, no cliente
+   ↓
+storefront_products(request)             ← is_active=True, del inquilino
+   ↓
+product = <id> resuelto DENTRO de ese conjunto
+   ↓  (fuera de él: mismo mensaje que un id inexistente)
+user y author_name derivados de request.user
+   ↓
+Review
+```
+
+### Decisión sobre la resolución del producto
+
+Se compararon las dos vías del §12. Un `ReviewCreateSerializer` aparte habría
+dejado dos clases que mantener en paralelo, y la que se olvidara de acotar
+volvería a ser global. Acotar el queryset del campo **dentro del propio
+serializer**, y dejarlo **vacío** cuando falta el contexto, hace que el camino
+inseguro deje de existir: no hay forma de escribir sin storefront.

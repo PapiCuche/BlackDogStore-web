@@ -9,6 +9,68 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase 0.3 / P0-D — Reseñas tenant-safe
+
+**Estado: IMPLEMENTADO.** Sin migraciones.
+
+### El id era la autoridad
+
+La **lectura** de reseñas ya estaba acotada (`product__in=storefront_products(request)`).
+La **escritura** no: `ReviewSerializer` es un `ModelSerializer` con `product`
+entre sus campos escribibles, y DRF resuelve una relación escribible contra el
+queryset **completo** del modelo. Un cliente autenticado navegando la tienda A
+ponía el id de un producto de la tienda B en el cuerpo y la reseña aterrizaba en
+el catálogo de B — visible para sus clientes, contada en su calificación, escrita
+por alguien que nunca vio esa tienda.
+
+El id que envía el cliente es un **selector**. La autoridad sale del storefront
+que resuelve el servidor.
+
+El contrato externo no cambia: `product` sigue siendo un id. Lo que cambia es el
+conjunto que ese id puede nombrar.
+
+### Falla cerrado
+
+Sin `request` en el contexto no hay storefront, y el queryset queda **vacío** en
+vez de global. Quien olvide pasar el contexto obtiene un serializer que no puede
+escribir en ninguna parte, en lugar de uno que puede escribir en cualquiera.
+
+### Producto ajeno = producto inexistente
+
+Un mismo mensaje —«Producto no disponible en esta tienda.»— para los dos casos.
+Dos respuestas distintas dejarían mapear el catálogo ajeno mirando cuáles se
+rechazan de forma diferente. Un producto **inactivo** recibe el mismo trato, y no
+es una regla inventada: `company_storefront_products` filtra `is_active=True`, así
+que un artículo retirado no está en la tienda.
+
+### Suplantación de autor
+
+`author_name` era texto libre en un endpoint autenticado: cualquiera podía
+publicar con el nombre de soporte de la propia tienda, o como otro cliente.
+Ahora es de sólo
+lectura y el servidor lo deriva de la cuenta. **La columna se conserva**: las
+reseñas anteriores a la exigencia de login llevan nombre y no llevan usuario, y
+ese nombre es su única atribución.
+
+### El formulario nunca había funcionado
+
+El POST del navegador usaba `fetch` plano —sin cookie ni CSRF— contra un endpoint
+que exige sesión, así que **siempre respondía 401**. Eso explica que el nombre
+fuera texto libre: el formulario es anterior a que se exigiera identificarse.
+Ahora usa `fetchWithAuth`, ya no envía el nombre y muestra «Inicia sesión para
+publicar una reseña» cuando corresponde.
+
+### Lo que NO se hizo, y por qué
+
+- **Sin `Review.company`**: el inquilino llega por `Product`. Una segunda columna
+  sería una segunda fuente de verdad que puede divergir.
+- **Sin constraint `(user, product)`**: no existe esa regla en código, tests,
+  frontend ni documentación, y no hay datos duplicados. Queda **PROPUESTA**; es
+  una decisión de producto, no de seguridad.
+- **Sin compra verificada**: **PROPUESTA**, por lo mismo.
+
+---
+
 ## Fase 0.3 / P0-C — Aislamiento administrativo legacy y regresión multitenant
 
 **Estado: IMPLEMENTADO.** Sin migraciones.

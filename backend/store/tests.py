@@ -29730,3 +29730,263 @@ class M9StructuralTest(M9ServiceBase):
             _M8StatusSetting.objects.filter(company=fresh).values_list('code', flat=True)
         )
         self.assertEqual(codes, {code for code, _l in _M8Status.choices})
+
+
+# =============================================================================
+# FASE 0.3 / P0-D — reviews tenant-safe
+# =============================================================================
+#
+# READING was already scoped: `ReviewViewSet.get_queryset()` filters by
+# `product__in=storefront_products(request)`. WRITING was not. `ReviewSerializer`
+# is a ModelSerializer with `product` among its writable fields, and DRF resolves
+# a writable relation against the model's FULL default queryset — so a signed-in
+# customer on shop A could post a review onto shop B's product simply by putting
+# B's id in the body.
+#
+# The id in a request is a SELECTOR. Authority comes from the storefront the
+# server resolved, never from the number the client typed.
+
+
+class P0DReviewTenantWriteTest(TestCase):
+    """The cross-tenant write, from both sides of the boundary."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('p0d-a', 'Tienda A')
+        self.b = _p3_company('p0d-b', 'Tienda B')
+        self.product_a = _c1_product(self.a, 'Cable de A', '49.90')
+        self.product_b = _c1_product(self.b, 'Cable de B', '59.90')
+        self.inactive_a = _c1_product(self.a, 'Retirado de A', '10.00')
+        self.inactive_a.is_active = False
+        self.inactive_a.save(update_fields=['is_active'])
+
+        self.user = User.objects.create_user(username='p0d_shopper', password='Pass123!')
+        self.client_ = APIClient()
+        self.client_.force_authenticate(user=self.user)
+
+    def _post(self, product_id, **extra):
+        payload = {
+            'product': product_id, 'author_name': 'Cliente', 'rating': 5,
+            'comment': 'Muy bueno',
+        }
+        payload.update(extra)
+        return self.client_.post('/api/reviews/', payload, format='json')
+
+    # --- the vulnerability ------------------------------------------------
+
+    def test_a_review_cannot_be_posted_onto_another_shops_product(self):
+        """
+        THE BUG. Browsing shop A, a customer put shop B's product id in the body
+        and the review landed on B's catalogue — visible to B's customers,
+        counted in B's rating, written by somebody who never saw the shop.
+        """
+        with _storefront_of(self.a):
+            response = self._post(self.product_b.pk)
+        self.assertNotEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(Review.objects.filter(product=self.product_b).exists())
+
+    def test_a_review_on_this_shops_product_still_works(self):
+        """The fix must not close the door on the legitimate case."""
+        with _storefront_of(self.a):
+            response = self._post(self.product_a.pk)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertTrue(Review.objects.filter(product=self.product_a).exists())
+
+    def test_the_other_shop_can_review_its_own_product(self):
+        with _storefront_of(self.b):
+            response = self._post(self.product_b.pk)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    # --- enumeration ------------------------------------------------------
+
+    def test_a_foreign_product_answers_exactly_like_one_that_does_not_exist(self):
+        """
+        §13. If the two differed, the endpoint would be an oracle: a rejected id
+        that says "invalid" and one that says something else together map out
+        another tenant's catalogue.
+        """
+        with _storefront_of(self.a):
+            foreign = self._post(self.product_b.pk)
+            missing = self._post(10 ** 7)
+        self.assertEqual(foreign.status_code, missing.status_code)
+        self.assertEqual(
+            json.dumps(foreign.data, default=str, sort_keys=True),
+            json.dumps(missing.data, default=str, sort_keys=True),
+        )
+
+    def test_an_inactive_product_is_treated_the_same_way(self):
+        """
+        Not an invented rule: `company_storefront_products` filters
+        `is_active=True`, so a withdrawn article is not on the storefront at all.
+        Accepting a review for something the shop no longer offers would be the
+        catalogue and the review surface disagreeing about what exists.
+        """
+        with _storefront_of(self.a):
+            inactive = self._post(self.inactive_a.pk)
+            missing = self._post(10 ** 7)
+        self.assertEqual(inactive.status_code, missing.status_code)
+        self.assertFalse(Review.objects.filter(product=self.inactive_a).exists())
+
+    # --- ownership and mass assignment ------------------------------------
+
+    def test_the_author_is_the_caller_and_not_the_payload(self):
+        """§14 — `user` is server-owned."""
+        someone_else = User.objects.create_user(username='p0d_victim', password='Pass123!')
+        with _storefront_of(self.a):
+            response = self._post(self.product_a.pk, user=someone_else.pk)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        review = Review.objects.get(product=self.product_a)
+        self.assertEqual(review.user, self.user)
+        self.assertNotEqual(review.user, someone_else)
+
+    def test_server_owned_fields_in_the_body_are_not_honoured(self):
+        """§23 — id and created_at belong to the server."""
+        with _storefront_of(self.a):
+            response = self._post(
+                self.product_a.pk, id=999999, created_at='2000-01-01T00:00:00Z',
+            )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        review = Review.objects.get(product=self.product_a)
+        self.assertNotEqual(review.pk, 999999)
+        self.assertGreater(review.created_at.year, 2000)
+
+    def test_the_display_name_cannot_be_chosen_by_the_author(self):
+        """
+        §15. `author_name` was free text on an authenticated endpoint, so a
+        signed-in customer could publish as "Soporte de la tienda" — a review
+        that looks like the shop answering itself, next to reviews that are not.
+        """
+        with _storefront_of(self.a):
+            response = self._post(
+                self.product_a.pk, author_name='Soporte de la tienda',
+            )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        review = Review.objects.get(product=self.product_a)
+        self.assertNotEqual(review.author_name, 'Soporte de la tienda')
+        self.assertEqual(review.author_name, self.user.get_username())
+
+    def test_a_real_name_is_preferred_over_the_username(self):
+        self.user.first_name = 'Ana'
+        self.user.last_name = 'Pérez'
+        self.user.save(update_fields=['first_name', 'last_name'])
+        with _storefront_of(self.a):
+            self._post(self.product_a.pk)
+        self.assertEqual(
+            Review.objects.get(product=self.product_a).author_name, 'Ana Pérez',
+        )
+
+    def test_reviews_written_before_the_login_requirement_keep_their_name(self):
+        """
+        The column is not removed. A review with no user has nothing else
+        identifying its author, and destroying that would be rewriting history
+        to tidy a field.
+        """
+        historic = Review.objects.create(
+            product=self.product_a, user=None, author_name='Cliente de 2023',
+            rating=4, comment='Antigua',
+        )
+        with _storefront_of(self.a):
+            response = APIClient().get(f'/api/reviews/?product={self.product_a.pk}')
+        names = [row['author_name'] for row in response.data]
+        self.assertIn('Cliente de 2023', names)
+        historic.refresh_from_db()
+        self.assertEqual(historic.author_name, 'Cliente de 2023')
+
+    def test_a_serializer_without_a_request_can_write_nothing(self):
+        """
+        Fail-closed. Without a request there is no storefront, so the writable
+        relation resolves against an EMPTY set rather than every product on the
+        platform — a caller who forgets the context gets a serializer that can
+        write nowhere instead of one that can write anywhere.
+        """
+        from .serializers import ReviewSerializer
+
+        serializer = ReviewSerializer(data={
+            'product': self.product_a.pk, 'rating': 5, 'comment': 'x',
+        })
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('product', serializer.errors)
+
+    # --- contract that must not regress -----------------------------------
+
+    def test_anonymous_still_cannot_post(self):
+        with _storefront_of(self.a):
+            response = APIClient().post(
+                '/api/reviews/',
+                {'product': self.product_a.pk, 'rating': 5, 'comment': 'x'},
+                format='json',
+            )
+        self.assertIn(
+            response.status_code,
+            (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
+        )
+
+    def test_reading_is_still_public(self):
+        with _storefront_of(self.a):
+            self._post(self.product_a.pk)
+            response = APIClient().get(f'/api/reviews/?product={self.product_a.pk}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_reading_another_shops_reviews_returns_nothing(self):
+        with _storefront_of(self.b):
+            self._post(self.product_b.pk)
+        with _storefront_of(self.a):
+            response = APIClient().get(f'/api/reviews/?product={self.product_b.pk}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list(response.data), [])
+
+    def test_the_rating_range_is_still_enforced(self):
+        with _storefront_of(self.a):
+            for bad in (0, 6, -1):
+                response = self._post(self.product_a.pk, rating=bad)
+                self.assertEqual(
+                    response.status_code, status.HTTP_400_BAD_REQUEST, bad,
+                )
+
+    def test_the_comment_length_is_still_enforced(self):
+        with _storefront_of(self.a):
+            response = self._post(self.product_a.pk, comment='a' * 2001)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_the_create_throttle_is_still_wired(self):
+        """§18 — regression only: the scope must still be on POST."""
+        from .throttles import ReviewCreateThrottle
+        from .views import ReviewViewSet
+
+        view = ReviewViewSet()
+        view.action = 'create'
+        self.assertTrue(
+            any(isinstance(t, ReviewCreateThrottle) for t in view.get_throttles())
+        )
+        view.action = 'list'
+        self.assertEqual(view.get_throttles(), [])
+
+
+class P0DProductRatingIsolationTest(TestCase):
+    """§22 — the aggregates on ProductSerializer must not cross tenants."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('p0d-agg-a', 'Agregados A')
+        self.b = _p3_company('p0d-agg-b', 'Agregados B')
+        self.product_a = _c1_product(self.a, 'Producto A', '10.00')
+        self.product_b = _c1_product(self.b, 'Producto B', '10.00')
+        user = User.objects.create_user(username='p0d_agg', password='Pass123!')
+        Review.objects.create(product=self.product_a, user=user, rating=5, comment='A')
+        Review.objects.create(product=self.product_b, user=user, rating=1, comment='B')
+
+    def test_each_products_rating_counts_only_its_own_reviews(self):
+        """
+        The aggregate walks `product.reviews`, so it is only as safe as the
+        Product that carries it — which the storefront queryset already scopes.
+        Asserted rather than assumed.
+        """
+        with _storefront_of(self.a):
+            response = APIClient().get('/api/products/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = {row['id']: row for row in response.data}
+        self.assertIn(self.product_a.pk, rows)
+        self.assertNotIn(self.product_b.pk, rows)
+        self.assertEqual(rows[self.product_a.pk]['review_count'], 1)
+        self.assertEqual(float(rows[self.product_a.pk]['average_rating']), 5.0)
