@@ -2417,6 +2417,104 @@ Empresa desconocida e inactiva devuelven el mismo 404 que el catálogo.
 
 ---
 
+## 8-unvicies. Superficie interna y pedidos de venta (`/api/v1/internal/`)
+
+**Estado: IMPLEMENTADO (contexto + pedidos de venta).** Sin migraciones. Aditiva.
+
+### Cuatro audiencias, cuatro superficies
+
+| Prefijo | Audiencia | Auth |
+|---|---|---|
+| `/api/v1/storefront/<slug>/` | **pública** | ninguna |
+| `/api/v1/customer/<slug>/` | **cliente**, sus propios registros | Bearer v1 |
+| `/api/v1/internal/<slug>/` | **staff**, registros de la empresa | Bearer v1 + capability |
+| `/api/admin/` | panel web | cookie + CSRF, **sin tocar** |
+
+No existe ningún endpoint que ensanche su resultado según quién llame. Un cliente
+que pide pedidos recibe los suyos; un empleado que pide pedidos recibe los de la
+empresa. Son URLs distintas, permisos distintos y serializers distintos.
+
+### Dos puertas, en orden, y responden distinto
+
+| Situación | Respuesta | Por qué |
+|---|---|---|
+| Empresa desconocida | **404** | — |
+| Empresa inactiva | **404** | indistinguible |
+| Sin membresía activa | **404** | otro código dejaría mapear los tenants de la plataforma, un slug cada vez |
+| Con membresía, sin capability | **403** | el servidor ya admitió que la empresa existe y que trabajas ahí; ocultar el motivo ya no protege nada |
+
+Una relación de **cliente no sirve**: comprarle a un negocio no es trabajar en él.
+
+Un **platform master** pasa la primera puerta, pero solo para la empresa **nombrada
+en la ruta**. Nunca recibe un tenant implícito, y eso no le concede capability
+alguna — `resolve_capabilities` decide eso aparte.
+
+### Endpoints
+
+```
+GET   /api/v1/internal/<slug>/context/
+GET   /api/v1/internal/<slug>/orders/
+GET   /api/v1/internal/<slug>/orders/<id>/
+PATCH /api/v1/internal/<slug>/orders/<id>/fulfillment/
+```
+
+`context/` se llama **al entrar** al área interna, no se lee de la sesión. El
+contexto emitido en el login es una instantánea: los roles cambian mientras una
+sesión sigue viva, y a quien le revocaron un permiso hace una hora no debe
+seguir viendo un módulo porque su token aún vale.
+
+Devuelve **solo** empresa, membresía, capabilities y platform. Ni clientes, ni
+pedidos, ni personal, ni configuración: responde «¿qué puedo ver?», y responder
+más lo convertiría en una fuente de datos que nadie auditó.
+
+### Una sola máquina de estados
+
+`order_fulfillment_services.py` concentra quién puede mover qué estado y qué se
+escribe en la auditoría. La vista del admin web y la de v1 la llaman.
+
+Una regla impuesta en un sitio y olvidada en el otro es cómo una operación acaba
+siendo posible desde un teléfono y rechazada en un escritorio.
+
+Se preserva **exacta** la restricción del rol de inventario —mover mercancía sí,
+cancelar ventas no— aunque esté clavada al `UserProfile.role` legacy y no a una
+capability. Ensanchar en silencio lo que puede hacer un almacenero no es algo que
+decida un refactor.
+
+El detalle devuelve `available_fulfillment_transitions`, **desde el servidor**,
+para que la app no cargue una segunda copia de la tabla. Es entrada de
+presentación: el PATCH vuelve a comprobar.
+
+### Nada de pagos
+
+Cambiar el fulfillment no toca el estado de pago, no manda correo y no mueve
+stock — igual que la vista legacy. Si el dinero llegó lo dice Stripe, por el
+webhook, nunca un miembro del personal afirmándolo.
+
+### Capabilities promovidas a ACTIVE
+
+`sales.orders.view` y `sales.orders.manage` pasan de AVAILABLE a **ACTIVE**.
+
+El catálogo define AVAILABLE como «el módulo existe pero sus endpoints los
+autoriza aún el RBAC legacy». `/api/v1/internal/` comprueba `has_capability` y
+**nada más**, sin ruta de rol legacy, así que conceder o retirar una de estas
+decide de verdad lo que ocurre.
+
+`sales.notes.manage` **sigue AVAILABLE** precisamente porque M6 no construyó ese
+módulo. Las de servicio técnico **siguen RESERVED**: `RepairOrder` no existe, y
+no hay permisos falsos para funciones ausentes.
+
+### Estado de los requerimientos
+
+| ID | Estado |
+|---|---|
+| BR-002 | **RESUELTO** para público, cliente e interno |
+| BR-007 | **PARCIAL** — catálogo, auth, cliente, checkout e interno de ventas |
+| Inventario interno v1 | PENDIENTE |
+| BR-005 servicio técnico | PENDIENTE |
+| BR-001B | PENDIENTE |
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

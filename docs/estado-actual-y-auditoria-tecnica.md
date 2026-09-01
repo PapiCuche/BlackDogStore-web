@@ -1155,3 +1155,28 @@ la variante por slug devuelva exactamente lo mismo.
 - **URL de checkout no persistida.** En un replay se recupera de Stripe; si la
   sesión caducó, `checkout_url` es null y el cliente lee el estado del pedido.
 - **Superficie interna v1 pendiente**, con `sales.orders.view` ya en el catálogo.
+
+---
+
+## Actualización — superficie interna (M6)
+
+`/api/v1/internal/<slug>/` es la cuarta audiencia del contrato v1. Dos puertas:
+pertenencia (404 indistinguible) y permiso (403).
+
+`order_fulfillment_services.py` extraído de `AdminOrderFulfillmentView`; ambas
+superficies lo llaman, con comportamiento idéntico. La restricción del rol de
+inventario se preservó **exacta**, aunque siga clavada al `UserProfile.role`
+legacy en lugar de a una capability.
+
+`sales.orders.view` y `sales.orders.manage` promovidas a **ACTIVE**: v1 las
+impone sin ruta de rol legacy, que es la definición de ACTIVE en el catálogo.
+
+### Deuda registrada
+
+- **La restricción de inventario usa `UserProfile.role`, no una capability.** Es
+  la regla vigente y se conservó tal cual; convertirla en capability es una
+  decisión de negocio, no un refactor.
+- **Sin superficie interna de inventario v1**, aunque `inventory.*` lleve
+  ACTIVE desde la Fase 2D. Mobile no debe llamar `/api/admin/inventory/`.
+- **`sales.notes.manage` sigue AVAILABLE**: el módulo no se implementó.
+- **Servicio técnico sigue RESERVED**: `RepairOrder` no existe.

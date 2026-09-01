@@ -19317,3 +19317,664 @@ class M5OrderIdempotencyModelTest(TestCase):
         _order(self.company, user=other, idempotency_key='shared-key')
 
         self.assertEqual(Order.objects.filter(idempotency_key='shared-key').count(), 2)
+
+
+# =============================================================================
+# M6 — the INTERNAL surface: /api/v1/internal/<company_slug>/
+# =============================================================================
+#
+# Four audiences now. Most of what follows exists to pin down that the third
+# never becomes the second and the second never becomes the third: a client
+# asking for orders gets theirs, an employee asking gets the company's, and no
+# endpoint decides which by looking at who called it.
+
+
+def _m6_ctx_url(slug):
+    return f'/api/v1/internal/{slug}/context/'
+
+
+def _m6_orders_url(slug):
+    return f'/api/v1/internal/{slug}/orders/'
+
+
+def _m6_order_url(slug, pk):
+    return f'/api/v1/internal/{slug}/orders/{pk}/'
+
+
+def _m6_fulfillment_url(slug, pk):
+    return f'/api/v1/internal/{slug}/orders/{pk}/fulfillment/'
+
+
+def _m6_user(username, password='Pass123!'):
+    return User.objects.create_user(
+        username=username, email=f'{username}@example.com', password=password,
+    )
+
+
+def _m6_login(username, password='Pass123!'):
+    client = APIClient()
+    token = client.post(
+        '/api/v1/auth/login/',
+        {'email': f'{username}@example.com', 'password': password},
+        format='json',
+    ).json()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {token['access']}")
+    return client, token
+
+
+class M6InternalBase(TestCase):
+    """One company, one staff member with full sales capability, one order."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Interna', 'm6-shop', tax_id='20790000001')
+        self.other = _saas_company('Ajena', 'm6-otra', tax_id='20790000002')
+
+        self.staff = _m6_user('vendedora')
+        self.membership = Membership.objects.create(
+            user=self.staff, company=self.company, role='sales',
+        )
+
+        self.buyer = _m6_user('compradora')
+        _v1_customer(self.company, self.buyer)
+        self.order = _order(self.company, user=self.buyer, total='500.00', paid=True)
+
+        self.client, _ = _m6_login('vendedora')
+
+
+class M6InternalContextTest(M6InternalBase):
+    """Who am I inside this company, RIGHT NOW."""
+
+    def test_anonymous_is_401(self):
+        self.assertEqual(APIClient().get(_m6_ctx_url('m6-shop')).status_code, 401)
+
+    def test_a_member_gets_their_context(self):
+        payload = self.client.get(_m6_ctx_url('m6-shop')).json()
+
+        self.assertEqual(payload['company']['slug'], 'm6-shop')
+        self.assertTrue(payload['member'])
+        self.assertIn('sales.orders.view', payload['capabilities'])
+
+    def test_a_CUSTOMER_ONLY_user_is_404(self):
+        # Buying from a business is not working for it, and never will be.
+        client, _ = _m6_login('compradora')
+
+        self.assertEqual(client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+
+    def test_an_INACTIVE_membership_is_404(self):
+        Membership.objects.filter(pk=self.membership.pk).update(is_active=False)
+
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+
+    def test_an_inactive_COMPANY_is_404(self):
+        self.company.is_active = False
+        self.company.save(update_fields=['is_active'])
+
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+
+    def test_a_member_of_A_asking_for_B_is_404(self):
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-otra')).status_code, 404)
+
+    def test_unknown_company_and_not_a_member_are_INDISTINGUISHABLE(self):
+        # Otherwise any valid login maps the platform's tenants, one at a time.
+        unknown = self.client.get(_m6_ctx_url('no-existe'))
+        foreign = self.client.get(_m6_ctx_url('m6-otra'))
+
+        self.assertEqual(unknown.status_code, foreign.status_code)
+        self.assertEqual(unknown.json(), foreign.json())
+
+    def test_a_member_of_TWO_companies_gets_each_context(self):
+        Membership.objects.create(user=self.staff, company=self.other, role='inventory')
+
+        here = self.client.get(_m6_ctx_url('m6-shop')).json()
+        there = self.client.get(_m6_ctx_url('m6-otra')).json()
+
+        self.assertEqual(here['company']['slug'], 'm6-shop')
+        self.assertEqual(there['company']['slug'], 'm6-otra')
+        self.assertIn('sales.orders.view', here['capabilities'])
+        self.assertNotIn('sales.orders.view', there['capabilities'])
+
+    def test_a_CUSTOM_role_decides_the_capabilities(self):
+        # Once a company models someone with custom roles, restricting them
+        # actually restricts them — the legacy role matrix is not consulted.
+        role = _role(self.company, 'Solo lectura', capabilities=['sales.orders.view'])
+        _assign(self.membership, role)
+
+        capabilities = self.client.get(_m6_ctx_url('m6-shop')).json()['capabilities']
+
+        self.assertIn('sales.orders.view', capabilities)
+        self.assertNotIn('sales.orders.manage', capabilities)
+
+    def test_it_reports_platform_master_SEPARATELY(self):
+        self.staff.is_superuser = True
+        self.staff.save(update_fields=['is_superuser'])
+        client, _ = _m6_login('vendedora')
+
+        self.assertTrue(client.get(_m6_ctx_url('m6-shop')).json()['platform']['is_master'])
+
+    def test_a_platform_master_must_NAME_the_tenant(self):
+        master = _m6_user('plataforma')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        client, _ = _m6_login('plataforma')
+
+        # The explicit slug works; there is no implicit tenant anywhere.
+        self.assertEqual(client.get(_m6_ctx_url('m6-shop')).status_code, 200)
+        self.assertEqual(client.get(_m6_ctx_url('no-existe')).status_code, 404)
+
+    def test_it_returns_NOTHING_but_access_information(self):
+        # Only the four access keys. Checked structurally rather than by
+        # substring: capability CODES legitimately contain words like "orders",
+        # and grepping for those would fail on a correct response.
+        payload = self.client.get(_m6_ctx_url('m6-shop')).json()
+
+        self.assertEqual(set(payload), {'company', 'member', 'capabilities', 'platform'})
+        self.assertEqual(set(payload['company']), {'slug', 'name'})
+
+        body = self.client.get(_m6_ctx_url('m6-shop')).content.decode().lower()
+        for leaked in ('customer_email', 'stripe', 'token', 'secret', 'tax_id', 'total'):
+            self.assertNotIn(leaked, body)
+
+    def test_a_web_cookie_does_not_open_it(self):
+        web = APIClient()
+        web.post(
+            '/api/auth/login/', {'username': 'vendedora', 'password': 'Pass123!'}, format='json',
+        )
+
+        self.assertEqual(web.get(_m6_ctx_url('m6-shop')).status_code, 401)
+
+    def test_a_body_or_header_cannot_change_the_company(self):
+        payload = self.client.get(
+            f"{_m6_ctx_url('m6-shop')}?company=m6-otra", HTTP_X_COMPANY_SLUG='m6-otra',
+        ).json()
+
+        self.assertEqual(payload['company']['slug'], 'm6-shop')
+
+
+class M6InternalOrdersViewTest(M6InternalBase):
+    """The COMPANY's orders, behind `sales.orders.view`."""
+
+    def test_a_member_with_the_capability_sees_the_company_orders(self):
+        rows = self.client.get(_m6_orders_url('m6-shop')).json()
+
+        self.assertEqual(rows['count'], 1)
+        self.assertEqual(rows['results'][0]['id'], self.order.id)
+
+    def test_it_shows_orders_the_caller_did_NOT_buy(self):
+        # The point of an internal surface. These are someone else's purchases,
+        # and staff are supposed to see them.
+        self.assertEqual(
+            self.client.get(_m6_orders_url('m6-shop')).json()['results'][0]['customer_name'],
+            self.order.customer_name,
+        )
+
+    def test_WITHOUT_the_capability_it_is_403(self):
+        role = _role(self.company, 'Sin ventas', capabilities=['company.view'])
+        _assign(self.membership, role)
+
+        self.assertEqual(self.client.get(_m6_orders_url('m6-shop')).status_code, 403)
+
+    def test_a_customer_only_user_is_404_not_403(self):
+        # 404 because they do not belong here at all; the capability question
+        # never arises, and answering it would confirm the company exists.
+        client, _ = _m6_login('compradora')
+
+        self.assertEqual(client.get(_m6_orders_url('m6-shop')).status_code, 404)
+
+    def test_a_member_of_another_company_is_404(self):
+        outsider = _m6_user('ajeno')
+        Membership.objects.create(user=outsider, company=self.other, role='admin')
+        client, _ = _m6_login('ajeno')
+
+        self.assertEqual(client.get(_m6_orders_url('m6-shop')).status_code, 404)
+
+    def test_orders_of_another_company_NEVER_appear(self):
+        foreign = _order(self.other, total='999.00')
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        rows = self.client.get(_m6_orders_url('m6-shop')).json()
+
+        self.assertNotIn(foreign.id, [row['id'] for row in rows['results']])
+
+    def test_SEARCH_cannot_reach_another_company(self):
+        _order(self.other, total='999.00', customer_name='Buscame')
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?search=Buscame").json()
+
+        self.assertEqual(rows['count'], 0)
+
+    def test_an_ID_search_cannot_reach_another_company(self):
+        foreign = _order(self.other, total='999.00')
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?search={foreign.id}").json()
+
+        self.assertEqual(rows['count'], 0)
+
+    def test_filters_stay_inside_the_company(self):
+        _order(self.other, total='999.00', paid=True)
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        for query in ('status=paid', 'fulfillment_status=pending', 'date_from=2000-01-01'):
+            rows = self.client.get(f"{_m6_orders_url('m6-shop')}?{query}").json()
+            for row in rows['results']:
+                self.assertEqual(Order.objects.get(pk=row['id']).company, self.company)
+
+    def test_pagination_cannot_reach_another_company(self):
+        for _ in range(3):
+            _order(self.other, total='10.00')
+        Membership.objects.create(user=self.staff, company=self.other, role='sales')
+
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?page=1&page_size=100").json()
+
+        self.assertEqual(rows['count'], 1)
+
+    def test_an_unparseable_date_is_ignored_rather_than_fatal(self):
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?date_from=no-es-fecha")
+
+        self.assertEqual(rows.status_code, 200)
+
+    def test_a_page_size_beyond_the_cap_is_clamped(self):
+        rows = self.client.get(f"{_m6_orders_url('m6-shop')}?page_size=100000").json()
+
+        self.assertLessEqual(rows['page_size'], 100)
+
+
+class M6InternalOrderDetailTest(M6InternalBase):
+    """One order, and everything the response must not contain."""
+
+    def setUp(self):
+        super().setUp()
+        self.order.stripe_session_id = 'cs_interno_secreto'
+        self.order.stripe_payment_intent_id = 'pi_interno_secreto'
+        self.order.payment_error = 'fallo interno del proveedor'
+        self.order.cart_session_key = 'session-secreta'
+        self.order.customer_phone = '987654321'
+        self.order.save()
+
+    def test_it_returns_the_order(self):
+        payload = self.client.get(_m6_order_url('m6-shop', self.order.id)).json()
+
+        self.assertEqual(payload['id'], self.order.id)
+        self.assertIn('items', payload)
+
+    def test_it_DOES_carry_contact_and_delivery_details(self):
+        # Unlike the customer contract: someone has to phone the buyer and
+        # someone has to ship it.
+        payload = self.client.get(_m6_order_url('m6-shop', self.order.id)).json()
+
+        self.assertIn('customer_phone', payload)
+        self.assertIn('delivery_method', payload)
+        self.assertIn('document_number', payload)
+
+    def test_NO_stripe_identifier_reaches_it(self):
+        body = self.client.get(_m6_order_url('m6-shop', self.order.id)).content.decode()
+
+        self.assertNotIn('cs_interno_secreto', body)
+        self.assertNotIn('pi_interno_secreto', body)
+        self.assertNotIn('stripe', body.lower())
+
+    def test_NO_raw_operational_string_reaches_it(self):
+        body = self.client.get(_m6_order_url('m6-shop', self.order.id)).content.decode()
+
+        self.assertNotIn('fallo interno del proveedor', body)
+        self.assertNotIn('session-secreta', body)
+
+    def test_an_order_of_ANOTHER_company_is_404(self):
+        foreign = _order(self.other, total='999.00')
+
+        self.assertEqual(
+            self.client.get(_m6_order_url('m6-shop', foreign.id)).status_code, 404,
+        )
+
+    def test_it_reports_the_allowed_transitions_FROM_THE_SERVER(self):
+        # So the app does not carry a second copy of the state machine.
+        payload = self.client.get(_m6_order_url('m6-shop', self.order.id)).json()
+
+        self.assertIn('available_fulfillment_transitions', payload)
+        self.assertIn('delivered', payload['available_fulfillment_transitions'])
+
+    def test_without_the_capability_it_is_403(self):
+        role = _role(self.company, 'Sin ventas', capabilities=['company.view'])
+        _assign(self.membership, role)
+
+        self.assertEqual(
+            self.client.get(_m6_order_url('m6-shop', self.order.id)).status_code, 403,
+        )
+
+
+class M6InternalFulfillmentTest(M6InternalBase):
+    """Moving a state, and who may."""
+
+    def _manage_client(self):
+        role = _role(
+            self.company, 'Gestión',
+            capabilities=['sales.orders.view', 'sales.orders.manage'],
+        )
+        _assign(self.membership, role)
+        client, _ = _m6_login('vendedora')
+        return client
+
+    def test_a_manager_can_move_the_state(self):
+        client = self._manage_client()
+
+        response = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.fulfillment_status, 'shipped')
+
+    def test_VIEW_alone_cannot_move_it(self):
+        # `manage` is checked, not `view`, and the catalogue declares them
+        # separately. Nothing here assumes one implies the other.
+        role = _role(self.company, 'Solo lectura', capabilities=['sales.orders.view'])
+        _assign(self.membership, role)
+        client, _ = _m6_login('vendedora')
+
+        response = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.order.refresh_from_db()
+        self.assertNotEqual(self.order.fulfillment_status, 'shipped')
+
+    def test_it_writes_an_AUDIT_entry_with_the_company_and_the_actor(self):
+        client = self._manage_client()
+        before = self.order.fulfillment_status
+
+        client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped', 'note': 'salió hoy'}, format='json',
+        )
+
+        entry = AdminAuditLog.objects.filter(
+            action='order_fulfillment_status_changed', target_id=self.order.pk,
+        ).latest('id')
+        self.assertEqual(entry.actor, self.staff)
+        self.assertEqual(entry.company, self.company)
+        self.assertEqual(entry.metadata['old_fulfillment_status'], before)
+        self.assertEqual(entry.metadata['new_fulfillment_status'], 'shipped')
+
+    def test_an_INVENTORY_role_is_limited_to_moving_goods(self):
+        # Warehouse staff move goods; they do not cancel sales. Preserved
+        # exactly from the web admin.
+        inventory = _m6_user('almacen')
+        Membership.objects.create(user=inventory, company=self.company, role='inventory')
+        profile, _ = UserProfile.objects.get_or_create(user=inventory)
+        profile.role = UserProfile.ROLE_INVENTORY
+        profile.save(update_fields=['role'])
+        role = _role(
+            self.company, 'Almacén',
+            capabilities=['sales.orders.view', 'sales.orders.manage'], slug='almacen-m6',
+        )
+        _assign(Membership.objects.get(user=inventory, company=self.company), role)
+        client, _ = _m6_login('almacen')
+
+        allowed = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+        refused = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'cancelled'}, format='json',
+        )
+
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(refused.status_code, 403)
+
+    def test_it_reports_the_transitions_that_actor_may_use(self):
+        inventory = _m6_user('almacen2')
+        Membership.objects.create(user=inventory, company=self.company, role='inventory')
+        profile, _ = UserProfile.objects.get_or_create(user=inventory)
+        profile.role = UserProfile.ROLE_INVENTORY
+        profile.save(update_fields=['role'])
+        role = _role(
+            self.company, 'Almacén 2',
+            capabilities=['sales.orders.view'], slug='almacen2-m6',
+        )
+        _assign(Membership.objects.get(user=inventory, company=self.company), role)
+        client, _ = _m6_login('almacen2')
+
+        payload = client.get(_m6_order_url('m6-shop', self.order.id)).json()
+
+        self.assertNotIn('cancelled', payload['available_fulfillment_transitions'])
+
+    def test_an_invalid_status_is_400(self):
+        client = self._manage_client()
+
+        response = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'inventado'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_order_of_another_company_is_404(self):
+        client = self._manage_client()
+        foreign = _order(self.other, total='999.00')
+
+        response = client.patch(
+            _m6_fulfillment_url('m6-shop', foreign.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_it_does_NOT_touch_payment_state(self):
+        # Whether money arrived is Stripe's answer, delivered by the webhook —
+        # never a staff member saying so.
+        client = self._manage_client()
+        before = self.order.status
+
+        client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'delivered'}, format='json',
+        )
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, before)
+
+    def test_it_sends_no_email(self):
+        client = self._manage_client()
+        mail.outbox.clear()
+
+        client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'shipped'}, format='json',
+        )
+
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class M6CapabilityRevocationTest(M6InternalBase):
+    """A permission taken away must take effect on the NEXT request."""
+
+    def test_a_live_session_loses_access_when_the_role_changes(self):
+        # The reason `context/` exists: an access context minted at login is a
+        # snapshot, and a token stays valid for thirty minutes.
+        self.assertEqual(self.client.get(_m6_orders_url('m6-shop')).status_code, 200)
+
+        role = _role(self.company, 'Recortado', capabilities=['company.view'])
+        _assign(self.membership, role)
+
+        self.assertEqual(self.client.get(_m6_orders_url('m6-shop')).status_code, 403)
+
+    def test_a_live_session_loses_the_area_when_the_membership_ends(self):
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 200)
+
+        Membership.objects.filter(pk=self.membership.pk).update(is_active=False)
+
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+
+    def test_losing_internal_access_does_NOT_end_the_customer_session(self):
+        # Their token is still good, and they may still be a customer.
+        _v1_customer(self.company, self.staff)
+        Membership.objects.filter(pk=self.membership.pk).update(is_active=False)
+
+        self.assertEqual(self.client.get(_m6_ctx_url('m6-shop')).status_code, 404)
+        self.assertEqual(self.client.get('/api/v1/auth/me/').status_code, 200)
+        self.assertEqual(
+            self.client.get('/api/v1/customer/m6-shop/orders/').status_code, 200,
+        )
+
+
+class M6AudiencesStayApartTest(M6InternalBase):
+    """Customer and internal are different questions with different answers."""
+
+    def test_a_dual_user_sees_DIFFERENT_things_on_each_surface(self):
+        # The explicit case: someone who works here and also shops here.
+        _v1_customer(self.company, self.staff)
+        own = _order(self.company, user=self.staff, total='50.00', paid=True)
+
+        customer_rows = self.client.get('/api/v1/customer/m6-shop/orders/').json()
+        internal_rows = self.client.get(_m6_orders_url('m6-shop')).json()
+
+        self.assertEqual([r['id'] for r in customer_rows], [own.id])
+        self.assertEqual(
+            sorted(r['id'] for r in internal_rows['results']),
+            sorted([own.id, self.order.id]),
+        )
+
+    def test_the_customer_surface_never_becomes_a_staff_view(self):
+        _v1_customer(self.company, self.staff)
+
+        rows = self.client.get('/api/v1/customer/m6-shop/orders/').json()
+
+        self.assertNotIn(self.order.id, [row['id'] for row in rows])
+
+    def test_the_two_serializers_expose_different_fields(self):
+        _v1_customer(self.company, self.staff)
+        own = _order(self.company, user=self.staff, total='50.00', paid=True)
+
+        customer = self.client.get(f'/api/v1/customer/m6-shop/orders/{own.id}/').json()
+        internal = self.client.get(_m6_order_url('m6-shop', own.id)).json()
+
+        self.assertNotIn('customer_phone', customer)
+        self.assertIn('customer_phone', internal)
+
+    def test_an_employee_does_not_gain_customer_checkout(self):
+        # M5's rule still holds: being staff is not being a client.
+        staff_only = _m6_user('solo-staff')
+        Membership.objects.create(user=staff_only, company=self.company, role='sales')
+        client, _ = _m6_login('solo-staff')
+
+        self.assertEqual(
+            client.get('/api/v1/customer/m6-shop/orders/').status_code, 404,
+        )
+        self.assertEqual(client.get(_m6_ctx_url('m6-shop')).status_code, 200)
+
+    def test_a_platform_master_does_not_become_a_customer(self):
+        master = _m6_user('master')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        client, _ = _m6_login('master')
+
+        self.assertEqual(client.get(_m6_ctx_url('m6-shop')).status_code, 200)
+        self.assertEqual(client.get('/api/v1/customer/m6-shop/orders/').status_code, 404)
+
+
+class M6LegacyRegressionTest(TestCase):
+    """Adding an internal surface moved nothing else."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Regresión', 'm6-reg', tax_id='20791000001')
+        self.user = _m6_user('regresion')
+        Membership.objects.create(user=self.user, company=self.company, role='admin')
+        profile, _ = UserProfile.objects.get_or_create(user=self.user)
+        profile.role = UserProfile.ROLE_ADMIN
+        profile.save(update_fields=['role'])
+
+    def test_the_web_admin_orders_endpoint_still_works(self):
+        client = APIClient()
+        client.post(
+            '/api/auth/login/', {'username': 'regresion', 'password': 'Pass123!'},
+            format='json',
+        )
+
+        self.assertEqual(
+            client.get(f'/api/admin/orders/?company={self.company.id}').status_code, 200,
+        )
+
+    def test_the_project_default_authentication_is_still_cookie_only(self):
+        from django.conf import settings
+
+        self.assertEqual(
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_every_internal_view_declares_bearer_explicitly(self):
+        from .v1_authentication import V1BearerAuthentication
+        from .v1_internal_views import (
+            V1InternalContextView, V1InternalOrderDetailView,
+            V1InternalOrderFulfillmentView, V1InternalOrderListView,
+        )
+
+        for view in (
+            V1InternalContextView, V1InternalOrderListView,
+            V1InternalOrderDetailView, V1InternalOrderFulfillmentView,
+        ):
+            self.assertEqual(view.authentication_classes, [V1BearerAuthentication], view)
+
+    def test_the_public_catalogue_is_still_anonymous(self):
+        _prod(self.company, 'Producto', 'producto-m6')
+
+        self.assertEqual(
+            APIClient().get('/api/v1/storefront/m6-reg/products/').status_code, 200,
+        )
+
+    def test_the_fulfillment_rule_is_ONE_service_shared_by_both(self):
+        # If these ever diverge, an operation becomes possible from a phone that
+        # is refused on a desk.
+        import inspect
+
+        from . import order_fulfillment_services
+        from .admin_views import AdminOrderFulfillmentView
+        from .v1_internal_views import V1InternalOrderFulfillmentView
+
+        for view in (AdminOrderFulfillmentView, V1InternalOrderFulfillmentView):
+            self.assertIn('change_fulfillment_status', inspect.getsource(view), view)
+        self.assertTrue(hasattr(order_fulfillment_services, 'allowed_fulfillment_statuses'))
+
+
+class M6CapabilityStatusTest(TestCase):
+    """The catalogue must stay honest about what is actually enforced."""
+
+    def test_sales_orders_capabilities_are_now_ACTIVE(self):
+        # Promoted because `/api/v1/internal/` enforces them with no legacy role
+        # path at all — not to make a table look better.
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+
+        self.assertEqual(CAPABILITIES['sales.orders.view'].status, STATUS_ACTIVE)
+        self.assertEqual(CAPABILITIES['sales.orders.manage'].status, STATUS_ACTIVE)
+
+    def test_sales_notes_stays_AVAILABLE_because_M6_did_not_build_it(self):
+        from .capabilities import CAPABILITIES, STATUS_AVAILABLE
+
+        self.assertEqual(CAPABILITIES['sales.notes.manage'].status, STATUS_AVAILABLE)
+
+    def test_service_capabilities_stay_RESERVED(self):
+        # RepairOrder does not exist. No fake permissions for absent features.
+        from .capabilities import CAPABILITIES, STATUS_RESERVED
+
+        for code in (
+            'service.orders.view', 'service.orders.manage',
+            'service.devices.view', 'service.diagnostic.manage',
+        ):
+            self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
+
+    def test_there_is_no_internal_inventory_or_service_surface_yet(self):
+        client = APIClient()
+        for path in (
+            '/api/v1/internal/m6-x/inventory/',
+            '/api/v1/internal/m6-x/service/',
+            '/api/v1/internal/m6-x/customers/',
+        ):
+            self.assertEqual(client.get(path).status_code, 404, path)

@@ -105,10 +105,21 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Ver reportes de stock, rotación y reposición.', STATUS_ACTIVE),
 
     # --- sales (module exists; endpoints still legacy-authorised) ---
+    # ENFORCED from M6.
+    #
+    # These were AVAILABLE — assignable, but the endpoints that used them were
+    # still authorised by the legacy `UserProfile.role`. `/api/v1/internal/`
+    # changed that: it checks `has_capability` and nothing else, with no legacy
+    # role path at all, so granting or withholding one of these now decides what
+    # actually happens.
+    #
+    # Promoted because the definition of ACTIVE is met, not to tidy a table.
+    # `sales.notes.manage` below stays AVAILABLE precisely because M6 did not
+    # build that module.
     _cap('sales.orders.view', 'sales', 'Ver pedidos',
-         'Consultar pedidos de la empresa.', STATUS_AVAILABLE),
+         'Consultar pedidos de la empresa.', STATUS_ACTIVE),
     _cap('sales.orders.manage', 'sales', 'Administrar pedidos',
-         'Gestionar el despacho de pedidos.', STATUS_AVAILABLE),
+         'Gestionar el despacho de pedidos.', STATUS_ACTIVE),
     _cap('sales.notes.manage', 'sales', 'Notas de venta internas',
          'Emitir y descargar notas de venta internas.', STATUS_AVAILABLE),
 

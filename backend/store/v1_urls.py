@@ -11,6 +11,10 @@ from rest_framework.routers import DefaultRouter
 from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
 from .v1_checkout_views import V1CustomerCheckoutView
 from .v1_customer_views import V1CustomerOrderViewSet
+from .v1_internal_views import (
+    V1InternalContextView, V1InternalOrderDetailView,
+    V1InternalOrderFulfillmentView, V1InternalOrderListView,
+)
 from .v1_views import (
     V1StorefrontCategoryViewSet, V1StorefrontConfigView, V1StorefrontProductViewSet,
 )
@@ -50,6 +54,25 @@ urlpatterns = [
     path(
         'customer/<slug:company_slug>/',
         include((customer_router.urls, 'v1-customer')),
+    ),
+    # INTERNAL audience. Staff reading the COMPANY's records under a
+    # capability — a different question from a client reading their own, so a
+    # different URL space (DEC-API-001).
+    path(
+        'internal/<slug:company_slug>/context/',
+        V1InternalContextView.as_view(), name='v1-internal-context',
+    ),
+    path(
+        'internal/<slug:company_slug>/orders/',
+        V1InternalOrderListView.as_view(), name='v1-internal-orders',
+    ),
+    path(
+        'internal/<slug:company_slug>/orders/<int:pk>/',
+        V1InternalOrderDetailView.as_view(), name='v1-internal-order-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/orders/<int:pk>/fulfillment/',
+        V1InternalOrderFulfillmentView.as_view(), name='v1-internal-order-fulfillment',
     ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),
