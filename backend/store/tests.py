@@ -14947,11 +14947,18 @@ class Phase2eSequenceApiTest(TestCase):
         return client
 
     def test_an_admin_lists_their_own_series(self):
+        # TWO series from M8: sales notes and service orders. Each document type
+        # has its own counter and its own prefix, and this screen is where a
+        # tenant edits them — which is the reason the repair series lives in
+        # `InternalSequence` at all rather than in a second mechanism.
         res = self._as(self.admin_a).get('/api/admin/sequences/')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(res.data['results']), 1)
-        self.assertEqual(res.data['results'][0]['id'], self.seq_a.pk)
-        self.assertEqual(res.data['results'][0]['preview'], 'NV-000001')
+
+        by_type = {row['document_type']: row for row in res.data['results']}
+        self.assertEqual(set(by_type), {'sales_note', 'repair_order'})
+        self.assertEqual(by_type['sales_note']['id'], self.seq_a.pk)
+        self.assertEqual(by_type['sales_note']['preview'], 'NV-000001')
+        self.assertEqual(by_type['repair_order']['preview'], 'SRV-000001')
         self.assertTrue(res.data['can_manage'])
 
     def test_the_response_says_the_numbering_is_not_fiscal(self):
@@ -15143,8 +15150,11 @@ class Phase2eSequenceApiTest(TestCase):
         """
         ensure_branch_sequence(self.a, self.a.default_inventory_branch)
         res = self._as(self.admin_a).get('/api/admin/sequences/')
-        self.assertEqual(len(res.data['results']), 1)
-        self.assertIsNone(res.data['results'][0]['branch'])
+        # The assertion is about BRANCH rows, not about how many document types
+        # exist: every row listed under company scope is a company-level one.
+        self.assertTrue(res.data['results'])
+        for row in res.data['results']:
+            self.assertIsNone(row['branch'], row['document_type'])
 
 
 class Phase2eMigrationTest(TestCase):
@@ -19960,17 +19970,25 @@ class M6CapabilityStatusTest(TestCase):
 
         self.assertEqual(CAPABILITIES['sales.notes.manage'].status, STATUS_AVAILABLE)
 
-    def test_service_capabilities_stay_RESERVED(self):
-        # RepairOrder does not exist. No fake permissions for absent features.
+    def test_service_capabilities_for_absent_modules_stay_RESERVED(self):
+        # Was `test_service_capabilities_stay_RESERVED` when `RepairOrder` did
+        # not exist. M8 built the core, so the four codes it actually enforces
+        # became ACTIVE and moved to `M8CapabilityCatalogueTest`. The RULE did
+        # not change: no permission over absent code. These three still name
+        # modules nobody has written.
         from .capabilities import CAPABILITIES, STATUS_RESERVED
 
         for code in (
-            'service.orders.view', 'service.orders.manage',
-            'service.devices.view', 'service.diagnostic.manage',
+            'service.diagnostic.manage', 'service.repair.manage',
+            'service.quality.manage',
         ):
             self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
 
-    def test_there_is_no_internal_inventory_or_service_surface_yet(self):
+    def test_a_bare_module_prefix_is_still_not_an_endpoint(self):
+        # Was `test_there_is_no_internal_inventory_or_service_surface_yet`.
+        # Both surfaces exist now — inventory since M7A, service since M8 — but
+        # neither mounts anything on its bare prefix, so these paths resolve to
+        # nothing rather than to a listing nobody designed.
         client = APIClient()
         for path in (
             '/api/v1/internal/m6-x/inventory/',
@@ -20649,3 +20667,1353 @@ class M7InventoryRegressionTest(M7InventoryBase):
             self.assertEqual(
                 self.client.get(_m7_url('m7-shop', resource)).status_code, 404, resource,
             )
+
+
+# =============================================================================
+# M8 / BR-005A — TECHNICAL SERVICE CORE
+# /api/v1/internal/<slug>/service/ and /api/v1/customer/<slug>/repairs/
+# =============================================================================
+
+from . import service_services as _m8_service  # noqa: E402
+from .models import (  # noqa: E402
+    Device as _M8Device,
+    RepairOrder as _M8RepairOrder,
+    RepairStatusCode as _M8Status,
+    RepairStatusHistory as _M8History,
+    RepairStatusSetting as _M8StatusSetting,
+    TechnicianAssignment as _M8Assignment,
+)
+
+
+def _m8_url(slug, resource=''):
+    return f'/api/v1/internal/{slug}/service/{resource}'
+
+
+def _m8_customer_url(slug, resource=''):
+    return f'/api/v1/customer/{slug}/repairs/{resource}'
+
+
+class M8ServiceBase(TestCase):
+    """
+    One company with two branches, a client, a device, and a foreign tenant.
+
+    The second branch and the foreign company are load-bearing: most assertions
+    below would pass against a single-tenant, single-shop implementation and
+    fail the moment a repair is supposed to stay inside the shop that received
+    it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Taller', 'm8-taller', tax_id='20900000001')
+        self.other = _saas_company('Ajena', 'm8-otra', tax_id='20900000002')
+
+        provision_company_access_defaults(self.company)
+        provision_company_access_defaults(self.other)
+
+        self.branch_a = self.company.branches.order_by('pk').first()
+        self.branch_b = _saas_branch(self.company, 'Sucursal Norte')
+        self.foreign_branch = self.other.branches.order_by('pk').first()
+
+        self.client_user = _m7_user('cliente_m8')
+        self.customer = _v1_customer(
+            self.company, self.client_user, first_name='Ana', last_name='Cliente',
+            document_type='dni', document_number='40404040', phone='999888777',
+        )
+        self.other_customer = _v1_customer(
+            self.company, None, first_name='Bruno', last_name='Segundo',
+        )
+        self.foreign_customer = _v1_customer(
+            self.other, None, first_name='Carla', last_name='Ajena',
+        )
+
+        self.device = _M8Device.objects.create(
+            company=self.company, customer=self.customer,
+            device_type=_M8Device.TYPE_PHONE, brand='Genérica', model='X100',
+            serial_number='SN-0001',
+        )
+        self.foreign_device = _M8Device.objects.create(
+            company=self.other, customer=self.foreign_customer,
+            device_type=_M8Device.TYPE_LAPTOP, brand='Otra', model='L1',
+        )
+
+        self.staff = _m7_user('recepcion')
+        self.membership = Membership.objects.create(
+            user=self.staff, company=self.company, role='technician',
+        )
+        self.client = _m7_login('recepcion')
+
+    # -- helpers ------------------------------------------------------------
+
+    def with_capabilities(self, *capabilities, slug='m8-rol'):
+        # The NAME is derived from the slug: `CompanyRole` is unique on
+        # (company, name) as well as (company, slug), so two roles in one test
+        # would collide on a shared display name.
+        role = _role(self.company, f'Rol {slug}', capabilities=list(capabilities), slug=slug)
+        _assign(self.membership, role)
+        return _m7_login('recepcion')
+
+    def full_service_role(self):
+        return self.with_capabilities(
+            'service.orders.view', 'service.orders.create', 'service.orders.manage',
+            'service.devices.view', 'service.devices.manage', 'service.customers.view',
+        )
+
+    def restrict_to_branch_a(self):
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        _M7BranchAccess.objects.create(membership=self.membership, branch=self.branch_a)
+        return _m7_login('recepcion')
+
+    def make_order(self, *, branch=None, customer=None, device=None, actor=None):
+        return _m8_service.create_repair_order(
+            company=self.company,
+            branch=branch or self.branch_a,
+            customer=customer or self.customer,
+            device=device or self.device,
+            reported_issue='No enciende.',
+            actor=actor or self.staff,
+        )
+
+
+class M8ProvisioningTest(M8ServiceBase):
+    """A company is usable the moment it exists, not the moment a migration ran."""
+
+    def test_provisioning_seeds_every_lifecycle_state(self):
+        codes = set(
+            _M8StatusSetting.objects.filter(company=self.company).values_list('code', flat=True)
+        )
+        self.assertEqual(codes, {c for c, _ in _M8Status.choices})
+
+    def test_provisioning_seeds_the_repair_series(self):
+        series = InternalSequence.objects.filter(
+            company=self.company, branch__isnull=True,
+            document_type=InternalSequence.DOCUMENT_REPAIR_ORDER,
+        ).first()
+        self.assertIsNotNone(series)
+        self.assertEqual(series.next_value, 1)
+
+    def test_the_repair_series_is_not_the_sales_note_series(self):
+        # Two documents of one business must never share a counter.
+        sales = InternalSequence.objects.get(
+            company=self.company, branch__isnull=True,
+            document_type=InternalSequence.DOCUMENT_SALES_NOTE,
+        )
+        repairs = InternalSequence.objects.get(
+            company=self.company, branch__isnull=True,
+            document_type=InternalSequence.DOCUMENT_REPAIR_ORDER,
+        )
+        self.assertNotEqual(sales.pk, repairs.pk)
+        self.assertNotEqual(sales.prefix, repairs.prefix)
+
+    def test_provisioning_is_idempotent(self):
+        before = _M8StatusSetting.objects.filter(company=self.company).count()
+        provision_company_access_defaults(self.company)
+        self.assertEqual(
+            _M8StatusSetting.objects.filter(company=self.company).count(), before,
+        )
+
+    def test_a_renamed_state_survives_reprovisioning(self):
+        row = _M8StatusSetting.objects.get(company=self.company, code=_M8Status.RECEIVED)
+        row.label = 'En recepción'
+        row.save(update_fields=['label'])
+
+        provision_company_access_defaults(self.company)
+
+        row.refresh_from_db()
+        self.assertEqual(row.label, 'En recepción')
+
+    def test_the_migration_and_the_runtime_defaults_agree(self):
+        # They are allowed to drift later — the migration is a record. Today is
+        # the only day they must match, so this asserts it today.
+        import importlib
+
+        from .company_provisioning import PRESET_REPAIR_STATUSES
+
+        module = importlib.import_module(
+            'store.migrations.0036_seed_repair_statuses_and_series',
+        )
+        self.assertEqual(tuple(module.REPAIR_STATUSES), tuple(PRESET_REPAIR_STATUSES))
+
+    def test_the_technician_preset_can_actually_run_the_module(self):
+        # The role existed before the module did, reserving authority. Now that
+        # the module exists, a technician who cannot receive a device is a label.
+        role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
+        for code in (
+            'service.devices.view', 'service.devices.manage',
+            'service.orders.view', 'service.orders.create', 'service.orders.manage',
+        ):
+            self.assertIn(code, role.capabilities, code)
+
+    def test_the_technician_preset_does_not_gain_reserved_capabilities(self):
+        role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
+        for code in (
+            'service.diagnostic.manage', 'service.repair.manage', 'service.quality.manage',
+        ):
+            self.assertNotIn(code, role.capabilities, code)
+
+
+class M8CapabilityCatalogueTest(TestCase):
+    """What M8 promoted, and what it deliberately did not."""
+
+    def test_the_five_capabilities_M8_enforces_are_ACTIVE(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+
+        for code in (
+            'service.devices.view', 'service.devices.manage',
+            'service.orders.view', 'service.orders.create', 'service.orders.manage',
+        ):
+            self.assertEqual(CAPABILITIES[code].status, STATUS_ACTIVE, code)
+
+    def test_capabilities_for_modules_M8_did_not_build_stay_RESERVED(self):
+        # The rule that has held since Phase 2A: no permission over absent code.
+        from .capabilities import CAPABILITIES, STATUS_RESERVED
+
+        for code in (
+            'service.diagnostic.manage', 'service.repair.manage', 'service.quality.manage',
+        ):
+            self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
+
+    def test_M8_invented_no_capability(self):
+        # Every code the service surface enforces already existed in the
+        # catalogue, reserved. M8 promoted; it did not add.
+        from .capabilities import CAPABILITIES
+        from .v1_service_views import (
+            CAP_CUSTOMERS_VIEW, CAP_DEVICES_MANAGE, CAP_DEVICES_VIEW,
+            CAP_ORDERS_CREATE, CAP_ORDERS_MANAGE, CAP_ORDERS_VIEW,
+        )
+
+        for code in (
+            CAP_DEVICES_VIEW, CAP_DEVICES_MANAGE, CAP_ORDERS_VIEW,
+            CAP_ORDERS_CREATE, CAP_ORDERS_MANAGE, CAP_CUSTOMERS_VIEW,
+        ):
+            self.assertIn(code, CAPABILITIES, code)
+
+    def test_there_is_no_separate_assign_capability(self):
+        # Deliberate: whoever may move an order to "en diagnóstico" is whoever
+        # decides which technician does the diagnosing.
+        from .capabilities import CAPABILITIES
+
+        self.assertNotIn('service.orders.assign', CAPABILITIES)
+
+
+class M8DeviceModelTest(M8ServiceBase):
+    """A device belongs to one customer of one company, and stores no secrets."""
+
+    def test_a_device_of_another_companys_customer_is_refused(self):
+        device = _M8Device(
+            company=self.company, customer=self.foreign_customer,
+            brand='X', model='Y',
+        )
+        with self.assertRaises(DjangoValidationError):
+            device.save()
+
+    def test_brand_and_model_are_required(self):
+        with self.assertRaises(DjangoValidationError):
+            _M8Device.objects.create(
+                company=self.company, customer=self.customer, brand='', model='',
+            )
+
+    def test_serial_is_normalised_but_never_globally_unique(self):
+        # The same physical device can be registered by two different shops.
+        mine = _M8Device.objects.create(
+            company=self.company, customer=self.other_customer,
+            brand='Genérica', model='X100', serial_number=' sn-0001 ',
+        )
+        self.assertEqual(mine.serial_number, 'SN-0001')
+
+        theirs = _M8Device.objects.create(
+            company=self.other, customer=self.foreign_customer,
+            brand='Genérica', model='X100', serial_number='SN-0001',
+        )
+        self.assertEqual(theirs.serial_number, 'SN-0001')
+
+    def test_a_duplicate_serial_is_detected_and_not_blocked(self):
+        twin = _M8Device.objects.create(
+            company=self.company, customer=self.other_customer,
+            brand='Genérica', model='X100', serial_number='SN-0001',
+        )
+        found = _m8_service.find_possible_duplicate_devices(
+            self.company, serial_number='SN-0001', exclude_pk=twin.pk,
+        )
+        self.assertIn(self.device, list(found))
+
+    def test_duplicate_detection_never_crosses_tenants(self):
+        _M8Device.objects.create(
+            company=self.other, customer=self.foreign_customer,
+            brand='Genérica', model='X100', serial_number='SN-0001',
+        )
+        found = _m8_service.find_possible_duplicate_devices(
+            self.other, serial_number='SN-0001',
+        )
+        for device in found:
+            self.assertEqual(device.company_id, self.other.pk)
+
+    def test_a_blank_serial_matches_nothing(self):
+        self.assertEqual(
+            list(_m8_service.find_possible_duplicate_devices(self.company)), [],
+        )
+
+    def test_one_device_serves_many_visits(self):
+        first = self.make_order()
+        second = self.make_order()
+        self.assertEqual(first.device_id, second.device_id)
+        self.assertNotEqual(first.pk, second.pk)
+
+    def test_the_model_stores_no_credential(self):
+        # Repair shops do ask for the unlock code. Storing one would make this
+        # table a credential store with no encryption, retention or deletion
+        # policy — none of which exist.
+        fields = {f.name for f in _M8Device._meta.get_fields()}
+        for forbidden in (
+            'password', 'pin', 'unlock_code', 'pattern', 'apple_id',
+            'icloud_password', 'passcode',
+        ):
+            self.assertNotIn(forbidden, fields, forbidden)
+
+
+class M8RepairOrderModelTest(M8ServiceBase):
+    """The order's invariants, and the identity the server owns."""
+
+    def test_a_new_order_is_RECEIVED_and_the_client_cannot_say_otherwise(self):
+        order = self.make_order()
+        self.assertEqual(order.status, _M8Status.RECEIVED)
+
+    def test_the_number_comes_from_the_company_series(self):
+        order = self.make_order()
+        self.assertTrue(order.number.startswith('SRV-'))
+        self.assertEqual(order.sequence_value, 1)
+
+    def test_numbers_do_not_interleave_between_tenants(self):
+        mine = self.make_order()
+        theirs = _m8_service.create_repair_order(
+            company=self.other,
+            branch=self.foreign_branch,
+            customer=self.foreign_customer,
+            device=self.foreign_device,
+            reported_issue='Otra empresa.',
+        )
+        self.assertEqual(mine.sequence_value, 1)
+        self.assertEqual(theirs.sequence_value, 1)
+
+    def test_numbers_are_unique_within_a_company(self):
+        first = self.make_order()
+        second = self.make_order()
+        self.assertNotEqual(first.number, second.number)
+        self.assertEqual(second.sequence_value, first.sequence_value + 1)
+
+    def test_received_by_is_the_actor_the_server_saw(self):
+        order = self.make_order(actor=self.staff)
+        self.assertEqual(order.received_by_id, self.staff.pk)
+
+    def test_a_device_belonging_to_another_customer_is_refused(self):
+        stray = _M8Device.objects.create(
+            company=self.company, customer=self.other_customer,
+            brand='G', model='Z',
+        )
+        with self.assertRaises(_m8_service.ServiceError):
+            self.make_order(device=stray)
+
+    def test_a_branch_of_another_company_is_refused(self):
+        with self.assertRaises(_m8_service.ServiceError):
+            self.make_order(branch=self.foreign_branch)
+
+    def test_a_customer_of_another_company_is_refused(self):
+        with self.assertRaises(_m8_service.ServiceError):
+            self.make_order(customer=self.foreign_customer, device=self.foreign_device)
+
+    def test_a_reported_issue_is_required(self):
+        with self.assertRaises(DjangoValidationError):
+            _M8RepairOrder.objects.create(
+                company=self.company, branch=self.branch_a, customer=self.customer,
+                device=self.device, number='X-1', sequence_value=1, reported_issue='  ',
+            )
+
+    def test_the_repair_order_is_not_an_ecommerce_order(self):
+        # Structural, and the point of the phase: no inheritance, no FK, no
+        # shared columns that would make a change to a sale a change to a repair.
+        self.assertNotIn(Order, _M8RepairOrder.__mro__)
+        related = {
+            f.name for f in _M8RepairOrder._meta.get_fields()
+            if getattr(f, 'related_model', None) is Order
+        }
+        self.assertEqual(related, set())
+
+
+class M8StatusHistoryTest(M8ServiceBase):
+    """The projection moves; the evidence accumulates."""
+
+    def test_creating_an_order_writes_the_intake_event(self):
+        order = self.make_order()
+        events = list(order.status_history.all())
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].from_status, '')
+        self.assertEqual(events[0].to_status, _M8Status.RECEIVED)
+
+    def test_a_transition_appends_rather_than_replaces(self):
+        order = self.make_order()
+        _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        self.assertEqual(order.status_history.count(), 2)
+
+    def test_the_projection_and_the_evidence_agree(self):
+        order = self.make_order()
+        _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        order.refresh_from_db()
+        last = order.status_history.order_by('-created_at', '-pk').first()
+        self.assertEqual(order.status, last.to_status)
+
+    def test_history_cannot_be_edited(self):
+        order = self.make_order()
+        event = order.status_history.first()
+        event.comment = 'reescrito'
+        with self.assertRaises(DjangoValidationError):
+            event.save()
+
+    def test_history_cannot_be_deleted(self):
+        order = self.make_order()
+        with self.assertRaises(DjangoValidationError):
+            order.status_history.first().delete()
+
+    def test_an_order_with_history_cannot_be_deleted_either(self):
+        from django.db.models import ProtectedError
+
+        order = self.make_order()
+        with self.assertRaises(ProtectedError):
+            order.delete()
+
+    def test_the_event_carries_the_company_without_a_join(self):
+        order = self.make_order()
+        self.assertEqual(order.status_history.first().company_id, self.company.pk)
+
+    def test_visibility_is_frozen_when_the_event_is_written(self):
+        # Changing the policy tomorrow must not retroactively reveal — or hide —
+        # what a customer was already shown.
+        order = self.make_order()
+        event = order.status_history.first()
+        self.assertTrue(event.is_customer_visible)
+
+        setting = _M8StatusSetting.objects.get(
+            company=self.company, code=_M8Status.RECEIVED,
+        )
+        setting.is_customer_visible = False
+        setting.save(update_fields=['is_customer_visible'])
+
+        event.refresh_from_db()
+        self.assertTrue(event.is_customer_visible)
+
+
+class M8TransitionTest(M8ServiceBase):
+    """One machine, on the server."""
+
+    def test_the_allowed_move_succeeds(self):
+        order = self.make_order()
+        moved = _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        self.assertEqual(moved.status, _M8Status.DIAGNOSING)
+
+    def test_a_move_the_machine_does_not_allow_is_refused(self):
+        order = self.make_order()
+        with self.assertRaises(_m8_service.InvalidTransitionError):
+            _m8_service.transition_repair_order(
+                repair_order=order, to_status=_M8Status.WAITING_APPROVAL,
+                actor=self.staff,
+            )
+
+    def test_moving_to_the_same_state_is_refused_explicitly(self):
+        order = self.make_order()
+        with self.assertRaises(_m8_service.InvalidTransitionError):
+            _m8_service.transition_repair_order(
+                repair_order=order, to_status=_M8Status.RECEIVED, actor=self.staff,
+            )
+
+    def test_a_cancelled_order_is_terminal(self):
+        order = self.make_order()
+        cancelled = _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.CANCELLED, actor=self.staff,
+        )
+        # The RETURNED instance, not the caller's stale one: the service re-reads
+        # the row under a lock and hands back what it actually wrote.
+        self.assertEqual(_m8_service.available_transitions(cancelled), [])
+
+    def test_cancelling_closes_the_order(self):
+        order = self.make_order()
+        closed = _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.CANCELLED, actor=self.staff,
+        )
+        self.assertIsNotNone(closed.closed_at)
+
+    def test_states_M8_cannot_support_do_not_exist(self):
+        # Shipping the word without the module would let an order enter a state
+        # no code can act on — a status that lies.
+        codes = {code for code, _label in _M8Status.choices}
+        for absent in (
+            'approved', 'rejected', 'in_repair', 'waiting_parts', 'repaired',
+            'quality_control', 'ready_for_pickup', 'delivered', 'warranty',
+        ):
+            self.assertNotIn(absent, codes, absent)
+
+    def test_the_machine_stops_where_M9_begins(self):
+        order = self.make_order()
+        _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.WAITING_APPROVAL, actor=self.staff,
+        )
+        order.refresh_from_db()
+        # Approval needs a quote, and a quote needs a diagnosis. Neither exists.
+        self.assertEqual(
+            _m8_service.available_transitions(order), [_M8Status.CANCELLED],
+        )
+
+    def test_two_transitions_from_one_state_cannot_both_win(self):
+        order = self.make_order()
+        _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        # The stale instance still believes it is RECEIVED. The service re-reads
+        # the row under a lock, so the second caller is told the truth instead
+        # of writing a second history from a state that has already been left.
+        with self.assertRaises(_m8_service.InvalidTransitionError):
+            _m8_service.transition_repair_order(
+                repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+            )
+        self.assertEqual(order.status_history.count(), 2)
+
+
+class M8AssignmentTest(M8ServiceBase):
+    """Who is responsible, and who was."""
+
+    def setUp(self):
+        super().setUp()
+        self.tech = _m7_user('tecnico')
+        Membership.objects.create(user=self.tech, company=self.company, role='technician')
+        self.foreign_tech = _m7_user('tecnico_ajeno')
+        Membership.objects.create(user=self.foreign_tech, company=self.other, role='technician')
+
+    def test_a_technician_of_this_company_can_be_assigned(self):
+        order = self.make_order()
+        assignment = _m8_service.assign_technician(
+            repair_order=order, technician=self.tech, actor=self.staff,
+        )
+        self.assertEqual(assignment.technician_id, self.tech.pk)
+        self.assertIsNone(assignment.unassigned_at)
+
+    def test_a_technician_of_another_company_is_refused(self):
+        order = self.make_order()
+        with self.assertRaises(_m8_service.TechnicianNotEligibleError):
+            _m8_service.assign_technician(
+                repair_order=order, technician=self.foreign_tech, actor=self.staff,
+            )
+
+    def test_an_inactive_membership_is_not_eligible(self):
+        order = self.make_order()
+        Membership.objects.filter(user=self.tech, company=self.company).update(is_active=False)
+        with self.assertRaises(_m8_service.TechnicianNotEligibleError):
+            _m8_service.assign_technician(
+                repair_order=order, technician=self.tech, actor=self.staff,
+            )
+
+    def test_a_legacy_role_alone_does_not_make_somebody_eligible(self):
+        # `UserProfile.role` is a label. Membership is the fact.
+        outsider = _m7_user('rolsuelto')
+        UserProfile.objects.update_or_create(
+            user=outsider, defaults={'role': 'technician'},
+        )
+        self.assertNotIn(outsider, list(_m8_service.eligible_technicians(self.company)))
+
+    def test_reassignment_closes_the_previous_row_and_keeps_it(self):
+        order = self.make_order()
+        first = _m8_service.assign_technician(
+            repair_order=order, technician=self.tech, actor=self.staff,
+        )
+        second = _m8_service.assign_technician(
+            repair_order=order, technician=self.staff, actor=self.staff,
+        )
+
+        first.refresh_from_db()
+        self.assertIsNotNone(first.unassigned_at)
+        self.assertIsNone(second.unassigned_at)
+        self.assertEqual(order.assignments.count(), 2)
+
+    def test_only_one_assignment_is_open_at_a_time(self):
+        order = self.make_order()
+        _m8_service.assign_technician(
+            repair_order=order, technician=self.tech, actor=self.staff,
+        )
+        _m8_service.assign_technician(
+            repair_order=order, technician=self.staff, actor=self.staff,
+        )
+        self.assertEqual(
+            _M8Assignment.objects.filter(
+                repair_order=order, unassigned_at__isnull=True,
+            ).count(),
+            1,
+        )
+
+    def test_assigning_the_same_person_twice_is_a_no_op(self):
+        order = self.make_order()
+        first = _m8_service.assign_technician(
+            repair_order=order, technician=self.tech, actor=self.staff,
+        )
+        again = _m8_service.assign_technician(
+            repair_order=order, technician=self.tech, actor=self.staff,
+        )
+        self.assertEqual(first.pk, again.pk)
+        self.assertEqual(order.assignments.count(), 1)
+
+    def test_releasing_leaves_the_history_behind(self):
+        order = self.make_order()
+        _m8_service.assign_technician(
+            repair_order=order, technician=self.tech, actor=self.staff,
+        )
+        _m8_service.unassign_technician(repair_order=order, actor=self.staff)
+        self.assertEqual(order.assignments.count(), 1)
+        self.assertIsNone(order.current_assignment)
+
+    def test_there_is_no_current_technician_column_to_drift(self):
+        fields = {f.name for f in _M8RepairOrder._meta.get_fields()}
+        self.assertNotIn('current_technician', fields)
+        self.assertNotIn('technician', fields)
+
+
+class M8InternalAccessTest(M8ServiceBase):
+    """Gate 1 — belonging. Everything that is not membership answers 404."""
+
+    def test_anonymous_gets_401(self):
+        self.assertEqual(APIClient().get(_m8_url('m8-taller', 'orders/')).status_code, 401)
+
+    def test_a_member_without_capability_gets_403_not_404(self):
+        # The server has already admitted the company exists and this person
+        # works there; hiding the reason protects nothing.
+        self.assertEqual(self.client.get(_m8_url('m8-taller', 'orders/')).status_code, 403)
+
+    def test_a_foreign_tenant_is_404(self):
+        self.full_service_role()
+        self.assertEqual(self.client.get(_m8_url('m8-otra', 'orders/')).status_code, 404)
+
+    def test_an_unknown_tenant_is_the_same_404(self):
+        self.full_service_role()
+        self.assertEqual(self.client.get(_m8_url('no-existe', 'orders/')).status_code, 404)
+
+    def test_a_customer_relation_does_not_open_the_service_area(self):
+        # Buying from a business, or leaving a device with it, is not working
+        # for it.
+        client = _m7_login('cliente_m8')
+        self.assertEqual(client.get(_m8_url('m8-taller', 'orders/')).status_code, 404)
+
+    def test_an_inactive_membership_closes_the_door(self):
+        self.full_service_role()
+        Membership.objects.filter(user=self.staff, company=self.company).update(is_active=False)
+        client = _m7_login('recepcion')
+        self.assertEqual(client.get(_m8_url('m8-taller', 'orders/')).status_code, 404)
+
+    def test_an_inactive_company_closes_the_door(self):
+        self.full_service_role()
+        Company.objects.filter(pk=self.company.pk).update(is_active=False)
+        self.assertEqual(self.client.get(_m8_url('m8-taller', 'orders/')).status_code, 404)
+
+    def test_every_service_view_declares_bearer_explicitly(self):
+        from .v1_authentication import V1BearerAuthentication
+        from .v1_service_views import (
+            V1ServiceContextView, V1ServiceCustomerSearchView,
+            V1ServiceDeviceDetailView, V1ServiceDeviceListView,
+            V1ServiceOrderAssignmentView, V1ServiceOrderDetailView,
+            V1ServiceOrderHistoryView, V1ServiceOrderListView,
+            V1ServiceOrderTransitionView,
+        )
+
+        for view in (
+            V1ServiceContextView, V1ServiceCustomerSearchView,
+            V1ServiceDeviceDetailView, V1ServiceDeviceListView,
+            V1ServiceOrderAssignmentView, V1ServiceOrderDetailView,
+            V1ServiceOrderHistoryView, V1ServiceOrderListView,
+            V1ServiceOrderTransitionView,
+        ):
+            self.assertEqual(view.authentication_classes, [V1BearerAuthentication], view)
+
+
+class M8InternalCapabilityTest(M8ServiceBase):
+    """Gate 2 — permission. Each action names the narrowest code that fits."""
+
+    def test_orders_view_opens_the_list_and_nothing_else(self):
+        client = self.with_capabilities('service.orders.view')
+        self.assertEqual(client.get(_m8_url('m8-taller', 'orders/')).status_code, 200)
+        self.assertEqual(client.get(_m8_url('m8-taller', 'devices/')).status_code, 403)
+
+    def test_viewing_orders_does_not_allow_creating_one(self):
+        client = self.with_capabilities('service.orders.view')
+        response = client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.customer.pk,
+            'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk,
+            'reported_issue': 'No enciende.',
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
+
+    def test_creating_an_order_does_not_allow_moving_one(self):
+        order = self.make_order()
+        client = self.with_capabilities('service.orders.view', 'service.orders.create')
+        response = client.post(
+            _m8_url('m8-taller', f'orders/{order.pk}/transition/'),
+            {'status': _M8Status.DIAGNOSING}, format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_viewing_devices_does_not_allow_registering_one(self):
+        client = self.with_capabilities('service.devices.view')
+        response = client.post(_m8_url('m8-taller', 'devices/'), {
+            'customer_id': self.customer.pk, 'device_type': 'phone',
+            'brand': 'G', 'model': 'Z',
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
+
+    def test_the_customer_search_needs_the_crm_read_capability(self):
+        client = self.with_capabilities('service.orders.view')
+        self.assertEqual(client.get(_m8_url('m8-taller', 'customers/')).status_code, 403)
+
+    def test_a_legacy_role_alone_authorises_nothing(self):
+        # `role='technician'` is the membership's legacy label. The catalogue,
+        # not the label, decides.
+        self.assertEqual(self.membership.role, 'technician')
+        self.assertEqual(self.client.get(_m8_url('m8-taller', 'orders/')).status_code, 403)
+
+    def test_a_custom_role_works_exactly_as_a_preset_would(self):
+        client = self.with_capabilities('service.orders.view', slug='rol-inventado')
+        self.assertEqual(client.get(_m8_url('m8-taller', 'orders/')).status_code, 200)
+
+    def test_revoking_takes_effect_on_the_next_request(self):
+        client = self.full_service_role()
+        self.assertEqual(client.get(_m8_url('m8-taller', 'orders/')).status_code, 200)
+
+        CompanyRole.objects.filter(company=self.company, slug='m8-rol').update(
+            capabilities=[],
+        )
+        # Same token, same client. Capabilities are re-resolved per request.
+        self.assertEqual(client.get(_m8_url('m8-taller', 'orders/')).status_code, 403)
+
+
+class M8BranchScopeTest(M8ServiceBase):
+    """The third gate: which shop received the device."""
+
+    def setUp(self):
+        super().setUp()
+        self.order_a = self.make_order(branch=self.branch_a)
+        self.order_b = self.make_order(branch=self.branch_b)
+
+    def test_a_member_of_every_branch_sees_every_order(self):
+        client = self.full_service_role()
+        numbers = {
+            row['number'] for row in
+            client.get(_m8_url('m8-taller', 'orders/')).json()['results']
+        }
+        self.assertEqual(numbers, {self.order_a.number, self.order_b.number})
+
+    def test_a_restricted_member_sees_only_their_shop(self):
+        self.full_service_role()
+        client = self.restrict_to_branch_a()
+        numbers = {
+            row['number'] for row in
+            client.get(_m8_url('m8-taller', 'orders/')).json()['results']
+        }
+        self.assertEqual(numbers, {self.order_a.number})
+
+    def test_an_order_in_another_shop_is_NOT_FOUND_not_forbidden(self):
+        # A 403 would confirm the order exists. Order numbers are short enough
+        # to guess, and a shop map is business information a role does not grant.
+        self.full_service_role()
+        client = self.restrict_to_branch_a()
+        self.assertEqual(
+            client.get(_m8_url('m8-taller', f'orders/{self.order_b.pk}/')).status_code, 404,
+        )
+
+    def test_a_branch_outside_the_grant_is_404_as_a_filter_too(self):
+        self.full_service_role()
+        client = self.restrict_to_branch_a()
+        response = client.get(
+            f"{_m8_url('m8-taller', 'orders/')}?branch_id={self.branch_b.pk}",
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_intake_into_a_branch_outside_the_grant_is_refused(self):
+        self.full_service_role()
+        client = self.restrict_to_branch_a()
+        response = client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.customer.pk,
+            'device_id': self.device.pk,
+            'branch_id': self.branch_b.pk,
+            'reported_issue': 'No enciende.',
+        }, format='json')
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_member_with_no_branches_reads_an_empty_list_not_an_error(self):
+        # `SELECTED` with zero grants is a legitimate state of the company.
+        self.full_service_role()
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        client = _m7_login('recepcion')
+
+        response = client.get(_m8_url('m8-taller', 'orders/'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 0)
+
+    def test_the_context_offers_only_the_branches_the_member_may_use(self):
+        self.full_service_role()
+        client = self.restrict_to_branch_a()
+        payload = client.get(_m8_url('m8-taller', 'context/')).json()
+        self.assertEqual(
+            [b['id'] for b in payload['available_branches']], [self.branch_a.pk],
+        )
+
+
+class M8IntakeApiTest(M8ServiceBase):
+    """Receiving a device over HTTP."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.full_service_role()
+
+    def test_intake_creates_the_order_the_server_describes(self):
+        response = self.client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.customer.pk,
+            'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk,
+            'reported_issue': 'Pantalla rota.',
+            'physical_condition': 'Rayones en la tapa.',
+            'received_accessories': 'Cargador.',
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertTrue(body['number'].startswith('SRV-'))
+        self.assertEqual(body['status'], _M8Status.RECEIVED)
+        self.assertEqual(len(body['history']), 1)
+
+    def test_the_client_cannot_choose_the_status(self):
+        response = self.client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.customer.pk,
+            'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk,
+            'reported_issue': 'X.',
+            'status': _M8Status.WAITING_APPROVAL,
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['status'], _M8Status.RECEIVED)
+
+    def test_the_client_cannot_choose_the_number(self):
+        response = self.client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.customer.pk,
+            'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk,
+            'reported_issue': 'X.',
+            'number': 'ELEGIDO-1',
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertNotEqual(response.json()['number'], 'ELEGIDO-1')
+
+    def test_the_client_cannot_choose_the_company(self):
+        response = self.client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.customer.pk,
+            'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk,
+            'reported_issue': 'X.',
+            'company': self.other.pk,
+            'company_id': self.other.pk,
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            _M8RepairOrder.objects.get(pk=response.json()['id']).company_id,
+            self.company.pk,
+        )
+
+    def test_received_by_is_the_authenticated_user(self):
+        response = self.client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.customer.pk,
+            'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk,
+            'reported_issue': 'X.',
+            'received_by': 999999,
+        }, format='json')
+        order = _M8RepairOrder.objects.get(pk=response.json()['id'])
+        self.assertEqual(order.received_by_id, self.staff.pk)
+
+    def test_a_device_from_another_tenant_is_not_found(self):
+        response = self.client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.customer.pk,
+            'device_id': self.foreign_device.pk,
+            'branch_id': self.branch_a.pk,
+            'reported_issue': 'X.',
+        }, format='json')
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_customer_from_another_tenant_is_not_found(self):
+        response = self.client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.foreign_customer.pk,
+            'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk,
+            'reported_issue': 'X.',
+        }, format='json')
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_device_belonging_to_another_client_is_a_domain_error(self):
+        stray = _M8Device.objects.create(
+            company=self.company, customer=self.other_customer, brand='G', model='Z',
+        )
+        response = self.client.post(_m8_url('m8-taller', 'orders/'), {
+            'customer_id': self.customer.pk,
+            'device_id': stray.pk,
+            'branch_id': self.branch_a.pk,
+            'reported_issue': 'X.',
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_registering_a_device_warns_about_a_possible_duplicate(self):
+        response = self.client.post(_m8_url('m8-taller', 'devices/'), {
+            'customer_id': self.other_customer.pk,
+            'device_type': 'phone', 'brand': 'Genérica', 'model': 'X100',
+            'serial_number': 'sn-0001',
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body['serial_number'], 'SN-0001')
+        self.assertEqual(len(body['possible_duplicates']), 1)
+
+    def test_the_device_payload_has_no_credential_field(self):
+        from .v1_service_serializers import V1ServiceDeviceCreateSerializer
+
+        declared = set(V1ServiceDeviceCreateSerializer().get_fields())
+        for forbidden in (
+            'password', 'pin', 'unlock_code', 'pattern', 'apple_id', 'icloud_password',
+        ):
+            self.assertNotIn(forbidden, declared, forbidden)
+
+
+class M8TransitionApiTest(M8ServiceBase):
+    """The server hands out the choices and re-checks the answer."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.full_service_role()
+        self.order = self.make_order()
+
+    def test_the_detail_carries_the_servers_own_transition_list(self):
+        body = self.client.get(_m8_url('m8-taller', f'orders/{self.order.pk}/')).json()
+        codes = [t['code'] for t in body['available_transitions']]
+        self.assertEqual(
+            set(codes), {_M8Status.DIAGNOSING, _M8Status.CANCELLED},
+        )
+
+    def test_the_offered_transitions_match_the_machine(self):
+        body = self.client.get(_m8_url('m8-taller', f'orders/{self.order.pk}/')).json()
+        self.assertEqual(
+            [t['code'] for t in body['available_transitions']],
+            _m8_service.available_transitions(self.order),
+        )
+
+    def test_an_offered_transition_succeeds_and_is_recorded(self):
+        response = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+            {'status': _M8Status.DIAGNOSING, 'comment': 'Al banco.'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], _M8Status.DIAGNOSING)
+        self.assertEqual(len(response.json()['history']), 2)
+
+    def test_a_transition_that_was_not_offered_is_refused(self):
+        response = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+            {'status': _M8Status.WAITING_APPROVAL}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_invented_status_is_refused(self):
+        response = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+            {'status': 'teletransportado'}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_the_actor_is_the_server_side_user(self):
+        self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+            {'status': _M8Status.DIAGNOSING, 'actor': 999999}, format='json',
+        )
+        last = self.order.status_history.order_by('-pk').first()
+        self.assertEqual(last.actor_id, self.staff.pk)
+
+    def test_the_history_endpoint_returns_the_internal_timeline(self):
+        self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+            {'status': _M8Status.DIAGNOSING, 'comment': 'Nota interna.'}, format='json',
+        )
+        body = self.client.get(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/history/'),
+        ).json()
+        self.assertEqual(body['count'], 2)
+        self.assertIn('Nota interna.', [e['comment'] for e in body['results']])
+
+    def test_labels_follow_the_company_and_the_code_does_not(self):
+        row = _M8StatusSetting.objects.get(company=self.company, code=_M8Status.RECEIVED)
+        row.label = 'En mostrador'
+        row.save(update_fields=['label'])
+
+        body = self.client.get(_m8_url('m8-taller', f'orders/{self.order.pk}/')).json()
+        self.assertEqual(body['status'], _M8Status.RECEIVED)
+        self.assertEqual(body['status_label'], 'En mostrador')
+
+
+class M8AssignmentApiTest(M8ServiceBase):
+    """Candidates come from the server, and only from this company."""
+
+    def setUp(self):
+        super().setUp()
+        self.tech = _m7_user('tecnico_api')
+        Membership.objects.create(user=self.tech, company=self.company, role='technician')
+        self.foreign_tech = _m7_user('tecnico_api_ajeno')
+        Membership.objects.create(
+            user=self.foreign_tech, company=self.other, role='technician',
+        )
+        self.client = self.full_service_role()
+        self.order = self.make_order()
+
+    def test_the_candidate_list_is_this_companys_staff(self):
+        body = self.client.get(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/assignment/'),
+        ).json()
+        ids = {c['id'] for c in body['candidates']}
+        self.assertIn(self.tech.pk, ids)
+        self.assertNotIn(self.foreign_tech.pk, ids)
+
+    def test_the_candidate_list_exposes_no_contact_details(self):
+        body = self.client.get(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/assignment/'),
+        ).json()
+        self.assertEqual(set(body['candidates'][0]), {'id', 'name'})
+        self.assertNotIn('@', json.dumps(body['candidates']))
+
+    def test_assigning_a_candidate_succeeds(self):
+        response = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/assignment/'),
+            {'technician_id': self.tech.pk}, format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()['technician_name'], self.tech.get_full_name() or self.tech.username,
+        )
+
+    def test_a_technician_of_another_company_is_not_found(self):
+        response = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/assignment/'),
+            {'technician_id': self.foreign_tech.pk}, format='json',
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_releasing_the_order_clears_the_current_technician(self):
+        self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/assignment/'),
+            {'technician_id': self.tech.pk}, format='json',
+        )
+        response = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/assignment/'),
+            {'technician_id': None}, format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['technician_name'], '')
+
+    def test_assignment_needs_the_manage_capability(self):
+        # Narrowed rather than stacked: capabilities are the UNION of the roles
+        # a membership holds, so granting a read-only role on top of a full one
+        # would prove nothing.
+        CompanyRole.objects.filter(company=self.company, slug='m8-rol').update(
+            capabilities=['service.orders.view'],
+        )
+        client = _m7_login('recepcion')
+
+        self.assertEqual(
+            client.get(
+                _m8_url('m8-taller', f'orders/{self.order.pk}/assignment/'),
+            ).status_code,
+            403,
+        )
+
+
+class M8CustomerRepairsTest(M8ServiceBase):
+    """A client reads their own repairs, and only theirs."""
+
+    def setUp(self):
+        super().setUp()
+        self.mine = self.make_order()
+        self.other_device = _M8Device.objects.create(
+            company=self.company, customer=self.other_customer,
+            brand='Genérica', model='Y200',
+        )
+        self.not_mine = self.make_order(
+            customer=self.other_customer, device=self.other_device,
+        )
+        self.foreign_order = _m8_service.create_repair_order(
+            company=self.other, branch=self.foreign_branch,
+            customer=self.foreign_customer, device=self.foreign_device,
+            reported_issue='Otra empresa.',
+        )
+        self.client = _m7_login('cliente_m8')
+
+    def test_anonymous_gets_401(self):
+        self.assertEqual(APIClient().get(_m8_customer_url('m8-taller')).status_code, 401)
+
+    def test_a_client_sees_their_own_repairs(self):
+        body = self.client.get(_m8_customer_url('m8-taller')).json()
+        self.assertEqual([row['number'] for row in body], [self.mine.number])
+
+    def test_a_client_does_not_see_another_clients_repair(self):
+        response = self.client.get(_m8_customer_url('m8-taller', f'{self.not_mine.pk}/'))
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_client_of_one_tenant_cannot_read_another(self):
+        response = self.client.get(_m8_customer_url('m8-otra'))
+        self.assertEqual(response.status_code, 404)
+
+    def test_being_staff_does_not_grant_customer_access(self):
+        # A staff member with no Customer record here is not a client here.
+        self.full_service_role()
+        staff_client = _m7_login('recepcion')
+        self.assertEqual(
+            staff_client.get(_m8_customer_url('m8-taller')).status_code, 404,
+        )
+
+    def test_a_person_who_is_both_sees_only_their_own_on_this_surface(self):
+        # The employee who also leaves a device at the shop they work in.
+        _v1_customer(self.company, self.staff, first_name='Recepción')
+        self.full_service_role()
+        dual = _m7_login('recepcion')
+
+        body = dual.get(_m8_customer_url('m8-taller')).json()
+        self.assertEqual(body, [])
+        # ...while the internal surface still shows the company's orders.
+        internal = dual.get(_m8_url('m8-taller', 'orders/')).json()
+        self.assertEqual(internal['count'], 2)
+
+    def test_ownership_is_the_foreign_key_and_not_the_email(self):
+        # Same email, no Customer link. A household shares an address and often
+        # an inbox; matching on one would hand over somebody else's device.
+        impostor = User.objects.create_user(
+            username='homonimo', email=self.client_user.email or 'x@example.com',
+            password='Pass123!',
+        )
+        _v1_customer(self.company, impostor, first_name='Homónimo')
+        client = APIClient()
+        token = client.post(
+            '/api/v1/auth/login/',
+            {'email': 'homonimo@example.com', 'password': 'Pass123!'},
+            format='json',
+        )
+        # The fixture user has no distinct email; the point is structural and is
+        # asserted directly on the ownership helper instead.
+        del token
+        owned = _m8_service.customer_owned_repair_orders(impostor, self.company)
+        self.assertEqual(list(owned), [])
+
+    def test_the_customer_payload_hides_everything_internal(self):
+        _m8_service.transition_repair_order(
+            repair_order=self.mine, to_status=_M8Status.DIAGNOSING,
+            actor=self.staff, comment='Placa con corrosión; no decírselo aún.',
+        )
+        body = self.client.get(_m8_customer_url('m8-taller', f'{self.mine.pk}/')).json()
+        raw = json.dumps(body, ensure_ascii=False)
+
+        for leaked in (
+            'internal_notes', 'physical_condition', 'received_accessories',
+            'assignments', 'available_transitions', 'branch', 'received_by',
+        ):
+            self.assertNotIn(leaked, body, leaked)
+        self.assertNotIn('corrosión', raw)
+        self.assertNotIn('comment', raw)
+
+    def test_the_customer_timeline_shows_only_visible_events(self):
+        setting = _M8StatusSetting.objects.get(
+            company=self.company, code=_M8Status.DIAGNOSING,
+        )
+        setting.is_customer_visible = False
+        setting.save(update_fields=['is_customer_visible'])
+
+        _m8_service.transition_repair_order(
+            repair_order=self.mine, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+
+        body = self.client.get(_m8_customer_url('m8-taller', f'{self.mine.pk}/')).json()
+        self.assertEqual(
+            [event['status'] for event in body['timeline']], [_M8Status.RECEIVED],
+        )
+
+    def test_a_hidden_event_never_reaches_the_client_at_all(self):
+        # Filtered on the SERVER. The app receives no hidden event to
+        # accidentally render, which is stronger than asking it not to.
+        setting = _M8StatusSetting.objects.get(
+            company=self.company, code=_M8Status.CANCELLED,
+        )
+        setting.is_customer_visible = False
+        setting.save(update_fields=['is_customer_visible'])
+
+        _m8_service.transition_repair_order(
+            repair_order=self.mine, to_status=_M8Status.CANCELLED,
+            actor=self.staff, comment='Cliente no responde.',
+        )
+        raw = json.dumps(
+            self.client.get(_m8_customer_url('m8-taller', f'{self.mine.pk}/')).json(),
+            ensure_ascii=False,
+        )
+        self.assertNotIn('Cliente no responde', raw)
+
+    def test_no_technician_identity_reaches_the_client(self):
+        tech = _m7_user('tecnico_privado')
+        Membership.objects.create(user=tech, company=self.company, role='technician')
+        _m8_service.assign_technician(
+            repair_order=self.mine, technician=tech, actor=self.staff,
+        )
+        raw = json.dumps(
+            self.client.get(_m8_customer_url('m8-taller', f'{self.mine.pk}/')).json(),
+            ensure_ascii=False,
+        )
+        self.assertNotIn('tecnico_privado', raw)
+        self.assertNotIn('@', raw)
+
+    def test_the_client_sees_the_tenants_own_wording(self):
+        row = _M8StatusSetting.objects.get(company=self.company, code=_M8Status.RECEIVED)
+        row.label = 'En mostrador'
+        row.save(update_fields=['label'])
+
+        body = self.client.get(_m8_customer_url('m8-taller', f'{self.mine.pk}/')).json()
+        self.assertEqual(body['status_label'], 'En mostrador')
+
+    def test_the_customer_surface_is_read_only(self):
+        response = self.client.post(
+            _m8_customer_url('m8-taller'), {'reported_issue': 'X'}, format='json',
+        )
+        self.assertIn(response.status_code, (403, 405))
+
+
+class M8EcommerceRegressionTest(M8ServiceBase):
+    """M8 must be invisible to the sales side."""
+
+    def test_the_order_model_kept_its_shape(self):
+        fields = {f.name for f in Order._meta.get_fields()}
+        for expected in ('status', 'fulfillment_status', 'total', 'company', 'user'):
+            self.assertIn(expected, fields, expected)
+        # Nothing about repairs leaked into the sale.
+        for absent in ('repair_order', 'device', 'repair'):
+            self.assertNotIn(absent, fields, absent)
+
+    def test_no_stock_moves_when_a_repair_is_received(self):
+        # Parts belong to a later phase. M8 must not touch inventory.
+        before = StockMovement.objects.count()
+        self.make_order()
+        self.assertEqual(StockMovement.objects.count(), before)
+
+    def test_the_sales_note_series_is_untouched_by_a_repair(self):
+        sales = InternalSequence.objects.get(
+            company=self.company, branch__isnull=True,
+            document_type=InternalSequence.DOCUMENT_SALES_NOTE,
+        )
+        before = sales.next_value
+        self.make_order()
+        sales.refresh_from_db()
+        self.assertEqual(sales.next_value, before)
+
+    def test_the_default_authentication_is_still_the_web_cookie(self):
+        from django.conf import settings
+
+        self.assertEqual(
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_the_service_module_never_reaches_the_legacy_admin_surface(self):
+        import ast
+        import inspect
+        import textwrap
+
+        from . import service_services, v1_service_serializers, v1_service_views
+
+        # RELATIVE imports only. `from rest_framework import serializers` is
+        # fine; `from .serializers import ...` would be the v1 surface reaching
+        # into the legacy web admin's modules, which is the thing being banned.
+        forbidden_local = {'admin_views', 'serializers', 'views', 'urls', 'admin'}
+
+        for module in (service_services, v1_service_views, v1_service_serializers):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(module)))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and (node.level or 0) > 0:
+                    self.assertNotIn(node.module, forbidden_local, module.__name__)
+                    for alias in node.names:
+                        self.assertNotIn(alias.name, forbidden_local, module.__name__)
+
+
+class M8StructuralTest(M8ServiceBase):
+    """Claims that must keep holding after somebody else edits this module."""
+
+    def test_the_view_never_writes_status_or_history_directly(self):
+        # The lock, the projection and the evidence belong to one function.
+        import ast
+        import inspect
+        import textwrap
+
+        from .v1_service_views import V1ServiceOrderTransitionView
+
+        # Docstrings out first: this view's prose explains what it delegates
+        # and names the very symbols the assertions forbid, so a raw text search
+        # would flag the explanation as the violation.
+        tree = ast.parse(textwrap.dedent(inspect.getsource(V1ServiceOrderTransitionView)))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if (node.body and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)):
+                node.body.pop(0)
+        code = ast.unparse(tree)
+
+        self.assertIn('transition_repair_order', code)
+        self.assertNotIn('RepairStatusHistory', code)
+        self.assertNotIn('.save(', code)
+
+    def test_there_is_no_transition_table_outside_the_service(self):
+        import ast
+        import inspect
+        import textwrap
+
+        from . import v1_service_serializers, v1_service_views
+
+        for module in (v1_service_views, v1_service_serializers):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(module)))
+            code = ast.unparse(tree)
+            self.assertNotIn('TRANSITIONS', code, module.__name__)
+
+    def test_the_customer_serializer_cannot_grow_an_internal_field(self):
+        from .v1_service_serializers import V1CustomerRepairDetailSerializer
+
+        declared = set(V1CustomerRepairDetailSerializer().get_fields())
+        for forbidden in (
+            'internal_notes', 'physical_condition', 'received_accessories',
+            'assignments', 'available_transitions', 'branch', 'received_by_name',
+            'history',
+        ):
+            self.assertNotIn(forbidden, declared, forbidden)
+
+    def test_transfers_quotes_and_diagnostics_are_not_exposed(self):
+        client = self.full_service_role()
+        for resource in ('quotes/', 'diagnostics/', 'parts/', 'warranties/', 'attachments/'):
+            self.assertEqual(
+                client.get(_m8_url('m8-taller', resource)).status_code, 404, resource,
+            )
+
+    def test_no_file_upload_field_was_introduced(self):
+        # DEC-016: the storage provider is undecided. Evidence photos wait for it.
+        from django.db import models
+
+        for model in (_M8Device, _M8RepairOrder, _M8History):
+            for field in model._meta.get_fields():
+                self.assertNotIsInstance(field, models.FileField, f'{model.__name__}.{field.name}')

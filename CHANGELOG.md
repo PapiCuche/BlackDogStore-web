@@ -9,6 +9,54 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Servicio técnico — núcleo multiempresa (M8 / BR-005A)
+
+**Estado: IMPLEMENTADO (núcleo).** Migraciones **0035–0037**. Aditiva.
+
+### Entregado
+
+- `Device` — el equipo de un cliente, reutilizable entre visitas
+- `RepairOrder` — una visita de un equipo al taller
+- `RepairStatusCode` (códigos estables) + `RepairStatusSetting` (etiqueta por empresa)
+- `RepairStatusHistory` — append-only, `save()` y `delete()` se niegan
+- `TechnicianAssignment` — historial de responsables, no una columna
+- `service_services.py` — la máquina de estados, el lock y el número
+- `/api/v1/internal/<slug>/service/…` — 9 endpoints
+- `/api/v1/customer/<slug>/repairs/` — lectura del cliente
+- 113 tests nuevos
+
+### Reglas
+
+- **Tres puertas**: pertenencia → 404; capability → 403; **sucursal → 404**.
+- El estado inicial, el número, la empresa y quién recibió el equipo los fija el
+  servidor. El payload no tiene campo para ninguno.
+- `RepairOrder.status` es una **proyección**; `RepairStatusHistory` es la
+  evidencia, y las dos se escriben en la misma transacción con la fila bloqueada.
+- La numeración **reutiliza `InternalSequence`** — no hay un segundo sistema.
+- El técnico debe tener `Membership` activa en la empresa. `UserProfile.role` no
+  autoriza nada.
+- El serializer de cliente y el interno son clases distintas, no una con un flag.
+
+### Capabilities
+
+Promovidas a **ACTIVE**: `service.devices.view`, `service.devices.manage`,
+`service.orders.view`, `service.orders.create`, `service.orders.manage`.
+Siguen **RESERVED**: `service.diagnostic.manage`, `service.repair.manage`,
+`service.quality.manage`. No se inventó ninguna capability nueva.
+
+### Lo que NO se implementó
+
+Diagnóstico, cotización, aprobación, ejecución, repuestos, control de calidad,
+garantía, evidencias fotográficas y el token público de seguimiento (BR-008).
+Cuatro estados, y la máquina se detiene en `waiting_approval` a propósito.
+
+### No tocado
+
+`Order`, `OrderItem`, carrito, checkout, Stripe, inventario, `/api/admin/`,
+cookie + CSRF.
+
+---
+
 ## API v1 — inventario interno (M7A)
 
 **Estado: IMPLEMENTADO.** Sin migraciones. Aditiva.

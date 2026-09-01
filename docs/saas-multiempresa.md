@@ -2001,9 +2001,9 @@ existiera, y hay tests de regresión que lo demuestran.
 | BR-007 | Superficie versionada `/api/v1/` | **PARCIAL** — existe el slice de catálogo; auth y superficie privada, PENDIENTE |
 | BR-001 | Contrato de autenticación nativo | `API_PENDING` |
 | BR-003 | `fulfillment_status` en pedidos | PENDIENTE |
-| BR-005 | Dominio de reparaciones | PENDIENTE — no existe `RepairOrder` |
+| BR-005 | Dominio de reparaciones | **PARCIAL** — núcleo en M8 (§ 8-tervicies) |
 | BR-006 | Endpoint público de marca | PENDIENTE |
-| BR-008 | Seguimiento seguro por enlace | `API_PENDING` — depende de BR-005 |
+| BR-008 | Seguimiento seguro por enlace | `API_PENDING` — `RepairOrder` ya existe; falta el token |
 
 ---
 
@@ -2500,7 +2500,7 @@ autoriza aún el RBAC legacy». `/api/v1/internal/` comprueba `has_capability` y
 decide de verdad lo que ocurre.
 
 `sales.notes.manage` **sigue AVAILABLE** precisamente porque M6 no construyó ese
-módulo. Las de servicio técnico **siguen RESERVED**: `RepairOrder` no existe, y
+módulo. Las de servicio técnico **seguían RESERVED** en M6: `RepairOrder` no existía, y
 no hay permisos falsos para funciones ausentes.
 
 ### Estado de los requerimientos
@@ -2510,7 +2510,7 @@ no hay permisos falsos para funciones ausentes.
 | BR-002 | **RESUELTO** para público, cliente e interno |
 | BR-007 | **PARCIAL** — catálogo, auth, cliente, checkout e interno de ventas |
 | Inventario interno v1 | **RESUELTO** (§ 8-duovicies) |
-| BR-005 servicio técnico | PENDIENTE |
+| BR-005 servicio técnico | **PARCIAL** — núcleo (§ 8-tervicies) |
 | BR-001B | PENDIENTE |
 
 ---
@@ -2604,6 +2604,167 @@ diferente. Se exponen cuando se diseñe el flujo, no antes.
   app lo presente como valor de costo.
 - **La restricción del rol `inventory` en fulfillment sigue en `UserProfile.role`**
   (heredada de M6). No se tocó aquí.
+
+---
+
+## 8-tervicies. Servicio técnico — núcleo (`/api/v1/internal/<slug>/service/`)
+
+**Estado: IMPLEMENTADO (núcleo).** Migraciones **0035–0037**. BR-005 pasa de
+PENDIENTE a **PARCIAL**.
+
+M6 anotó que el servicio técnico seguía RESERVED porque «`RepairOrder` no
+existe». Existe.
+
+### El alcance, y por qué se detiene donde se detiene
+
+M8 entrega lo que un taller necesita para **abrir el día**: registrar el equipo
+que entra, abrir su orden, moverla con historial, asignar responsable, verla
+desde dentro y dejar que el cliente consulte la suya.
+
+No entrega diagnóstico, cotización, aprobación, ejecución, repuestos, control de
+calidad, garantía ni evidencias. No es una lista de deseos recortada: cada una
+de esas cosas define un estado del ciclo de vida, y **un estado sin su módulo es
+un estado en el que ninguna línea de código puede actuar**. Por eso el ciclo de
+vida de M8 tiene cuatro estados y no trece.
+
+### Cinco modelos
+
+| Modelo | Qué es |
+|---|---|
+| `Device` | El equipo de un cliente. Se registra una vez y lo reutilizan todas sus visitas |
+| `RepairOrder` | **Una visita** de un equipo al taller |
+| `RepairStatusSetting` | Cómo **esta empresa** presenta un código del ciclo |
+| `RepairStatusHistory` | Append-only. `save()` de una fila existente y `delete()` se niegan |
+| `TechnicianAssignment` | Quién es responsable, y quién lo fue |
+
+### `RepairOrder` no es `Order`
+
+No hay herencia y no hay ForeignKey entre los dos, y eso es deliberado. Un
+`Order` es una **venta**: tiene carrito, total, estado de pago y sesión de
+Stripe. Una `RepairOrder` no tiene nada de eso — no se compra nada, y no hay
+precio hasta que alguien diagnostique y cotice, que es M9. Comparten una palabra
+en inglés y ningún campo. Un test estructural comprueba que ninguna FK de
+`RepairOrder` apunta a `Order`.
+
+### Códigos estables, etiquetas por empresa (DEC-014)
+
+`RepairStatusCode` es una `TextChoices` de la **plataforma**: `received`,
+`diagnosing`, `waiting_approval`, `cancelled`. Los reportes, la máquina y
+cualquier integración futura están escritos contra esas cadenas.
+
+`RepairStatusSetting` lleva lo que un tenant sí puede cambiar: **la etiqueta**,
+**si el cliente ve el evento** y **el orden**. No lleva un `is_active`, y esa
+ausencia es la decisión: desactivar `received` dejaría a las órdenes nuevas sin
+dónde nacer. Un tenant renombra «Recibido» a «En mostrador» y sus reportes
+siguen funcionando; lo que no puede es decidir qué significa `received`.
+
+### La proyección y la evidencia
+
+`RepairOrder.status` existe para que listar doscientas órdenes no necesite una
+subconsulta por fila. La **evidencia** es `RepairStatusHistory`.
+
+`service_services.transition_repair_order()` bloquea la fila con
+`select_for_update()`, escribe las dos en la misma transacción, y es el único
+escritor de ambas. Dos técnicos mirando la misma orden pulsan el mismo botón: sin
+el lock, los dos leen el mismo `from_status` y el historial acaba afirmando que
+pasaron dos cosas distintas desde un mismo estado. Con él, el segundo relee el
+estado del ganador y se le dice que su movimiento ya no es legal.
+
+El evento de **recepción** se escribe al crear la orden. Un historial que
+empezara en el primer cambio se saltaría el único hecho en el que todos están de
+acuerdo: el equipo llegó.
+
+### Tres puertas
+
+Las dos de M6 no cambian. La tercera es la **sucursal**, y responde **404** — no
+403 — igual que en M7A: un 403 confirmaría que la orden existe, y un número de
+orden es corto.
+
+### La numeración reutiliza `InternalSequence`
+
+No hay un segundo sistema de secuencias. `document_type` existía para esto desde
+2E, y la deuda registrada en el punto 44 ya autorizaba este camino.
+
+**Se corrigió un defecto latente al hacerlo.** `sequence_scope(company,
+document_type)` aceptaba `document_type` y lo ignoraba: devolvía siempre el
+scope de las notas de venta. Inofensivo con un solo tipo de documento; en cuanto
+llegó el segundo, habría numerado órdenes de servicio por sucursal porque alguien
+configuró así sus notas de venta. Ahora un tipo sin columna de scope propia
+numera a nivel de empresa, que es la respuesta conservadora.
+
+`SRV-` es el valor **semilla** que se escribe en la fila de cada empresa, no una
+constante que ninguna asignación lee. El tenant lo edita desde la pantalla de
+series que ya existía.
+
+### Capabilities
+
+Promovidas a **ACTIVE**: `service.devices.view`, `service.devices.manage`,
+`service.orders.view`, `service.orders.create`, `service.orders.manage`.
+
+**No se inventó ninguna.** Las cinco estaban en el catálogo, reservadas desde la
+Fase 2A. No se creó `service.orders.assign`: quien puede mover una orden a «en
+diagnóstico» es quien decide qué técnico la diagnostica, y separar las dos cosas
+sería inventar una distinción que el negocio no ha hecho.
+
+Siguen **RESERVED** `service.diagnostic.manage`, `service.repair.manage` y
+`service.quality.manage`, porque nombran módulos que nadie ha escrito.
+
+La migración **0037** clona el patrón de la 0033: concede las cinco a los roles
+`Administrador` cuyo conjunto de capacidades es **exactamente** el preset
+anterior. Igualdad exacta, en los dos sentidos. Un rol que el tenant editó es
+suyo, y una autoridad que llega porque se desplegó software no es una decisión
+que la empresa haya tomado.
+
+### El técnico
+
+`Membership` activa en la empresa. `UserProfile.role == 'technician'` **no**
+autoriza: es una etiqueta heredada, y hay un test que lo fija.
+
+`TechnicianAssignment` es una tabla y no una columna porque «quién la tiene» se
+responde igual con las dos, y «quién la tenía» solo con la tabla — y esa es la
+pregunta que importa cuando algo se hizo mal. Reasignar son dos filas: se cierra
+la abierta y se inserta otra. Una constraint parcial garantiza que solo haya una
+abierta.
+
+### Lo que el cliente ve, y lo que no
+
+Los serializers de cliente y los internos son **clases distintas**, no una clase
+con un flag. Un `if request.user.is_staff` dentro de un serializer está a un
+refactor de devolverle a un cliente la nota privada de un técnico, y el fallo es
+silencioso.
+
+El cliente recibe: número, estado, etiqueta del estado **de su empresa**, resumen
+del equipo, problema reportado, fecha y una línea de tiempo filtrada.
+
+No recibe: notas internas, condición física, accesorios, historial de
+asignaciones, nombre/correo/teléfono del técnico, sucursal, transiciones
+disponibles ni comentarios de ningún evento.
+
+`is_customer_visible` se **congela al escribir el evento**. Si una empresa cambia
+su política mañana, no revela ni oculta retroactivamente lo que un cliente ya vio.
+
+La propiedad es una **FK** (`Customer.user`). Nunca el email: una familia
+comparte dirección y a menudo bandeja de entrada.
+
+### Lo que NO se tocó
+
+`Order`, `OrderItem`, carrito, checkout, Stripe, inventario, `/api/admin/`,
+cookie + CSRF. M8 **no descuenta repuestos** y no vincula `RepairOrder` a
+`StockMovement`: eso es una fase posterior.
+
+### Deuda registrada
+
+- **Asimetría de presets.** Una empresa registrada mañana recibe un rol
+  `Servicio Técnico` que puede recibir equipos; una registrada el año pasado no,
+  porque 0037 solo toca `Administrador`. Es la misma decisión que tomó 0033 y por
+  la misma razón: reescribir una lista específica en una migración cambiaría lo
+  que los técnicos de un tenant pueden hacer sin que nadie lo decida. Se concede
+  con una casilla en un rol que ya es suyo.
+- **Sin evidencias fotográficas** (DEC-016): no hay proveedor de almacenamiento,
+  y no hay un solo `FileField` en el backend. Un test lo fija.
+- **Sin scope por sucursal para la serie de servicio.** Se numera por empresa.
+  Se añade cuando un negocio lo pida.
+- **BR-008 sigue `API_PENDING`.** Ahora tiene contra qué diseñarse.
 
 ---
 

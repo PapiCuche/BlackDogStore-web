@@ -286,6 +286,8 @@ Tercera audiencia, en su propio espacio de URL (**DEC-API-001**):
 |--------|----------|-------|
 | GET | `/api/v1/customer/<company_slug>/orders/` | Solo los pedidos del llamante |
 | GET | `/api/v1/customer/<company_slug>/orders/<id>/` | 404 si no es suyo |
+| GET | `/api/v1/customer/<company_slug>/repairs/` | Solo las reparaciones del llamante |
+| GET | `/api/v1/customer/<company_slug>/repairs/<id>/` | 404 si no es suya |
 
 **La propiedad son dos FKs**: `Order.user` (compró con sesión) o
 `Order.customer.user` (compra anónima que el negocio emparejó por documento con
@@ -360,6 +362,15 @@ Cuarta audiencia. Staff leyendo los registros de **la empresa**, bajo capability
 | GET | `/api/v1/internal/<slug>/inventory/stock/` | `inventory.view` |
 | GET | `/api/v1/internal/<slug>/inventory/movements/` | `inventory.view` |
 | POST | `/api/v1/internal/<slug>/inventory/adjustments/` | `inventory.adjust` |
+| GET | `/api/v1/internal/<slug>/service/context/` | `service.orders.view` |
+| GET | `/api/v1/internal/<slug>/service/customers/` | `service.customers.view` |
+| GET · POST | `/api/v1/internal/<slug>/service/devices/` | `service.devices.view` · `.manage` |
+| GET | `/api/v1/internal/<slug>/service/devices/<id>/` | `service.devices.view` |
+| GET · POST | `/api/v1/internal/<slug>/service/orders/` | `service.orders.view` · `.create` |
+| GET | `/api/v1/internal/<slug>/service/orders/<id>/` | `service.orders.view` |
+| GET | `/api/v1/internal/<slug>/service/orders/<id>/history/` | `service.orders.view` |
+| POST | `/api/v1/internal/<slug>/service/orders/<id>/transition/` | `service.orders.manage` |
+| GET · POST | `/api/v1/internal/<slug>/service/orders/<id>/assignment/` | `service.orders.manage` |
 
 **Dos puertas, y responden distinto.** Sin membresía activa → **404**,
 indistinguible de una empresa desconocida: otro código dejaría a cualquier login
