@@ -9,6 +9,47 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## API v1 — inventario interno (M7A)
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Aditiva.
+
+### Entregado
+
+- `GET /api/v1/internal/<slug>/inventory/summary/` — KPIs + `available_branches`
+- `GET /api/v1/internal/<slug>/inventory/stock/` — stock por sucursal, paginado
+- `GET /api/v1/internal/<slug>/inventory/movements/` — Kardex, paginado
+- `POST /api/v1/internal/<slug>/inventory/adjustments/` — entrada/salida manual
+- `v1_inventory_serializers.py` + `v1_inventory_views.py`, serializers propios
+  de la superficie interna
+- 62 tests nuevos
+
+### Reglas
+
+- **Tres puertas**: pertenencia → 404; capability → 403; **sucursal → 404**.
+- Un `branch_id` fuera del acceso del miembro es *no encontrado*, no *prohibido*:
+  un 403 confirmaría que esa sucursal existe.
+- Sin `branch_id` se agrega sobre las sucursales visibles; el conjunto vacío es
+  200 con cero filas, no un error.
+- El ajuste manda **intención** (producto, sucursal, tipo, cantidad positiva,
+  motivo). No existe campo de stock final.
+- Solo `StockMovement.MANUAL_TYPES`; `sale_exit` y las transferencias, fuera.
+- La vista **no escribe stock**: todo pasa por
+  `inventory_services.apply_manual_stock_movement()`, el mismo servicio del admin
+  web. Un test estructural sobre el AST lo vigila.
+- Transferencias y recuentos **no se exponen**: son flujos de varios pasos.
+
+### Capabilities
+
+Ninguna promovida. `inventory.view` e `inventory.adjust` ya eran **ACTIVE** desde
+la Fase 2D; M7A las consume.
+
+### No tocado
+
+`/api/admin/`, cookie + CSRF, Stripe, `inventory_services`, modelos, migraciones,
+catálogo público, cliente.
+
+---
+
 ## API v1 — superficie interna y pedidos de venta (M6)
 
 **Estado: IMPLEMENTADO.** Sin migraciones. Aditiva.

@@ -19978,3 +19978,674 @@ class M6CapabilityStatusTest(TestCase):
             '/api/v1/internal/m6-x/customers/',
         ):
             self.assertEqual(client.get(path).status_code, 404, path)
+
+
+# =============================================================================
+# M7A — INTERNAL INVENTORY: /api/v1/internal/<slug>/inventory/
+# =============================================================================
+#
+# The second internal module, and the point of the phase: proving the shape M6
+# established carries another one without being bent.
+#
+# Inventory adds a boundary sales orders do not have. Sales are tenant-scoped;
+# stock is tenant-scoped AND BRANCH-scoped, so most of what follows is about the
+# branch never widening by accident.
+
+from . import inventory_services  # noqa: E402
+from .models import MembershipBranchAccess as _M7BranchAccess  # noqa: E402
+
+
+def _m7_url(slug, resource):
+    return f'/api/v1/internal/{slug}/inventory/{resource}/'
+
+
+def _m7_user(username, password='Pass123!'):
+    return User.objects.create_user(
+        username=username, email=f'{username}@example.com', password=password,
+    )
+
+
+def _m7_login(username, password='Pass123!'):
+    client = APIClient()
+    token = client.post(
+        '/api/v1/auth/login/',
+        {'email': f'{username}@example.com', 'password': password},
+        format='json',
+    ).json()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {token['access']}")
+    return client
+
+
+def _m7_stock(branch, product, quantity, minimum=0):
+    row, _ = BranchStock.objects.get_or_create(branch=branch, product=product)
+    row.quantity = quantity
+    row.minimum_stock = minimum
+    row.save(update_fields=['quantity', 'minimum_stock'])
+    return row
+
+
+class M7InventoryBase(TestCase):
+    """
+    One company with TWO branches, and a member who may only see one.
+
+    The second branch is the whole point: almost every test below would pass
+    against a tenant-only implementation, and fail the moment stock is supposed
+    to stay inside a shop.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Inventario', 'm7-shop', tax_id='20800000001')
+        self.other = _saas_company('Ajena', 'm7-otra', tax_id='20800000002')
+
+        self.branch_a = self.company.branches.first() or _saas_branch(self.company, 'Centro')
+        self.branch_b = _saas_branch(self.company, 'Sucursal Norte')
+        self.foreign_branch = _saas_branch(self.other, 'Ajena')
+
+        self.product = _prod(self.company, 'iPhone 15', 'iphone-15-m7', price='4000.00')
+        self.other_product = _prod(self.company, 'Cargador', 'cargador-m7', price='100.00')
+        self.foreign_product = _prod(self.other, 'Ajeno', 'producto-ajeno-m7')
+
+        _m7_stock(self.branch_a, self.product, 10)
+        _m7_stock(self.branch_b, self.product, 3)
+        _m7_stock(self.branch_a, self.other_product, 0)
+        _m7_stock(self.foreign_branch, self.foreign_product, 99)
+
+        self.staff = _m7_user('almacenera')
+        self.membership = Membership.objects.create(
+            user=self.staff, company=self.company, role='inventory',
+        )
+        self.client = _m7_login('almacenera')
+
+    def restrict_to_branch_a(self):
+        """Give the member SELECTED access to branch A only, and re-login."""
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        _M7BranchAccess.objects.create(membership=self.membership, branch=self.branch_a)
+        return _m7_login('almacenera')
+
+    def with_capabilities(self, *capabilities, slug='m7-rol'):
+        role = _role(self.company, 'Rol M7', capabilities=list(capabilities), slug=slug)
+        _assign(self.membership, role)
+        return _m7_login('almacenera')
+
+
+class M7InventoryAccessTest(M7InventoryBase):
+    """Who reaches the inventory surface at all."""
+
+    def test_anonymous_is_401(self):
+        self.assertEqual(APIClient().get(_m7_url('m7-shop', 'summary')).status_code, 401)
+
+    def test_a_WEB_cookie_does_not_open_it(self):
+        web = APIClient()
+        web.post(
+            '/api/auth/login/', {'username': 'almacenera', 'password': 'Pass123!'},
+            format='json',
+        )
+
+        self.assertEqual(web.get(_m7_url('m7-shop', 'summary')).status_code, 401)
+
+    def test_a_member_with_inventory_view_gets_the_summary(self):
+        self.assertEqual(self.client.get(_m7_url('m7-shop', 'summary')).status_code, 200)
+
+    def test_a_CUSTOMER_ONLY_user_is_404(self):
+        buyer = _m7_user('compradora')
+        _v1_customer(self.company, buyer)
+        client = _m7_login('compradora')
+
+        self.assertEqual(client.get(_m7_url('m7-shop', 'summary')).status_code, 404)
+
+    def test_an_INACTIVE_membership_is_404(self):
+        Membership.objects.filter(pk=self.membership.pk).update(is_active=False)
+
+        self.assertEqual(self.client.get(_m7_url('m7-shop', 'summary')).status_code, 404)
+
+    def test_a_member_of_ANOTHER_company_is_404(self):
+        outsider = _m7_user('ajena')
+        Membership.objects.create(user=outsider, company=self.other, role='admin')
+        client = _m7_login('ajena')
+
+        self.assertEqual(client.get(_m7_url('m7-shop', 'summary')).status_code, 404)
+
+    def test_an_unknown_company_and_a_foreign_one_are_INDISTINGUISHABLE(self):
+        unknown = self.client.get(_m7_url('no-existe', 'summary'))
+        foreign = self.client.get(_m7_url('m7-otra', 'summary'))
+
+        self.assertEqual(unknown.status_code, foreign.status_code)
+        self.assertEqual(unknown.json(), foreign.json())
+
+    def test_the_LEGACY_BRIDGE_is_unreachable_from_v1(self):
+        # `visible_branches` still contains a legacy bridge that grants every
+        # branch to a membership-less operator on the pilot tenant. The v1
+        # surface never reaches it, because its FIRST gate demands an active
+        # membership — so the compatibility path survives for the web admin
+        # without widening anything here.
+        stranger = _m7_user('sin-membresia')
+        client = _m7_login('sin-membresia')
+
+        self.assertEqual(client.get(_m7_url('m7-shop', 'summary')).status_code, 404)
+        self.assertEqual(client.get(_m7_url('m7-shop', 'stock')).status_code, 404)
+
+
+class M7InventoryCapabilityTest(M7InventoryBase):
+    """`view` reads, `adjust` writes, and neither implies the other."""
+
+    def test_without_inventory_view_reading_is_403(self):
+        client = self.with_capabilities('company.view')
+
+        self.assertEqual(client.get(_m7_url('m7-shop', 'summary')).status_code, 403)
+        self.assertEqual(client.get(_m7_url('m7-shop', 'stock')).status_code, 403)
+        self.assertEqual(client.get(_m7_url('m7-shop', 'movements')).status_code, 403)
+
+    def test_view_alone_CANNOT_adjust(self):
+        client = self.with_capabilities('inventory.view')
+
+        response = client.post(
+            _m7_url('m7-shop', 'adjustments'),
+            {
+                'product_slug': 'iphone-15-m7', 'branch_id': self.branch_a.id,
+                'movement_type': 'manual_entry', 'quantity': 5, 'reason': 'prueba',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_adjust_can_write(self):
+        client = self.with_capabilities('inventory.view', 'inventory.adjust')
+
+        response = client.post(
+            _m7_url('m7-shop', 'adjustments'),
+            {
+                'product_slug': 'iphone-15-m7', 'branch_id': self.branch_a.id,
+                'movement_type': 'manual_entry', 'quantity': 5, 'reason': 'reposición',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+    def test_a_CUSTOM_role_restricts_for_real(self):
+        # Once a company models someone with custom roles, the legacy matrix is
+        # not consulted — restricting them actually restricts them.
+        client = self.with_capabilities('inventory.view')
+
+        self.assertEqual(client.get(_m7_url('m7-shop', 'stock')).status_code, 200)
+        self.assertEqual(
+            client.post(_m7_url('m7-shop', 'adjustments'), {}, format='json').status_code, 403,
+        )
+
+    def test_the_v1_surface_never_consults_the_legacy_ROLE(self):
+        # A `sales` UserProfile role with an inventory capability must read
+        # stock, and an `inventory` role without the capability must not.
+        profile, _ = UserProfile.objects.get_or_create(user=self.staff)
+        profile.role = UserProfile.ROLE_SALES
+        profile.save(update_fields=['role'])
+        client = self.with_capabilities('inventory.view')
+
+        self.assertEqual(client.get(_m7_url('m7-shop', 'stock')).status_code, 200)
+
+
+class M7InventoryBranchScopeTest(M7InventoryBase):
+    """The boundary sales orders do not have."""
+
+    def test_a_member_with_ALL_access_sees_every_branch(self):
+        rows = self.client.get(_m7_url('m7-shop', 'stock')).json()['results']
+
+        self.assertEqual(
+            {row['branch_name'] for row in rows},
+            {self.branch_a.name, self.branch_b.name},
+        )
+
+    def test_SELECTED_access_hides_the_other_branch(self):
+        client = self.restrict_to_branch_a()
+
+        rows = client.get(_m7_url('m7-shop', 'stock')).json()['results']
+
+        self.assertEqual({row['branch_name'] for row in rows}, {self.branch_a.name})
+
+    def test_asking_for_a_branch_they_may_NOT_see_is_404(self):
+        # 404 rather than 403: a 403 would confirm the branch is real and
+        # belongs to some company, which is the shape of a cross-tenant probe.
+        client = self.restrict_to_branch_a()
+
+        response = client.get(f"{_m7_url('m7-shop', 'stock')}?branch_id={self.branch_b.id}")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_branch_of_ANOTHER_company_is_404(self):
+        response = self.client.get(
+            f"{_m7_url('m7-shop', 'stock')}?branch_id={self.foreign_branch.id}",
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_nonsense_branch_id_is_404_not_500(self):
+        response = self.client.get(f"{_m7_url('m7-shop', 'stock')}?branch_id=abc")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_SELECTED_with_no_grants_reaches_nothing(self):
+        # A valid state — a member not yet placed anywhere — and it denies.
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        client = _m7_login('almacenera')
+
+        rows = client.get(_m7_url('m7-shop', 'stock')).json()
+
+        self.assertEqual(rows['count'], 0)
+
+    def test_the_summary_reports_only_the_branches_they_may_see(self):
+        client = self.restrict_to_branch_a()
+
+        summary = client.get(_m7_url('m7-shop', 'summary')).json()
+
+        self.assertEqual(
+            {b['name'] for b in summary['available_branches']}, {self.branch_a.name},
+        )
+
+    def test_movements_stay_inside_the_allowed_branches(self):
+        inventory_services.apply_manual_stock_movement(
+            branch=self.branch_b, product_id=self.product.pk,
+            movement_type='manual_entry', quantity=2, reason='en la otra',
+            actor=self.staff,
+        )
+        client = self.restrict_to_branch_a()
+
+        rows = client.get(_m7_url('m7-shop', 'movements')).json()['results']
+
+        self.assertNotIn(self.branch_b.name, {row['branch_name'] for row in rows})
+
+    def test_an_adjustment_on_a_forbidden_branch_is_404(self):
+        client = self.restrict_to_branch_a()
+        role = _role(
+            self.company, 'Ajustes', capabilities=['inventory.view', 'inventory.adjust'],
+            slug='ajustes-m7',
+        )
+        _assign(self.membership, role)
+        client = _m7_login('almacenera')
+
+        response = client.post(
+            _m7_url('m7-shop', 'adjustments'),
+            {
+                'product_slug': 'iphone-15-m7', 'branch_id': self.branch_b.id,
+                'movement_type': 'manual_entry', 'quantity': 1, 'reason': 'no debería',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(BranchStock.objects.get(branch=self.branch_b, product=self.product).quantity, 3)
+
+
+class M7InventoryStockTest(M7InventoryBase):
+    """What the stock list reports."""
+
+    def test_it_reports_quantities_per_branch(self):
+        rows = self.client.get(_m7_url('m7-shop', 'stock')).json()['results']
+        by_branch = {
+            row['branch_name']: row['quantity']
+            for row in rows if row['product_slug'] == 'iphone-15-m7'
+        }
+
+        self.assertEqual(by_branch[self.branch_a.name], 10)
+        self.assertEqual(by_branch[self.branch_b.name], 3)
+
+    def test_out_of_stock_is_flagged(self):
+        rows = self.client.get(_m7_url('m7-shop', 'stock')).json()['results']
+        row = next(r for r in rows if r['product_slug'] == 'cargador-m7')
+
+        self.assertTrue(row['is_out_of_stock'])
+        self.assertFalse(row['is_low_stock'])
+
+    def test_low_stock_uses_the_PER_ROW_minimum_when_set(self):
+        # A charger running low at 20 downtown is fully stocked at 3 in a
+        # satellite shop; one company-wide number cannot say that.
+        _m7_stock(self.branch_a, self.product, 10, minimum=20)
+
+        rows = self.client.get(_m7_url('m7-shop', 'stock')).json()['results']
+        row = next(
+            r for r in rows
+            if r['product_slug'] == 'iphone-15-m7' and r['branch_name'] == self.branch_a.name
+        )
+
+        self.assertTrue(row['is_low_stock'])
+
+    def test_the_serializer_agrees_with_the_QUERY_filter(self):
+        # The flag is computed per instance and the filter is a Q object; they
+        # restate the same rule and must not drift.
+        _m7_stock(self.branch_b, self.product, 2)
+
+        flagged = {
+            r['id'] for r in self.client.get(_m7_url('m7-shop', 'stock')).json()['results']
+            if r['is_low_stock']
+        }
+        filtered_ids = {
+            r['id'] for r in
+            self.client.get(f"{_m7_url('m7-shop', 'stock')}?low_stock=true").json()['results']
+        }
+
+        self.assertEqual(flagged, filtered_ids)
+
+    def test_search_stays_inside_the_company(self):
+        rows = self.client.get(f"{_m7_url('m7-shop', 'stock')}?search=Ajeno").json()
+
+        self.assertEqual(rows['count'], 0)
+
+    def test_it_exposes_NO_cost_or_supplier(self):
+        # There is no cost model in the system. A field claiming to be one would
+        # be a number with a false name on it.
+        body = self.client.get(_m7_url('m7-shop', 'stock')).content.decode().lower()
+
+        for absent in ('cost', 'costo', 'supplier', 'proveedor', 'margin', 'margen'):
+            self.assertNotIn(absent, body)
+
+    def test_it_is_paginated(self):
+        page = self.client.get(f"{_m7_url('m7-shop', 'stock')}?page_size=1").json()
+
+        self.assertEqual(page['page_size'], 1)
+        self.assertEqual(len(page['results']), 1)
+
+    def test_the_page_size_is_capped(self):
+        page = self.client.get(f"{_m7_url('m7-shop', 'stock')}?page_size=100000").json()
+
+        self.assertLessEqual(page['page_size'], 100)
+
+
+class M7InventorySummaryTest(M7InventoryBase):
+    """The counters, and their honesty."""
+
+    def test_it_reports_units_and_counts(self):
+        summary = self.client.get(_m7_url('m7-shop', 'summary')).json()
+
+        self.assertEqual(summary['total_units'], 13)
+        self.assertGreaterEqual(summary['out_of_stock_count'], 1)
+
+    def test_it_LABELS_the_valuation_basis(self):
+        # Stock × sale price is not capital invested, and the payload says so
+        # rather than letting a screen guess.
+        summary = self.client.get(_m7_url('m7-shop', 'summary')).json()
+
+        self.assertEqual(summary['inventory_value_basis'], 'sale_price')
+
+    def test_it_narrows_to_a_selected_branch(self):
+        summary = self.client.get(
+            f"{_m7_url('m7-shop', 'summary')}?branch_id={self.branch_a.id}",
+        ).json()
+
+        self.assertEqual(summary['total_units'], 10)
+        self.assertEqual(summary['branch']['name'], self.branch_a.name)
+
+    def test_it_lists_the_branches_the_app_may_offer(self):
+        summary = self.client.get(_m7_url('m7-shop', 'summary')).json()
+
+        self.assertEqual(len(summary['available_branches']), 2)
+
+    def test_another_company_contributes_NOTHING(self):
+        _m7_stock(self.foreign_branch, self.foreign_product, 500)
+
+        summary = self.client.get(_m7_url('m7-shop', 'summary')).json()
+
+        self.assertEqual(summary['total_units'], 13)
+
+
+class M7InventoryAdjustmentTest(M7InventoryBase):
+    """Moving stock through the domain service, never around it."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.with_capabilities('inventory.view', 'inventory.adjust')
+
+    def _adjust(self, **overrides):
+        body = {
+            'product_slug': 'iphone-15-m7',
+            'branch_id': self.branch_a.id,
+            'movement_type': 'manual_entry',
+            'quantity': 5,
+            'reason': 'reposición',
+        }
+        body.update(overrides)
+        return self.client.post(_m7_url('m7-shop', 'adjustments'), body, format='json')
+
+    def test_an_entry_increases_stock_ONCE(self):
+        response = self._adjust()
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch_a, product=self.product).quantity, 15,
+        )
+
+    def test_it_creates_a_StockMovement_with_before_and_after(self):
+        self._adjust()
+
+        movement = StockMovement.objects.filter(
+            branch=self.branch_a, product=self.product, movement_type='manual_entry',
+        ).latest('id')
+        self.assertEqual(movement.stock_before, 10)
+        self.assertEqual(movement.stock_after, 15)
+        self.assertEqual(movement.actor, self.staff)
+        self.assertEqual(movement.company, self.company)
+
+    def test_an_exit_decreases_stock(self):
+        self._adjust(movement_type='manual_exit', quantity=4)
+
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch_a, product=self.product).quantity, 6,
+        )
+
+    def test_an_exit_beyond_available_stock_is_refused(self):
+        response = self._adjust(movement_type='manual_exit', quantity=999)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch_a, product=self.product).quantity, 10,
+        )
+
+    def test_it_writes_an_AUDIT_entry(self):
+        self._adjust()
+
+        entry = AdminAuditLog.objects.filter(action='stock_entry_created').latest('id')
+        self.assertEqual(entry.actor, self.staff)
+        self.assertEqual(entry.company, self.company)
+
+    def test_a_SALE_exit_cannot_be_written_by_hand(self):
+        # Sale movements are created only by the payment pipeline.
+        response = self._adjust(movement_type='sale_exit')
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_TRANSFER_type_cannot_be_written_by_hand(self):
+        # A hand-written `transfer_out` with no matching `transfer_in` would be
+        # stock that simply vanished from the company.
+        for movement_type in ('transfer_out', 'transfer_in'):
+            self.assertEqual(self._adjust(movement_type=movement_type).status_code, 400)
+
+    def test_a_reason_is_REQUIRED(self):
+        self.assertEqual(self._adjust(reason='   ').status_code, 400)
+
+    def test_a_zero_or_negative_quantity_is_refused(self):
+        self.assertEqual(self._adjust(quantity=0).status_code, 400)
+        self.assertEqual(self._adjust(quantity=-3).status_code, 400)
+
+    def test_the_contract_has_NO_final_quantity_field(self):
+        # A client stating the resulting stock would be the app deciding a
+        # number two people may be changing at the same moment.
+        from .v1_inventory_serializers import V1StockAdjustmentSerializer
+
+        fields = set(V1StockAdjustmentSerializer().fields)
+        for forbidden in ('quantity_after', 'new_quantity', 'stock_after', 'set_quantity'):
+            self.assertNotIn(forbidden, fields)
+
+    def test_a_product_of_ANOTHER_company_is_404(self):
+        response = self._adjust(product_slug='producto-ajeno-m7')
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_movement_appears_in_the_kardex(self):
+        self._adjust()
+
+        rows = self.client.get(_m7_url('m7-shop', 'movements')).json()['results']
+
+        self.assertEqual(rows[0]['movement_type'], 'manual_entry')
+        self.assertEqual(rows[0]['stock_after'], 15)
+
+
+class M7InventoryMovementsTest(M7InventoryBase):
+    """The Kardex."""
+
+    def setUp(self):
+        super().setUp()
+        inventory_services.apply_manual_stock_movement(
+            branch=self.branch_a, product_id=self.product.pk,
+            movement_type='manual_entry', quantity=5, reason='inicial',
+            actor=self.staff,
+        )
+
+    def test_it_reports_traceability(self):
+        row = self.client.get(_m7_url('m7-shop', 'movements')).json()['results'][0]
+
+        for field in ('movement_type', 'quantity', 'stock_before', 'stock_after',
+                      'reason', 'actor_name', 'created_at', 'branch_name'):
+            self.assertIn(field, row)
+
+    def test_the_actor_is_a_NAME_not_a_credential(self):
+        row = self.client.get(_m7_url('m7-shop', 'movements')).json()['results'][0]
+
+        self.assertEqual(row['actor_name'], 'almacenera')
+        self.assertNotIn('@', row['actor_name'])
+
+    def test_it_exposes_no_internal_identifiers(self):
+        body = self.client.get(_m7_url('m7-shop', 'movements')).content.decode()
+
+        for absent in ('metadata', 'reference_id', 'inventory_count', 'transfer'):
+            self.assertNotIn(absent, body)
+
+    def test_it_can_be_filtered_by_product(self):
+        rows = self.client.get(
+            f"{_m7_url('m7-shop', 'movements')}?product_slug=cargador-m7",
+        ).json()
+
+        self.assertEqual(rows['count'], 0)
+
+    def test_it_is_paginated(self):
+        page = self.client.get(f"{_m7_url('m7-shop', 'movements')}?page_size=1").json()
+
+        self.assertEqual(page['page_size'], 1)
+
+    def test_movements_of_another_company_never_appear(self):
+        inventory_services.apply_manual_stock_movement(
+            branch=self.foreign_branch, product_id=self.foreign_product.pk,
+            movement_type='manual_entry', quantity=1, reason='ajena',
+            actor=self.staff,
+        )
+
+        rows = self.client.get(_m7_url('m7-shop', 'movements')).json()['results']
+
+        self.assertNotIn('Ajeno', {row['product_name'] for row in rows})
+
+
+class M7InventoryRevocationTest(M7InventoryBase):
+    """A permission taken away takes effect on the NEXT request."""
+
+    def test_a_live_session_loses_inventory_when_the_role_changes(self):
+        self.assertEqual(self.client.get(_m7_url('m7-shop', 'stock')).status_code, 200)
+
+        role = _role(self.company, 'Recortado', capabilities=['company.view'], slug='recortado-m7')
+        _assign(self.membership, role)
+
+        self.assertEqual(self.client.get(_m7_url('m7-shop', 'stock')).status_code, 403)
+
+    def test_losing_inventory_does_not_end_the_session(self):
+        role = _role(self.company, 'Recortado2', capabilities=['company.view'], slug='recortado2-m7')
+        _assign(self.membership, role)
+
+        self.assertEqual(self.client.get('/api/v1/auth/me/').status_code, 200)
+        self.assertEqual(self.client.get('/api/v1/internal/m7-shop/context/').status_code, 200)
+
+
+class M7InventoryRegressionTest(M7InventoryBase):
+    """Adding an inventory surface moved nothing else."""
+
+    def test_the_web_admin_inventory_still_works(self):
+        profile, _ = UserProfile.objects.get_or_create(user=self.staff)
+        profile.role = UserProfile.ROLE_ADMIN
+        profile.save(update_fields=['role'])
+        Membership.objects.filter(pk=self.membership.pk).update(role='admin')
+
+        web = APIClient()
+        web.post(
+            '/api/auth/login/', {'username': 'almacenera', 'password': 'Pass123!'},
+            format='json',
+        )
+
+        self.assertEqual(
+            web.get(f'/api/admin/inventory/summary/?company={self.company.id}').status_code, 200,
+        )
+
+    def test_internal_SALES_orders_still_work(self):
+        role = _role(
+            self.company, 'Ventas M7', capabilities=['sales.orders.view'], slug='ventas-m7',
+        )
+        _assign(self.membership, role)
+        client = _m7_login('almacenera')
+
+        self.assertEqual(client.get('/api/v1/internal/m7-shop/orders/').status_code, 200)
+
+    def test_the_public_catalogue_is_still_anonymous(self):
+        self.assertEqual(
+            APIClient().get('/api/v1/storefront/m7-shop/products/').status_code, 200,
+        )
+
+    def test_the_project_default_authentication_is_unchanged(self):
+        from django.conf import settings
+
+        self.assertEqual(
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'],
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_every_inventory_view_declares_bearer_explicitly(self):
+        from .v1_authentication import V1BearerAuthentication
+        from .v1_inventory_views import (
+            V1InventoryAdjustmentView, V1InventoryMovementsView,
+            V1InventoryStockView, V1InventorySummaryView,
+        )
+
+        for view in (
+            V1InventorySummaryView, V1InventoryStockView,
+            V1InventoryMovementsView, V1InventoryAdjustmentView,
+        ):
+            self.assertEqual(view.authentication_classes, [V1BearerAuthentication], view)
+
+    def test_the_v1_surface_writes_stock_ONLY_through_the_service(self):
+        # The service owns the lock, the movement row and the audit entry. A
+        # view that touched BranchStock directly would bypass all three.
+        import ast
+        import inspect
+        import textwrap
+
+        from .v1_inventory_views import V1InventoryAdjustmentView
+
+        # Read the CODE, not the prose: the docstrings explain what the view
+        # delegates and legitimately name `BranchStock`, so a raw text search
+        # would be checking the comments instead of the behaviour.
+        tree = ast.parse(textwrap.dedent(inspect.getsource(V1InventoryAdjustmentView)))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if (node.body and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)):
+                    node.body.pop(0)
+        code = ast.unparse(tree)
+
+        self.assertIn('apply_manual_stock_movement', code)
+        self.assertNotIn('BranchStock', code)
+        self.assertNotIn('.save(', code)
+
+    def test_transfers_and_counts_are_NOT_exposed(self):
+        # Both are multi-step workflows in the domain; a single POST would be
+        # inventing a semantics the business does not have.
+        for resource in ('transfers', 'counts', 'inventory-counts'):
+            self.assertEqual(
+                self.client.get(_m7_url('m7-shop', resource)).status_code, 404, resource,
+            )
