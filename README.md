@@ -280,7 +280,7 @@ Tercera audiencia, en su propio espacio de URL (**DEC-API-001**):
 |---|---|---|
 | `/api/v1/storefront/<slug>/` | pública | ninguna |
 | `/api/v1/customer/<slug>/` | **cliente, sus propios registros** | Bearer v1 |
-| `/api/v1/internal/<slug>/` | staff bajo capability | **no existe todavía** |
+| `/api/v1/internal/<slug>/` | staff bajo capability | Bearer v1 + capability |
 
 | Método | Endpoint | Notas |
 |--------|----------|-------|
@@ -356,6 +356,10 @@ Cuarta audiencia. Staff leyendo los registros de **la empresa**, bajo capability
 | GET | `/api/v1/internal/<slug>/orders/` | `sales.orders.view` |
 | GET | `/api/v1/internal/<slug>/orders/<id>/` | `sales.orders.view` |
 | PATCH | `/api/v1/internal/<slug>/orders/<id>/fulfillment/` | `sales.orders.manage` |
+| GET | `/api/v1/internal/<slug>/inventory/summary/` | `inventory.view` |
+| GET | `/api/v1/internal/<slug>/inventory/stock/` | `inventory.view` |
+| GET | `/api/v1/internal/<slug>/inventory/movements/` | `inventory.view` |
+| POST | `/api/v1/internal/<slug>/inventory/adjustments/` | `inventory.adjust` |
 
 **Dos puertas, y responden distinto.** Sin membresía activa → **404**,
 indistinguible de una empresa desconocida: otro código dejaría a cualquier login
@@ -367,6 +371,23 @@ trabajar en él.
 
 **`context/` se llama al entrar**, no se lee de la sesión: los roles cambian
 mientras una sesión sigue viva.
+
+**El inventario tiene una tercera puerta: la sucursal.** Tener `inventory.view`
+responde *qué* puedes hacer; `MembershipBranchAccess` responde *dónde*. Un
+almacenero con acceso a una sola sucursal ve el stock de esa sucursal y el Kardex
+de esa sucursal, y no puede deducir la existencia de las demás: un `branch_id`
+fuera de su conjunto responde **404**, no 403.
+
+**Los ajustes son intenciones, no resultados.** El cliente manda producto,
+sucursal, tipo, cantidad positiva y motivo. No existe campo para el stock final:
+lo calcula `inventory_services` bajo `select_for_update()`, que es también quien
+escribe el `StockMovement` y la auditoría. Solo se aceptan los tipos de
+`StockMovement.MANUAL_TYPES` — `sale_exit` lo produce el pipeline de pago y las
+transferencias su propio flujo de dos lados.
+
+**Transferencias y recuentos no se exponen en v1.** Son flujos de varios pasos
+(crear → cargar líneas → despachar → recibir); un solo POST inventaría una
+semántica que el negocio no tiene.
 
 **Una sola máquina de estados.** `order_fulfillment_services.py` la comparten el
 admin web y v1. Cambiar fulfillment no toca el pago, no manda correo y no mueve
