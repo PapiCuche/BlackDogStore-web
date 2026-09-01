@@ -1479,3 +1479,58 @@ cookies `Secure` sobre texto plano. Ahora sólo se activa cuando
   aplicativo, no protección volumétrica.
 - **Credential stuffing distribuido**: limitar sólo por IP no lo cubre. Añadir
   identidad de cuenta al cubo del login queda como `PROPUESTA / P1`.
+
+---
+
+---
+
+## Actualización — servicio técnico, núcleo (M8 / BR-005A)
+
+`RepairOrder` existe. Las tres líneas de esta documentación que decían lo
+contrario están corregidas.
+
+### Qué se construyó
+
+`Device`, `RepairOrder`, `RepairStatusSetting`, `RepairStatusHistory` y
+`TechnicianAssignment`, más `service_services.py` y dos superficies:
+`/api/v1/internal/<slug>/service/` (9 rutas) y
+`/api/v1/customer/<slug>/repairs/` (lectura).
+
+Migraciones **0035** (esquema), **0036** (semilla de estados y serie) y **0037**
+(capacidades para presets sin modificar).
+
+### Decisiones que conviene poder defender
+
+- **`brand` y `model` son texto normalizado, no un catálogo.** Un catálogo de
+  marcas tiene que ser de alguien: de la plataforma, y se queda obsoleto la
+  semana que sale un teléfono nuevo sin que ningún tenant pueda arreglarlo; del
+  tenant, y son tres tablas de CRUD entre un recepcionista y el equipo que tiene
+  delante. Los campos están indexados y migrar a FKs después no cambiaría la API.
+- **Sin unicidad global de serial ni de IMEI.** Un equipo vuelve al taller, los
+  seriales se transcriben a mano de una pegatina, muchos equipos no tienen uno
+  legible, y dos tenants pueden tener el mismo teléfono de segunda mano. La base
+  lo permite y el operador recibe un aviso de posible duplicado.
+- **La sucursal es de la orden, no del equipo.** Un equipo no vive en una tienda;
+  una visita, sí.
+- **No hay columna `current_technician`.** La asignación abierta se deriva de la
+  tabla, que es la única fuente. Una columna sería una segunda verdad que
+  mantener sincronizada.
+
+### Defecto corregido de paso
+
+`sequences.sequence_scope(company, document_type)` aceptaba `document_type` y lo
+ignoraba: devolvía siempre el scope configurado para las notas de venta. Con un
+solo tipo de documento era inofensivo; el segundo habría numerado órdenes de
+servicio por sucursal porque alguien configuró así sus notas.
+
+### Deuda
+
+- Una empresa registrada antes de M8 no recibe automáticamente las capacidades
+  de servicio en su rol `Servicio Técnico` — solo en `Administrador`, y solo si
+  no lo editó. Misma decisión y misma razón que la migración 0033.
+- Sin evidencias fotográficas: no hay proveedor de almacenamiento y no existe un
+  solo `FileField` en el backend.
+- La serie de servicio numera por empresa; el scope por sucursal se añade cuando
+  un negocio lo pida.
+- BR-008 sigue `API_PENDING`, pero ahora tiene contra qué diseñarse.
+

@@ -339,6 +339,8 @@ Tercera audiencia, en su propio espacio de URL (**DEC-API-001**):
 |--------|----------|-------|
 | GET | `/api/v1/customer/<company_slug>/orders/` | Solo los pedidos del llamante |
 | GET | `/api/v1/customer/<company_slug>/orders/<id>/` | 404 si no es suyo |
+| GET | `/api/v1/customer/<company_slug>/repairs/` | Solo las reparaciones del llamante |
+| GET | `/api/v1/customer/<company_slug>/repairs/<id>/` | 404 si no es suya |
 
 **La propiedad son dos FKs**: `Order.user` (compró con sesión) o
 `Order.customer.user` (compra anónima que el negocio emparejó por documento con
@@ -413,6 +415,15 @@ Cuarta audiencia. Staff leyendo los registros de **la empresa**, bajo capability
 | GET | `/api/v1/internal/<slug>/inventory/stock/` | `inventory.view` |
 | GET | `/api/v1/internal/<slug>/inventory/movements/` | `inventory.view` |
 | POST | `/api/v1/internal/<slug>/inventory/adjustments/` | `inventory.adjust` |
+| GET | `/api/v1/internal/<slug>/service/context/` | `service.orders.view` |
+| GET | `/api/v1/internal/<slug>/service/customers/` | `service.customers.view` |
+| GET · POST | `/api/v1/internal/<slug>/service/devices/` | `service.devices.view` · `.manage` |
+| GET | `/api/v1/internal/<slug>/service/devices/<id>/` | `service.devices.view` |
+| GET · POST | `/api/v1/internal/<slug>/service/orders/` | `service.orders.view` · `.create` |
+| GET | `/api/v1/internal/<slug>/service/orders/<id>/` | `service.orders.view` |
+| GET | `/api/v1/internal/<slug>/service/orders/<id>/history/` | `service.orders.view` |
+| POST | `/api/v1/internal/<slug>/service/orders/<id>/transition/` | `service.orders.manage` |
+| GET · POST | `/api/v1/internal/<slug>/service/orders/<id>/assignment/` | `service.orders.manage` |
 
 **Dos puertas, y responden distinto.** Sin membresía activa → **404**,
 indistinguible de una empresa desconocida: otro código dejaría a cualquier login
@@ -449,6 +460,45 @@ stock.
 `/api/admin/` **no cambia**.
 
 Detalle en `docs/saas-multiempresa.md` § 8-unvicies.
+
+### Servicio técnico (M8 · BR-005A)
+
+**Una orden de servicio no es un pedido.** No hay herencia ni ForeignKey entre
+`RepairOrder` y `Order`: una venta tiene carrito, total, pago y sesión de
+Stripe; una reparación no tiene nada de eso hasta que alguien diagnostique y
+cotice, que es la fase siguiente.
+
+**Cuatro estados, no trece.** `received` → `diagnosing` → `waiting_approval`, y
+`cancelled` desde cualquiera. Los demás estados de un taller real —aprobado, en
+reparación, esperando repuestos, control de calidad, entregado, garantía—
+necesitan módulos que M8 no construyó, y un estado sin su módulo es un estado en
+el que ningún código puede actuar.
+
+**Códigos estables, etiquetas por empresa.** El código lo define la plataforma;
+la etiqueta, la visibilidad para el cliente y el orden los define el tenant.
+Renombrar «Recibido» a «En mostrador» no rompe un solo reporte.
+
+**El historial es append-only.** `RepairOrder.status` es una proyección para
+listar rápido; `RepairStatusHistory` es la evidencia, y `save()` sobre una fila
+existente y `delete()` lanzan. La transición bloquea la fila con
+`select_for_update()` y escribe las dos cosas en la misma transacción.
+
+**El servidor decide la identidad**: el número (desde la misma
+`InternalSequence` que numera las notas de venta, no un segundo sistema), el
+estado inicial, la empresa y quién recibió el equipo. El payload no tiene campo
+para ninguno.
+
+**El técnico es una `Membership` activa**, nunca un `UserProfile.role`. Y la
+asignación es una tabla con historial, no una columna que se sobrescribe.
+
+**No se guarda ninguna credencial del equipo** — ni PIN, ni patrón, ni Apple ID.
+Los talleres las piden; un campo para una convertiría esta tabla en un almacén
+de credenciales sin política de cifrado, de acceso, de retención ni de borrado.
+
+**El cliente ve lo suyo y nada más**: notas internas, condición física,
+accesorios, asignaciones, identidad del técnico, sucursal y comentarios de los
+eventos no viajan a `/api/v1/customer/<slug>/repairs/`. Los serializers son
+clases distintas, no una con un flag.
 
 ### Reglas de contraseña (registro)
 
