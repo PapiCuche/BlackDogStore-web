@@ -9,6 +9,85 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase Comercial C1.4 — Carga masiva de productos e inventario desde Excel
+
+**Estado: IMPLEMENTADO.** Migración **0042**.
+
+### Los dos formatos reales, auditados
+
+`Carga_Masiva_(Productos).xlsx` — SHA256 `b14bca62…6b6d534`. Cinco hojas, pero
+**no son cinco hojas de productos**: `Productos` es la de datos y
+`Unidades de medida` (63 filas), `Marcas` (vacía), `Variables` (vacía) y
+`Afectaciones` (4 filas) son vocabularios de validación. La fila 1 es un banner
+de títulos combinados y la **fila 2** tiene los 18 encabezados reales. La hoja de
+productos está **vacía**: es la plantilla en blanco.
+
+`Carga_Masiva_(inventarios)-2.xlsx` — SHA256 `83bb2a69…30150a0`. Una hoja,
+cabecera simple, **696 productos**, `CODIGO` único en las 696 filas, `CODIGO EAN`
+presente en 692 y guardado como **número**, y la **columna de cantidad
+completamente vacía**.
+
+### Dos hallazgos que cambiaron el diseño
+
+**Los EAN del archivo no son códigos de barras.** Son la serie
+`310000000001…310000000696` con 4 huecos, y sólo 67 de 692 pasan el dígito de
+control —lo que da el azar—. Por eso la simbología sólo se nombra cuando el
+dígito de control lo confirma; en caso contrario `unknown`. Etiquetarlos
+`upca` metería una afirmación falsa en el catálogo e invitaría a alguien a
+imprimir uno.
+
+**El precio de la plantilla es por sucursal.** No hay «Precio de venta»: sólo
+`Precio venta - 11834`, que es la lista de precios de una tienda. El catálogo
+guarda un precio por producto, así que se importa —es el único que hay— pero la
+previsualización lo advierte.
+
+### Vacío no es cero
+
+La regla alrededor de la que está construido todo el importador de stock:
+
+    celda vacía  →  no tocar ese stock
+    cero escrito →  poner ese stock en cero
+
+Son instrucciones opuestas y en una hoja de cálculo se parecen. El archivo real
+tiene 696 filas con la columna de cantidad vacía: es el catálogo impreso,
+esperando a que alguien recorra los estantes. Leer vacío como cero da de baja
+la tienda entera en una sola carga.
+
+### Objetivo, no diferencia
+
+El número del archivo es el stock **contado**, no cuánto sumar. El movimiento se
+calcula como `objetivo − actual` **bajo lock en el momento de aplicar**, nunca
+con la diferencia que mostró la previsualización: entre las dos pantallas la caja
+puede haber vendido dos unidades.
+
+### Arquitectura
+
+`BulkImportJob` · `BulkImportRow` · `ImportMappingProfile`. Dos pasos siempre:
+previsualizar (no escribe nada comercial) y aplicar (lee del staging, no del
+navegador). **El archivo no se guarda**: sólo su SHA256 y las filas ya
+normalizadas.
+
+- **Lector seguro** (`xlsx_reader.py`): sólo `.xlsx`, 10 MB, tope de filas,
+  defensa contra zip bomb, rechazo de macros, y **saneado en memoria** de los
+  `dataValidation` que Google Sheets escribe con `errorStyle="error"` —valor que
+  no existe en el estándar y que impide abrir el archivo del propietario. El
+  original nunca se modifica. Las fórmulas ni se evalúan ni se leen de caché.
+- **Presets por firma de encabezados**, no por empresa. Cualquier inquilino cuyo
+  sistema exporte esas columnas queda reconocido; un `if company.slug == …`
+  habría soldado un cliente a la plataforma.
+- **Escritura de stock sólo por `inventory_services`**: todo cambio es un
+  `StockMovement` con referencia al job. Locks en orden `(branch_id, product_id)`.
+- **Aplicar es idempotente**: el segundo clic devuelve el resultado del primero.
+- Plantilla de productos e **exportación del inventario** (con cantidades o en
+  blanco para conteo físico), reimportables por el mismo sistema.
+
+### PENDIENTE
+- Importación parcial · CSV · compras a proveedor · promociones · reversión
+  automática de una importación ya aplicada · limpieza/retención de
+  `BulkImportRow`.
+
+---
+
 ## Fase Comercial C1.4 — Reconciliación del grafo de migraciones y hardening de promociones
 
 **Estado: IMPLEMENTADO.** Migración **0041** (merge, sin operaciones).

@@ -223,6 +223,15 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
     quickAction: true,
   },
+  {
+    id: "products.import",
+    group: "products",
+    label: "Carga masiva",
+    description: "Importar productos desde Excel, con previsualización antes de escribir.",
+    href: "/admin/products/import",
+    requiredCapabilities: ["products.manage"],
+    status: "implemented",
+  },
   { id: "products.categories", group: "products", label: "Categorías", description: "Taxonomía del catálogo. API tenant-aware, pantalla pendiente.", status: "partial" },
 
   // ── Inventario ───────────────────────────────────────────────────────────
@@ -238,6 +247,15 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["inventory.view"],
     status: "implemented",
     quickAction: true,
+  },
+  {
+    id: "inventory.import",
+    group: "inventory",
+    label: "Carga masiva",
+    description: "Ajustar existencias desde Excel. Genera movimientos de Kardex.",
+    href: "/admin/inventory/import",
+    requiredCapabilities: ["inventory.adjust"],
+    status: "implemented",
   },
   {
     id: "inventory.movements",

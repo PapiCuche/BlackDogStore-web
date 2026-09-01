@@ -3080,6 +3080,106 @@ Empresa desconocida e inactiva devuelven el mismo 404 que el catálogo.
 
 ---
 
+## 8-unvicies. Carga masiva desde Excel (Fase C1.4)
+
+**Estado: IMPLEMENTADO.** Migración **0042**.
+
+### Por qué un importador es tres tablas y no un manejador de subida
+
+La forma obvia es: recibir el archivo, recorrerlo, escribir. Aquí está mal por
+una razón concreta de lo que se escribe. Un producto mal importado se corrige
+editándolo. Un **stock** mal importado no: se convierte en movimientos de Kardex,
+y el Kardex es un registro de hechos físicos que sólo crece. «Deshacerlo»
+significa emitir movimientos compensatorios que también son historia permanente.
+El momento de detectar el error es **antes** de escribir.
+
+De ahí: `BulkImportJob` (la subida), `BulkImportRow` (cada fila ya normalizada) e
+`ImportMappingProfile` (qué columna era cuál). Previsualizar no toca ninguna tabla
+de negocio; aplicar lee del staging, no del navegador.
+
+### Vacío ≠ cero
+
+| En el Excel | Significa | Efecto |
+|---|---|---|
+| celda vacía | «no conté esto» | stock intacto, fila OMITIR |
+| `0` escrito | «no queda ninguno» | corrección negativa hasta cero |
+
+El archivo real del propietario tiene 696 filas y la columna de cantidad
+**completamente vacía** — es el catálogo impreso esperando un conteo. Leer vacío
+como cero da de baja la tienda entera en una sola operación.
+
+### Objetivo, no diferencia — DEC-IMP-001
+
+El número es el stock **contado**. El movimiento es `objetivo − actual`, calculado
+bajo lock **en el momento de aplicar**. La diferencia de la previsualización es
+informativa: si la caja vendió dos unidades mientras alguien revisaba la pantalla,
+aplicar el `+5` previsualizado dejaría la tienda permanentemente corta y un Kardex
+que dice que todo cuadra.
+
+### Reconocimiento por firma de encabezados — DEC-IMP-002
+
+Los presets se resuelven por un hash de la fila de encabezados normalizada, no por
+la empresa. Un `if company.slug == 'black-dog-store'` no es una funcionalidad: es
+un cliente soldado a la plataforma, y la rama que sólo corre para un cliente es la
+rama que las pruebas de nadie más cubren.
+
+La firma **no** es el SHA256 del archivo: los datos cambian en cada subida, la
+forma no. Hashear el archivo no reconocería nada dos veces.
+
+### Los dos formatos auditados
+
+| | Productos | Inventario |
+|---|---|---|
+| SHA256 | `b14bca62…6b6d534` | `83bb2a69…30150a0` |
+| Hojas | 5 (1 de datos + 4 vocabularios) | 1 (`Worksheet`) |
+| Fila de encabezados | **2** (la 1 es un banner combinado) | 1 |
+| Columnas | 18 | 5 |
+| Filas de datos | **0** (plantilla en blanco) | **696** |
+| Rareza | `errorStyle="error"` inválido de Google Sheets | `CODIGO EAN` guardado como número |
+
+Los 18 encabezados: `Código de barras · Código · Unidad de medida · Nombre · Peso ·
+Código SUNAT · Descripción · Precio costo · Afectación · Compra · Venta ·
+Almacenable · Stock mínimo · Marca · Stock inicial - ALMACEN 1 - 11416 ·
+Area - black dog octavio - 817 · Precio venta - 11834 · SUCURSAL 1 - 11357`.
+
+De esos, se importan cuatro (código de barras, código, nombre, descripción) más el
+precio. `Código SUNAT` y `Afectación` son tributarios y esta plataforma no emite
+comprobantes electrónicos; `Precio costo` no tiene dónde ir porque el catálogo no
+registra costos; y `Stock inicial` **no** se importa aquí, porque el inventario
+tiene su propio importador con su propia previsualización.
+
+### Lo que el archivo llama EAN no es un EAN
+
+Los 692 códigos son la serie `310000000001…310000000696` con cuatro huecos, y sólo
+67 pasan el dígito de control —exactamente lo que produce el azar—. Son una serie
+interna, no códigos de barras de comercio. Por eso la simbología sólo se nombra
+cuando el dígito de control lo confirma; si no, `unknown`. Y por eso **nunca** se
+repone un cero inicial perdido: adivinar un dígito cambia de qué producto se habla.
+
+`CODIGO` sí es un identificador estable —696 filas, 696 valores distintos, ninguno
+vacío— y se registra como `ProductBarcode` con simbología `internal` en vez de
+añadir otra columna a `Product`.
+
+### Seguridad del lector
+
+Sólo `.xlsx`; 10 MB comprimidos; tope de entradas, de tamaño expandido y de ratio
+de compresión; `vbaProject.bin` es un rechazo; 5000 filas por trabajo. Las
+fórmulas no se evalúan **ni se leen de la caché**: el valor guardado lo calculó la
+máquina que grabó el archivo por última vez, posiblemente desde filas que no están
+en esta subida.
+
+El saneado de `dataValidation` es incondicional cuando el archivo trae alguno, y
+no un plan B: openpyxl en modo lectura analiza las hojas **de forma perezosa**, así
+que el error aparece en mitad del bucle del llamador y un `try` alrededor de la
+apertura nunca se ejecuta.
+
+### Deuda
+
+Importación parcial; CSV; compras a proveedor; importar promociones; reversión
+automática de una importación ya aplicada; retención/limpieza de `BulkImportRow`.
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

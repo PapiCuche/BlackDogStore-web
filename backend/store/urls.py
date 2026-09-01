@@ -51,6 +51,18 @@ from .sales_analytics_views import (
     AdminSalesDashboardView,
     AdminSalesReplenishmentView,
 )
+from .import_views import (
+    AdminImportErrorReportView,
+    AdminImportHistoryView,
+    AdminImportInspectView,
+    AdminImportJobView,
+    AdminInventoryExportView,
+    AdminProductImportApplyView,
+    AdminProductImportPreviewView,
+    AdminProductTemplateView,
+    AdminStockImportApplyView,
+    AdminStockImportPreviewView,
+)
 from .promotion_views import (
     AdminCouponView,
     AdminPosCombosView,
@@ -188,6 +200,18 @@ urlpatterns = [
     path('admin/sales/coupons/', AdminCouponView.as_view(), name='admin-coupons'),
     path('admin/sales/coupons/<int:pk>/', AdminCouponView.as_view(), name='admin-coupon-detail'),
     path('admin/pos/combos/', AdminPosCombosView.as_view(), name='admin-pos-combos'),
+
+    # --- C1.4: bulk imports ------------------------------------------------
+    path('admin/imports/inspect/', AdminImportInspectView.as_view(), name='admin-import-inspect'),
+    path('admin/imports/', AdminImportHistoryView.as_view(), name='admin-import-history'),
+    path('admin/imports/<int:pk>/', AdminImportJobView.as_view(), name='admin-import-job'),
+    path('admin/imports/<int:pk>/errors.csv', AdminImportErrorReportView.as_view(), name='admin-import-errors'),
+    path('admin/products/import/preview/', AdminProductImportPreviewView.as_view(), name='admin-product-import-preview'),
+    path('admin/products/import/<int:pk>/apply/', AdminProductImportApplyView.as_view(), name='admin-product-import-apply'),
+    path('admin/products/import/template/', AdminProductTemplateView.as_view(), name='admin-product-template'),
+    path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),
+    path('admin/inventory/import/<int:pk>/apply/', AdminStockImportApplyView.as_view(), name='admin-stock-import-apply'),
+    path('admin/inventory/export/', AdminInventoryExportView.as_view(), name='admin-inventory-export'),
     path('admin/sales/commission-settings/', AdminCommissionSettingsView.as_view(), name='admin-commission-settings'),
     path('admin/sales/commission-settings/<int:pk>/', AdminCommissionSettingsView.as_view(), name='admin-commission-setting-detail'),
     path('admin/sales/replenishment/', AdminSalesReplenishmentView.as_view(), name='admin-sales-replenishment'),

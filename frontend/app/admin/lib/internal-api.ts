@@ -1228,3 +1228,211 @@ export async function fetchCombos(
   if (!res.ok) return [];
   return (await res.json()).results ?? [];
 }
+
+// ---------------------------------------------------------------------------
+// C1.4 — bulk imports
+// ---------------------------------------------------------------------------
+//
+// Every import is TWO calls: preview, then apply. There is no single-shot
+// endpoint, and adding one would defeat the design — the point of staging is
+// that a person sees what will happen to six hundred rows before it happens.
+
+export type ImportAction = "create" | "update" | "no_change" | "skip" | "error";
+
+export type ImportRow = {
+  sheet: string;
+  row: number;
+  action: ImportAction;
+  match_key: string;
+  data: Record<string, unknown>;
+  errors: string[];
+  warnings: string[];
+};
+
+export type ImportJob = {
+  id: number;
+  import_type: "products" | "stock";
+  status: "previewed" | "applied" | "failed";
+  stock_mode: string;
+  original_filename: string;
+  file_sha256: string;
+  mapping: Record<string, unknown>;
+  options: Record<string, unknown>;
+  counts: {
+    total: number;
+    create: number;
+    update: number;
+    no_change: number;
+    skip: number;
+    error: number;
+  };
+  summary: {
+    detected?: string;
+    reader_notes?: string[];
+    format_notes?: string[];
+    unmapped?: { column: string; reason: string }[];
+    branches?: { column: string; branch_id: number; branch_name: string }[];
+    truncated?: boolean;
+    sheets?: string[];
+    applied?: Record<string, number>;
+  };
+  created_at: string;
+  applied_at: string | null;
+  created_by: string;
+  applied_by: string;
+  is_applicable: boolean;
+  rows?: ImportRow[];
+  rows_truncated?: boolean;
+};
+
+export type InspectedSheet = {
+  name: string;
+  header_row: number;
+  headers: string[];
+  sample_rows: number;
+  detected: string;
+  preset: string;
+  mapping: Record<string, number>;
+  warehouse_columns: { index: number; header: string }[];
+  notes: string[];
+  signature: string;
+  profile: { id: number; name: string; mapping: Record<string, number> } | null;
+};
+
+export type InspectResult = {
+  import_type: string;
+  reader_notes: string[];
+  sheets: InspectedSheet[];
+  fields: Record<string, { label: string; required: boolean }>;
+  branches: { id: number; name: string }[];
+};
+
+/**
+ * POST multipart WITHOUT forcing a Content-Type.
+ *
+ * `fetchWithAuth` always sets `application/json`, which is right for every other
+ * call in this file and fatal here: a multipart body needs the boundary the
+ * browser generates, and a hand-written Content-Type has no boundary in it, so
+ * the server receives a body it cannot split into parts. Deleting the header
+ * lets the browser write the correct one.
+ */
+async function postForm<T>(path: string, form: FormData, fallback: string): Promise<T> {
+  const res = await fetchWithAuth(`${API_BASE}${path}`, {
+    method: "POST",
+    body: form,
+    headers: { "Content-Type": "" },
+  });
+  if (res.ok) return res.json();
+  throw new Error(await readDetail(res, fallback));
+}
+
+export function inspectImportFile(
+  companyId: number | null,
+  file: File,
+  importType: "products" | "stock",
+): Promise<InspectResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("import_type", importType);
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return postForm(`/admin/imports/inspect/${qs}`, form, "No se pudo leer el archivo.");
+}
+
+export function previewProductImport(
+  companyId: number | null,
+  file: File,
+  opts: {
+    sheetName?: string;
+    headerRow?: number;
+    mapping?: Record<string, number>;
+    options?: Record<string, unknown>;
+  } = {},
+): Promise<ImportJob> {
+  const form = new FormData();
+  form.append("file", file);
+  if (opts.sheetName) form.append("sheet_name", opts.sheetName);
+  if (opts.headerRow) form.append("header_row", String(opts.headerRow));
+  if (opts.mapping) form.append("mapping", JSON.stringify(opts.mapping));
+  if (opts.options) form.append("options", JSON.stringify(opts.options));
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return postForm(
+    `/admin/products/import/preview/${qs}`, form,
+    "No se pudo previsualizar el archivo.",
+  );
+}
+
+export function previewStockImport(
+  companyId: number | null,
+  file: File,
+  opts: {
+    branchMap: Record<string, number>;
+    mode: string;
+    sheetName?: string;
+    headerRow?: number;
+    mapping?: Record<string, number>;
+  },
+): Promise<ImportJob> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("branch_map", JSON.stringify(opts.branchMap));
+  form.append("mode", opts.mode);
+  if (opts.sheetName) form.append("sheet_name", opts.sheetName);
+  if (opts.headerRow) form.append("header_row", String(opts.headerRow));
+  if (opts.mapping) form.append("mapping", JSON.stringify(opts.mapping));
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return postForm(
+    `/admin/inventory/import/preview/${qs}`, form,
+    "No se pudo previsualizar el inventario.",
+  );
+}
+
+export async function applyImport(
+  companyId: number | null,
+  job: ImportJob,
+): Promise<ImportJob> {
+  const base =
+    job.import_type === "products"
+      ? `/admin/products/import/${job.id}/apply/`
+      : `/admin/inventory/import/${job.id}/apply/`;
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}${base}${qs}`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo aplicar la importación."));
+  return res.json();
+}
+
+export async function fetchImportHistory(
+  companyId: number | null,
+  importType?: "products" | "stock",
+): Promise<ImportJob[]> {
+  const qs = new URLSearchParams();
+  if (companyId) qs.set("company", String(companyId));
+  if (importType) qs.set("type", importType);
+  const res = await fetchWithAuth(`${API_BASE}/admin/imports/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar el historial."));
+  return (await res.json()).results ?? [];
+}
+
+/** Absolute URLs for the browser to navigate to — downloads, not fetches. */
+export function importErrorReportUrl(companyId: number | null, jobId: number) {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return `${API_BASE}/admin/imports/${jobId}/errors.csv${qs}`;
+}
+
+export function productTemplateUrl(companyId: number | null) {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return `${API_BASE}/admin/products/import/template/${qs}`;
+}
+
+export function inventoryExportUrl(
+  companyId: number | null,
+  branchIds: number[],
+  quantities: "current" | "blank",
+) {
+  const qs = new URLSearchParams({ quantities });
+  if (companyId) qs.set("company", String(companyId));
+  if (branchIds.length) qs.set("branches", branchIds.join(","));
+  return `${API_BASE}/admin/inventory/export/?${qs}`;
+}

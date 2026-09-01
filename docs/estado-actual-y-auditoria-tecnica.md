@@ -1207,3 +1207,38 @@ la variante por slug devuelva exactamente lo mismo.
 - **URL de checkout no persistida.** En un replay se recupera de Stripe; si la
   sesión caducó, `checkout_url` es null y el cliente lee el estado del pedido.
 - **Superficie interna v1 pendiente**, con `sales.orders.view` ya en el catálogo.
+
+
+---
+
+## Fase Comercial C1.4 — grafo de migraciones y carga masiva
+
+**Grafo reconciliado.** Dos ramas salieron de la 0033 (`0034_checkout_idempotency`
+en master y `0034_commercial_pos_barcode → 0040` en la rama comercial). Se creó
+`0041`, una migración de merge real y vacía que depende de ambas hojas. **No se
+renumeró nada**: esas siete migraciones están aplicadas en una base de datos real,
+y renumerarlas le mostraría a Django siete migraciones que nunca ha ejecutado
+contra tablas que ya existen.
+
+**Defecto silencioso del auto-merge.** Git dejó **dos asignaciones
+`constraints = [...]`** en `Order.Meta`; la segunda tapaba a la primera. Python
+válido, semántica equivocada: desaparecía la unicidad de `pos_idempotency_key`.
+Las dos idempotencias se conservan y **no se unifican** — la del POS es única por
+empresa, la del checkout por empresa **y usuario**.
+
+**Defecto en producción encontrado por las pruebas nuevas.** `PATCH` sobre una
+promoción no era parcial: una clave ausente significaba «ponlo en None», así que
+`PATCH {is_active: false}` —lo que manda el botón de archivar— borraba el precio
+del combo y la petición se rechazaba con 400. El botón nunca funcionó. El único
+test de C1.3 que mandaba `is_active` apuntaba a la promoción de otra empresa y
+esperaba 404: pasaba por el control de tenant y nunca llegaba a ese código.
+
+**Fechas.** `promotion.starts_at = request.data[...]` no validaba nada: un
+`DateTimeField` acepta cualquier objeto en Python y sólo se convierte al llegar a
+la base de datos, ya dentro de la transacción. Entrada inválida daba 500 y una
+fecha sin zona horaria se guardaba naive. Nuevo `api_parsing.py`.
+
+**Carga masiva.** Ver `docs/saas-multiempresa.md` §8-unvicies. Lo esencial para
+una auditoría: la previsualización no escribe nada de negocio, aplicar lee del
+staging y no del navegador, el archivo original no se guarda, el stock se escribe
+únicamente por `inventory_services`, y **una celda vacía nunca es un cero**.

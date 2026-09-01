@@ -27,6 +27,7 @@ import stripe as stripe_lib
 
 from django.core import mail
 from django.core.cache import cache
+from django.db import models
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -22907,4 +22908,1621 @@ class C14PromotionTenantInvariantTest(TestCase):
         self.assertIn('branches', res.data)
         self.assertFalse(
             PromotionBranch.objects.filter(branch=self.branch_b).exists()
+        )
+
+
+# =============================================================================
+# C1.4 — bulk import from Excel
+# =============================================================================
+#
+# FIXTURES ARE BUILT, NOT COMMITTED
+# --------------------------------
+# The owner's two workbooks are real commercial data — 696 articles, their
+# internal codes, what the shop sells. They stay out of the repository (§72).
+# What the tests need is the SHAPE of those files, so the shape is rebuilt here
+# from the audit: the same sheet names, the same header rows, the same
+# eighteen columns, and the same malformed `errorStyle="error"` that makes
+# openpyxl refuse the original. The products are invented.
+
+import hashlib as _c14_hashlib
+import io as _c14_io
+import zipfile as _c14_zip
+
+from store import (  # noqa: E402
+    import_exports as _c14_exports,
+    import_formats as _c14_formats,
+    import_services as _c14_products,
+    stock_import_services as _c14_stock,
+    xlsx_reader as _c14_reader,
+)
+from store.models import (  # noqa: E402
+    BulkImportJob as _BulkImportJob,
+    BulkImportRow as _BulkImportRow,
+    ImportMappingProfile as _ImportMappingProfile,
+)
+
+_C14_PRODUCT_HEADERS = [
+    'Código de barras', 'Código', 'Unidad de medida', 'Nombre', 'Peso',
+    'Código SUNAT', 'Descripción', 'Precio costo', 'Afectación', 'Compra',
+    'Venta', 'Almacenable', 'Stock mínimo', 'Marca',
+    'Stock inicial - ALMACEN 1 - 11416', 'Area - black dog octavio - 817',
+    'Precio venta - 11834', 'SUCURSAL 1 - 11357',
+]
+_C14_PRODUCT_BANNER = {
+    1: 'Información del producto', 10: 'Tipo de operación',
+    13: 'Campos adicionales', 15: 'Stock Por Almacén',
+    16: 'Áreas de impresión', 17: 'Stock Octavio Muñoz - (11834)',
+    18: 'Visibilidad del producto',
+}
+_C14_STOCK_HEADERS = ['ID', 'CODIGO', 'CODIGO EAN', 'NOMBRE', 'ALMACEN 1 - 11416']
+
+
+def _c14_break_validations(payload: bytes) -> bytes:
+    """
+    Reproduce the defect that makes the owner's own file unreadable.
+
+    Google Sheets writes `errorStyle="error"` on its data validations. That value
+    is not in the OOXML enumeration (`stop | warning | information`), so openpyxl
+    raises while parsing and the workbook cannot be opened at all. openpyxl will
+    not emit it, so the fixture injects it into the finished archive — which is
+    also proof that the reader's repair works on a file it did not create.
+    """
+    source = _c14_zip.ZipFile(_c14_io.BytesIO(payload))
+    out = _c14_io.BytesIO()
+    with _c14_zip.ZipFile(out, 'w', _c14_zip.ZIP_DEFLATED) as target:
+        for info in source.infolist():
+            body = source.read(info.filename)
+            if info.filename == 'xl/worksheets/sheet1.xml':
+                injected = (
+                    b'<dataValidations count="1">'
+                    b'<dataValidation type="list" errorStyle="error" allowBlank="1" '
+                    b'sqref="C3:C202"><formula1>"NIU,ZZ"</formula1></dataValidation>'
+                    b'</dataValidations>'
+                )
+                body = body.replace(b'</worksheet>', injected + b'</worksheet>')
+            target.writestr(info.filename, body)
+    return out.getvalue()
+
+
+def _c14_products_workbook(rows=(), *, broken=True):
+    """
+    The 18-column, 5-sheet, banner-row-then-headers product template.
+
+    `rows` are dicts keyed by header name; anything absent is left blank, which
+    is what the real template looks like for most of its columns.
+    """
+    import openpyxl
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = 'Productos'
+    for column, text in _C14_PRODUCT_BANNER.items():
+        sheet.cell(row=1, column=column, value=text)
+    for column, header in enumerate(_C14_PRODUCT_HEADERS, start=1):
+        sheet.cell(row=2, column=column, value=header)
+    for offset, values in enumerate(rows):
+        for column, header in enumerate(_C14_PRODUCT_HEADERS, start=1):
+            if header in values:
+                sheet.cell(row=3 + offset, column=column, value=values[header])
+
+    for name in ('Unidades de medida', 'Marcas', 'Variables', 'Afectaciones'):
+        extra = workbook.create_sheet(name)
+        extra.cell(row=1, column=1, value=name)
+        extra.cell(row=2, column=1, value='Código')
+        extra.cell(row=2, column=2, value='Nombre')
+    workbook['Unidades de medida'].cell(row=3, column=1, value='NIU')
+    workbook['Unidades de medida'].cell(row=3, column=2, value='PRODUCTO (UND)')
+
+    buffer = _c14_io.BytesIO()
+    workbook.save(buffer)
+    payload = buffer.getvalue()
+    return _c14_break_validations(payload) if broken else payload
+
+
+def _c14_stock_workbook(rows=(), *, headers=None, sheet_title='Worksheet'):
+    """The 5-column inventory export. A value of `None` leaves the cell EMPTY."""
+    import openpyxl
+
+    headers = list(headers or _C14_STOCK_HEADERS)
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = sheet_title
+    for column, header in enumerate(headers, start=1):
+        sheet.cell(row=1, column=column, value=header)
+    for offset, values in enumerate(rows):
+        for column, header in enumerate(headers, start=1):
+            value = values.get(header)
+            if value is not None:
+                sheet.cell(row=2 + offset, column=column, value=value)
+    buffer = _c14_io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _c14_upload(payload: bytes, name='carga.xlsx'):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    return SimpleUploadedFile(
+        name, payload,
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
+class C14XlsxReaderTest(TestCase):
+    """§15, §16, §17 — reading a file somebody else's software wrote."""
+
+    def test_a_workbook_openpyxl_refuses_is_read_anyway(self):
+        """
+        The whole reason this module exists. The owner's product template does
+        not open: Google Sheets wrote `errorStyle="error"`, which is not a legal
+        value, and openpyxl raises rather than ignore it. Those validations are
+        dropdown hints for whoever types into the sheet — refusing the file over
+        them would mean telling the owner their own template is invalid.
+        """
+        import openpyxl
+
+        payload = _c14_products_workbook(broken=True)
+        with self.assertRaises(Exception):
+            wb = openpyxl.load_workbook(_c14_io.BytesIO(payload), read_only=True)
+            list(wb['Productos'].iter_rows())
+
+        workbook, notes = _c14_reader.load_workbook(payload)
+        headers, rows, _t = _c14_reader.read_rows(workbook, 'Productos', header_row=2)
+        self.assertEqual(headers, _C14_PRODUCT_HEADERS)
+        self.assertTrue(notes)
+
+    def test_the_original_bytes_are_never_modified(self):
+        payload = _c14_products_workbook(broken=True)
+        before = _c14_hashlib.sha256(payload).hexdigest()
+        _c14_reader.load_workbook(payload)
+        self.assertEqual(_c14_hashlib.sha256(payload).hexdigest(), before)
+
+    def test_a_valid_workbook_is_not_rewritten(self):
+        payload = _c14_stock_workbook([{'ID': 1, 'NOMBRE': 'X'}])
+        _workbook, notes = _c14_reader.load_workbook(payload)
+        self.assertEqual(notes, [])
+
+    def test_only_xlsx_is_accepted(self):
+        payload = _c14_stock_workbook([{'ID': 1}])
+        for name in ('libro.xlsm', 'libro.xls', 'libro.zip', 'libro.csv'):
+            with self.assertRaises(_c14_reader.XlsxError, msg=name):
+                _c14_reader.check_upload(_c14_upload(payload, name), filename=name)
+
+    def test_a_macro_bearing_archive_is_refused(self):
+        payload = _c14_stock_workbook([{'ID': 1}])
+        buffer = _c14_io.BytesIO()
+        source = _c14_zip.ZipFile(_c14_io.BytesIO(payload))
+        with _c14_zip.ZipFile(buffer, 'w') as target:
+            for info in source.infolist():
+                target.writestr(info.filename, source.read(info.filename))
+            target.writestr('xl/vbaProject.bin', b'\x00' * 32)
+        with self.assertRaises(_c14_reader.XlsxError):
+            _c14_reader.check_upload(_c14_upload(buffer.getvalue()), filename='x.xlsx')
+
+    def test_a_zip_bomb_is_refused_before_it_is_parsed(self):
+        """
+        A megabyte that becomes gigabytes in RAM. Caught from the archive's own
+        directory listing, so the payload is never decompressed to find out.
+        """
+        buffer = _c14_io.BytesIO()
+        with _c14_zip.ZipFile(buffer, 'w', _c14_zip.ZIP_DEFLATED) as target:
+            target.writestr('xl/workbook.xml', b'<workbook/>')
+            target.writestr('xl/bomb.xml', b'0' * (60 * 1024 * 1024))
+        with self.assertRaises(_c14_reader.XlsxTooLarge):
+            _c14_reader.check_upload(_c14_upload(buffer.getvalue()), filename='x.xlsx')
+
+    def test_an_oversized_upload_is_refused(self):
+        big = _c14_upload(b'x' * (_c14_reader.MAX_UPLOAD_BYTES + 1))
+        with self.assertRaises(_c14_reader.XlsxTooLarge):
+            _c14_reader.check_upload(big, filename='x.xlsx')
+
+    def test_something_that_is_not_a_zip_is_refused(self):
+        with self.assertRaises(_c14_reader.XlsxError):
+            _c14_reader.check_upload(_c14_upload(b'no soy un excel'), filename='x.xlsx')
+
+    def test_an_integer_code_is_not_rendered_in_scientific_notation(self):
+        """
+        Excel stores `CODIGO EAN` as a number, so Python receives a float. A
+        barcode printed as `3.1e+11` matches nothing.
+        """
+        self.assertEqual(_c14_reader.normalize_scalar(310000000001.0), '310000000001')
+        self.assertEqual(_c14_reader.normalize_scalar(7751234567890), '7751234567890')
+
+    def test_trailing_blank_rows_are_not_data(self):
+        """
+        The owner's product sheet declares 202 rows and contains none: the extra
+        rows exist because the template has formatting on them.
+        """
+        payload = _c14_products_workbook(broken=True)
+        workbook, _notes = _c14_reader.load_workbook(payload)
+        _headers, rows, _t = _c14_reader.read_rows(workbook, 'Productos', header_row=2)
+        self.assertEqual(rows, [])
+
+
+class C14ProductImportTest(TestCase):
+    """§25–37, §73 — the product half of the matrix."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-prod', 'Importa Productos')
+        self.other = _p3_company('c14-prod-b', 'Otra Empresa')
+        self.user, _ = _p2d_member(self.company, 'c14_prod_admin',
+                                   ['company.view', 'products.manage'])
+        self.category = Category.objects.create(
+            company=self.company, name='Accesorios', slug='accesorios',
+        )
+
+    def _preview(self, rows, **kwargs):
+        payload = _c14_products_workbook(rows)
+        return _c14_products.preview_products(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(payload), filename='Carga_Masiva_(Productos).xlsx',
+            **kwargs,
+        )
+
+    def _row(self, **kw):
+        base = {
+            'Código de barras': '7751234567892', 'Código': 'C000001',
+            'Nombre': 'Cable Lightning', 'Descripción': 'Cable de un metro',
+            'Precio venta - 11834': 49.90,
+        }
+        base.update(kw)
+        return base
+
+    # --- detection --------------------------------------------------------
+
+    def test_the_black_dog_format_is_recognised_without_being_told(self):
+        job = self._preview([self._row()])
+        self.assertIn('18 columnas', job.summary['detected'])
+        self.assertEqual(job.mapping_snapshot['header_row'], 2)
+
+    def test_the_banner_row_is_not_imported_as_a_product(self):
+        """Header row 2, not 1. Get it wrong and you create «Información del producto»."""
+        job = self._preview([self._row()])
+        names = {r.normalized_data.get('name') for r in job.rows.all()}
+        self.assertNotIn('Información del producto', names)
+        self.assertEqual(names, {'Cable Lightning'})
+
+    def test_the_tax_columns_are_reported_as_recognised_but_not_imported(self):
+        """
+        `Código SUNAT` and `Afectación` are for electronic invoicing, which this
+        platform does not do. Saying so beats an operator assuming they landed.
+        """
+        job = self._preview([self._row()])
+        ignored = {u['column'] for u in job.summary['unmapped']}
+        self.assertIn('Código SUNAT', ignored)
+        self.assertIn('Afectación', ignored)
+        self.assertIn('Precio costo', ignored)
+
+    def test_the_stock_column_of_the_product_sheet_is_not_imported(self):
+        """
+        §25. The template carries `Stock inicial - ALMACEN 1 - 11416`. Stock has
+        its own importer with its own preview and its own Kardex movements; a
+        product import that also moved stock would write to the ledger from a
+        screen that never warned about it.
+        """
+        job = self._preview([self._row(**{'Stock inicial - ALMACEN 1 - 11416': 25})])
+        self.assertNotIn('stock', job.mapping_snapshot['mapping'])
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertEqual(StockMovement.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(Product.objects.get(company=self.company).inventory, 0)
+
+    # --- create / update --------------------------------------------------
+
+    def test_a_new_product_is_created_with_both_of_its_codes(self):
+        job = self._preview([self._row()])
+        self.assertEqual(job.rows_create, 1)
+        _c14_products.apply_products(job=job, actor=self.user)
+        product = Product.objects.get(company=self.company, name='Cable Lightning')
+        self.assertEqual(product.price, Decimal('49.90'))
+        codes = dict(product.barcodes.values_list('code', 'symbology'))
+        self.assertEqual(codes['7751234567892'], ProductBarcode.EAN13)
+        # §27 — CODIGO becomes an INTERNAL barcode instead of a new column.
+        self.assertEqual(codes['C000001'], ProductBarcode.INTERNAL)
+
+    def test_a_second_import_updates_instead_of_duplicating(self):
+        _c14_products.apply_products(
+            job=self._preview([self._row()]), actor=self.user,
+        )
+        job = self._preview([self._row(**{'Precio venta - 11834': 59.90})])
+        self.assertEqual(job.rows_update, 1)
+        self.assertEqual(job.rows_create, 0)
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+        self.assertEqual(
+            Product.objects.get(company=self.company).price, Decimal('59.90'),
+        )
+
+    def test_a_blank_cell_does_not_erase_what_is_already_there(self):
+        """
+        §37. An empty description column means "I did not fill this in", never
+        "delete what you have". Wiping it destroys work nobody asked to destroy.
+        """
+        _c14_products.apply_products(
+            job=self._preview([self._row()]), actor=self.user,
+        )
+        row = self._row()
+        row.pop('Descripción')
+        _c14_products.apply_products(
+            job=self._preview([row]), actor=self.user,
+        )
+        self.assertEqual(
+            Product.objects.get(company=self.company).description,
+            'Cable de un metro',
+        )
+
+    def test_create_only_mode_leaves_existing_products_alone(self):
+        _c14_products.apply_products(
+            job=self._preview([self._row()]), actor=self.user,
+        )
+        job = self._preview(
+            [self._row(**{'Precio venta - 11834': 99.90})],
+            options={'mode': 'create_only'},
+        )
+        self.assertEqual(job.rows_skip, 1)
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertEqual(
+            Product.objects.get(company=self.company).price, Decimal('49.90'),
+        )
+
+    # --- identifiers ------------------------------------------------------
+
+    def test_identifiers_pointing_at_different_products_are_an_error(self):
+        """
+        §30. Choosing one would either update the wrong article or duplicate an
+        existing one, and both happen silently.
+        """
+        a = _c1_product(self.company, 'Producto A', '10.00')
+        b = _c1_product(self.company, 'Producto B', '20.00')
+        ProductBarcode.objects.create(company=self.company, product=a, code='7751234567892')
+        ProductBarcode.objects.create(company=self.company, product=b, code='C000001')
+        job = self._preview([self._row()])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('apuntan a productos distintos', job.rows.first().errors[0])
+
+    def test_the_same_barcode_twice_in_one_file_is_an_error(self):
+        job = self._preview([self._row(), self._row(**{'Nombre': 'Otro nombre'})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_the_excel_id_never_becomes_the_primary_key(self):
+        """
+        §26. `ID` is a number in somebody else's database. Six hundred rows whose
+        ids start at 1288488 would either fail or, worse, land on unrelated rows.
+        """
+        job = self._preview([self._row()])
+        _c14_products.apply_products(job=job, actor=self.user)
+        product = Product.objects.get(company=self.company)
+        self.assertNotEqual(product.pk, 1288488)
+
+    # --- barcode semantics ------------------------------------------------
+
+    def test_a_symbology_is_only_named_when_the_check_digit_agrees(self):
+        """
+        §28. The owner's file holds 692 twelve-digit codes of which 67 have a
+        valid check digit — which is what chance produces. They are an internal
+        sequence, not retail barcodes, and calling them UPC-A would put a false
+        claim in the catalogue and invite somebody to print one.
+        """
+        self.assertEqual(_c14_products.detect_symbology('7751234567892'),
+                         ProductBarcode.EAN13)
+        self.assertEqual(_c14_products.detect_symbology('310000000001'),
+                         ProductBarcode.UNKNOWN)
+        self.assertEqual(_c14_products.detect_symbology('C000001'),
+                         ProductBarcode.UNKNOWN)
+
+    def test_a_numeric_code_warns_about_a_possible_lost_zero_and_invents_nothing(self):
+        """§28, §29 — warn, never restore. A digit decides which product this is."""
+        job = self._preview([self._row(**{'Código de barras': 310000000001})])
+        row = job.rows.first()
+        self.assertTrue(any('cero' in w for w in row.warnings))
+        self.assertEqual(row.normalized_data['barcode'], '310000000001')
+
+    def test_a_text_code_keeping_its_leading_zero_is_imported_verbatim(self):
+        job = self._preview([self._row(**{'Código de barras': '0750123456789'})])
+        self.assertEqual(job.rows.first().normalized_data['barcode'], '0750123456789')
+
+    # --- prices -----------------------------------------------------------
+
+    def test_a_price_that_is_not_a_number_is_a_row_error(self):
+        job = self._preview([self._row(**{'Precio venta - 11834': 'gratis'})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_an_ambiguous_thousands_separator_is_refused_rather_than_guessed(self):
+        """
+        §34. `1,999` is one thousand nine hundred ninety-nine in Peru and 1.999
+        in an English export. The difference is a factor of a thousand on a price
+        tag, so the row asks instead of choosing.
+        """
+        job = self._preview([self._row(**{'Precio venta - 11834': '1,999'})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('ambiguo', job.rows.first().errors[0])
+
+    def test_an_unambiguous_european_price_is_read_correctly(self):
+        job = self._preview([self._row(**{'Precio venta - 11834': '1.999,90'})])
+        self.assertEqual(job.rows.first().normalized_data['price'], '1999.90')
+
+    def test_a_price_is_never_a_float(self):
+        job = self._preview([self._row(**{'Precio venta - 11834': 19.99})])
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertIsInstance(Product.objects.get(company=self.company).price, Decimal)
+
+    def test_a_negative_price_is_refused(self):
+        job = self._preview([self._row(**{'Precio venta - 11834': -5})])
+        self.assertEqual(job.rows_error, 1)
+
+    # --- formulas ---------------------------------------------------------
+
+    def test_a_formula_in_a_mapped_cell_is_a_row_error(self):
+        """
+        §17. The cached value was computed by whatever machine last saved the
+        file, possibly from rows that are not in this upload. Neither evaluated
+        nor trusted.
+        """
+        job = self._preview([self._row(**{'Precio venta - 11834': '=A1*2'})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('fórmula', job.rows.first().errors[0])
+
+    # --- rows and categories ----------------------------------------------
+
+    def test_a_completely_empty_row_is_skipped_not_failed(self):
+        """§24 — and no empty product is created."""
+        job = self._preview([self._row(), {}, self._row(**{
+            'Nombre': 'Otro', 'Código': 'C000002', 'Código de barras': '7751234567908',
+        })])
+        self.assertEqual(job.rows_error, 0)
+        self.assertEqual(job.rows_create, 2)
+
+    def test_an_unknown_category_is_an_error_by_default(self):
+        """§33 — creating categories silently populates a catalogue with typos."""
+        job = self._preview(
+            [self._row()],
+            mapping={'name': 3, 'code': 1, 'barcode': 0, 'price': 16, 'category': 6},
+            header_row=2,
+        )
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('categoría', job.rows.first().errors[0].lower())
+
+    def test_categories_are_created_when_that_is_asked_for_explicitly(self):
+        job = self._preview(
+            [self._row(**{'Descripción': 'Cargadores'})],
+            mapping={'name': 3, 'code': 1, 'barcode': 0, 'price': 16, 'category': 6},
+            header_row=2, options={'create_missing_categories': True},
+        )
+        self.assertEqual(job.rows_error, 0)
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertTrue(
+            Category.objects.filter(company=self.company, name='Cargadores').exists()
+        )
+        self.assertFalse(
+            Category.objects.filter(company=self.other, name='Cargadores').exists()
+        )
+
+    # --- slugs ------------------------------------------------------------
+
+    def test_two_products_with_the_same_name_get_distinct_slugs(self):
+        job = self._preview([
+            self._row(**{'Nombre': 'Cable', 'Código': 'C000001',
+                         'Código de barras': '7751234567892'}),
+            self._row(**{'Nombre': 'Cable', 'Código': 'C000002',
+                         'Código de barras': '7751234567908'}),
+        ])
+        self.assertEqual(job.rows_error, 0)
+        _c14_products.apply_products(job=job, actor=self.user)
+        slugs = list(Product.objects.filter(company=self.company).values_list('slug', flat=True))
+        self.assertEqual(len(slugs), len(set(slugs)))
+
+    def test_another_tenant_may_use_the_same_slug(self):
+        """Scoped to the company: two shops can both sell a "Cable Lightning"."""
+        _c1_product(self.other, 'Cable Lightning', '10.00')
+        _c14_products.apply_products(job=self._preview([self._row()]), actor=self.user)
+        self.assertTrue(Product.objects.filter(company=self.company).exists())
+
+    # --- apply discipline -------------------------------------------------
+
+    def test_one_bad_row_prevents_the_whole_import(self):
+        """§36 — a half-imported catalogue cannot be told from a whole one."""
+        job = self._preview([
+            self._row(),
+            self._row(**{'Nombre': 'Roto', 'Código': 'C000002',
+                         'Código de barras': '7751234567908',
+                         'Precio venta - 11834': 'gratis'}),
+        ])
+        with self.assertRaises(_c14_products.ImportError_):
+            _c14_products.apply_products(job=job, actor=self.user)
+        self.assertFalse(Product.objects.filter(company=self.company).exists())
+
+    def test_applying_twice_does_not_import_twice(self):
+        """§52 — pressing a button twice is not a mistake worth duplicating a catalogue over."""
+        job = self._preview([self._row()])
+        _job, first = _c14_products.apply_products(job=job, actor=self.user)
+        _job, second = _c14_products.apply_products(job=job, actor=self.user)
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+
+    def test_preview_writes_nothing_commercial(self):
+        """§53."""
+        before = (Product.objects.count(), ProductBarcode.objects.count(),
+                  Category.objects.count())
+        self._preview([self._row()])
+        after = (Product.objects.count(), ProductBarcode.objects.count(),
+                 Category.objects.count())
+        self.assertEqual(before, after)
+
+    def test_a_product_created_between_preview_and_apply_is_updated_not_duplicated(self):
+        """
+        A preview is a forecast, not a promise. Apply re-resolves every match
+        because the catalogue may have moved between the two clicks.
+        """
+        job = self._preview([self._row()])
+        self.assertEqual(job.rows_create, 1)
+        sneaked = _c1_product(self.company, 'Cable Lightning', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=sneaked, code='7751234567892',
+        )
+        _c14_products.apply_products(job=job, actor=self.user)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+
+    def test_the_original_file_is_not_stored(self):
+        """
+        §64. The SHA256 proves which file this was; the workbook itself is the
+        tenant's commercial data — prices, costs, everything they sell — and
+        keeping it indefinitely to answer a question the normalised rows already
+        answer is a liability, not a feature.
+        """
+        job = self._preview([self._row()])
+        self.assertEqual(len(job.file_sha256), 64)
+        binary_fields = [
+            f.name for f in _BulkImportJob._meta.get_fields()
+            if isinstance(f, (models.FileField, models.BinaryField))
+        ]
+        self.assertEqual(binary_fields, [])
+        self.assertEqual(job.original_filename, 'Carga_Masiva_(Productos).xlsx')
+
+    def test_a_code_too_short_for_a_barcode_is_a_row_error_not_a_crash(self):
+        """
+        Found by this suite. `validate_barcode` wants 4–64 characters; a
+        two-character code used to pass the preview, be reported as CREATE, and
+        then raise from inside apply() — a stack trace instead of a row number,
+        after the operator had been told the file was fine.
+        """
+        job = self._preview([self._row(**{'Código': 'C1'})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('C1', job.rows.first().errors[0])
+
+
+class C14StockImportTest(TestCase):
+    """§38–52, §73 — the half that writes to the Kardex."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-stock', 'Importa Stock')
+        self.other = _p3_company('c14-stock-b', 'Otra Stock')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.branch2 = _p2d_branch(self.company, 'Secundaria')
+        self.foreign_branch = _p2d_branch(self.other, 'Ajena')
+        self.user, _ = _p2d_member(
+            self.company, 'c14_stock_admin',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.product = _c1_product(self.company, 'Cable Lightning', '49.90')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product,
+            code='7751234567892', symbology=ProductBarcode.EAN13,
+        )
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+            symbology=ProductBarcode.INTERNAL,
+        )
+
+    def _row(self, **kw):
+        base = {'ID': 1288488, 'CODIGO': 'C000001',
+                'CODIGO EAN': '7751234567892', 'NOMBRE': 'Cable Lightning'}
+        base.update(kw)
+        return base
+
+    def _preview(self, rows, *, mode=None, branch_map=None, headers=None):
+        payload = _c14_stock_workbook(rows, headers=headers)
+        return _c14_stock.preview_stock(
+            company=self.company, actor=self.user, upload=_c14_upload(payload),
+            filename='Carga_Masiva_(inventarios)-2.xlsx',
+            branch_map=branch_map or {4: self.branch.pk},
+            mode=mode or _BulkImportJob.MODE_RECONCILE,
+        )
+
+    def _set_stock(self, quantity, *, branch=None, product=None):
+        inventory_services.create_stock_movement(
+            branch=branch or self.branch, product_id=(product or self.product).pk,
+            movement_type=StockMovement.INITIAL_STOCK, quantity=quantity,
+            reason='alta de prueba',
+        )
+
+    def _quantity(self, *, branch=None, product=None):
+        return inventory_services.branch_quantity(
+            branch or self.branch, product or self.product,
+        )
+
+    # =====================================================================
+    # THE RULE (§14, §44)
+    # =====================================================================
+
+    def test_a_blank_cell_leaves_the_stock_exactly_where_it_was(self):
+        """
+        The rule this whole subsystem is arranged around. The owner's real file
+        has 696 rows and a completely empty quantity column: it is the catalogue
+        printed out, waiting for somebody to walk the shelves. Read blank as
+        zero and that one upload writes off the entire shop.
+        """
+        self._set_stock(17)
+        job = self._preview([self._row()])            # no 'ALMACEN' key at all
+        row = job.rows.get(action=_BulkImportRow.SKIP)
+        self.assertEqual(row.normalized_data['quantity_kind'], 'blank')
+        # The preview shows the stock it is PRESERVING. A blank next to a blank
+        # is exactly the ambiguity this rule exists to remove.
+        self.assertEqual(row.normalized_data['current_preview'], 17)
+        self.assertIn('se queda en 17', row.warnings[0])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 17)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                branch=self.branch, reference_type='bulk_import',
+            ).count(),
+            0,
+        )
+
+    def test_an_explicit_zero_writes_the_stock_down_to_zero(self):
+        """
+        The opposite instruction, and it looks almost identical in a
+        spreadsheet. 17 → 0 is a real correction and produces a real movement.
+        """
+        self._set_stock(17)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 0})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 0)
+        movement = StockMovement.objects.get(reference_type='bulk_import')
+        self.assertEqual(movement.movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movement.quantity, 17)
+
+    def test_blank_and_zero_are_distinguishable_in_the_preview_itself(self):
+        """An operator must be able to SEE the difference before applying."""
+        self._set_stock(17)
+        blank = self._preview([self._row()]).rows.first()
+        zero = self._preview([self._row(**{'ALMACEN 1 - 11416': 0})]).rows.first()
+        self.assertEqual(blank.action, _BulkImportRow.SKIP)
+        self.assertEqual(zero.action, _BulkImportRow.UPDATE)
+        self.assertEqual(zero.normalized_data['target'], 0)
+        self.assertIsNone(blank.normalized_data.get('target'))
+
+    # =====================================================================
+    # Targets, not deltas
+    # =====================================================================
+
+    def test_a_target_above_current_produces_a_positive_correction(self):
+        self._set_stock(10)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 15})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 15)
+        self.assertEqual(
+            StockMovement.objects.get(reference_type='bulk_import').movement_type,
+            StockMovement.CORRECTION_POSITIVE,
+        )
+
+    def test_a_target_equal_to_current_moves_nothing(self):
+        self._set_stock(10)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 10})])
+        self.assertEqual(job.rows_no_change, 1)
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertFalse(
+            StockMovement.objects.filter(reference_type='bulk_import').exists()
+        )
+
+    def test_a_sale_between_preview_and_apply_does_not_resurrect_stock(self):
+        """
+        §48 — the case the whole target-not-delta design exists for.
+
+        Preview sees 10, target 15, and shows "+5". Then the till sells two: the
+        shelf holds 8. Applying the preview's +5 would leave 13 and the shop
+        would be permanently two short, with a Kardex that says everything
+        balanced. The delta is recomputed under the lock at apply time.
+        """
+        self._set_stock(10)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 15})])
+        self.assertEqual(job.rows.first().normalized_data['delta_preview'], 5)
+
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=2, reason='venta',
+        )
+        self.assertEqual(self._quantity(), 8)
+
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 15)
+        movement = StockMovement.objects.get(reference_type='bulk_import')
+        self.assertEqual(movement.quantity, 7)
+
+    # =====================================================================
+    # Validation of the quantity itself (§45)
+    # =====================================================================
+
+    def test_a_negative_quantity_is_refused(self):
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': -1})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_a_decimal_quantity_is_refused(self):
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 2.5})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('entera', job.rows.first().errors[0])
+
+    def test_text_is_not_a_quantity(self):
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 'abc'})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_a_padded_number_is_read_as_that_number(self):
+        self._set_stock(1)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': ' 7 '})])
+        self.assertEqual(job.rows.first().normalized_data['target'], 7)
+
+    def test_a_whole_number_written_as_a_float_is_accepted(self):
+        """Excel stores every number as a double; `7.0` is seven, not a decimal."""
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 7.0})])
+        self.assertEqual(job.rows_error, 0)
+        self.assertEqual(job.rows.first().normalized_data['target'], 7)
+
+    def test_a_formula_in_a_quantity_cell_is_refused(self):
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': '=SUM(A1:A2)'})])
+        self.assertEqual(job.rows_error, 1)
+
+    # =====================================================================
+    # Matching
+    # =====================================================================
+
+    def test_a_product_that_does_not_exist_is_an_error_not_a_creation(self):
+        """
+        A stock importer that creates products would create them from a name and
+        a quantity, with no price and no codes — and it would do it six hundred
+        times from one bad column mapping.
+        """
+        job = self._preview([self._row(
+            **{'CODIGO': 'C999999', 'CODIGO EAN': '7758888888882',
+               'NOMBRE': 'No existe', 'ALMACEN 1 - 11416': 5})])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('no se encontró', job.rows.first().errors[0].lower())
+
+    def test_conflicting_identifiers_are_an_error(self):
+        """§30, on the stock side."""
+        other = _c1_product(self.company, 'Otro', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=other, code='7759999999995',
+        )
+        job = self._preview([self._row(
+            **{'CODIGO EAN': '7759999999995', 'ALMACEN 1 - 11416': 5})])
+        self.assertEqual(job.rows_error, 1)
+
+    def test_the_same_product_and_branch_twice_is_an_error_not_last_row_wins(self):
+        """§46 — "last row wins" silently discards somebody's count."""
+        job = self._preview([
+            self._row(**{'ALMACEN 1 - 11416': 5}),
+            self._row(**{'ALMACEN 1 - 11416': 9}),
+        ])
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('ya aparecen en la fila', job.rows.get(action='error').errors[0])
+
+    def test_the_excel_id_is_not_used_as_a_primary_key(self):
+        """§38 — matching is by code; the origin system's id identifies nothing here."""
+        job = self._preview([self._row(**{'ID': self.product.pk + 9999,
+                                          'ALMACEN 1 - 11416': 5})])
+        self.assertEqual(job.rows_error, 0)
+        self.assertEqual(job.rows.first().normalized_data['product_id'], self.product.pk)
+
+    # =====================================================================
+    # Modes (§41–43)
+    # =====================================================================
+
+    def test_initial_mode_refuses_a_product_that_already_has_history(self):
+        """
+        §42. "Initial stock" claims nothing was there before. Saying that about a
+        shelf with a Kardex behind it rewrites the beginning of a story that has
+        already been told.
+        """
+        self._set_stock(4)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 10})],
+                            mode=_BulkImportJob.MODE_INITIAL)
+        self.assertEqual(job.rows_error, 1)
+        self.assertIn('historial', job.rows.first().errors[0])
+
+    def test_initial_mode_works_on_a_product_with_no_history(self):
+        fresh = _c1_product(self.company, 'Sin historial', '10.00')
+        ProductBarcode.objects.create(
+            company=self.company, product=fresh, code='C000777',
+        )
+        job = self._preview(
+            [self._row(**{'CODIGO': 'C000777', 'CODIGO EAN': '',
+                          'NOMBRE': 'Sin historial', 'ALMACEN 1 - 11416': 12})],
+            mode=_BulkImportJob.MODE_INITIAL,
+        )
+        self.assertEqual(job.rows_error, 0)
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(product=fresh), 12)
+        self.assertEqual(
+            StockMovement.objects.get(product=fresh).movement_type,
+            StockMovement.INITIAL_STOCK,
+        )
+
+    # =====================================================================
+    # Warehouses (§39, §40)
+    # =====================================================================
+
+    def test_the_warehouse_column_is_detected_by_shape_not_by_its_number(self):
+        """
+        `11416` is a warehouse id in the system that exported the file. Reading
+        it as a `Branch.pk` here would point at whichever branch happened to
+        have that primary key.
+        """
+        detected = _c14_formats.detect(
+            _BulkImportJob.STOCK, 'Worksheet', _C14_STOCK_HEADERS,
+        )
+        self.assertEqual(detected['warehouse_columns'], [(4, 'ALMACEN 1 - 11416')])
+        self.assertNotEqual(self.branch.pk, 11416)
+
+    def test_several_warehouses_go_through_the_same_importer(self):
+        """§40 — today one column, tomorrow three, no new code path."""
+        headers = _C14_STOCK_HEADERS + ['ALMACEN 2 - 20993']
+        self._set_stock(1)
+        self._set_stock(1, branch=self.branch2)
+        job = self._preview(
+            [self._row(**{'ALMACEN 1 - 11416': 5, 'ALMACEN 2 - 20993': 8})],
+            branch_map={4: self.branch.pk, 5: self.branch2.pk}, headers=headers,
+        )
+        self.assertEqual(job.rows_error, 0)
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 5)
+        self.assertEqual(self._quantity(branch=self.branch2), 8)
+
+    def test_a_blank_in_one_warehouse_does_not_affect_the_other(self):
+        headers = _C14_STOCK_HEADERS + ['ALMACEN 2 - 20993']
+        self._set_stock(3)
+        self._set_stock(4, branch=self.branch2)
+        job = self._preview(
+            [self._row(**{'ALMACEN 2 - 20993': 9})],
+            branch_map={4: self.branch.pk, 5: self.branch2.pk}, headers=headers,
+        )
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 3)
+        self.assertEqual(self._quantity(branch=self.branch2), 9)
+
+    # =====================================================================
+    # Tenant and Kardex discipline
+    # =====================================================================
+
+    def test_another_tenants_branch_cannot_be_written(self):
+        with self.assertRaises(_c14_stock.StockImportError):
+            self._preview([self._row(**{'ALMACEN 1 - 11416': 5})],
+                          branch_map={4: self.foreign_branch.pk})
+
+    def test_preview_creates_no_movement_and_no_stock(self):
+        """§53."""
+        movements = StockMovement.objects.count()
+        self._preview([self._row(**{'ALMACEN 1 - 11416': 5})])
+        self.assertEqual(StockMovement.objects.count(), movements)
+
+    def test_every_change_goes_through_the_kardex(self):
+        """
+        §49 — `inventory_services` is the only writer. A movement per change,
+        with the stock before and after recorded on it, is what makes the
+        history reconstructable.
+        """
+        self._set_stock(2)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 6})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        movement = StockMovement.objects.get(reference_type='bulk_import')
+        self.assertEqual((movement.stock_before, movement.stock_after), (2, 6))
+        self.assertEqual(movement.reason, 'Carga masiva de inventario')
+        self.assertEqual(movement.actor, self.user)
+
+    def test_the_movement_points_back_at_the_job(self):
+        """§51 — through the existing reference mechanism, not a new FK."""
+        self._set_stock(1)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 4})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        movement = StockMovement.objects.get(reference_type='bulk_import')
+        self.assertEqual(movement.reference_id, str(job.pk))
+
+    def test_the_compatibility_aggregate_stays_in_step(self):
+        self._set_stock(2)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 9})])
+        _c14_stock.apply_stock(job=job, actor=self.user)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 9)
+
+    def test_applying_twice_does_not_move_stock_twice(self):
+        """§52 — the failure mode this prevents is a doubled shop."""
+        self._set_stock(2)
+        job = self._preview([self._row(**{'ALMACEN 1 - 11416': 9})])
+        _job, first, _m = _c14_stock.apply_stock(job=job, actor=self.user)
+        _job, second, _m = _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(self._quantity(), 9)
+        self.assertEqual(
+            StockMovement.objects.filter(reference_type='bulk_import').count(), 1,
+        )
+
+    def test_a_job_with_errors_cannot_be_applied_at_all(self):
+        self._set_stock(5)
+        job = self._preview([
+            self._row(**{'ALMACEN 1 - 11416': 9}),
+            self._row(**{'CODIGO': 'C000999', 'CODIGO EAN': '', 'NOMBRE': 'Fantasma',
+                         'ALMACEN 1 - 11416': 3}),
+        ])
+        self.assertEqual(job.rows_error, 1)
+        with self.assertRaises(_c14_stock.StockImportError):
+            _c14_stock.apply_stock(job=job, actor=self.user)
+        self.assertEqual(self._quantity(), 5)
+
+    def test_a_large_file_is_previewed_in_a_bounded_number_of_queries(self):
+        """
+        §74. The naive implementation issues a query per row per identifier: for
+        the owner's 696-row file that is thousands of round trips and a preview
+        measured in minutes.
+        """
+        products = []
+        for index in range(60):
+            product = _c1_product(self.company, f'Bulk {index}', '10.00')
+            ProductBarcode.objects.create(
+                company=self.company, product=product, code=f'C{index:06d}9',
+            )
+            products.append(product)
+        rows = [
+            {'ID': 1000 + i, 'CODIGO': f'C{i:06d}9', 'CODIGO EAN': '',
+             'NOMBRE': f'Bulk {i}', 'ALMACEN 1 - 11416': i}
+            for i in range(60)
+        ]
+        with self.assertNumQueries(FuzzyInt(1, 40)):
+            job = self._preview(rows)
+        self.assertEqual(job.rows_error, 0)
+
+
+class FuzzyInt(int):
+    """An upper bound for `assertNumQueries` — the ceiling is what matters."""
+
+    def __new__(cls, low, high):
+        obj = super().__new__(cls, high)
+        obj.low, obj.high = low, high
+        return obj
+
+    def __eq__(self, other):
+        return self.low <= other <= self.high
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash((self.low, self.high))
+
+    def __repr__(self):
+        return f'entre {self.low} y {self.high} consultas'
+
+
+class C14ImportApiTest(TestCase):
+    """§57, §58, §59, §63 — authority, tenancy and the surrounding endpoints."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-api', 'API Import')
+        self.other = _p3_company('c14-api-b', 'API Otra')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.branch2 = _p2d_branch(self.company, 'Secundaria')
+        self.foreign_branch = _p2d_branch(self.other, 'Ajena')
+
+        self.product_admin, _ = _p2d_member(
+            self.company, 'c14_api_products', ['company.view', 'products.manage'],
+        )
+        self.stock_admin, _ = _p2d_member(
+            self.company, 'c14_api_stock',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        self.nobody, _ = _p2d_member(self.company, 'c14_api_nobody', ['company.view'])
+        self.product = _c1_product(self.company, 'Cable Lightning', '49.90')
+        ProductBarcode.objects.create(
+            company=self.company, product=self.product, code='C000001',
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _product_file(self):
+        return _c14_upload(_c14_products_workbook([{
+            'Código de barras': '7751234567892', 'Código': 'C000002',
+            'Nombre': 'Nuevo cable', 'Precio venta - 11834': 19.90,
+        }]), 'Carga_Masiva_(Productos).xlsx')
+
+    def _stock_file(self, quantity=5):
+        return _c14_upload(_c14_stock_workbook([{
+            'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '',
+            'NOMBRE': 'Cable Lightning', 'ALMACEN 1 - 11416': quantity,
+        }]), 'Carga_Masiva_(inventarios)-2.xlsx')
+
+    # --- authority --------------------------------------------------------
+
+    def test_product_import_needs_products_manage(self):
+        res = self._as(self.nobody).post(
+            '/api/admin/products/import/preview/', {'file': self._product_file()},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_stock_import_needs_inventory_adjust(self):
+        res = self._as(self.product_admin).post(
+            '/api/admin/inventory/import/preview/',
+            {'file': self._stock_file(),
+             'branch_map': json.dumps({'4': self.branch.pk})},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_is_refused_everywhere(self):
+        for path in ('/api/admin/imports/', '/api/admin/imports/inspect/',
+                     '/api/admin/products/import/preview/',
+                     '/api/admin/inventory/import/preview/',
+                     '/api/admin/products/import/template/',
+                     '/api/admin/inventory/export/'):
+            res = APIClient().get(path)
+            self.assertIn(
+                res.status_code,
+                (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN,
+                 status.HTTP_405_METHOD_NOT_ALLOWED),
+                path,
+            )
+
+    def test_stock_import_also_needs_access_to_the_branch(self):
+        """
+        §57 — the two axes. "May move stock" and "may move stock HERE" are
+        different questions, and a chain has staff for whom the answers differ.
+        """
+        limited, membership = _p2d_member(
+            self.company, 'c14_api_limited',
+            ['company.view', 'inventory.adjust', 'inventory.view'],
+        )
+        membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        membership.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.filter(membership=membership).delete()
+        MembershipBranchAccess.objects.create(
+            membership=membership, branch=self.branch,
+        )
+
+        res = self._as(limited).post(
+            '/api/admin/inventory/import/preview/',
+            {'file': self._stock_file(),
+             'branch_map': json.dumps({'4': self.branch2.pk})},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_another_tenants_branch_is_not_found_rather_than_refused(self):
+        res = self._as(self.stock_admin).post(
+            '/api/admin/inventory/import/preview/',
+            {'file': self._stock_file(),
+             'branch_map': json.dumps({'4': self.foreign_branch.pk})},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # --- the two-step flow ------------------------------------------------
+
+    def test_preview_then_apply(self):
+        res = self._as(self.product_admin).post(
+            '/api/admin/products/import/preview/', {'file': self._product_file()},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data['counts']['create'], 1)
+        self.assertEqual(res.data['status'], 'previewed')
+        self.assertFalse(
+            Product.objects.filter(company=self.company, name='Nuevo cable').exists()
+        )
+
+        job_id = res.data['id']
+        res = self._as(self.product_admin).post(
+            f'/api/admin/products/import/{job_id}/apply/', {}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['status'], 'applied')
+        self.assertTrue(
+            Product.objects.filter(company=self.company, name='Nuevo cable').exists()
+        )
+
+    def test_another_tenant_cannot_apply_my_job(self):
+        res = self._as(self.product_admin).post(
+            '/api/admin/products/import/preview/', {'file': self._product_file()},
+            format='multipart',
+        )
+        job_id = res.data['id']
+        intruder, _ = _p2d_member(
+            self.other, 'c14_api_intruder', ['company.view', 'products.manage'],
+        )
+        res = self._as(intruder).post(
+            f'/api/admin/products/import/{job_id}/apply/', {}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(
+            _BulkImportJob.objects.get(pk=job_id).status == 'previewed'
+        )
+
+    def test_the_audit_log_records_the_import_without_the_catalogue_in_it(self):
+        """
+        §66. An audit entry naming 696 products is a copy of the file in a table
+        that was never meant to hold one.
+        """
+        res = self._as(self.stock_admin).post(
+            '/api/admin/inventory/import/preview/',
+            {'file': self._stock_file(),
+             'branch_map': json.dumps({'4': self.branch.pk})},
+            format='multipart',
+        )
+        job_id = res.data['id']
+        self._as(self.stock_admin).post(
+            f'/api/admin/inventory/import/{job_id}/apply/', {}, format='json',
+        )
+        entry = AdminAuditLog.objects.filter(action='inventory_import_applied').first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.metadata['job_id'], job_id)
+        blob = json.dumps(entry.metadata)
+        self.assertNotIn('Cable Lightning', blob)
+        self.assertNotIn('C000001', blob)
+
+    # --- inspection, history, downloads -----------------------------------
+
+    def test_inspect_reports_the_sheets_without_staging_anything(self):
+        before = _BulkImportJob.objects.count()
+        res = self._as(self.product_admin).post(
+            '/api/admin/imports/inspect/',
+            {'file': self._product_file(), 'import_type': 'products'},
+            format='multipart',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        names = [s['name'] for s in res.data['sheets']]
+        self.assertEqual(names, ['Productos', 'Unidades de medida', 'Marcas',
+                                 'Variables', 'Afectaciones'])
+        productos = res.data['sheets'][0]
+        self.assertEqual(productos['header_row'], 2)
+        self.assertEqual(len(productos['headers']), 18)
+        self.assertIn('18 columnas', productos['detected'])
+        self.assertEqual(_BulkImportJob.objects.count(), before)
+
+    def test_the_history_is_tenant_scoped(self):
+        self._as(self.product_admin).post(
+            '/api/admin/products/import/preview/', {'file': self._product_file()},
+            format='multipart',
+        )
+        stranger, _ = _p2d_member(
+            self.other, 'c14_api_stranger', ['company.view', 'products.manage'],
+        )
+        res = self._as(stranger).get('/api/admin/imports/')
+        self.assertEqual(res.data['results'], [])
+        res = self._as(self.product_admin).get('/api/admin/imports/')
+        self.assertEqual(len(res.data['results']), 1)
+
+    def test_the_error_report_downloads_as_csv(self):
+        upload = _c14_upload(_c14_products_workbook([{
+            'Código de barras': '7751234567892', 'Código': 'C000009',
+            'Nombre': 'Precio malo', 'Precio venta - 11834': 'gratis',
+        }]), 'malo.xlsx')
+        res = self._as(self.product_admin).post(
+            '/api/admin/products/import/preview/', {'file': upload},
+            format='multipart',
+        )
+        job_id = res.data['id']
+        res = self._as(self.product_admin).get(
+            f'/api/admin/imports/{job_id}/errors.csv'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        body = res.content.decode('utf-8')
+        self.assertIn('Precio malo', body)
+        self.assertIn('attachment', res['Content-Disposition'])
+
+    def test_the_product_template_downloads_and_the_importer_can_read_it(self):
+        """§60 — a template the platform cannot read back is not a template."""
+        res = self._as(self.product_admin).get('/api/admin/products/import/template/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        workbook, _notes = _c14_reader.load_workbook(res.content)
+        headers, rows, _t = _c14_reader.read_rows(workbook, 'Productos', header_row=1)
+        self.assertIn('Nombre', headers)
+        self.assertIn('Precio de venta', headers)
+
+    def test_the_inventory_export_round_trips_through_the_importer(self):
+        """§61, §62 — download, count in Excel, upload again."""
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.INITIAL_STOCK, quantity=4, reason='alta',
+        )
+        res = self._as(self.stock_admin).get(
+            f'/api/admin/inventory/export/?branches={self.branch.pk}'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        workbook, _notes = _c14_reader.load_workbook(res.content)
+        headers, rows, _t = _c14_reader.read_rows(
+            workbook, 'Inventario', header_row=1,
+        )
+        self.assertEqual(headers[:3], ['CODIGO', 'CODIGO EAN', 'NOMBRE'])
+        # NOT the exporting system's header. That number is another platform's
+        # warehouse id and has no business in every tenant's download.
+        self.assertNotIn('ALMACEN 1 - 11416', headers)
+        self.assertIn(f'ALMACEN {self.branch.name}', headers)
+        self.assertEqual(rows[0][1][3], '4')
+
+    def test_the_count_sheet_can_be_downloaded_blank(self):
+        """
+        §61(B). Pre-filled quantities are how a physical count stops being a
+        count: whoever holds the sheet reads "14", sees fourteen-ish, and writes
+        nothing.
+        """
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.INITIAL_STOCK, quantity=4, reason='alta',
+        )
+        res = self._as(self.stock_admin).get(
+            f'/api/admin/inventory/export/?branches={self.branch.pk}&quantities=blank'
+        )
+        workbook, _notes = _c14_reader.load_workbook(res.content)
+        _headers, rows, _t = _c14_reader.read_rows(
+            workbook, 'Inventario', header_row=1,
+        )
+        self.assertNotIn(3, rows[0][1])
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 4,
+        )
+
+    def test_the_export_refuses_another_tenants_branch(self):
+        res = self._as(self.stock_admin).get(
+            f'/api/admin/inventory/export/?branches={self.foreign_branch.pk}'
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class C14MappingProfileTest(TestCase):
+    """§20, §21, §22 — remembering the shape, not the customer."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-profile', 'Perfiles')
+        self.other = _p3_company('c14-profile-b', 'Perfiles B')
+        self.user, _ = _p2d_member(
+            self.company, 'c14_profile_admin', ['company.view', 'products.manage'],
+        )
+
+    def test_a_signature_survives_the_data_changing(self):
+        """
+        Keyed on the SHAPE. Hashing the file would recognise nothing twice,
+        because the data is different in every upload — which is the point of
+        uploading it.
+        """
+        first = _c14_formats.header_signature(
+            'products', 'Productos', _C14_PRODUCT_HEADERS,
+        )
+        second = _c14_formats.header_signature(
+            'products', 'Productos', _C14_PRODUCT_HEADERS,
+        )
+        self.assertEqual(first, second)
+
+    def test_different_columns_are_a_different_shape(self):
+        changed = _C14_PRODUCT_HEADERS[:-1]
+        self.assertNotEqual(
+            _c14_formats.header_signature('products', 'Productos', _C14_PRODUCT_HEADERS),
+            _c14_formats.header_signature('products', 'Productos', changed),
+        )
+
+    def test_accents_and_case_do_not_change_the_shape(self):
+        self.assertEqual(
+            _c14_formats.normalize_header('CÓDIGO EAN'),
+            _c14_formats.normalize_header('codigo_ean'),
+        )
+
+    def test_two_warehouses_are_not_folded_into_one_column(self):
+        """
+        Digits are kept on purpose: `ALMACEN 1` and `ALMACEN 2` are two shops,
+        and collapsing them would merge two warehouses into one.
+        """
+        self.assertNotEqual(
+            _c14_formats.normalize_header('ALMACEN 1 - 11416'),
+            _c14_formats.normalize_header('ALMACEN 2 - 11417'),
+        )
+
+    def test_a_profile_is_stored_after_the_first_preview(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        client.post(
+            '/api/admin/products/import/preview/',
+            {'file': _c14_upload(_c14_products_workbook([{
+                'Código de barras': '7751234567892', 'Código': 'C000002',
+                'Nombre': 'X', 'Precio venta - 11834': 10,
+            }]), 'p.xlsx')},
+            format='multipart',
+        )
+        profile = _ImportMappingProfile.objects.get(company=self.company)
+        self.assertEqual(profile.import_type, 'products')
+        self.assertIn('name', profile.mapping)
+        self.assertFalse(_ImportMappingProfile.objects.filter(company=self.other).exists())
+
+    def test_the_presets_are_not_keyed_to_a_company(self):
+        """
+        §22. `if company.slug == 'black-dog-store'` is not a feature, it is one
+        customer welded into a platform: the second tenant with the same
+        accounting system gets nothing, and the branch that runs for one customer
+        is the branch nobody else's tests cover.
+        """
+        import ast
+        import inspect
+
+        # Walked as a SYNTAX TREE, not scanned as text. The module's own
+        # docstring quotes `if company.slug == 'black-dog-store'` as the thing
+        # it refuses to do, and a text scan cannot tell an example of a mistake
+        # from the mistake.
+        tree = ast.parse(inspect.getsource(_c14_formats))
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in ('slug', 'pk', 'id'):
+                base = node.value
+                if isinstance(base, ast.Name) and base.id in ('company', 'tenant'):
+                    offenders.append(node.lineno)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                # A tenant's slug appearing as a runtime STRING would be the
+                # same welding by another route. Docstrings are excluded: they
+                # are the module explaining itself.
+                if node.value in ('black-dog-store', 'blackdog'):
+                    offenders.append(node.lineno)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)):
+                doc = ast.get_docstring(node, clean=False)
+                if doc is None:
+                    continue
+                first = node.body[0]
+                if isinstance(first, ast.Expr):
+                    span = range(first.lineno, (first.end_lineno or first.lineno) + 1)
+                    offenders = [line for line in offenders if line not in span]
+        self.assertEqual(offenders, [], 'el detector depende de una empresa concreta')
+
+        # And it really does fire for a company that is not the owner's.
+        stranger = _p3_company('c14-anyone', 'Cualquier Empresa')
+        detected = _c14_formats.detect('products', 'Productos', _C14_PRODUCT_HEADERS)
+        self.assertIsNotNone(detected)
+        self.assertTrue(stranger.pk)
+
+    def test_a_file_from_another_system_with_the_same_columns_is_recognised(self):
+        """A different warehouse number is the same format."""
+        headers = ['ID', 'CODIGO', 'CODIGO EAN', 'NOMBRE', 'ALMACEN 1 - 99999']
+        detected = _c14_formats.detect('stock', 'Worksheet', headers)
+        self.assertIsNotNone(detected)
+        self.assertEqual(detected['warehouse_columns'], [(4, 'ALMACEN 1 - 99999')])
+
+
+class C14MigrationGraphTest(TestCase):
+    """§4, §71 — one graph, and it still runs from either side."""
+
+    def test_the_graph_has_exactly_one_leaf(self):
+        """
+        Two branches left 0033 and Django refuses a graph with two leaves — it
+        cannot know which order was intended, and the answer is not in the files.
+        """
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        leaves = [
+            name for app, name in loader.graph.leaf_nodes() if app == 'store'
+        ]
+        self.assertEqual(len(leaves), 1, leaves)
+
+    def test_the_merge_migration_depends_on_both_real_leaves(self):
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        merge = loader.disk_migrations[
+            ('store', '0041_merge_checkout_and_commercial_graphs')
+        ]
+        dependencies = {name for app, name in merge.dependencies if app == 'store'}
+        self.assertEqual(dependencies, {
+            '0034_checkout_idempotency',
+            '0040_promotion_capabilities_for_untouched_presets',
+        })
+
+    def test_the_merge_migration_changes_no_schema(self):
+        """
+        The two branches touch disjoint columns, so there is nothing to
+        reconcile in SQL. An empty node costs one row in `django_migrations`;
+        renumbering seven applied migrations costs a manual recovery.
+        """
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        merge = loader.disk_migrations[
+            ('store', '0041_merge_checkout_and_commercial_graphs')
+        ]
+        self.assertEqual(merge.operations, [])
+
+    def test_the_published_commercial_migrations_were_not_renumbered(self):
+        """
+        Those seven are applied in a real database. Renumbering them would show
+        Django seven migrations it has never run against tables that already
+        exist.
+        """
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        names = {name for app, name in loader.disk_migrations if app == 'store'}
+        for expected in (
+            '0034_commercial_pos_barcode',
+            '0035_commercial_capabilities_for_untouched_presets',
+            '0036_pos_customers_discounts_commissions',
+            '0037_commission_capabilities_for_untouched_presets',
+            '0038_backfill_historical_discount_source',
+            '0039_promotions_and_combos',
+            '0040_promotion_capabilities_for_untouched_presets',
+            '0034_checkout_idempotency',
+        ):
+            self.assertIn(expected, names)
+
+    def test_both_idempotency_constraints_survive(self):
+        """
+        §5. The auto-merge left two `constraints = [...]` in `Order.Meta`, the
+        second silently shadowing the first — valid Python that dropped the POS
+        uniqueness. They are different guarantees on different surfaces and are
+        deliberately not unified.
+        """
+        names = {c.name for c in Order._meta.constraints}
+        self.assertIn('unique_pos_idempotency_key_per_company', names)
+        self.assertIn('unique_checkout_idempotency_per_customer', names)
+
+    def test_a_fresh_database_builds_the_whole_graph(self):
+        """
+        §71(A). Implicitly proven by this suite existing — Django builds a fresh
+        database from 0001 to the leaf for every run — and asserted so that the
+        guarantee is stated rather than assumed.
+        """
+        from django.db import connection
+
+        tables = set(connection.introspection.table_names())
+        for table in ('store_bulkimportjob', 'store_bulkimportrow',
+                      'store_importmappingprofile', 'store_promotion',
+                      'store_stockmovement'):
+            self.assertIn(table, tables)
+
+
+class C14StockWriterDisciplineTest(TestCase):
+    """§49 — `inventory_services` is the ONLY thing that writes stock."""
+
+    IMPORT_MODULES = [
+        'import_services', 'stock_import_services', 'import_views',
+        'import_exports', 'import_formats', 'xlsx_reader',
+    ]
+
+    def test_no_import_module_writes_stock_directly(self):
+        """
+        Asserted over the SYNTAX TREE, not by scanning source text — these
+        modules discuss `BranchStock.quantity` in their prose precisely because
+        they must not touch it, and a text scan cannot tell an explanation from
+        an assignment.
+
+        The rule matters because a direct write leaves no Kardex row. The stock
+        would move and the history would not record it, so the shelf and the
+        ledger would disagree with no way to tell when they started to.
+        """
+        import ast
+        import importlib
+        import inspect
+
+        offenders = []
+        for name in self.IMPORT_MODULES:
+            module = importlib.import_module(f'store.{name}')
+            tree = ast.parse(inspect.getsource(module))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if (isinstance(target, ast.Attribute)
+                                and target.attr in ('quantity', 'inventory')):
+                            offenders.append(f'{name}:{node.lineno} = .{target.attr}')
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    if node.func.attr in ('update', 'bulk_update'):
+                        for keyword in node.keywords:
+                            if keyword.arg in ('quantity', 'inventory'):
+                                offenders.append(
+                                    f'{name}:{node.lineno} update({keyword.arg}=…)'
+                                )
+        self.assertEqual(offenders, [])
+
+    def test_the_stock_importer_calls_the_service(self):
+        """The other half: it does not write directly AND it does write."""
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(_c14_stock))
+        calls = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        self.assertIn('create_stock_movement', calls)
+
+
+class C14ImportedProductIsUsableTest(TestCase):
+    """§67 — a product that arrived by import is an ordinary product."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c14-usable', 'Usable')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.user, _ = _p2d_member(
+            self.company, 'c14_usable_admin',
+            ['company.view', 'products.manage', 'inventory.adjust',
+             _C13_PROMO_VIEW, _C13_PROMO_MANAGE],
+        )
+
+    def _import(self, rows):
+        job = _c14_products.preview_products(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_products_workbook(rows)), filename='p.xlsx',
+        )
+        _c14_products.apply_products(job=job, actor=self.user)
+        return job
+
+    def test_an_imported_product_can_join_a_promotion_immediately(self):
+        """
+        Nothing about the import marks a product as second class — no pending
+        flag, no separate table. If it did, an operator would import a catalogue
+        and then find they could not build a combo out of it.
+        """
+        self._import([
+            {'Código de barras': '7751234567892', 'Código': 'C000001',
+             'Nombre': 'Cable importado', 'Precio venta - 11834': 40},
+            {'Código de barras': '7751234567908', 'Código': 'C000002',
+             'Nombre': 'Cargador importado', 'Precio venta - 11834': 60},
+        ])
+        one = Product.objects.get(company=self.company, name='Cable importado')
+        two = Product.objects.get(company=self.company, name='Cargador importado')
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        res = client.post('/api/admin/sales/promotions/', {
+            'name': 'Combo importado',
+            'promotion_type': 'bundle_fixed_price',
+            'fixed_price': '80.00',
+            'items': [
+                {'product': one.pk, 'quantity': 1},
+                {'product': two.pk, 'quantity': 1},
+            ],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+
+    def test_an_imported_product_can_be_sold_and_leaves_stock(self):
+        """
+        The full chain: import the article, import its stock, sell it, and the
+        Kardex shows the exit against the quantity the import created.
+        """
+        self._import([{
+            'Código de barras': '7751234567892', 'Código': 'C000001',
+            'Nombre': 'Cable importado', 'Precio venta - 11834': 40,
+        }])
+        product = Product.objects.get(company=self.company, name='Cable importado')
+
+        stock_job = _c14_stock.preview_stock(
+            company=self.company, actor=self.user,
+            upload=_c14_upload(_c14_stock_workbook([{
+                'ID': 1, 'CODIGO': 'C000001', 'CODIGO EAN': '7751234567892',
+                'NOMBRE': 'Cable importado', 'ALMACEN 1 - 11416': 6,
+            }])),
+            filename='inv.xlsx', branch_map={4: self.branch.pk},
+            mode=_BulkImportJob.MODE_INITIAL,
+        )
+        self.assertEqual(stock_job.rows_error, 0)
+        _c14_stock.apply_stock(job=stock_job, actor=self.user)
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, product), 6,
+        )
+
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=2, reason='venta',
+        )
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, product), 4,
         )

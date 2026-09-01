@@ -3354,3 +3354,212 @@ class AppliedPromotion(models.Model):
                 raise ValidationError('El pedido no pertenece a esta empresa.')
             if promotion_companies.get(row.promotion_id) != row.company_id:
                 raise ValidationError('La promoción no pertenece a esta empresa.')
+
+
+# =============================================================================
+# Bulk import — Commercial Phase C1.4
+# =============================================================================
+#
+# WHY AN IMPORT IS THREE TABLES AND NOT AN UPLOAD HANDLER
+# ------------------------------------------------------
+# The naive shape is: receive the file, loop, write. It is wrong here for a
+# reason specific to what is being written. A product import can be corrected by
+# editing the product. A STOCK import cannot: it becomes Kardex movements, and
+# the Kardex is an append-only record of physical fact. Undoing it means issuing
+# compensating movements that are themselves permanent history — so the moment
+# to catch a mistake is BEFORE the write, not after.
+#
+# Hence: parse and normalise into `BulkImportRow` (which touches no business
+# table at all), show the operator exactly what will happen, and only then, on a
+# second deliberate action, apply. The file itself is never stored — its SHA256
+# and its normalised rows are, which is what an audit actually needs.
+
+
+class BulkImportJob(models.Model):
+    """
+    One upload, from the moment it was parsed to the moment it was applied.
+
+    Deliberately NOT a file store. Keeping the original workbook would mean
+    holding the tenant's commercial data — prices, costs, every article they
+    sell — indefinitely, to answer a question the normalised rows already
+    answer. The SHA256 is enough to prove which file this was.
+    """
+
+    PRODUCTS = 'products'
+    STOCK = 'stock'
+    TYPE_CHOICES = [
+        (PRODUCTS, 'Productos'),
+        (STOCK, 'Inventario'),
+    ]
+
+    PREVIEWED = 'previewed'
+    APPLIED = 'applied'
+    FAILED = 'failed'
+    STATUS_CHOICES = [
+        (PREVIEWED, 'Previsualizado'),
+        (APPLIED, 'Aplicado'),
+        (FAILED, 'Fallido'),
+    ]
+
+    # Stock only: what the numbers in the file MEAN.
+    MODE_INITIAL = 'initial'
+    MODE_RECONCILE = 'reconcile_target'
+    MODE_CHOICES = [
+        (MODE_INITIAL, 'Carga inicial'),
+        (MODE_RECONCILE, 'Ajuste a stock objetivo'),
+    ]
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='import_jobs',
+    )
+    import_type = models.CharField(max_length=16, choices=TYPE_CHOICES, db_index=True)
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=PREVIEWED, db_index=True,
+    )
+    stock_mode = models.CharField(
+        max_length=20, choices=MODE_CHOICES, blank=True, default='',
+    )
+
+    original_filename = models.CharField(max_length=255, blank=True, default='')
+    file_sha256 = models.CharField(max_length=64, blank=True, default='', db_index=True)
+
+    # Frozen at preview so apply cannot be argued into using a different
+    # mapping than the one the operator reviewed.
+    mapping_snapshot = models.JSONField(default=dict, blank=True)
+    options_snapshot = models.JSONField(default=dict, blank=True)
+
+    rows_total = models.PositiveIntegerField(default=0)
+    rows_create = models.PositiveIntegerField(default=0)
+    rows_update = models.PositiveIntegerField(default=0)
+    rows_no_change = models.PositiveIntegerField(default=0)
+    rows_skip = models.PositiveIntegerField(default=0)
+    rows_error = models.PositiveIntegerField(default=0)
+
+    summary = models.JSONField(default=dict, blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='import_jobs_created',
+    )
+    applied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='import_jobs_applied',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        indexes = [
+            models.Index(fields=['company', 'import_type', '-created_at']),
+            models.Index(fields=['company', 'status']),
+        ]
+
+    def __str__(self):
+        return f'{self.get_import_type_display()} #{self.pk} ({self.status})'
+
+    @property
+    def is_applicable(self) -> bool:
+        return self.status == self.PREVIEWED and self.rows_error == 0
+
+
+class BulkImportRow(models.Model):
+    """
+    One line of a preview, kept so that apply reads from the DATABASE.
+
+    WHY NOT JUST POST THE ROWS BACK FROM THE BROWSER
+    -----------------------------------------------
+    Because then the browser decides what gets written. Everything the operator
+    approved is here, normalised and tenant-scoped, and apply re-reads it —
+    the client sends an id and a confirmation, never data.
+
+    Only MAPPED columns are stored. Copying every unrecognised column of a
+    workbook into the database would persist whatever else the tenant keeps in
+    their spreadsheet — costs, suppliers, notes — that nobody asked to store.
+    """
+
+    CREATE = 'create'
+    UPDATE = 'update'
+    NO_CHANGE = 'no_change'
+    SKIP = 'skip'
+    ERROR = 'error'
+    ACTION_CHOICES = [
+        (CREATE, 'Crear'),
+        (UPDATE, 'Actualizar'),
+        (NO_CHANGE, 'Sin cambios'),
+        (SKIP, 'Omitir'),
+        (ERROR, 'Error'),
+    ]
+
+    job = models.ForeignKey(
+        BulkImportJob, on_delete=models.CASCADE, related_name='rows',
+    )
+    sheet_name = models.CharField(max_length=120, blank=True, default='')
+    # The row number the OPERATOR sees in Excel. Off-by-one here means they fix
+    # the wrong line.
+    row_number = models.PositiveIntegerField()
+    action = models.CharField(max_length=12, choices=ACTION_CHOICES, db_index=True)
+    match_key = models.CharField(max_length=120, blank=True, default='')
+    normalized_data = models.JSONField(default=dict, blank=True)
+    errors = models.JSONField(default=list, blank=True)
+    warnings = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sheet_name', 'row_number', 'pk']
+        indexes = [
+            models.Index(fields=['job', 'action']),
+        ]
+
+    def __str__(self):
+        return f'{self.sheet_name}!{self.row_number} → {self.action}'
+
+
+class ImportMappingProfile(models.Model):
+    """
+    A remembered answer to "which column is which".
+
+    Mapping eighteen columns by hand is a five-minute job the first time and an
+    error every time after. A profile is keyed by a HEADER SIGNATURE — the shape
+    of the file — so the same export from the same system is recognised
+    tomorrow, next month, and by a different member of staff.
+
+    Keyed on the headers and NOT on the file's SHA256, which changes with every
+    new set of data and would recognise nothing twice. And keyed on the headers
+    and NOT on the company's slug: a preset written for one tenant's export
+    works for any tenant whose system produces the same columns, which is what
+    makes this a SaaS feature rather than one customer's hardcoding.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='import_profiles',
+    )
+    name = models.CharField(max_length=120)
+    import_type = models.CharField(
+        max_length=16, choices=BulkImportJob.TYPE_CHOICES, db_index=True,
+    )
+    header_signature = models.CharField(max_length=64, db_index=True)
+    mapping = models.JSONField(default=dict, blank=True)
+    options = models.JSONField(default=dict, blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='import_profiles_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'import_type', 'header_signature'],
+                name='unique_import_profile_per_signature',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'import_type', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f'{self.name} ({self.import_type})'

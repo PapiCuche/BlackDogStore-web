@@ -989,7 +989,22 @@ Company
 
 Panel: `/admin/inventory`, `/admin/inventory/movements`,
 `/admin/inventory/transfers`, `/admin/inventory/counts`,
-`/admin/inventory/replenishment`, `/admin/inventory/reports`.
+`/admin/inventory/replenishment`, `/admin/inventory/reports`,
+`/admin/inventory/import`.
+
+### Carga masiva desde Excel (C1.4)
+
+`/admin/products/import` y `/admin/inventory/import`. Siempre en dos pasos:
+previsualizar y aplicar. La previsualización no escribe nada de negocio; el
+archivo no se almacena (sólo su SHA256 y las filas normalizadas).
+
+En el importador de inventario, **una celda de cantidad vacía no es un cero**:
+esa fila se omite y el stock queda como estaba. Un cero escrito sí baja el stock
+a cero. Todo cambio pasa por `inventory_services` y genera Kardex.
+
+El formato de 18 columnas del POS del propietario y su export de inventario de 5
+columnas se reconocen solos, por la **forma** del archivo (firma de encabezados),
+no por la empresa: cualquier inquilino con el mismo export queda cubierto.
 
 **Migración:** con una sola sucursal activa por empresa se resuelve sola. Con
 varias y ninguna indicada, la migración **falla ruidosamente** y pide
