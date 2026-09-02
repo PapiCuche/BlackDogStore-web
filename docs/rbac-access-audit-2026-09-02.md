@@ -30,15 +30,19 @@ Auditoría de autoridad de plataforma, roles empresariales, capacidades, aislami
 - El frontend histórico de `/admin/users` gestionaba el rol global heredado aunque el backend moderno ya estaba orientado a membresías por empresa.
 - Varios módulos conservan puentes legacy deliberados para no bloquear operadores pre-SaaS.
 
-### PENDIENTE — seguridad antes de merge
+### RESUELTO — el bloqueo de seguridad (M11)
 
-`resolve_capabilities()` usa el rol heredado cuando no encuentra **asignaciones personalizadas activas**. Como las asignaciones se desactivan para conservar historial, una membresía que ya adoptó RBAC personalizado puede perder su última asignación activa y volver accidentalmente a la autoridad legacy (por ejemplo, un antiguo `admin`).
+`resolve_capabilities()` usaba el rol heredado cuando no encontraba **asignaciones personalizadas activas**. Como las asignaciones se desactivan para conservar historial, una membresía que ya había adoptado RBAC podía perder su última asignación activa y volver a la autoridad legacy. En el caso peor —rol heredado `admin`— **quitarle a alguien su único rol lo convertía en administrador de la empresa**.
 
-Regla que debe quedar implementada y cubierta por tests:
+Regla implementada:
 
-> El fallback legacy solo aplica a membresías que **nunca** adoptaron roles personalizados. Si existe historial de asignaciones personalizadas y ninguna está activa, la capacidad efectiva es cero.
+> El fallback legacy solo aplica a membresías que **nunca** adoptaron roles personalizados. Si existe historial de asignaciones y ninguna está activa, la capacidad efectiva es cero.
 
-Hasta cerrar esa regla, la nueva consola web adopta comportamiento conservador: permite asignar roles y editar capacidades, pero no expone la revocación del último rol ni la desactivación de roles en uso.
+El discriminador no es «cuántos roles activos tiene» sino «¿esta empresa ha expresado alguna vez la autoridad de esta persona mediante RBAC?». Se responde con `has_custom_role_history(membership)` → `role_assignments.exists()`, que es fiable **porque la revocación es un soft-disable**: nada en el proyecto borra un `MembershipRoleAssignment`. Un test fija esa propiedad, porque un borrado físico futuro borraría la prueba de que la membresía migró y rearmaría el fallback en silencio.
+
+Prueba negativa: neutralizar la guarda hace fallar 5 tests; restaurarla los deja en verde.
+
+Con el backend cerrado, la consola **ya expone** la revocación individual de roles y la activación/desactivación de roles en uso.
 
 ### OBSOLETO / deuda de transición
 
@@ -55,11 +59,42 @@ Hasta cerrar esa regla, la nueva consola web adopta comportamiento conservador: 
 | Ventas | IMPLEMENTADO | Pedidos, POS, notas de venta; sin inventario administrativo ni configuración |
 | Inventario | IMPLEMENTADO | Ver/ajustar/reportar inventario; limitado además por sucursal |
 | Técnico | IMPLEMENTADO | Órdenes de servicio, diagnóstico, reparación; sin ajuste libre de inventario |
-| Recepción | PROPUESTA | Clientes/dispositivos/crear y consultar órdenes; sin diagnóstico, reparación ni inventario |
-| Caja | PROPUESTA | POS y cobro; sin analítica sensible, descuentos altos ni administración de roles |
-| Supervisor técnico | PROPUESTA | Gestión de órdenes, diagnóstico, reparación y futura calidad; sin administración SaaS |
-| Jefe de sucursal | PROPUESTA | Supervisión operativa de una o varias sucursales, sin autoridad de plataforma |
-| Control de calidad | PENDIENTE | No conceder hasta que `service.quality.manage` deje de estar reservado |
+| Recepción | **ABSORBIDO EN VENTAS** | Decisión de producto: no hay preset propio |
+| Caja | **ABSORBIDO EN VENTAS** | Decisión de producto: no hay preset propio |
+| Supervisor técnico | **IMPLEMENTADO** (M11) | Órdenes, asignación, diagnóstico y reparación; sin administración SaaS ni `inventory.adjust` |
+| Jefe de sucursal | PROPUESTA — **bloqueada por el modelo** | Ver más abajo |
+| Control de calidad | DESCARTADO EN ESTA FASE | `service.quality.manage` sigue reservada; no se crea preset |
+
+### Ventas = Ventas + Recepción + Caja (M11)
+
+La granularidad necesaria **ya existía**; no hizo falta inventar ninguna capacidad ni conceder de más. Ningún endpoint de recepción exige `service.manage`:
+
+| Operación de mostrador | Capacidad que la protege |
+| --- | --- |
+| Buscar al cliente | `service.customers.view` |
+| Registrar un cliente nuevo | `service.customers.manage` |
+| Anotar el equipo | `service.devices.view` / `.manage` |
+| Abrir la orden de recepción | `service.orders.create` |
+| Consultarla para atender | `service.orders.view` |
+
+Lo que Ventas **no** recibe, y por qué:
+
+| Excluida | Razón |
+| --- | --- |
+| `service.manage` | Es el módulo entero; recepción no lo necesita |
+| `service.orders.manage` | Mover la orden por el taller es dirigir el banco, no recibir |
+| `service.diagnostic.manage` / `service.repair.manage` | Decir qué falla y arreglarlo es el trabajo técnico |
+| `inventory.*` | Un mostrador que vende no es un mostrador que corrige la estantería |
+| `sales.discounts.apply` | Decidir el precio es de supervisión; cobrarlo no |
+| `sales.analytics.view` | Cobrar un cable no exige ver la facturación |
+
+**La matriz legacy NO creció.** Divergen a propósito: la matriz responde por membresías que nunca adoptaron RBAC —operadores pre-SaaS— y añadirle recepción les daría acceso al taller porque el software se publicó, que es exactamente la «autoridad que nadie decidió» que este proyecto rechaza. El preset crece porque una empresa lo elige.
+
+### Por qué *Jefe de sucursal* queda en PROPUESTA
+
+No es falta de capacidades: es que **el alcance por sucursal no vive en el rol**. `branch_access_mode` y `MembershipBranchAccess` son atributos de la **membresía**, deliberadamente independientes del rol (§5). Un `CompanyRole` no puede exigir «este rol solo tiene sentido con alcance restringido»: un administrador podría asignarlo con `branch_access_mode = ALL` y el resultado sería un supervisor de toda la empresa con nombre de jefe de sucursal.
+
+Crear el preset daría una garantía que el modelo no sostiene. Implementarlo de verdad requiere que el alcance obligatorio sea expresable —por ejemplo, un rol que declare `requires_branch_scope`— y eso es infraestructura de negocio que esta fase no tenía por qué inventar.
 
 ## Cambios de interfaz en esta rama
 
@@ -76,16 +111,37 @@ Hasta cerrar esa regla, la nueva consola web adopta comportamiento conservador: 
 - `frontend/app/admin/roles/page.tsx`
 - `docs/rbac-access-audit-2026-09-02.md`
 
+## Hallazgo adicional de M11 — duplicados de asignación
+
+`UniqueConstraint(membership, role, area)` **no cubría el caso normal**. `area` es nullable y en SQL dos NULL nunca son iguales, así que `(membresía, rol, NULL)` jamás colisionaba consigo mismo: la base de datos aceptaba dos asignaciones idénticas. Medido contra una base real antes de escribir nada, no deducido.
+
+Lo único que lo impedía era un `.exists()` previo a la inserción en la vista —una lectura antes de una escritura, que dos peticiones concurrentes atraviesan— exactamente la forma que P0-E ya había declarado insuficiente para las líneas de carrito.
+
+Corregido con un índice único parcial `WHERE area IS NULL`, precedido de una migración que consolida los duplicados que el hueco pudiera haber dejado.
+
+## Fuente única de autorización (§28)
+
+`CompanyContext.can()` responde desde `COMPANY_CAPABILITIES`, la matriz de la Fase 2A basada en el rol heredado. Sería un riesgo real de doble autoridad **si algo la usara**: no lo usa nada. `build_company_context()` y `.can()` no tienen ningún llamador en el runtime; solo los ejercitan sus propios tests.
+
+Por eso M11 **no la reescribe**: cambiar código dormido para arreglar un problema que no está causando es como una fase de seguridad se convierte en una refactorización. En su lugar hay un test estructural que recorre los módulos de runtime y falla si alguien la conecta, de modo que unificarla tenga que ser una decisión consciente.
+
+Clasificación: **OBSOLETO / deuda de transición.**
+
 ## Migraciones
 
-Ninguna.
+| Migración | Propósito |
+| --- | --- |
+| `0047_sales_reception_and_service_supervisor` | Da recepción a los presets `Ventas` **sin modificar** (igualdad exacta) y ofrece `Supervisor Técnico` a las empresas existentes |
+| `0048_consolidate_duplicate_role_assignments` | Desactiva duplicados `(membresía, rol)` sin área conservando el historial |
+| `0049_role_assignment_uniqueness` | Índice único parcial `WHERE area IS NULL` |
 
 ## Tests
 
-- Suite base conocida antes de esta rama: 2698 tests verdes (fase anterior).
-- Tests de esta rama: **PENDIENTE EJECUTAR**.
-- TypeScript/lint/build de esta rama: **PENDIENTE EJECUTAR**.
-- No fusionar a `master` hasta validar y cerrar el fallback de revocación.
+Ejecutados en esta rama; cifras reales en el informe de la fase.
+
+- Baseline al empezar M11: **2698 verdes**.
+- Suite completa tras M11: ver informe.
+- Prueba negativa del fallback: 5 fallos al retirar la guarda, verde al restaurarla.
 
 ## Decisión técnica
 
