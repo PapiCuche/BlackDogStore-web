@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     AccountToken, AdminAuditLog, Category, Product,
-    Order, OrderItem, CartItem, Review, Coupon, UserProfile,
+    Order, OrderItem, CartItem, PaymentTransaction, Review, Coupon, UserProfile,
     SalesNote, StockMovement,
     Branch, Company, Membership,
     CompanyArea, CompanyRole, MembershipRoleAssignment,
@@ -78,9 +78,9 @@ class OrderAdmin(admin.ModelAdmin):
         'receipt_type', 'paid', 'paid_at', 'created_at',
     )
     list_filter = ('status', 'fulfillment_status', 'delivery_method', 'receipt_type', 'paid', 'created_at')
-    search_fields = ('customer_name', 'customer_email', 'coupon_code', 'stripe_session_id',
+    search_fields = ('customer_name', 'customer_email', 'coupon_code',
                      'document_number', 'customer_phone')
-    readonly_fields = ('stripe_session_id', 'stripe_payment_intent_id', 'paid_at', 'payment_error',
+    readonly_fields = ('paid_at', 'payment_error',
                        'accepted_terms', 'accepted_warranty_policy',
                        'confirmation_email_sent_at', 'internal_notification_sent_at', 'email_send_error')
     fieldsets = (
@@ -103,10 +103,9 @@ class OrderAdmin(admin.ModelAdmin):
         ('Emails transaccionales (Fase 4.1)', {
             'fields': ('confirmation_email_sent_at', 'internal_notification_sent_at', 'email_send_error'),
         }),
-        ('Técnico (Stripe)', {
+        ('Técnico', {
             'classes': ('collapse',),
-            'fields': ('stripe_session_id', 'stripe_payment_intent_id', 'payment_error',
-                       'cart_session_key'),
+            'fields': ('payment_error', 'cart_session_key'),
         }),
     )
     inlines = [OrderItemInline]
@@ -667,6 +666,43 @@ class CustomerAdmin(admin.ModelAdmin):
         if obj is not None:
             base.append('company')
         return tuple(base)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(PaymentTransaction)
+class PaymentTransactionAdmin(admin.ModelAdmin):
+    """
+    The payments ledger, READ ONLY.
+
+    Nothing here is editable, and nothing is deletable. These rows are what an
+    operator reconciles a disputed charge against; a screen that let someone
+    correct an amount or a response code by hand would make them worthless as
+    evidence of what the gateway actually said.
+
+    The Order admin used to carry a "Técnico" panel with the gateway's
+    identifiers on it. It no longer does — the identifiers moved here, where
+    every attempt is visible instead of only the last one.
+    """
+
+    list_display = (
+        'transaction_id', 'order', 'provider', 'status', 'amount', 'currency',
+        'response_code', 'signature_verified', 'created_at', 'confirmed_at',
+    )
+    list_filter = ('provider', 'status', 'signature_verified', 'currency', 'created_at')
+    search_fields = ('transaction_id', 'order_number', 'authorization_code',
+                     'reference_number', 'provider_unique_id')
+    list_select_related = ('order',)
+    raw_id_fields = ('order',)
+    date_hierarchy = 'created_at'
+
+    def get_readonly_fields(self, request, obj=None):
+        return tuple(f.name for f in self.model._meta.fields)
+
+    def has_add_permission(self, request):
+        # A payment is created by a checkout, never typed in.
+        return False
 
     def has_delete_permission(self, request, obj=None):
         return False

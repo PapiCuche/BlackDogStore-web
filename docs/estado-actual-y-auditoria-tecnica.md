@@ -17,7 +17,7 @@ Black Dog Store es un ecommerce en construcción compuesto por:
 - PostgreSQL disponible mediante Docker Compose.
 - Autenticación JWT.
 - Carrito para visitantes.
-- Integración inicial con Stripe Checkout.
+- Integración inicial con la pasarela anterior (retirada en P0-F).
 - Enlaces de contacto mediante WhatsApp.
 
 La tienda tiene una identidad visual pública definida y ya cuenta con catálogo, detalle de producto, carrito, autenticación, pedidos, reseñas, cupones y checkout inicial.
@@ -106,7 +106,7 @@ La separación principal entre frontend y backend es correcta para la etapa actu
 - Simple JWT.
 - django-environ.
 - django-cors-headers.
-- Stripe SDK.
+- Izipay (REST, sin SDK de servidor: `urllib` de la stdlib).
 - psycopg2-binary.
 
 ### Infraestructura
@@ -164,7 +164,7 @@ Existe deriva entre entornos. Se deben fijar versiones compatibles y reproducibl
 ### Pedidos y pagos
 
 - Creación de órdenes.
-- Creación de sesiones de Stripe Checkout.
+- Creación de intentos de pago Izipay (token de sesión).
 - Webhook con verificación de firma.
 - Marcado básico de una orden como pagada.
 
@@ -214,8 +214,8 @@ La API se publica bajo `/api/`.
 | `/api/auth/login/` | POST | Obtener JWT |
 | `/api/auth/refresh/` | POST | Renovar JWT |
 | `/api/auth/me/` | GET | Consultar perfil |
-| `/api/payments/create-checkout-session/` | POST | Crear orden y sesión Stripe |
-| `/api/payments/webhook/` | POST | Recibir eventos Stripe |
+| `/api/payments/create-checkout-session/` | POST | Crear orden e intento de pago Izipay |
+| `/api/payments/izipay/notification/` | POST | Recibir notificaciones Izipay firmadas |
 
 ---
 
@@ -347,9 +347,9 @@ backend/store/serializers.py
 3. Crea sus líneas.
 4. Elimina el carrito.
 
-Después de eso, `CreateCheckoutSessionView` intenta comunicarse con Stripe.
+Después de eso, `CreateCheckoutSessionView` abre un intento de pago con Izipay.
 
-Si Stripe falla o el cliente cancela:
+Si la pasarela falla o el cliente cancela:
 
 - El carrito ya no existe.
 - Queda una orden pendiente.
@@ -404,7 +404,7 @@ Cualquier persona puede abrir `/checkout/success` directamente y verá:
 ¡Pago exitoso!
 ```
 
-No se consulta el estado de la orden ni la sesión de Stripe.
+No se consulta el estado de la orden ni el intento de pago.
 
 Además, la página promete un correo de confirmación, pero no existe un servicio de correo implementado.
 
@@ -643,8 +643,8 @@ No se pudo realizar una inspección visual por capturas porque el navegador inte
 
 ### Implementadas
 
-- Stripe Checkout.
-- Stripe webhook.
+- Checkout Izipay (Web SDK oficial).
+- Notificación (IPN) Izipay firmada.
 - WhatsApp.
 - Facebook.
 - Instagram.
@@ -980,7 +980,7 @@ Coupon tenant-aware                      IMPLEMENTADO
 Cart tenant-aware                        IMPLEMENTADO
 Order tenant-aware                       IMPLEMENTADO
 Checkout tenant-aware                    IMPLEMENTADO
-Stripe tenant-safe                       IMPLEMENTADO
+Pasarela tenant-safe                     IMPLEMENTADO
 Customer order isolation                 IMPLEMENTADO
 Admin order isolation                    IMPLEMENTADO
 Sales capabilities                       IMPLEMENTADO
@@ -1166,11 +1166,11 @@ acceso interno a los pedidos de la empresa será `sales.orders.view` sobre
 
 **BR-003 cerrado para v1**: `fulfillment_status` se expone en el serializer de
 cliente. El legacy no se tocó — pertenece al frontend web y además lista
-`stripe_session_id`.
+un identificador de pasarela.
 
 ### Deuda registrada
 
-- **`OrderSerializer` legacy expone `stripe_session_id`.** Fuera del alcance de
+- **`OrderSerializer` legacy exponía un identificador de pasarela.** Resuelto en P0-F; fuera del alcance de
   esta fase (es el contrato del frontend web), pero merece una revisión propia:
   un identificador de pasarela de pago no aporta nada a un cliente.
 - **`delivery_method` es `blank=True` sin default.** Los pedidos anteriores al
@@ -1200,11 +1200,11 @@ la variante por slug devuelva exactamente lo mismo.
 ### Deuda registrada
 
 - **Sin reserva de stock.** Dos compradores pueden validar la última unidad y
-  ambos llegar a Stripe; el stock definitivo se resuelve en el webhook, como ya
+  ambos llegar a la pasarela; el stock definitivo se resuelve en la notificación, como ya
   ocurría. No se cambió la semántica de inventario en esta fase.
-- **`stripe_session_id` es `unique=True`**, lo que es correcto, y conviene
+- **El identificador de pasarela es único**, lo que es correcto, y conviene
   recordarlo al escribir tests con mocks: dos pedidos no pueden compartir id.
-- **URL de checkout no persistida.** En un replay se recupera de Stripe; si la
+- **Sesión de pago no persistida.** En un replay se abre un intento nuevo; si la
   sesión caducó, `checkout_url` es null y el cliente lee el estado del pedido.
 - **Superficie interna v1 pendiente**, con `sales.orders.view` ya en el catálogo.
 
@@ -1370,7 +1370,7 @@ M7). Verificado hoy contra OSV/GHSA, PyPI y npm.
 | Pillow 12.2.0 — 13 CVE | CONFIRMADO, **sin superficie alcanzable** | → 12.3.0 igualmente |
 | sqlparse 0.5.5 — 4 CVE | CONFIRMADO (transitiva) | fijado a 0.6.0 |
 | `openpyxl` ausente de requirements | CONFIRMADO — rompe despliegue limpio | añadido |
-| DRF, SimpleJWT, Stripe, gunicorn, reportlab, psycopg2, cors-headers, django-environ | sin advisories | ninguna |
+| DRF, SimpleJWT, gunicorn, reportlab, psycopg2, cors-headers, django-environ | sin advisories | ninguna |
 
 ### Por qué la «mínima segura» no fue la mínima obvia
 
@@ -1779,3 +1779,123 @@ Los tests con hilos y barrera están escritos y **se omiten explícitamente** en
 SQLite con esa razón. Correrán sin cambios el día que la suite apunte a
 PostgreSQL. Lo que garantiza la invariante —constraint más incremento atómico— no
 depende de cómo el motor planifique los escritores.
+
+---
+
+## Fase 0.3 / P0-F — Pasarela de pago Izipay e integridad monetaria
+
+**Estado: IMPLEMENTADO**, con la verificación end-to-end en sandbox **pendiente
+de credenciales**. Migraciones **0043**, **0044** y **0045**.
+
+### La decisión que ordena todo lo demás
+
+> **El callback del navegador no es autoridad de pago.**
+
+El SDK devuelve un resultado a la página del comprador. Esa página es el peor
+testigo disponible: se edita, se repite y se inventa desde la consola. Sirve para
+elegir qué pantalla mostrar. Lo único que puede marcar un pedido como pagado es
+una notificación firmada, verificada en el servidor con una clave que el
+navegador nunca ve.
+
+### Sólo los bytes firmados son el mensaje
+
+Izipay firma `payloadHttp`, y **nada más**. La copia decodificada que viaja al
+lado —`response`— es cómoda y no está protegida por ninguna firma: cualquiera que
+alcance el endpoint puede editarla sin invalidar nada.
+
+Por eso todo valor con consecuencias —importe, moneda, número de orden, comercio,
+transacción, código— se lee **de dentro** del `payloadHttp` parseado, y el
+adaptador devuelve un `NotificationResult` en el que no sobrevive ningún dato del
+sobre exterior. Un objeto del que no se puede leer la copia equivocada.
+
+Ese payload **no se vuelve a serializar** para verificarlo:
+
+```
+json.loads(payloadHttp)  →  json.dumps(...)     ✗  otros bytes, otro HMAC
+str tal cual, como llegó                        ✓
+```
+
+Reordenar claves, cambiar separadores o re-escapar el acento de «Operación» basta
+para que la firma no cuadre y se rechacen todas las notificaciones legítimas.
+
+### Comprobaciones antes de tocar nada
+
+| Orden | Comprobación | Qué evita |
+|---|---|---|
+| 1 | Firma HMAC-SHA256 con `compare_digest` | Mensaje falsificado o alterado |
+| 2 | `transactionId` conocido | Autorización de una operación que no existe aquí |
+| 3 | `orderNumber` del propio intento | Pagar un pedido con la autorización de otro |
+| 4 | `merchantCode` configurado | Autorización de otro comercio |
+| 5 | Moneda exacta | 100 USD tomados por 100 PEN |
+| 6 | Importe **exacto** contra `Order.total` | Cobro de menos y de más |
+| 7 | Código de respuesta autorizado | Rechazo tratado como pago |
+
+Sólo después, bajo `select_for_update()`, cambian estado, stock y carrito.
+
+### El importe cuadra en las dos direcciones
+
+`99.99` no paga un pedido de `100.00`. **`100.01` tampoco.** Recibir de más no es
+un golpe de suerte: es una autorización que pertenece a otra intención, y
+quedarse con la diferencia es reconciliar por accidente. Una discrepancia no se
+registra como rechazo sino como `integrity_failed` — un rechazo lo dice la
+pasarela; esto lo dicen la pasarela y la base de datos a la vez, y necesita una
+persona, no un reintento.
+
+### `PaymentTransaction`: los intentos son filas, no columnas
+
+| Opción | Por qué no / sí |
+|---|---|
+| **A** — campos en `Order` | Más simple, y **pierde historial**: un comprador con dos rechazos y una aceptación produce tres intentos, y un solo campo guarda el último. Justo lo que hace falta cuando alguien impugna un cargo |
+| **B** — `PaymentTransaction` | **Elegida.** Una fila por intento; `UNIQUE(provider, transaction_id)` es la idempotencia decidida por la base de datos, no por un `if` |
+
+Y hay una razón del propio protocolo: Izipay rechaza un `orderNumber` repetido
+(código **P69**), así que un reintento necesita uno nuevo. El número pertenece al
+intento.
+
+**Sin columna de empresa**: el inquilino es `order.company`. Una segunda copia
+crearía dos respuestas a «de quién es este pago» — el mismo criterio que dejó
+`company` fuera de `Review` en P0-D y de `CartItem` en P0-E.
+
+### Qué NO se guarda
+
+No el payload completo, no el bloque de facturación, no el de envío, no la
+tarjeta enmascarada, no el documento que la pasarela devuelve. Guardarlo «para
+auditoría» construiría una segunda base de datos de clientes dentro de la tabla
+de pagos, con otra política de retención y sin que nadie la pidiera.
+
+### Secretos y entorno
+
+`IZIPAY_API_KEY` e `IZIPAY_HASH_KEY` no salen del backend ni aparecen en ninguna
+respuesta. Al navegador van sólo código de comercio, clave pública RSA y un token
+de sesión emitido para **una** transacción — los tres públicos por documentación.
+
+El frontend recibe el **nombre** del entorno, nunca una URL: las dos direcciones
+oficiales del SDK son constantes en el código. Una dirección de script que viaja
+como dato la elige quien pueda modificar la respuesta, en la única página donde
+se teclea una tarjeta.
+
+`IZIPAY_ENV` es explícito. **Nunca se deduce de `DEBUG`**: un staging con
+`DEBUG=0` no es producción, y deducirlo es la forma de empezar a cobrar de verdad
+sin que nadie lo haya decidido.
+
+### Multiempresa — lo que existe hoy
+
+| Modelo | Estado |
+|---|---|
+| **A** — una instalación, un comercio Izipay | **Es el actual**, igual que la configuración anterior |
+| **B** — un comercio por empresa | **PENDIENTE DE DECISIÓN / INFRA** |
+| **C** — la plataforma procesa por los tenants | **PENDIENTE DE DECISIÓN** (implicaciones regulatorias) |
+
+No se inventa la decisión comercial. Las credenciales se pasan como un valor
+(`IzipayCredentials`) a cada llamada, así que el día que se decida el modelo B
+sólo cambia de dónde sale ese valor, no quién lo usa. **No se guardan secretos en
+`CompanySettings`.**
+
+### Lo que queda sin verificar, y por qué
+
+| Punto | Estado |
+|---|---|
+| Flujo end-to-end contra sandbox | **PENDIENTE — requiere credenciales Izipay** |
+| `IZIPAY_TOKEN_URL` | Configuración **sin valor por defecto**: la referencia REST se renderiza en el navegador y la autoridad es el panel del comercio. Una URL adivinada habría sido un endpoint inventado |
+| `dateTimeTransaction` | Se envía en milisegundos de época — la forma de todos los ejemplos oficiales; el formato exacto no está publicado en ninguna página servida estáticamente |
+| Código `P66` | Figura como «Operación exitosa» en la tabla oficial y **no** se acepta como autorización hasta confirmarlo con Izipay. Un código aceptado de más regala mercadería; uno rechazado de más deja un pedido pendiente y visible |

@@ -7,7 +7,7 @@
 ## 1. Sistema de inventario
 
 Antes de la Fase 6.0 el stock era un único entero (`Product.inventory`) que se
-modificaba desde dos sitios: el webhook de Stripe y el endpoint de ajuste manual.
+modificaba desde dos sitios: la notificación de pago y el endpoint de ajuste manual.
 No quedaba rastro de *quién* lo movió, *cuándo* ni *por qué*.
 
 Ahora **todo cambio de stock pasa por `store/inventory_services.py`** y produce
@@ -49,7 +49,7 @@ Garantías del servicio:
 
 `sale_exit` está deliberadamente excluido de los tipos que un operador puede
 registrar a mano: el endpoint lo rechaza con `400`. Las salidas por venta solo
-las crea el webhook de Stripe.
+las crea la notificación de pago verificada.
 
 ---
 
@@ -75,7 +75,7 @@ a mano desincronizaría `Product.inventory`.
 
 ## 4. Idempotencia de las ventas
 
-Cuando Stripe confirma un pago, el webhook llama:
+Cuando Izipay confirma un pago con una notificación firmada, el endpoint llama:
 
 ```python
 record_sale_stock_movements(order)
@@ -85,7 +85,7 @@ que descuenta stock y escribe el Kardex dentro de la transacción que ya tenía 
 orden bloqueada. Antes de crear cada movimiento consulta qué productos de esa
 orden ya tienen una `sale_exit`, y los omite. Consecuencia:
 
-- Un webhook reintentado por Stripe **no vuelve a descontar stock**.
+- Una notificación reintentada por Izipay **no vuelve a descontar stock**.
 - Tres entregas del mismo evento producen exactamente **una** `sale_exit` por ítem.
 
 Si el stock se agotó entre el checkout y la confirmación, el dinero ya está
@@ -199,7 +199,7 @@ fecha · cliente · teléfono · documento · comprobante solicitado · método 
 entrega · productos (nombre, cantidad, precio unitario, subtotal) · descuento ·
 total · notas · disclaimer.
 
-**Nunca incluye** `stripe_session_id`, `stripe_payment_intent_id`,
+**Nunca incluye** identificadores de pasarela (`PaymentTransaction`),
 `payment_error`, tokens, cookies ni secretos. Hay tests que verifican que esas
 cadenas no aparecen ni en el contexto ni en los bytes del PDF.
 
@@ -219,7 +219,7 @@ Metadata permitida: `product_id`, `product_name`, `movement_type`, `quantity`,
 `stock_before`, `stock_after`, `reason`, `order_id`, `sales_note_id`,
 `sales_note_number`.
 
-**Nunca** se guarda: identificadores de Stripe, `payment_error`, tokens, cookies
+**Nunca** se guarda: identificadores de pasarela, `payment_error`, tokens, cookies
 ni secretos.
 
 ---

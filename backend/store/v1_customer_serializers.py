@@ -11,7 +11,7 @@ There are now three audiences, and they are not the same reader:
               capability. (Not implemented yet — DEC-API-001.)
 
 The legacy `OrderSerializer` belongs to the web frontend and lists
-`stripe_session_id` among its fields. That is a payment-processor identifier,
+a gateway identifier among its fields. That is a payment-processor identifier,
 and it has no business in a mobile response no matter who is asking. Reusing it
 "because it is close enough" is exactly how internal data reaches a customer
 screen.
@@ -71,7 +71,7 @@ class V1CustomerOrderSerializer(serializers.ModelSerializer):
 
     # ── What is deliberately ABSENT, and why ────────────────────────────────
     #
-    # stripe_session_id, stripe_payment_intent_id
+    # gateway identifiers (see PaymentTransaction)
     #     Payment-processor identifiers. Nothing a customer can do with one, and
     #     everything an attacker holding a leaked order could.
     # payment_error, email_send_error

@@ -5,7 +5,7 @@ from .views import (
     OrderViewSet,
     CartViewSet,
     CreateCheckoutSessionView,
-    StripeWebhookView,
+    IzipayNotificationView,
     PaymentStatusView,
     ReviewViewSet,
     CouponValidateView,
@@ -111,7 +111,13 @@ urlpatterns = [
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='auth-password-reset-confirm'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='auth-change-password'),
     path('payments/create-checkout-session/', CreateCheckoutSessionView.as_view(), name='create-checkout-session'),
-    path('payments/webhook/', StripeWebhookView.as_view(), name='stripe-webhook'),
+    # The gateway's notification endpoint. Named for the role, not the
+    # provider's product name, so the route survives the next migration.
+    path(
+        'payments/izipay/notification/',
+        IzipayNotificationView.as_view(),
+        name='izipay-notification',
+    ),
     path('payments/status/', PaymentStatusView.as_view(), name='payment-status'),
     path('coupons/validate/', CouponValidateView.as_view(), name='coupon-validate'),
     path('admin/users/', AdminUserListView.as_view(), name='admin-users'),

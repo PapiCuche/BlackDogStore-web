@@ -154,8 +154,9 @@ class AdminPosContextView(APIView):
             'payment_methods': [
                 {'value': v, 'label': l}
                 for v, l in PaymentMethod.choices
-                # Stripe is the online channel's method; a counter cannot pick it.
-                if v != PaymentMethod.STRIPE
+                # The gateway method belongs to the online channel; a
+                # counter cannot pick it.
+                if v != PaymentMethod.ONLINE
             ],
             'can_manage_customers': has_capability(
                 request.user, company, 'service.customers.manage',

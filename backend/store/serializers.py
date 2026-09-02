@@ -177,7 +177,6 @@ class OrderSerializer(serializers.ModelSerializer):
             'status',
             'paid',
             'paid_at',
-            'stripe_session_id',
             'created_at',
             'items',
         ]
@@ -202,7 +201,7 @@ _PERU_PHONE_RE = re.compile(r'^\+?51?\s*9\d{2}\s*\d{3}\s*\d{3}$|^9\d{8}$')
 # Fields the frontend must never be allowed to set (injected fields)
 _FORBIDDEN_CHECKOUT_FIELDS = frozenset([
     'total', 'discount_amount', 'paid', 'paid_at', 'status', 'fulfillment_status',
-    'stripe_session_id', 'stripe_payment_intent_id', 'payment_error', 'cart_session_key',
+    'payment_error', 'cart_session_key',
     'coupon_code',  # accepted separately, validated server-side
 ])
 
@@ -485,7 +484,7 @@ class AdminOrderDetailSerializer(serializers.ModelSerializer):
             'confirmation_email_sent_at', 'internal_notification_sent_at', 'email_send_error',
             'items',
         ]
-        # NOTE: stripe_session_id, stripe_payment_intent_id, payment_error intentionally excluded
+        # NOTE: payment_error intentionally excluded — see the note above.
 
 
 class AdminOrderFulfillmentSerializer(serializers.Serializer):
@@ -623,7 +622,7 @@ class SalesNoteSerializer(serializers.ModelSerializer):
     """
     Internal sales note. NOT a SUNAT electronic receipt.
 
-    Deliberately exposes no Stripe identifier and no payment_error.
+    Deliberately exposes no gateway identifier and no payment_error.
     """
 
     created_by_username = serializers.SerializerMethodField()
@@ -1103,9 +1102,9 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
     remain platform-operator decisions.
 
     `currency` is read-only on purpose: the value is stored so the model is ready
-    for multi-currency, but checkout charges through Stripe in one currency
+    for multi-currency, but checkout charges through the gateway in one currency
     configured at the platform level. A dropdown that let a tenant pick USD while
-    Stripe billed PEN would be a lie with a UI on it.
+    the gateway billed PEN would be a lie with a UI on it.
     """
 
     company_name = serializers.CharField(source='company.name', read_only=True)
@@ -1395,7 +1394,7 @@ class CustomerOrderSerializer(serializers.ModelSerializer):
     point of showing history is to show what happened, and what happened
     included the address the parcel actually went to.
 
-    Carries no Stripe identifier and no payment error, for the same reason the
+    Carries no gateway identifier and no payment error, for the same reason the
     rest of the internal order surface does not.
     """
 

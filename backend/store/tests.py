@@ -2,7 +2,7 @@
 Black Dog Store backend tests.
 Phase 0.1 (24 tests): models, catalog API, cart, coupons.
 Phase 1 (+16 tests): checkout flow, inventory, webhook, payment status.
-Audit Phase 1 (+8 tests): Stripe error path, OrderViewSet access control, cross-user isolation.
+Audit Phase 1 (+8 tests): gateway error path, OrderViewSet access control, cross-user isolation.
 Phase 2.0 (+22 tests): register/login security, cart PATCH validation, review permissions.
 Phase 2.1 (+19 tests): cookie JWT auth, CSRF enforcement, refresh/logout/csrf endpoints.
 Phase 2.2 (+10 tests): logout CSRF enforcement, token blacklist after rotation and logout.
@@ -12,18 +12,20 @@ Phase 3.1 (+9 tests): paginated responses, search/filter users, filter audit log
 Audit 3.1 (+14 tests): page_size cap, page invalid, CSRF on role change, extra fields ignored, actor filter, pagination edge cases.
 Phase 3.2 (+52 tests): admin products CRUD, inventory adjust, categories, is_active filter, regression.
 Audit 3.2 (+6 tests): cart rejects inactive, public detail 404 inactive, checkout rejects inactive, PATCH detail GET.
-Phase 3.3 (+72 tests): admin orders access control, filters, detail security (no stripe/payment_error), fulfillment status change, inventory role restrictions, audit log, regression.
+Phase 3.3 (+72 tests): admin orders access control, filters, detail security (no gateway id/payment_error), fulfillment status change, inventory role restrictions, audit log, regression.
 Audit 3.3 (+7 tests): technician 403, webhook doesn't modify fulfillment_status, checkout default pending, atomic audit log.
 Phase 4.0 (+30 tests): commercial checkout fields, document validation, delivery address requirements, receipt type, terms acceptance, frontend injection blocked, admin order detail commercial fields.
 Phase 4.1 (+36 tests): email service unit tests, idempotency flags, no-duplicate sends, webhook on_commit integration, send_mail failure handled, admin detail email flags, customer/payment views don't expose email flags.
-Phase 4.2 (+46 tests, audit +4=50): PDF context builder (excludes Stripe fields, Decimal types, disclaimer), PDF generator (valid bytes, ValueError for unpaid), email+PDF integration (attachment, PDF fail graceful, error logged), admin PDF endpoint RBAC (4 allowed roles, technician/customer/anon blocked), audit log clean metadata, content-type, Content-Disposition, Stripe data not in cleartext, copywriting disclaimer, no-SUNAT-electronico title.
-Phase 4.3 (+37 tests, audit +3=42): resend_order_confirmation_email service (bypasses idempotency, best-effort PDF, updates flag, raises on SMTP failure), AdminOrderResendEmailView RBAC (admin+superadmin allowed; customer/sales/inventory/technician/anon blocked), 400 for unpaid, 404 for missing, 502 for SMTP failure, 405 for non-POST methods, audit log clean metadata (no Stripe IDs), SMTP failure records email_send_error, audit log NOT created on SMTP failure, HTML body no Stripe IDs, regression (automatic webhook flow unaffected).
+Phase 4.2 (+46 tests, audit +4=50): PDF context builder (excludes gateway fields, Decimal types, disclaimer), PDF generator (valid bytes, ValueError for unpaid), email+PDF integration (attachment, PDF fail graceful, error logged), admin PDF endpoint RBAC (4 allowed roles, technician/customer/anon blocked), audit log clean metadata, content-type, Content-Disposition, gateway data not in cleartext, copywriting disclaimer, no-SUNAT-electronico title.
+Phase 4.3 (+37 tests, audit +3=42): resend_order_confirmation_email service (bypasses idempotency, best-effort PDF, updates flag, raises on SMTP failure), AdminOrderResendEmailView RBAC (admin+superadmin allowed; customer/sales/inventory/technician/anon blocked), 400 for unpaid, 404 for missing, 502 for SMTP failure, 405 for non-POST methods, audit log clean metadata (no gateway IDs), SMTP failure records email_send_error, audit log NOT created on SMTP failure, HTML body no gateway IDs, regression (automatic webhook flow unaffected).
 """
+import base64
+import hashlib
+import hmac
 import itertools
+import json
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
-
-import stripe as stripe_lib
 
 from django.core import mail
 from django.conf import settings
@@ -36,9 +38,200 @@ from datetime import timedelta
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import AccountToken, AdminAuditLog, Category, Product, Coupon, Order, OrderItem, CartItem, Review, UserProfile
+from .models import (
+    AccountToken, AdminAuditLog, Category, Product, Coupon, Order, OrderItem,
+    CartItem, PaymentTransaction, Review, UserProfile,
+)
+from .payments import izipay
 
 User = get_user_model()
+
+
+# ---------------------------------------------------------------------------
+# P0-F — the payment gateway, under test
+# ---------------------------------------------------------------------------
+
+# A COMPLETE, FAKE merchant configuration. Every value is invented: no sandbox
+# credential of the real business is in this file, and the token URL points at
+# `.invalid`, a TLD reserved by RFC 2606 precisely so it can never resolve. If a
+# test ever escapes its mock and tries to reach the network, it fails with a DNS
+# error instead of quietly contacting something real.
+IZIPAY_TEST_SETTINGS = {
+    'PAYMENT_PROVIDER': 'izipay',
+    'IZIPAY_ENV': 'sandbox',
+    'IZIPAY_MERCHANT_CODE': '4001061',
+    'IZIPAY_API_KEY': 'test-api-key-not-real',
+    'IZIPAY_HASH_KEY': 'test-hash-key-not-real',
+    'IZIPAY_PUBLIC_KEY': 'test-public-key-not-real',
+    'IZIPAY_TOKEN_URL': 'https://izipay.invalid/token',
+    'IZIPAY_CURRENCY': 'PEN',
+    'IZIPAY_IPN_URL': 'https://tienda.invalid/api/payments/izipay/notification/',
+}
+
+# The one place the network is mocked. `request_session_token` is the ONLY
+# function in the adapter that opens a socket, so patching it is enough to run
+# the whole checkout offline — and, importantly, it is not the signature code.
+# Signatures are computed for real everywhere in this suite.
+SESSION_TOKEN_PATH = 'store.checkout_services.izipay.request_session_token'
+FAKE_SESSION_TOKEN = 'test-session-token'
+
+
+def _izipay_payload(
+    *,
+    transaction_id,
+    order_number,
+    amount,
+    currency='PEN',
+    code='00',
+    merchant_code='4001061',
+    pay_method='CARD',
+):
+    """
+    Build the exact string Izipay signs.
+
+    A STRING, not a dict, and that is the point of this helper. `payloadHttp` is
+    the original message; the signature covers those bytes and nothing else. A
+    test that built a dict and let the client re-encode it would be testing a
+    different byte sequence than the one it signed, and would pass or fail for
+    reasons that have nothing to do with the code under test.
+    """
+    return json.dumps({
+        'code': code,
+        'message': 'Operación exitosa' if code == '00' else 'Rechazado',
+        'messageUser': 'Operación exitosa' if code == '00' else 'Rechazado',
+        'messageUserEng': 'Successful' if code == '00' else 'Rejected',
+        'transactionId': transaction_id,
+        'response': {
+            'payMethod': pay_method,
+            'order': [{
+                'payMethodAuthorization': pay_method,
+                'codeAuth': '831000',
+                'currency': currency,
+                'amount': str(amount),
+                'installment': '00',
+                'deferred': '0',
+                'orderNumber': order_number,
+                'stateMessage': 'Autorizado' if code == '00' else 'Rechazado',
+                'dateTransaction': '20260902',
+                'timeTransaction': '174837',
+                'uniqueId': '1429383',
+                'referenceNumber': '6330602',
+            }],
+            'merchant': {'merchantCode': merchant_code, 'facilitatorCode': ''},
+        },
+    }, ensure_ascii=False)
+
+
+def _izipay_sign(payload_http, hash_key='test-hash-key-not-real'):
+    """
+    A REAL HMAC-SHA256, computed here rather than taken from the adapter.
+
+    Deliberately an independent implementation of the documented algorithm. If
+    this called `izipay.sign()`, then a bug in `sign()` would be reproduced
+    identically on both sides of every assertion and every signature test would
+    pass while the product rejected genuine notifications.
+    """
+    return base64.b64encode(
+        hmac.new(hash_key.encode('utf-8'), payload_http.encode('utf-8'), hashlib.sha256).digest()
+    ).decode('ascii')
+
+
+def _izipay_notification(payload_http, signature=None, hash_key='test-hash-key-not-real'):
+    """The full envelope Izipay POSTs, with a correct signature by default."""
+    return {
+        'code': json.loads(payload_http)['code'],
+        'message': 'Operación exitosa',
+        'messageUser': 'Operación exitosa',
+        'messageUserEng': 'Successful',
+        'response': json.loads(payload_http)['response'],
+        'payloadHttp': payload_http,
+        'signature': signature if signature is not None else _izipay_sign(payload_http, hash_key),
+        'transactionId': json.loads(payload_http)['transactionId'],
+    }
+
+
+def _pay_attempt(order, *, transaction_id='17370677285350', order_number='173706772800',
+                 amount=None, currency='PEN'):
+    """Open a payment attempt against `order`, the way the checkout would."""
+    return PaymentTransaction.objects.create(
+        order=order,
+        provider=izipay.PROVIDER,
+        transaction_id=transaction_id,
+        order_number=order_number,
+        amount=order.total if amount is None else amount,
+        currency=currency,
+        status=PaymentTransaction.Status.PENDING,
+    )
+
+
+IPN_URL = '/api/payments/izipay/notification/'
+_ipn_counter = itertools.count(1)
+
+
+def _post_izipay_ipn(
+    client,
+    order,
+    *,
+    amount=None,
+    currency='PEN',
+    code='00',
+    merchant_code='4001061',
+    pay_method='CARD',
+    signature=None,
+    hash_key='test-hash-key-not-real',
+    attempt=None,
+    payload_amount=None,
+    payload_order_number=None,
+    envelope_overrides=None,
+):
+    """
+    Deliver a genuine, correctly signed notification for `order`.
+
+    THE SIGNATURE IS REAL. Every call computes an actual HMAC-SHA256 over the
+    actual payload; nothing about the verification path is mocked. A test that
+    wants a forged message passes `signature=` explicitly, and then it is
+    forged for the same reason a real attacker's would be — the bytes do not
+    match the key.
+
+    Reuses an existing attempt when given one, so replay tests hit the SAME
+    transaction rather than quietly opening a fresh one and proving nothing.
+    """
+    if attempt is None:
+        # Reuse the order's existing attempt when there is one. That is what
+        # makes a repeated call a REPLAY of the same transaction rather than a
+        # brand-new one — a test that quietly opened a second attempt would
+        # show idempotency it never exercised.
+        attempt = PaymentTransaction.objects.filter(order=order).order_by('pk').last()
+    if attempt is None:
+        n = next(_ipn_counter)
+        attempt = _pay_attempt(
+            order,
+            transaction_id=f'tx{n:016d}',
+            order_number=f'on{n:010d}',
+            amount=order.total if amount is None else amount,
+            currency=currency,
+        )
+
+    payload = _izipay_payload(
+        transaction_id=attempt.transaction_id,
+        order_number=(
+            attempt.order_number if payload_order_number is None else payload_order_number
+        ),
+        amount=(attempt.amount if payload_amount is None else payload_amount),
+        currency=currency,
+        code=code,
+        merchant_code=merchant_code,
+        pay_method=pay_method,
+    )
+    body = _izipay_notification(payload, signature=signature, hash_key=hash_key)
+    if envelope_overrides:
+        body.update(envelope_overrides)
+
+    response = client.post(
+        IPN_URL, data=json.dumps(body), content_type='application/json',
+    )
+    response.attempt = attempt
+    return response
 
 
 def _storefront_of(company):
@@ -579,11 +772,7 @@ class CartStockValidationTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
-@override_settings(
-    STRIPE_SECRET_KEY='sk_test_fake_key',
-    STRIPE_WEBHOOK_SECRET='whsec_fake_secret',
-    STRIPE_DOMAIN='http://localhost:3000',
-)
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class CheckoutFlowTest(TestCase):
     """CreateCheckoutSessionView: validates cart, calculates totals from DB, preserves cart."""
 
@@ -603,11 +792,9 @@ class CheckoutFlowTest(TestCase):
             quantity=1,
         )
 
-    def _mock_stripe_session(self, session_id="cs_test_abc123"):
-        mock = MagicMock()
-        mock.id = session_id
-        mock.url = "https://checkout.stripe.com/pay/cs_test_abc123"
-        return mock
+    def _mock_session_token(self, token=FAKE_SESSION_TOKEN):
+        """What the gateway returns from the token API: a string, nothing more."""
+        return token
 
     def _base_body(self, **overrides):
         """Returns a complete valid checkout body for regression tests."""
@@ -626,9 +813,9 @@ class CheckoutFlowTest(TestCase):
         body.update(overrides)
         return body
 
-    @patch("stripe.checkout.Session.create")
+    @patch(SESSION_TOKEN_PATH)
     def test_checkout_creates_order_with_pending_status(self, mock_create):
-        mock_create.return_value = self._mock_stripe_session()
+        mock_create.return_value = self._mock_session_token()
         response = self.client.post(
             "/api/payments/create-checkout-session/", self._base_body(), format="json"
         )
@@ -637,27 +824,48 @@ class CheckoutFlowTest(TestCase):
         self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
         self.assertFalse(order.paid)
 
-    @patch("stripe.checkout.Session.create")
+    @patch(SESSION_TOKEN_PATH)
     def test_checkout_does_not_delete_cart(self, mock_create):
-        mock_create.return_value = self._mock_stripe_session()
+        mock_create.return_value = self._mock_session_token()
         self.client.post(
             "/api/payments/create-checkout-session/", self._base_body(), format="json"
         )
         cart_count = CartItem.objects.filter(session_key=self.session_key).count()
         self.assertEqual(cart_count, 1)
 
-    @patch("stripe.checkout.Session.create")
-    def test_checkout_saves_stripe_session_id(self, mock_create):
-        mock_create.return_value = self._mock_stripe_session("cs_test_xyz")
-        self.client.post(
+    @patch(SESSION_TOKEN_PATH)
+    def test_checkout_records_the_payment_attempt(self, mock_create):
+        mock_create.return_value = self._mock_session_token()
+        response = self.client.post(
             "/api/payments/create-checkout-session/", self._base_body(), format="json"
         )
         order = Order.objects.first()
-        self.assertEqual(order.stripe_session_id, "cs_test_xyz")
+        attempt = PaymentTransaction.objects.get(order=order)
+        self.assertEqual(attempt.provider, izipay.PROVIDER)
+        self.assertEqual(attempt.status, PaymentTransaction.Status.PENDING)
+        # The attempt is frozen at the order's total, so a notification cannot
+        # later be matched against a figure nobody authorised.
+        self.assertEqual(attempt.amount, order.total)
+        self.assertEqual(response.json()["transaction_id"], attempt.transaction_id)
 
-    @patch("stripe.checkout.Session.create")
+    @patch(SESSION_TOKEN_PATH)
+    def test_checkout_never_returns_a_secret(self, mock_create):
+        """The API key and the hash key have no path to any response."""
+        mock_create.return_value = self._mock_session_token()
+        response = self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
+        blob = json.dumps(response.json()).lower()
+        self.assertNotIn(IZIPAY_TEST_SETTINGS["IZIPAY_API_KEY"].lower(), blob)
+        self.assertNotIn(IZIPAY_TEST_SETTINGS["IZIPAY_HASH_KEY"].lower(), blob)
+        # ...while the values Izipay documents as public ARE present, because
+        # the SDK cannot draw a form without them.
+        self.assertEqual(response.json()["merchant_code"], "4001061")
+        self.assertEqual(response.json()["public_key"], "test-public-key-not-real")
+
+    @patch(SESSION_TOKEN_PATH)
     def test_checkout_calculates_total_from_db_not_frontend(self, mock_create):
-        mock_create.return_value = self._mock_stripe_session()
+        mock_create.return_value = self._mock_session_token()
         response = self.client.post(
             "/api/payments/create-checkout-session/",
             self._base_body(**{"frontend_total": "1.00"}),  # malicious input ignored
@@ -683,9 +891,9 @@ class CheckoutFlowTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("errors", response.json())
 
-    @patch("stripe.checkout.Session.create")
+    @patch(SESSION_TOKEN_PATH)
     def test_checkout_applies_coupon_discount_from_db(self, mock_create):
-        mock_create.return_value = self._mock_stripe_session()
+        mock_create.return_value = self._mock_session_token()
         Coupon.objects.create(company=_pilot_company(), code="FASE1TEST", discount_percent=10, is_active=True)
         response = self.client.post(
             "/api/payments/create-checkout-session/",
@@ -698,9 +906,9 @@ class CheckoutFlowTest(TestCase):
         self.assertEqual(order.total, expected_total)
         self.assertEqual(order.coupon_code, "FASE1TEST")
 
-    @patch("stripe.checkout.Session.create")
+    @patch(SESSION_TOKEN_PATH)
     def test_checkout_invalid_coupon_returns_400(self, mock_create):
-        mock_create.return_value = self._mock_stripe_session()
+        mock_create.return_value = self._mock_session_token()
         response = self.client.post(
             "/api/payments/create-checkout-session/",
             self._base_body(coupon_code="CUPONFALSO"),
@@ -709,12 +917,9 @@ class CheckoutFlowTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
-@override_settings(
-    STRIPE_SECRET_KEY='sk_test_fake_key',
-    STRIPE_WEBHOOK_SECRET='whsec_fake_secret',
-)
-class StripeWebhookTest(TestCase):
-    """StripeWebhookView: idempotent payment confirmation, inventory decrement, cart cleanup."""
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class IzipayNotificationTest(TestCase):
+    """IzipayNotificationView: idempotent payment confirmation, inventory decrement, cart cleanup."""
 
     def setUp(self):
         self.client = APIClient()
@@ -729,7 +934,6 @@ class StripeWebhookTest(TestCase):
             customer_email="webhook@example.com",
             total=Decimal("799.00"),
             cart_session_key=self.session_key,
-            stripe_session_id="cs_test_webhook_001",
             status=Order.Status.PENDING_PAYMENT,
         )
         OrderItem.objects.create(
@@ -743,86 +947,134 @@ class StripeWebhookTest(TestCase):
             product=self.product,
             quantity=2,
         )
+        self.attempt = _pay_attempt(self.order)
 
-    def _post_webhook(self, event_type, session_id="cs_test_webhook_001",
-                      payment_intent_id="pi_test_001"):
-        event = {
-            "type": event_type,
-            "data": {
-                "object": {
-                    "id": session_id,
-                    "payment_intent": payment_intent_id,
-                }
-            },
-        }
-        with patch("stripe.Webhook.construct_event", return_value=event):
-            return self.client.post(
-                "/api/payments/webhook/",
-                data=b'{}',
-                content_type="application/json",
-                HTTP_STRIPE_SIGNATURE="t=1,v1=fake",
-            )
+    def _post_ipn(self, **kwargs):
+        """One signed notification for this order, reusing the same attempt."""
+        kwargs.setdefault('attempt', self.attempt)
+        return _post_izipay_ipn(self.client, self.order, **kwargs)
 
-    def test_webhook_marks_order_paid(self):
-        response = self._post_webhook("checkout.session.completed")
+    def test_valid_notification_marks_order_paid(self):
+        response = self._post_ipn()
         self.assertEqual(response.status_code, 200)
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, Order.Status.PAID)
         self.assertTrue(self.order.paid)
         self.assertIsNotNone(self.order.paid_at)
 
-    def test_webhook_saves_payment_intent_id(self):
-        self._post_webhook("checkout.session.completed", payment_intent_id="pi_test_real_001")
-        self.order.refresh_from_db()
-        self.assertEqual(self.order.stripe_payment_intent_id, "pi_test_real_001")
+    def test_valid_notification_records_the_gateway_data(self):
+        self._post_ipn()
+        self.attempt.refresh_from_db()
+        self.assertEqual(self.attempt.status, PaymentTransaction.Status.AUTHORIZED)
+        self.assertTrue(self.attempt.signature_verified)
+        self.assertEqual(self.attempt.response_code, '00')
+        self.assertEqual(self.attempt.payment_method, 'CARD')
+        self.assertEqual(self.attempt.authorization_code, '831000')
+        self.assertIsNotNone(self.attempt.confirmed_at)
 
-    def test_webhook_decrements_inventory(self):
-        self._post_webhook("checkout.session.completed")
+    def test_notification_decrements_inventory(self):
+        self._post_ipn()
         self.product.refresh_from_db()
         self.assertEqual(self.product.inventory, 8)  # 10 - 2
 
-    def test_webhook_idempotent_no_double_decrement(self):
-        """Duplicate webhook must not decrement inventory twice."""
-        self._post_webhook("checkout.session.completed")
-        self._post_webhook("checkout.session.completed")
+    def test_notification_is_idempotent_no_double_decrement(self):
+        """Ten identical notifications, one payment."""
+        for _ in range(10):
+            self._post_ipn()
         self.product.refresh_from_db()
-        self.assertEqual(self.product.inventory, 8)  # still 8, not 6
+        self.assertEqual(self.product.inventory, 8)  # still 8, never 6
 
-    def test_webhook_deletes_cart_after_payment(self):
-        self._post_webhook("checkout.session.completed")
+    def test_replay_leaves_exactly_one_sale_exit(self):
+        from .models import StockMovement
+        for _ in range(10):
+            self._post_ipn()
+        movements = StockMovement.objects.filter(
+            order=self.order, movement_type=StockMovement.SALE_EXIT,
+        )
+        self.assertEqual(movements.count(), 1)
+
+    def test_replay_sends_exactly_one_set_of_emails(self):
+        with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
+            for _ in range(10):
+                self._post_ipn()
+        self.order.refresh_from_db()
+        # The idempotency flags are stamped once, so the second confirmation
+        # cannot send a second confirmation e-mail.
+        self.assertIsNotNone(self.order.confirmation_email_sent_at)
+
+    def test_notification_deletes_cart_after_payment(self):
+        self._post_ipn()
         remaining = CartItem.objects.filter(session_key=self.session_key).count()
         self.assertEqual(remaining, 0)
 
-    def test_webhook_expired_marks_order_expired(self):
-        response = self._post_webhook("checkout.session.expired")
+    def test_unknown_transaction_touches_nothing(self):
+        """
+        Correctly signed, but about a transaction this database never opened.
+
+        It must not create an order, adopt one, or move stock. There is nothing
+        to reconcile it against, and guessing would be worse than refusing.
+        """
+        orphan = _pay_attempt(self.order, transaction_id='tx-never-stored',
+                              order_number='on-never-stored')
+        payload = _izipay_payload(
+            transaction_id='tx-does-not-exist-at-all',
+            order_number='on-does-not-exist',
+            amount=self.order.total,
+        )
+        orphan.delete()
+        body = _izipay_notification(payload)
+        response = self.client.post(
+            IPN_URL, data=json.dumps(body), content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PENDING_PAYMENT)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+
+    def test_a_declined_payment_leaves_the_order_alone(self):
+        response = self._post_ipn(code='A02')
         self.assertEqual(response.status_code, 200)
         self.order.refresh_from_db()
-        self.assertEqual(self.order.status, Order.Status.EXPIRED)
+        self.assertEqual(self.order.status, Order.Status.PENDING_PAYMENT)
+        self.assertFalse(self.order.paid)
+        self.attempt.refresh_from_db()
+        self.assertEqual(self.attempt.status, PaymentTransaction.Status.REJECTED)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+        self.assertEqual(
+            CartItem.objects.filter(session_key=self.session_key).count(), 1,
+        )
 
-    def test_webhook_unknown_session_id_is_safe(self):
-        """Webhook for unknown session ID must return 200 (don't expose 404 to Stripe)."""
-        response = self._post_webhook("checkout.session.completed", session_id="cs_nonexistent")
-        self.assertEqual(response.status_code, 200)
+    def test_get_is_not_accepted(self):
+        """The notification endpoint answers POST and nothing else."""
+        self.assertEqual(self.client.get(IPN_URL).status_code, 405)
 
 
-@override_settings(
-    STRIPE_SECRET_KEY='sk_test_fake_key',
-    STRIPE_WEBHOOK_SECRET='whsec_fake_secret',
-)
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class PaymentStatusViewTest(TestCase):
-    """GET /api/payments/status/?session_id= returns accurate order state."""
+    """
+    GET /api/payments/status/?reference= — what the success page is allowed to learn.
+
+    The reference is the attempt's `transaction_id`: server-generated and long
+    enough that holding one is evidence of having made the payment, not of
+    having counted upwards. That possession model is inherited deliberately from
+    the previous gateway rather than downgraded to an enumerable order id.
+    """
 
     def setUp(self):
         self.client = APIClient()
         self.order = Order.objects.create(company=_pilot_company(),
             customer_email="status@example.com",
             total=Decimal("1299.00"),
-            stripe_session_id="cs_test_status_001",
             status=Order.Status.PENDING_PAYMENT,
         )
+        self.attempt = _pay_attempt(self.order, transaction_id='tx-status-0001',
+                                    order_number='on-status-0001')
+        self.url = f"/api/payments/status/?reference={self.attempt.transaction_id}"
 
     def test_status_pending(self):
-        response = self.client.get("/api/payments/status/?session_id=cs_test_status_001")
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], "pending_payment")
@@ -832,14 +1084,14 @@ class PaymentStatusViewTest(TestCase):
         self.order.status = Order.Status.PAID
         self.order.paid = True
         self.order.save()
-        response = self.client.get("/api/payments/status/?session_id=cs_test_status_001")
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], "paid")
         self.assertTrue(data["paid"])
 
-    def test_status_unknown_session_returns_404(self):
-        response = self.client.get("/api/payments/status/?session_id=cs_does_not_exist")
+    def test_status_unknown_reference_returns_404(self):
+        response = self.client.get("/api/payments/status/?reference=tx-does-not-exist")
         self.assertEqual(response.status_code, 404)
 
     def test_status_missing_param_returns_400(self):
@@ -847,8 +1099,7 @@ class PaymentStatusViewTest(TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_status_returns_total(self):
-        response = self.client.get("/api/payments/status/?session_id=cs_test_status_001")
-        self.assertEqual(response.json()["total"], "1299.00")
+        self.assertEqual(self.client.get(self.url).json()["total"], "1299.00")
 
     def test_authenticated_user_cannot_access_other_user_order(self):
         """Authenticated user must get 403 when trying to read another user's order status."""
@@ -858,47 +1109,70 @@ class PaymentStatusViewTest(TestCase):
             user=owner,
             customer_email="owner@example.com",
             total=Decimal("999.00"),
-            stripe_session_id="cs_cross_user_001",
             status=Order.Status.PAID,
         )
+        owner_attempt = _pay_attempt(owner_order, transaction_id='tx-cross-user',
+                                     order_number='on-cross-user')
         self.client.force_authenticate(user=requester)
         response = self.client.get(
-            f"/api/payments/status/?session_id={owner_order.stripe_session_id}"
+            f"/api/payments/status/?reference={owner_attempt.transaction_id}"
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_status_does_not_expose_internal_fields(self):
-        """Response must not include payment_error, cart_session_key, or stripe_payment_intent_id."""
+        """Response must not include payment_error, cart_session_key, or gateway identifiers."""
         self.order.payment_error = "Card declined internal log"
         self.order.cart_session_key = "sensitive-session-key"
-        self.order.stripe_payment_intent_id = "pi_secret_intent"
         self.order.save()
-        response = self.client.get("/api/payments/status/?session_id=cs_test_status_001")
-        body = response.json()
+        body = self.client.get(self.url).json()
         self.assertNotIn("payment_error", body)
         self.assertNotIn("cart_session_key", body)
-        self.assertNotIn("stripe_payment_intent_id", body)
+        self.assertNotIn("authorization_code", body)
         self.assertNotIn("customer_email", body)
 
+    def test_a_forged_browser_callback_cannot_make_an_order_paid(self):
+        """
+        THE CALLBACK IS NOT AUTHORITY — P0-F §31.
 
-@override_settings(
-    STRIPE_SECRET_KEY='sk_test_fake_key',
-    STRIPE_WEBHOOK_SECRET='whsec_fake_secret',
-    STRIPE_DOMAIN='http://localhost:3000',
-)
-class CheckoutStripeErrorTest(TestCase):
-    """Stripe call failure: cart preserved, order marked FAILED, 502 returned."""
+        A buyer who posts the gateway's own success shape at this endpoint, or
+        at any endpoint reachable from a browser, changes nothing. Only a
+        signed notification does, and the signing key never leaves the server.
+        """
+        forged = {"code": "00", "amount": "1299.00", "paid": True,
+                  "status": "paid", "order_id": self.order.pk}
+        for url in ("/api/payments/status/", self.url):
+            self.client.post(url, forged, format="json")
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PENDING_PAYMENT)
+        self.assertFalse(self.order.paid)
+
+    def test_an_authenticated_buyer_is_still_not_the_gateway(self):
+        """Even a logged-in owner cannot declare their own order paid."""
+        buyer = User.objects.create_user(username="buyer_forge", password="pass")
+        self.order.user = buyer
+        self.order.save(update_fields=["user"])
+        self.client.force_authenticate(user=buyer)
+        self.client.post(IPN_URL, {"code": "00", "transactionId": self.attempt.transaction_id},
+                         format="json")
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PENDING_PAYMENT)
+        self.assertFalse(self.order.paid)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class CheckoutGatewayErrorTest(TestCase):
+    """Gateway call failure: cart preserved, order marked FAILED, 502 returned."""
 
     def setUp(self):
         cache.clear()
         self.client = APIClient()
         self.product = _seeded(Product.objects.create(company=_pilot_company(),
-            name="iPhone Stripe Error Test",
-            slug="iphone-stripe-error-test",
+            name="iPhone Gateway Error Test",
+            slug="iphone-gateway-error-test",
             price=Decimal("4999.00"),
             inventory=5,
         ))
-        self.session_key = "stripe-error-session-001"
+        self.session_key = "gateway-error-session-001"
         CartItem.objects.create(
             session_key=self.session_key,
             product=self.product,
@@ -919,29 +1193,54 @@ class CheckoutStripeErrorTest(TestCase):
             "accepted_warranty_policy": True,
         }
 
-    @patch("stripe.checkout.Session.create", side_effect=stripe_lib.StripeError("Connection error"))
-    def test_stripe_failure_returns_502(self, _mock):
+    @patch(SESSION_TOKEN_PATH, side_effect=izipay.IzipayError("Connection error"))
+    def test_gateway_failure_returns_502(self, _mock):
         response = self.client.post(
             "/api/payments/create-checkout-session/", self._base_body(), format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
 
-    @patch("stripe.checkout.Session.create", side_effect=stripe_lib.StripeError("Connection error"))
-    def test_stripe_failure_preserves_cart(self, _mock):
+    @patch(SESSION_TOKEN_PATH, side_effect=izipay.IzipayError("Connection error"))
+    def test_gateway_failure_preserves_cart(self, _mock):
         self.client.post(
             "/api/payments/create-checkout-session/", self._base_body(), format="json"
         )
         cart_count = CartItem.objects.filter(session_key=self.session_key).count()
         self.assertEqual(cart_count, 1)
 
-    @patch("stripe.checkout.Session.create", side_effect=stripe_lib.StripeError("Connection error"))
-    def test_stripe_failure_marks_order_failed(self, _mock):
+    @patch(SESSION_TOKEN_PATH, side_effect=izipay.IzipayError("Connection error"))
+    def test_gateway_failure_marks_order_failed(self, _mock):
         self.client.post(
             "/api/payments/create-checkout-session/", self._base_body(), format="json"
         )
         order = Order.objects.first()
         self.assertEqual(order.status, Order.Status.FAILED)
-        self.assertIn("Connection error", order.payment_error)
+        self.assertTrue(order.payment_error)
+
+    @patch(SESSION_TOKEN_PATH, side_effect=izipay.IzipayError("Connection error"))
+    def test_gateway_failure_records_the_reason_on_the_attempt(self, _mock):
+        """
+        The attempt keeps WHY it failed; the order keeps only that it did.
+
+        A provider error string can quote the request it was making, and that
+        request carries the API key. It belongs in the payments table an
+        operator reads, not on the order that flows into serializers, e-mails
+        and PDFs.
+        """
+        self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
+        attempt = PaymentTransaction.objects.get()
+        self.assertEqual(attempt.status, PaymentTransaction.Status.REJECTED)
+        self.assertIn("Connection error", attempt.failure_reason)
+
+    @patch(SESSION_TOKEN_PATH, side_effect=izipay.IzipayError("Connection error"))
+    def test_gateway_failure_moves_no_stock(self, _mock):
+        self.client.post(
+            "/api/payments/create-checkout-session/", self._base_body(), format="json"
+        )
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 5)
 
 
 class OrderViewSetAccessTest(TestCase):
@@ -2917,7 +3216,7 @@ class AdminProductCreateTest(TestCase):
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
         response = self.client.post('/api/admin/products/', self._base_payload(name='Safe Product'), format='json')
         data = response.json()
-        for field in ('password', 'token', 'stripe_secret', 'cookie'):
+        for field in ('password', 'token', 'izipay_api_key', 'cookie'):
             self.assertNotIn(field, data)
 
 
@@ -3122,7 +3421,7 @@ class AdminInventoryAdjustTest(TestCase):
         self.client.post(self._url(), {'delta': 1, 'reason': 'Security test'}, format='json')
         log = AdminAuditLog.objects.filter(action='product_inventory_adjusted').first()
         log_str = str(log.metadata)
-        for sensitive in ('password', 'token', 'stripe', 'cookie'):
+        for sensitive in ('password', 'token', 'izipay', 'cookie'):
             self.assertNotIn(sensitive, log_str)
 
     def test_nonexistent_product_returns_404(self):
@@ -3180,6 +3479,7 @@ class AdminCategoryTest(TestCase):
         self.assertIn('name', log.metadata)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class ProductIsActivePublicCatalogTest(TestCase):
     """Public catalog must not show inactive products; admin must see them."""
 
@@ -3208,10 +3508,8 @@ class ProductIsActivePublicCatalogTest(TestCase):
     def test_inactive_product_blocked_in_checkout(self):
         """Checkout must reject cart items containing inactive products."""
         CartItem.objects.create(session_key='pub_sess', product=self.inactive, quantity=1)
-        with patch('store.views.stripe') as mock_stripe:
-            mock_stripe.checkout.Session.create.return_value = MagicMock(id='cs_test', url='https://stripe.com/test')
-            mock_stripe.api_key = ''
-            with override_settings(STRIPE_SECRET_KEY='sk_test_fake', STRIPE_WEBHOOK_SECRET='whsec_fake'):
+        with patch(SESSION_TOKEN_PATH, return_value=FAKE_SESSION_TOKEN):
+            with override_settings(**IZIPAY_TEST_SETTINGS):
                 response = self.client.post('/api/payments/create-checkout-session/', {
                     'session_key': 'pub_sess',
                     'customer_name': 'Test',
@@ -3581,18 +3879,16 @@ class Phase33AdminOrderDetailSecurityTest(TestCase):
             status=Order.Status.PAID,
             paid=True,
             total=Decimal('500.00'),
-            stripe_session_id='cs_secret_123',
-            stripe_payment_intent_id='pi_secret_456',
             payment_error='some error text',
         )
 
-    def test_detail_does_not_expose_stripe_session_id(self):
+    def test_detail_does_not_expose_gateway_transaction_id(self):
         data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
-        self.assertNotIn('stripe_session_id', data)
+        self.assertNotIn('transaction_id', data)
 
-    def test_detail_does_not_expose_stripe_payment_intent_id(self):
+    def test_detail_does_not_expose_gateway_authorization_code(self):
         data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
-        self.assertNotIn('stripe_payment_intent_id', data)
+        self.assertNotIn('authorization_code', data)
 
     def test_detail_does_not_expose_payment_error(self):
         data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
@@ -3607,10 +3903,10 @@ class Phase33AdminOrderDetailSecurityTest(TestCase):
         for field in ('id', 'customer_name', 'customer_email', 'total', 'status', 'fulfillment_status', 'paid', 'items'):
             self.assertIn(field, data)
 
-    def test_list_does_not_expose_stripe_session_id(self):
+    def test_list_does_not_expose_gateway_transaction_id(self):
         data = self.client.get('/api/admin/orders/').json()
         if data['results']:
-            self.assertNotIn('stripe_session_id', data['results'][0])
+            self.assertNotIn('transaction_id', data['results'][0])
 
 
 class Phase33FulfillmentStatusChangeTest(TestCase):
@@ -3734,9 +4030,9 @@ class Phase33FulfillmentStatusChangeTest(TestCase):
         self.assertEqual(self.order.total, Decimal('999.00'))
         self.assertEqual(self.order.status, Order.Status.PAID)
 
-    def test_response_does_not_contain_stripe_session_id(self):
+    def test_response_does_not_contain_gateway_transaction_id(self):
         res = self._patch(self.admin)
-        self.assertNotIn('stripe_session_id', res.json())
+        self.assertNotIn('transaction_id', res.json())
 
     def test_response_does_not_contain_payment_error(self):
         res = self._patch(self.admin)
@@ -3821,7 +4117,7 @@ class Phase33AuditLogTest(TestCase):
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
         self.assertEqual(log.metadata.get('customer_email'), self.order.customer_email)
 
-    def test_audit_log_does_not_contain_stripe_data(self):
+    def test_audit_log_does_not_contain_gateway_data(self):
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
             {'fulfillment_status': 'confirmed'},
@@ -3829,7 +4125,7 @@ class Phase33AuditLogTest(TestCase):
         )
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
         meta_str = str(log.metadata)
-        self.assertNotIn('stripe', meta_str.lower())
+        self.assertNotIn('izipay', meta_str.lower())
         self.assertNotIn('payment_error', meta_str)
 
     def test_audit_log_note_is_stored(self):
@@ -3974,8 +4270,7 @@ class Phase33RegressionTest(TestCase):
         order.status = Order.Status.PAID
         order.paid = True
         order.paid_at = timezone.now()
-        order.stripe_payment_intent_id = 'pi_test_reg33'
-        order.save(update_fields=['status', 'paid', 'paid_at', 'stripe_payment_intent_id', 'payment_error'])
+        order.save(update_fields=['status', 'paid', 'paid_at', 'payment_error'])
         order.refresh_from_db()
         # fulfillment_status must remain 'confirmed' — webhook never touches it
         self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.CONFIRMED)
@@ -4006,11 +4301,7 @@ class Phase33RegressionTest(TestCase):
 # Phase 4.0 tests — commercial checkout fields
 # ---------------------------------------------------------------------------
 
-@override_settings(
-    STRIPE_SECRET_KEY='sk_test_fake_key',
-    STRIPE_WEBHOOK_SECRET='whsec_fake_secret',
-    STRIPE_DOMAIN='http://localhost:3000',
-)
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class Phase40CheckoutValidationTest(TestCase):
     """Validates all commercial checkout fields: document, delivery, receipt, terms."""
 
@@ -4042,11 +4333,8 @@ class Phase40CheckoutValidationTest(TestCase):
         body.update(overrides)
         return body
 
-    def _mock_stripe(self):
-        mock = MagicMock()
-        mock.id = 'cs_test_p40'
-        mock.url = 'https://checkout.stripe.com/pay/cs_test_p40'
-        return mock
+    def _mock_session_token(self):
+        return FAKE_SESSION_TOKEN
 
     # --- Required field missing ---
 
@@ -4108,8 +4396,8 @@ class Phase40CheckoutValidationTest(TestCase):
         self.assertIn('document_number', resp.json())
 
     def test_dni_exactly_8_digits_accepted(self):
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             resp = self.client.post(
                 '/api/payments/create-checkout-session/',
                 self._base_body(document_type='dni', document_number='12345678'),
@@ -4127,8 +4415,8 @@ class Phase40CheckoutValidationTest(TestCase):
         self.assertIn('document_number', resp.json())
 
     def test_ruc_11_digits_accepted(self):
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             resp = self.client.post(
                 '/api/payments/create-checkout-session/',
                 self._base_body(document_type='ruc', document_number='20610159886'),
@@ -4146,8 +4434,8 @@ class Phase40CheckoutValidationTest(TestCase):
         self.assertIn('document_number', resp.json())
 
     def test_ce_valid_length_accepted(self):
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             resp = self.client.post(
                 '/api/payments/create-checkout-session/',
                 self._base_body(document_type='ce', document_number='ABC123456'),
@@ -4167,8 +4455,8 @@ class Phase40CheckoutValidationTest(TestCase):
         self.assertIn('receipt_type', resp.json())
 
     def test_factura_with_ruc_accepted(self):
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             resp = self.client.post(
                 '/api/payments/create-checkout-session/',
                 self._base_body(
@@ -4181,8 +4469,8 @@ class Phase40CheckoutValidationTest(TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_boleta_with_dni_accepted(self):
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             resp = self.client.post(
                 '/api/payments/create-checkout-session/',
                 self._base_body(receipt_type='boleta', document_type='dni', document_number='12345678'),
@@ -4191,8 +4479,8 @@ class Phase40CheckoutValidationTest(TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_boleta_with_ruc_accepted(self):
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             resp = self.client.post(
                 '/api/payments/create-checkout-session/',
                 self._base_body(receipt_type='boleta', document_type='ruc', document_number='20610159886'),
@@ -4260,8 +4548,8 @@ class Phase40CheckoutValidationTest(TestCase):
         self.assertIn('district', resp.json())
 
     def test_pickup_store_does_not_require_address(self):
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             resp = self.client.post(
                 '/api/payments/create-checkout-session/',
                 self._base_body(delivery_method='pickup_store'),
@@ -4298,8 +4586,8 @@ class Phase40CheckoutValidationTest(TestCase):
 
     def test_frontend_cannot_send_total(self):
         """total sent from frontend must be silently ignored — backend calculates it."""
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             body = self._base_body()
             body['total'] = '1.00'
             resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
@@ -4309,8 +4597,8 @@ class Phase40CheckoutValidationTest(TestCase):
 
     def test_frontend_cannot_send_paid_true(self):
         """paid=True sent from frontend must never affect the order."""
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             body = self._base_body()
             body['paid'] = True
             resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
@@ -4320,8 +4608,8 @@ class Phase40CheckoutValidationTest(TestCase):
 
     def test_frontend_cannot_send_status_paid(self):
         """status=paid sent from frontend must never affect the order."""
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             body = self._base_body()
             body['status'] = 'paid'
             resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
@@ -4331,8 +4619,8 @@ class Phase40CheckoutValidationTest(TestCase):
 
     def test_frontend_cannot_send_fulfillment_status_delivered(self):
         """fulfillment_status sent from frontend must never affect the order."""
-        with patch('stripe.checkout.Session.create') as m:
-            m.return_value = self._mock_stripe()
+        with patch(SESSION_TOKEN_PATH) as m:
+            m.return_value = self._mock_session_token()
             body = self._base_body()
             body['fulfillment_status'] = 'delivered'
             resp = self.client.post('/api/payments/create-checkout-session/', body, format='json')
@@ -4342,9 +4630,9 @@ class Phase40CheckoutValidationTest(TestCase):
 
     # --- Order saves commercial fields ---
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_order_saves_commercial_fields(self, mock_create):
-        mock_create.return_value = self._mock_stripe()
+        mock_create.return_value = self._mock_session_token()
         body = self._base_body(
             delivery_method='delivery_arequipa',
             address_line='Calle Mercaderes 100',
@@ -4368,8 +4656,9 @@ class Phase40CheckoutValidationTest(TestCase):
         self.assertTrue(order.accepted_warranty_policy)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class Phase40AdminOrderDetailCommercialFieldsTest(TestCase):
-    """Admin order detail endpoint exposes commercial fields and hides Stripe fields."""
+    """Admin order detail endpoint exposes commercial fields and hides gateway fields."""
 
     def setUp(self):
         cache.clear()
@@ -4391,7 +4680,6 @@ class Phase40AdminOrderDetailCommercialFieldsTest(TestCase):
             notes='Test notes',
             accepted_terms=True,
             accepted_warranty_policy=True,
-            stripe_session_id='cs_test_p40_admin',
         )
 
     def test_admin_detail_shows_commercial_fields(self):
@@ -4408,16 +4696,18 @@ class Phase40AdminOrderDetailCommercialFieldsTest(TestCase):
         self.assertTrue(data['accepted_terms'])
         self.assertTrue(data['accepted_warranty_policy'])
 
-    def test_admin_detail_still_hides_stripe_session_id(self):
+    def test_admin_detail_still_hides_gateway_transaction_id(self):
         self.client.force_authenticate(user=self.admin)
         data = self.client.get(f'/api/admin/orders/{self.order.pk}/').json()
-        self.assertNotIn('stripe_session_id', data)
+        self.assertNotIn('transaction_id', data)
         self.assertNotIn('payment_error', data)
 
     def test_payment_status_view_does_not_expose_commercial_fields(self):
         """PaymentStatusView must not expose address/document data."""
+        attempt = _pay_attempt(self.order, transaction_id='tx-p40-admin',
+                               order_number='on-p40-admin')
         data = self.client.get(
-            f'/api/payments/status/?session_id=cs_test_p40_admin'
+            f'/api/payments/status/?reference={attempt.transaction_id}'
         ).json()
         self.assertNotIn('address_line', data)
         self.assertNotIn('document_number', data)
@@ -4450,8 +4740,6 @@ def _make_paid_order(**kwargs):
         status=Order.Status.PAID,
         paid=True,
         paid_at=timezone.now(),
-        stripe_session_id='cs_test_41',
-        stripe_payment_intent_id='pi_test_41',
     )
     defaults.update(kwargs)
     order = Order.objects.create(company=_pilot_company(), **defaults)
@@ -4472,12 +4760,12 @@ class Phase41EmailServiceUnitTest(TestCase):
         _set_notification_email(_pilot_company(), 'store@example.com')
         mail.outbox = []
 
-    def test_build_order_confirmation_context_excludes_stripe_fields(self):
+    def test_build_order_confirmation_context_excludes_gateway_fields(self):
         from store.email_services import build_order_confirmation_context
         order = _make_paid_order()
         ctx = build_order_confirmation_context(order)
-        self.assertNotIn('stripe_session_id', ctx)
-        self.assertNotIn('stripe_payment_intent_id', ctx)
+        self.assertNotIn('transaction_id', ctx)
+        self.assertNotIn('authorization_code', ctx)
         self.assertNotIn('payment_error', ctx)
 
     def test_build_order_confirmation_context_includes_required_fields(self):
@@ -4500,9 +4788,9 @@ class Phase41EmailServiceUnitTest(TestCase):
         msg = mail.outbox[0]
         self.assertEqual(msg.to, ['ana@example.com'])
         self.assertIn(str(order.id), msg.subject)
-        self.assertNotIn('stripe', msg.body.lower())
+        self.assertNotIn('izipay', msg.body.lower())
 
-    def test_send_order_confirmation_email_does_not_include_stripe_data(self):
+    def test_send_order_confirmation_email_does_not_include_gateway_data(self):
         from store.email_services import send_order_confirmation_email
         order = _make_paid_order()
         send_order_confirmation_email(order)
@@ -4584,7 +4872,7 @@ class Phase41EmailServiceUnitTest(TestCase):
         self.assertIn('localhost:3000', msg.body)
         self.assertIn(str(order.id), msg.body)
 
-    def test_send_internal_notification_does_not_include_stripe_data(self):
+    def test_send_internal_notification_does_not_include_gateway_data(self):
         from store.email_services import send_internal_order_notification
         order = _make_paid_order()
         send_internal_order_notification(order)
@@ -4773,17 +5061,16 @@ class Phase41EmailServiceUnitTest(TestCase):
         self.assertIn(first_error[:50], order.email_send_error)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 @override_settings(
     EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
     ORDER_NOTIFICATION_EMAIL='store@example.com',
     DEFAULT_FROM_EMAIL='Black Dog Store <no-reply@test.com>',
     FRONTEND_URL='http://localhost:3000',
-    STRIPE_SECRET_KEY='sk_test_fake41',
-    STRIPE_WEBHOOK_SECRET='whsec_fake41',
 )
 class Phase41WebhookEmailIntegrationTest(TestCase):
     """
-    Tests that the Stripe webhook triggers email sending via transaction.on_commit().
+    Tests that the gateway notification triggers email sending via transaction.on_commit().
 
     Because TestCase wraps everything in a transaction that is never committed,
     we patch transaction.on_commit to call the function immediately, which lets
@@ -4804,30 +5091,13 @@ class Phase41WebhookEmailIntegrationTest(TestCase):
             total='5999.00',
             status=Order.Status.PENDING_PAYMENT,
             paid=False,
-            stripe_session_id='cs_wh_41_integration',
         )
         OrderItem.objects.create(
             order=self.order, product=self.product, quantity=1, price='5999.00',
         )
 
-    def _fire_webhook(self, event_type='checkout.session.completed', extra_data=None):
-        event = {
-            'type': event_type,
-            'data': {
-                'object': {
-                    'id': 'cs_wh_41_integration',
-                    'payment_intent': 'pi_wh_41',
-                    **(extra_data or {}),
-                }
-            },
-        }
-        with patch('stripe.Webhook.construct_event', return_value=event):
-            return self.client.post(
-                '/api/payments/webhook/',
-                data=b'{}',
-                content_type='application/json',
-                HTTP_STRIPE_SIGNATURE='t=1,v1=fake',
-            )
+    def _fire_webhook(self, **kwargs):
+        return _post_izipay_ipn(self.client, self.order, **kwargs)
 
     def test_webhook_triggers_email_via_on_commit(self):
         with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
@@ -4872,6 +5142,7 @@ class Phase41WebhookEmailIntegrationTest(TestCase):
         self.assertEqual(len(mail.outbox), 0)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 @override_settings(
     EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
     ORDER_NOTIFICATION_EMAIL='store@example.com',
@@ -4884,7 +5155,7 @@ class Phase41AdminDetailEmailFlagsTest(TestCase):
         self.admin = User.objects.create_user('admin41', 'admin41@example.com', 'pw')
         self.admin.profile.role = UserProfile.ROLE_ADMIN
         self.admin.profile.save()
-        self.order = _make_paid_order(stripe_session_id='cs_test_admin_41_flags')
+        self.order = _make_paid_order()
 
     def test_admin_detail_exposes_email_flags_null_by_default(self):
         self.client.force_authenticate(user=self.admin)
@@ -4906,7 +5177,7 @@ class Phase41AdminDetailEmailFlagsTest(TestCase):
     def test_admin_detail_email_flags_not_visible_to_customer(self):
         """OrderSerializer (customer-facing) must never include email flags."""
         customer = User.objects.create_user('cust41', 'cust41@example.com', 'pw')
-        order = _make_paid_order(stripe_session_id='cs_test_cust41')
+        order = _make_paid_order()
         order.user = customer
         order.save(update_fields=['user'])
         self.client.force_authenticate(user=customer)
@@ -4917,8 +5188,10 @@ class Phase41AdminDetailEmailFlagsTest(TestCase):
 
     def test_payment_status_view_does_not_expose_email_flags(self):
         """PaymentStatusView (public endpoint) must not expose email flags."""
+        attempt = _pay_attempt(self.order, transaction_id='tx-41-flags',
+                               order_number='on-41-flags')
         data = self.client.get(
-            f'/api/payments/status/?session_id=cs_test_admin_41_flags'
+            f'/api/payments/status/?reference={attempt.transaction_id}'
         ).json()
         self.assertNotIn('confirmation_email_sent_at', data)
         self.assertNotIn('internal_notification_sent_at', data)
@@ -4943,9 +5216,7 @@ def _make_paid_order_42(**kwargs):
         delivery_method='pickup_store', receipt_type='boleta',
         accepted_terms=True, accepted_warranty_policy=True,
         total='9999.00', discount_amount='0.00', status=Order.Status.PAID, paid=True,
-        paid_at=timezone.now(), stripe_session_id='cs_test_42_base',
-        stripe_payment_intent_id='pi_test_42_base',
-    )
+        paid_at=timezone.now(), )
     defaults.update(kwargs)
     order = Order.objects.create(company=_pilot_company(), **defaults)
     OrderItem.objects.create(order=order, product=product, quantity=1, price='9999.00')
@@ -4977,11 +5248,11 @@ class Phase42PdfContextTest(TestCase):
         ):
             self.assertIn(key, ctx, msg=f"Missing key: {key}")
 
-    def test_context_excludes_stripe_fields(self):
+    def test_context_excludes_gateway_fields(self):
         from store.pdf_services import build_order_pdf_context
         ctx = build_order_pdf_context(self.order)
         for forbidden in (
-            'stripe_session_id', 'stripe_payment_intent_id', 'payment_error',
+            'transaction_id', 'authorization_code', 'payment_error',
             'cart_session_key', 'confirmation_email_sent_at', 'email_send_error',
         ):
             self.assertNotIn(forbidden, ctx, msg=f"Forbidden key found: {forbidden}")
@@ -5019,8 +5290,7 @@ class Phase42PdfContextTest(TestCase):
     def test_context_factura_title(self):
         from store.pdf_services import build_order_pdf_context
         order = _make_paid_order_42(
-            receipt_type='factura', stripe_session_id='cs_42_fac', document_type='ruc',
-            stripe_payment_intent_id='pi_42_fac',
+            receipt_type='factura', document_type='ruc',
         )
         ctx = build_order_pdf_context(order)
         self.assertIn('Factura', ctx['title'])
@@ -5035,9 +5305,7 @@ class Phase42PdfContextTest(TestCase):
         from store.pdf_services import build_order_pdf_context
         order = _make_paid_order_42(
             delivery_method='delivery_arequipa',
-            address_line='Jr. Lima 123', district='Cercado', city='Arequipa',
-            stripe_session_id='cs_42_del', stripe_payment_intent_id='pi_42_del',
-        )
+            address_line='Jr. Lima 123', district='Cercado', city='Arequipa', )
         ctx = build_order_pdf_context(order)
         self.assertIn('Lima', ctx['full_address'])
         self.assertIn('Cercado', ctx['full_address'])
@@ -5085,9 +5353,7 @@ class Phase42PdfContextTest(TestCase):
         from store.pdf_services import build_order_pdf_context
         order = _make_paid_order_42(
             discount_amount='500.00', coupon_code='BLK50',
-            total='9499.00', stripe_session_id='cs_42_disc',
-            stripe_payment_intent_id='pi_42_disc',
-        )
+            total='9499.00', )
         ctx = build_order_pdf_context(order)
         self.assertEqual(ctx['discount_amount'], Decimal('500.00'))
         self.assertEqual(ctx['coupon_code'], 'BLK50')
@@ -5101,7 +5367,7 @@ class Phase42PdfGeneratorTest(TestCase):
     """Tests for generate_order_receipt_pdf() and get_order_receipt_filename()."""
 
     def setUp(self):
-        self.order = _make_paid_order_42(stripe_session_id='cs_42_gen', stripe_payment_intent_id='pi_42_gen')
+        self.order = _make_paid_order_42()
 
     def test_pdf_returns_bytes(self):
         from store.pdf_services import generate_order_receipt_pdf
@@ -5121,27 +5387,21 @@ class Phase42PdfGeneratorTest(TestCase):
     def test_pdf_raises_for_pending_payment_order(self):
         from store.pdf_services import generate_order_receipt_pdf
         order = _make_paid_order_42(
-            paid=False, status=Order.Status.PENDING_PAYMENT,
-            stripe_session_id='cs_42_pend', stripe_payment_intent_id='pi_42_pend',
-        )
+            paid=False, status=Order.Status.PENDING_PAYMENT, )
         with self.assertRaises(ValueError):
             generate_order_receipt_pdf(order)
 
     def test_pdf_raises_for_failed_order(self):
         from store.pdf_services import generate_order_receipt_pdf
         order = _make_paid_order_42(
-            paid=False, status=Order.Status.FAILED,
-            stripe_session_id='cs_42_fail', stripe_payment_intent_id='pi_42_fail',
-        )
+            paid=False, status=Order.Status.FAILED, )
         with self.assertRaises(ValueError):
             generate_order_receipt_pdf(order)
 
     def test_pdf_raises_for_cancelled_order(self):
         from store.pdf_services import generate_order_receipt_pdf
         order = _make_paid_order_42(
-            paid=False, status=Order.Status.CANCELLED,
-            stripe_session_id='cs_42_can', stripe_payment_intent_id='pi_42_can',
-        )
+            paid=False, status=Order.Status.CANCELLED, )
         with self.assertRaises(ValueError):
             generate_order_receipt_pdf(order)
 
@@ -5164,9 +5424,7 @@ class Phase42PdfGeneratorTest(TestCase):
     def test_pdf_with_discount(self):
         from store.pdf_services import generate_order_receipt_pdf
         order = _make_paid_order_42(
-            discount_amount='500.00', coupon_code='BLK50', total='9499.00',
-            stripe_session_id='cs_42_discpdf', stripe_payment_intent_id='pi_42_discpdf',
-        )
+            discount_amount='500.00', coupon_code='BLK50', total='9499.00', )
         pdf = generate_order_receipt_pdf(order)
         self.assertTrue(pdf[:4] == b'%PDF')
         self.assertGreater(len(pdf), 2000)
@@ -5175,9 +5433,7 @@ class Phase42PdfGeneratorTest(TestCase):
         from store.pdf_services import generate_order_receipt_pdf
         order = _make_paid_order_42(
             delivery_method='delivery_arequipa',
-            address_line='Av. Ejercito 100', district='Yanahuara', city='Arequipa',
-            stripe_session_id='cs_42_addr', stripe_payment_intent_id='pi_42_addr',
-        )
+            address_line='Av. Ejercito 100', district='Yanahuara', city='Arequipa', )
         pdf = generate_order_receipt_pdf(order)
         self.assertTrue(pdf[:4] == b'%PDF')
 
@@ -5196,9 +5452,7 @@ class Phase42EmailWithPdfTest(TestCase):
     """Integration tests for PDF attached to customer confirmation email."""
 
     def setUp(self):
-        self.order = _make_paid_order_42(
-            stripe_session_id='cs_42_email', stripe_payment_intent_id='pi_42_email',
-        )
+        self.order = _make_paid_order_42( )
 
     def test_email_with_pdf_attachment_sends(self):
         from store.email_services import send_order_confirmation_email
@@ -5272,9 +5526,7 @@ class Phase42AdminReceiptPdfEndpointTest(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.order = _make_paid_order_42(
-            stripe_session_id='cs_42_pdf_ep', stripe_payment_intent_id='pi_42_pdf_ep',
-        )
+        self.order = _make_paid_order_42( )
         self.url = f'/api/admin/orders/{self.order.pk}/receipt-pdf/'
 
         self.admin = self._make_user('adm42', UserProfile.ROLE_ADMIN)
@@ -5342,9 +5594,7 @@ class Phase42AdminReceiptPdfEndpointTest(TestCase):
 
     def test_pdf_endpoint_400_for_unpaid_order(self):
         unpaid = _make_paid_order_42(
-            paid=False, status=Order.Status.PENDING_PAYMENT,
-            stripe_session_id='cs_42_unp', stripe_payment_intent_id='pi_42_unp',
-        )
+            paid=False, status=Order.Status.PENDING_PAYMENT, )
         self.client.force_authenticate(user=self.admin)
         resp = self.client.get(f'/api/admin/orders/{unpaid.pk}/receipt-pdf/')
         self.assertEqual(resp.status_code, 400)
@@ -5356,20 +5606,20 @@ class Phase42AdminReceiptPdfEndpointTest(TestCase):
         after = AdminAuditLog.objects.filter(action='order_receipt_pdf_downloaded').count()
         self.assertEqual(after, before + 1)
 
-    def test_pdf_response_does_not_contain_stripe_session_id(self):
-        """PDF bytes must not contain the Stripe session ID in cleartext."""
+    def test_pdf_response_does_not_contain_gateway_transaction_id(self):
+        """PDF bytes must not contain the gateway transaction id in cleartext."""
         self.client.force_authenticate(user=self.admin)
         resp = self.client.get(self.url)
         self.assertNotIn(b'cs_42_pdf_ep', resp.content)
 
-    def test_pdf_response_does_not_contain_stripe_payment_intent(self):
-        """PDF bytes must not contain the Stripe payment intent ID in cleartext."""
+    def test_pdf_response_does_not_contain_gateway_authorization_code(self):
+        """PDF bytes must not contain the gateway authorization code in cleartext."""
         self.client.force_authenticate(user=self.admin)
         resp = self.client.get(self.url)
         self.assertNotIn(b'pi_42_pdf_ep', resp.content)
 
-    def test_audit_log_metadata_does_not_contain_stripe_ids(self):
-        """Audit log entry must not store stripe_session_id or stripe_payment_intent_id."""
+    def test_audit_log_metadata_does_not_contain_gateway_ids(self):
+        """Audit log entry must not store any gateway identifier."""
         self.client.force_authenticate(user=self.admin)
         self.client.get(self.url)
         log = AdminAuditLog.objects.filter(
@@ -5417,9 +5667,7 @@ def _make_paid_order_43(**kwargs):
         delivery_method='pickup_store', receipt_type='boleta',
         accepted_terms=True, accepted_warranty_policy=True,
         total='8999.00', discount_amount='0.00', status=Order.Status.PAID, paid=True,
-        paid_at=timezone.now(), stripe_session_id=None,
-        stripe_payment_intent_id='pi_test_43_base',
-    )
+        paid_at=timezone.now(), )
     defaults.update(kwargs)
     order = Order.objects.create(company=_pilot_company(), **defaults)
     OrderItem.objects.create(order=order, product=product, quantity=1, price='8999.00')
@@ -5518,12 +5766,10 @@ class Phase43ResendEmailServiceTest(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn(self.order.customer_email, mail.outbox[0].to)
 
-    def test_resend_email_does_not_contain_stripe_payment_intent(self):
+    def test_resend_email_does_not_contain_gateway_authorization_code(self):
         from store.email_services import resend_order_confirmation_email
         order = _make_paid_order_43(
-            stripe_payment_intent_id='pi_secret_43_test',
-            stripe_session_id=None,
-        )
+            )
         resend_order_confirmation_email(order)
         body = mail.outbox[0].body
         self.assertNotIn('pi_secret_43_test', body)
@@ -5570,7 +5816,7 @@ class Phase43ResendEmailEndpointTest(TestCase):
         cache.clear()  # reset throttle state between tests
         mail.outbox = []
         self.client = APIClient()
-        self.order = _make_paid_order_43(stripe_session_id='cs_43_ep', stripe_payment_intent_id='pi_43_ep')
+        self.order = _make_paid_order_43()
         self.url = f'/api/admin/orders/{self.order.pk}/resend-confirmation-email/'
 
         self.admin = _make_user_43('adm43', UserProfile.ROLE_ADMIN)
@@ -5619,7 +5865,7 @@ class Phase43ResendEmailEndpointTest(TestCase):
     # --- Validation ---
 
     def test_unpaid_order_returns_400(self):
-        unpaid = _make_paid_order_43(paid=False, status=Order.Status.PENDING_PAYMENT, stripe_session_id=None, stripe_payment_intent_id='pi_43_unpaid')
+        unpaid = _make_paid_order_43(paid=False, status=Order.Status.PENDING_PAYMENT)
         self.client.force_authenticate(user=self.admin)
         resp = self.client.post(f'/api/admin/orders/{unpaid.pk}/resend-confirmation-email/')
         self.assertEqual(resp.status_code, 400)
@@ -5718,7 +5964,7 @@ class Phase43ResendEmailEndpointTest(TestCase):
         after = AdminAuditLog.objects.filter(action='order_confirmation_email_resent').count()
         self.assertEqual(after, before + 1)
 
-    def test_audit_log_metadata_does_not_contain_stripe_ids(self):
+    def test_audit_log_metadata_does_not_contain_gateway_ids(self):
         self.client.force_authenticate(user=self.admin)
         self.client.post(self.url)
         log = AdminAuditLog.objects.filter(
@@ -5773,8 +6019,8 @@ class Phase43ResendEmailEndpointTest(TestCase):
         after = AdminAuditLog.objects.filter(action='order_confirmation_email_resent').count()
         self.assertEqual(before, after)
 
-    def test_resend_html_body_does_not_contain_stripe_payment_intent(self):
-        """HTML alternative body must also exclude Stripe IDs."""
+    def test_resend_html_body_does_not_contain_gateway_authorization_code(self):
+        """HTML alternative body must also exclude gateway IDs."""
         self.client.force_authenticate(user=self.admin)
         self.client.post(self.url)
         self.assertEqual(len(mail.outbox), 1)
@@ -5864,8 +6110,6 @@ def _p60_paid_order(product, quantity=2, **extra):
         status=Order.Status.PAID,
         paid=True,
         paid_at=timezone.now(),
-        stripe_session_id=extra.pop('stripe_session_id', None),
-        stripe_payment_intent_id=extra.pop('stripe_payment_intent_id', ''),
         **extra,
     )
     OrderItem.objects.create(order=order, product=product, quantity=quantity, price=product.price)
@@ -6124,7 +6368,7 @@ class Phase60StockMovementRulesTest(TestCase):
         }, format='json')
         log = AdminAuditLog.objects.filter(action='stock_entry_created').first()
         raw = str(log.metadata)
-        for forbidden in ('stripe', 'payment_intent', 'payment_error', 'cs_test', 'pi_'):
+        for forbidden in ('izipay', 'transaction_id', 'payment_error', 'authorization'):
             self.assertNotIn(forbidden, raw.lower())
 
     def test_movement_records_actor(self):
@@ -6139,8 +6383,9 @@ class Phase60StockMovementRulesTest(TestCase):
         self.assertEqual(movement.reference_type, 'manual')
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class Phase60SaleStockMovementTest(TestCase):
-    """Sale exits from the Stripe webhook: created once, never duplicated."""
+    """Sale exits from the gateway notification: created once, never duplicated."""
 
     def setUp(self):
         cache.clear()
@@ -6151,7 +6396,6 @@ class Phase60SaleStockMovementTest(TestCase):
             customer_email='p60@example.com',
             total=Decimal('1998.00'),
             cart_session_key=self.session_key,
-            stripe_session_id='cs_test_p60_001',
             status=Order.Status.PENDING_PAYMENT,
         )
         OrderItem.objects.create(
@@ -6159,18 +6403,8 @@ class Phase60SaleStockMovementTest(TestCase):
         )
         CartItem.objects.create(session_key=self.session_key, product=self.product, quantity=2)
 
-    def _post_webhook(self, session_id='cs_test_p60_001'):
-        event = {
-            'type': 'checkout.session.completed',
-            'data': {'object': {'id': session_id, 'payment_intent': 'pi_test_p60'}},
-        }
-        with patch('stripe.Webhook.construct_event', return_value=event):
-            return self.client.post(
-                '/api/payments/webhook/',
-                data=b'{}',
-                content_type='application/json',
-                HTTP_STRIPE_SIGNATURE='t=1,v1=fake',
-            )
+    def _post_webhook(self, **kwargs):
+        return _post_izipay_ipn(self.client, self.order, **kwargs)
 
     def test_15_webhook_creates_sale_exit_movements(self):
         self._post_webhook()
@@ -6386,8 +6620,6 @@ class Phase60SalesNoteTest(TestCase):
         self.product = _p60_product(name='iPad P60', inventory=10, price='4999.00')
         self.paid_order = _p60_paid_order(
             self.product, quantity=1,
-            stripe_session_id='cs_test_p60_note',
-            stripe_payment_intent_id='pi_test_p60_note',
         )
         self.unpaid_order = Order.objects.create(company=_pilot_company(),
             customer_email='pending@example.com',
@@ -6460,16 +6692,16 @@ class Phase60SalesNoteTest(TestCase):
         self.assertIn('SUNAT', SALES_NOTE_DISCLAIMER)
         self.assertEqual(build_sales_note_context(note)['disclaimer'], SALES_NOTE_DISCLAIMER)
 
-    def test_30_pdf_context_contains_no_stripe_ids(self):
+    def test_30_pdf_context_contains_no_gateway_ids(self):
         note, _ = get_or_create_sales_note(self.paid_order)
         from .sales_note_services import build_sales_note_context
         raw = str(build_sales_note_context(note)).lower()
         self.assertNotIn('cs_test', raw)
         self.assertNotIn('pi_test', raw)
-        self.assertNotIn('stripe', raw)
+        self.assertNotIn('izipay', raw)
         self.assertNotIn('payment_error', raw)
 
-    def test_30b_pdf_bytes_contain_no_stripe_ids_in_cleartext(self):
+    def test_30b_pdf_bytes_contain_no_gateway_ids_in_cleartext(self):
         note, _ = get_or_create_sales_note(self.paid_order)
         pdf = generate_sales_note_pdf(note)
         self.assertNotIn(b'cs_test_p60_note', pdf)
@@ -6478,7 +6710,7 @@ class Phase60SalesNoteTest(TestCase):
     def test_30c_serializer_exposes_no_payment_fields(self):
         res = self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
         raw = str(res.data).lower()
-        for forbidden in ('stripe', 'payment_error', 'cs_test', 'pi_test'):
+        for forbidden in ('izipay', 'payment_error', 'transaction_id'):
             self.assertNotIn(forbidden, raw)
 
     def test_31_customer_cannot_download(self):
@@ -6522,7 +6754,7 @@ class Phase60SalesNoteTest(TestCase):
         self.assertEqual(log.metadata['sales_note_number'], 'NV-000001')
         self.assertEqual(log.metadata['order_id'], self.paid_order.pk)
         raw = str(log.metadata).lower()
-        self.assertNotIn('stripe', raw)
+        self.assertNotIn('izipay', raw)
 
     def test_34b_audit_log_not_duplicated_on_second_post(self):
         self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
@@ -6543,14 +6775,12 @@ class Phase60SalesNoteTest(TestCase):
             'status': self.paid_order.status,
             'paid': self.paid_order.paid,
             'total': self.paid_order.total,
-            'stripe_session_id': self.paid_order.stripe_session_id,
         }
         self.client.post(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
         self.paid_order.refresh_from_db()
         self.assertEqual(self.paid_order.status, before['status'])
         self.assertEqual(self.paid_order.paid, before['paid'])
         self.assertEqual(self.paid_order.total, before['total'])
-        self.assertEqual(self.paid_order.stripe_session_id, before['stripe_session_id'])
 
     def test_37_note_does_not_modify_inventory(self):
         before = self.product.inventory
@@ -6572,6 +6802,7 @@ class Phase60SalesNoteTest(TestCase):
         self.assertIn('SUNAT', res.data['notice'])
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class Phase60RegressionTest(TestCase):
     """Phase 6.0 must not disturb checkout, payments, admin or existing PDFs."""
 
@@ -6583,8 +6814,8 @@ class Phase60RegressionTest(TestCase):
 
     def test_38_checkout_still_creates_pending_order(self):
         CartItem.objects.create(session_key='p60-reg-cart', product=self.product, quantity=1)
-        with patch('stripe.checkout.Session.create') as mock_create:
-            mock_create.return_value = MagicMock(id='cs_test_reg_p60', url='https://stripe.test/x')
+        with patch(SESSION_TOKEN_PATH) as mock_create:
+            mock_create.return_value = FAKE_SESSION_TOKEN
             res = self.client.post('/api/payments/create-checkout-session/', {
                 'session_key': 'p60-reg-cart',
                 'customer_name': 'Cliente Regresión',
@@ -6598,7 +6829,7 @@ class Phase60RegressionTest(TestCase):
                 'accepted_warranty_policy': True,
             }, format='json')
         self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
-        order = Order.objects.get(stripe_session_id='cs_test_reg_p60')
+        order = Order.objects.get(customer_email='reg@example.com')
         self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
         # No stock movement before payment is confirmed
         self.assertEqual(StockMovement.objects.filter(order=order).count(), 0)
@@ -6609,33 +6840,28 @@ class Phase60RegressionTest(TestCase):
         order = Order.objects.create(company=_pilot_company(),
             customer_email='reg2@example.com',
             total=Decimal('1000.00'),
-            stripe_session_id='cs_test_reg_p60_2',
             status=Order.Status.PENDING_PAYMENT,
         )
         OrderItem.objects.create(order=order, product=self.product, quantity=1, price=self.product.price)
-        event = {
-            'type': 'checkout.session.completed',
-            'data': {'object': {'id': 'cs_test_reg_p60_2', 'payment_intent': 'pi_reg_p60'}},
-        }
-        with patch('stripe.Webhook.construct_event', return_value=event):
-            res = self.client.post(
-                '/api/payments/webhook/', data=b'{}',
-                content_type='application/json', HTTP_STRIPE_SIGNATURE='t=1,v1=fake',
-            )
+        res = _post_izipay_ipn(self.client, order)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         order.refresh_from_db()
         self.assertEqual(order.status, Order.Status.PAID)
-        self.assertEqual(order.stripe_payment_intent_id, 'pi_reg_p60')
+        self.assertEqual(
+            res.attempt.__class__.objects.get(pk=res.attempt.pk).authorization_code,
+            '831000',
+        )
 
     def test_40_payment_status_view_still_works(self):
         order = Order.objects.create(company=_pilot_company(),
             customer_email='reg3@example.com',
             total=Decimal('1000.00'),
-            stripe_session_id='cs_test_reg_p60_3',
             status=Order.Status.PAID,
             paid=True,
         )
-        res = self.client.get('/api/payments/status/?session_id=cs_test_reg_p60_3')
+        attempt = _pay_attempt(order, transaction_id='tx-reg-p60-3',
+                               order_number='on-reg-p60-3')
+        res = self.client.get(f'/api/payments/status/?reference={attempt.transaction_id}')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['order_id'], order.pk)
 
@@ -7174,6 +7400,7 @@ class SaasMembershipBackfillTest(TestCase):
         self.assertEqual(get_user_role(user), UserProfile.ROLE_INVENTORY)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class SaasNoRegressionTest(TestCase):
     """The existing e-commerce must behave identically with the SaaS models present."""
 
@@ -7209,8 +7436,8 @@ class SaasNoRegressionTest(TestCase):
 
     def test_checkout_still_creates_pending_order(self):
         CartItem.objects.create(session_key='saas-reg-co', product=self.product, quantity=1)
-        with patch('stripe.checkout.Session.create') as mock_create:
-            mock_create.return_value = MagicMock(id='cs_saas_reg', url='https://stripe.test/x')
+        with patch(SESSION_TOKEN_PATH) as mock_create:
+            mock_create.return_value = FAKE_SESSION_TOKEN
             res = self.client.post('/api/payments/create-checkout-session/', {
                 'session_key': 'saas-reg-co',
                 'customer_name': 'Cliente SaaS',
@@ -7224,30 +7451,20 @@ class SaasNoRegressionTest(TestCase):
                 'accepted_warranty_policy': True,
             }, format='json')
         self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
-        order = Order.objects.get(stripe_session_id='cs_saas_reg')
+        order = Order.objects.get(customer_email='saas@example.com')
         self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
 
-    def _fire_webhook(self, session_id):
-        event = {
-            'type': 'checkout.session.completed',
-            'data': {'object': {'id': session_id, 'payment_intent': 'pi_saas_reg'}},
-        }
-        with patch('stripe.Webhook.construct_event', return_value=event):
-            return self.client.post(
-                '/api/payments/webhook/', data=b'{}',
-                content_type='application/json', HTTP_STRIPE_SIGNATURE='t=1,v1=fake',
-            )
+    def _fire_webhook(self, order, **kwargs):
+        return _post_izipay_ipn(self.client, order, **kwargs)
 
     def test_webhook_still_marks_paid_and_remains_idempotent(self):
         order = Order.objects.create(company=_pilot_company(),
-            customer_email='saas-wh@example.com', total=Decimal('1000.00'),
-            stripe_session_id='cs_saas_wh', status=Order.Status.PENDING_PAYMENT,
+            customer_email='saas-wh@example.com', total=Decimal('1000.00'), status=Order.Status.PENDING_PAYMENT,
         )
         OrderItem.objects.create(order=order, product=self.product, quantity=2, price=self.product.price)
 
-        self._fire_webhook('cs_saas_wh')
-        self._fire_webhook('cs_saas_wh')
-        self._fire_webhook('cs_saas_wh')
+        for _ in range(3):
+            self._fire_webhook(order)
 
         order.refresh_from_db()
         self.product.refresh_from_db()
@@ -7263,11 +7480,11 @@ class SaasNoRegressionTest(TestCase):
         )
 
     def test_payment_status_view_still_works(self):
-        Order.objects.create(company=_pilot_company(),
-            customer_email='saas-ps@example.com', total=Decimal('1000.00'),
-            stripe_session_id='cs_saas_ps', status=Order.Status.PAID, paid=True,
+        order = Order.objects.create(company=_pilot_company(),
+            customer_email='saas-ps@example.com', total=Decimal('1000.00'), status=Order.Status.PAID, paid=True,
         )
-        res = self.client.get('/api/payments/status/?session_id=cs_saas_ps')
+        attempt = _pay_attempt(order, transaction_id='tx-saas-ps', order_number='on-saas-ps')
+        res = self.client.get(f'/api/payments/status/?reference={attempt.transaction_id}')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
     def test_admin_products_and_orders_still_work(self):
@@ -7796,7 +8013,7 @@ class Phase2aAuditTest(TestCase):
         raw = self._all_metadata()
         for secret in (
             'password', 'pass123', 'jwt', 'bearer', 'blackdog_access',
-            'blackdog_refresh', 'csrf', 'stripe', 'sk_', 'pi_', 'cs_', 'token',
+            'blackdog_refresh', 'csrf', 'izipay', 'hash_key', 'api_key', 'token',
         ):
             self.assertNotIn(secret, raw, f'metadata expone "{secret}"')
 
@@ -8637,7 +8854,7 @@ class Phase2a1AuditTest(TestCase):
         }, format='json')
         raw = ' '.join(str(log.metadata) for log in AdminAuditLog.objects.all()).lower()
         for secret in ('password', 'pass123', 'jwt', 'bearer', 'blackdog_access',
-                       'blackdog_refresh', 'csrf', 'stripe', 'sk_', 'token'):
+                       'blackdog_refresh', 'csrf', 'izipay', 'hash_key', 'token'):
             self.assertNotIn(secret, raw, f'metadata expone "{secret}"')
 
     def test_rejected_action_creates_no_audit_log(self):
@@ -9615,7 +9832,7 @@ class InternalDashboardTest(TestCase):
         data = self._get(self.staff_a).data
         raw = str(data).lower()
 
-        for forbidden in ('producto global', 'stripe', 'profit', 'margin', 'utilidad'):
+        for forbidden in ('producto global', 'izipay', 'profit', 'margin', 'utilidad'):
             self.assertNotIn(forbidden, raw, f'la respuesta expone "{forbidden}"')
 
         # The other tenant's 77 units are not in this company's totals.
@@ -10720,6 +10937,7 @@ class Phase2cCouponIsolationTest(TestCase):
             self.assertEqual(storefront_coupon(request, 'BIENVENIDO10'), self.coupon_b)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class Phase2cCheckoutTest(TestCase):
     """Checkout derives its tenant from the storefront and nothing else."""
 
@@ -10750,8 +10968,8 @@ class Phase2cCheckoutTest(TestCase):
         return base
 
     def _checkout(self, session_id='cs_2c'):
-        with patch('stripe.checkout.Session.create') as mock_create:
-            mock_create.return_value = MagicMock(id=session_id, url='https://stripe.test/x')
+        with patch(SESSION_TOKEN_PATH) as mock_create:
+            mock_create.return_value = FAKE_SESSION_TOKEN
             return self.client.post('/api/payments/create-checkout-session/',
                                     self._payload(), format='json'), mock_create
 
@@ -10760,19 +10978,19 @@ class Phase2cCheckoutTest(TestCase):
         with _storefront_of(self.a):
             res, _ = self._checkout()
         self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
-        order = Order.objects.get(stripe_session_id='cs_2c')
+        order = Order.objects.get()
         self.assertEqual(order.company_id, self.a.pk)
         self.assertEqual(order.items.first().product.company_id, self.a.pk)
 
     def test_company_in_the_payload_is_ignored(self):
         CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
         with _storefront_of(self.a):
-            with patch('stripe.checkout.Session.create') as mock_create:
-                mock_create.return_value = MagicMock(id='cs_2c_payload', url='u')
+            with patch(SESSION_TOKEN_PATH) as mock_create:
+                mock_create.return_value = FAKE_SESSION_TOKEN
                 self.client.post('/api/payments/create-checkout-session/',
                                  self._payload(company=self.b.pk), format='json')
         self.assertEqual(
-            Order.objects.get(stripe_session_id='cs_2c_payload').company_id, self.a.pk)
+            Order.objects.get().company_id, self.a.pk)
 
     def test_a_cart_of_another_tenant_is_invisible_to_this_checkout(self):
         """The cross-tenant cart cannot even reach the order-creation step."""
@@ -10780,14 +10998,14 @@ class Phase2cCheckoutTest(TestCase):
         with _storefront_of(self.a):
             res, _ = self._checkout()
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(Order.objects.filter(stripe_session_id='cs_2c').count(), 0)
+        self.assertEqual(Order.objects.count(), 0)
 
     def test_coupon_of_another_tenant_is_rejected(self):
         _coupon(self.b, 'SOLO_B', 50)
         CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
         with _storefront_of(self.a):
-            with patch('stripe.checkout.Session.create') as mock_create:
-                mock_create.return_value = MagicMock(id='cs_2c_cup', url='u')
+            with patch(SESSION_TOKEN_PATH) as mock_create:
+                mock_create.return_value = FAKE_SESSION_TOKEN
                 res = self.client.post('/api/payments/create-checkout-session/',
                                        self._payload(coupon_code='SOLO_B'), format='json')
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
@@ -10796,21 +11014,31 @@ class Phase2cCheckoutTest(TestCase):
         _coupon(self.a, 'MITAD', 50)
         CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
         with _storefront_of(self.a):
-            with patch('stripe.checkout.Session.create') as mock_create:
-                mock_create.return_value = MagicMock(id='cs_2c_own', url='u')
+            with patch(SESSION_TOKEN_PATH) as mock_create:
+                mock_create.return_value = FAKE_SESSION_TOKEN
                 self.client.post('/api/payments/create-checkout-session/',
                                  self._payload(coupon_code='MITAD'), format='json')
-        order = Order.objects.get(stripe_session_id='cs_2c_own')
+        order = Order.objects.get()
         self.assertEqual(order.total, Decimal('50.00'))
 
-    def test_stripe_metadata_carries_the_company(self):
+    def test_the_attempt_belongs_to_the_orders_company(self):
+        """
+        The payment attempt hangs off the order, so its tenant is the order's.
+
+        The previous integration sent the company id to the gateway as metadata
+        and compared the echo. Nothing is echoed now — the attempt is a row
+        pointing at the order, and `order.company` is the only answer there is.
+        """
         CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
         with _storefront_of(self.a):
-            _res, mock_create = self._checkout('cs_2c_meta')
-        metadata = mock_create.call_args.kwargs['metadata']
-        self.assertEqual(metadata['company_id'], str(self.a.pk))
+            self._checkout()
+        order = Order.objects.get()
+        attempt = PaymentTransaction.objects.get()
+        self.assertEqual(attempt.order_id, order.pk)
+        self.assertEqual(attempt.order.company_id, self.a.pk)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class Phase2cWebhookTest(TestCase):
     """The webhook resolves its tenant from the database, never from the request."""
 
@@ -10823,7 +11051,7 @@ class Phase2cWebhookTest(TestCase):
         self.prod_a = _prod(self.a, 'Producto A', '2c-wh-prod-a', inventory=10)
         self.prod_b = _prod(self.b, 'Producto B', '2c-wh-prod-b', inventory=10)
 
-        self.order = _order(self.a, stripe_session_id='cs_wh_2c')
+        self.order = _order(self.a)
         OrderItem.objects.create(
             order=self.order, product=self.prod_a, quantity=2, price=self.prod_a.price)
         self.order.cart_session_key = self.SESSION
@@ -10834,18 +11062,8 @@ class Phase2cWebhookTest(TestCase):
         CartItem.objects.create(session_key=self.SESSION, product=self.prod_b, quantity=1)
         self.client = APIClient()
 
-    def _fire(self, session_id='cs_wh_2c', metadata=None):
-        event = {
-            'type': 'checkout.session.completed',
-            'data': {'object': {
-                'id': session_id, 'payment_intent': 'pi_2c',
-                **({'metadata': metadata} if metadata is not None else {}),
-            }},
-        }
-        with patch('stripe.Webhook.construct_event', return_value=event):
-            return self.client.post('/api/payments/webhook/', data=b'{}',
-                                    content_type='application/json',
-                                    HTTP_STRIPE_SIGNATURE='t=1,v1=fake')
+    def _fire(self, **kwargs):
+        return _post_izipay_ipn(self.client, self.order, **kwargs)
 
     def test_payment_is_confirmed_for_the_orders_own_company(self):
         self._fire()
@@ -10873,21 +11091,41 @@ class Phase2cWebhookTest(TestCase):
             1,
         )
 
-    def test_metadata_company_mismatch_is_refused(self):
-        """Metadata came back from a third party; it is checked, never trusted."""
-        res = self._fire(metadata={'company_id': str(self.b.pk)})
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
+    def test_another_merchants_authorization_is_refused(self):
+        """
+        What the gateway sends back is CHECKED, never trusted.
+
+        The previous integration echoed a `company_id` we had sent it, and the
+        webhook compared that against the order. Izipay has no such field, so
+        the equivalent check is the merchant: an authorisation issued to a
+        different merchant account cannot pay an order here.
+        """
+        res = self._fire(merchant_code='9999999')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.order.refresh_from_db()
         self.assertNotEqual(self.order.status, Order.Status.PAID)
         self.assertEqual(StockMovement.objects.filter(order=self.order).count(), 0)
 
-    def test_matching_metadata_is_accepted(self):
-        self._fire(metadata={'company_id': str(self.a.pk)})
+    def test_our_own_merchants_authorization_is_accepted(self):
+        self._fire(merchant_code=IZIPAY_TEST_SETTINGS['IZIPAY_MERCHANT_CODE'])
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, Order.Status.PAID)
 
+    def test_the_tenant_is_never_read_from_the_message(self):
+        """
+        The company comes from `Order.company` — the database — and nowhere else.
+
+        Not from the host (one endpoint serves every tenant) and not from the
+        payload (that is data we would be letting a third party choose).
+        """
+        self._fire()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.company_id, self.a.pk)
+        movement = StockMovement.objects.get(order=self.order)
+        self.assertEqual(movement.product.company_id, self.a.pk)
+
     def test_webhook_host_never_decides_the_tenant(self):
-        """Stripe calls one endpoint; the host says nothing about the seller."""
+        """The gateway calls one endpoint; the host says nothing about the seller."""
         with _storefront_of(self.b):
             self._fire()
         self.order.refresh_from_db()
@@ -11071,7 +11309,7 @@ class Phase2cAdminOrderIsolationTest(TestCase):
         self.assertIsNotNone(log)
         self.assertEqual(log.company_id, self.a.pk)
         raw = str(log.metadata).lower()
-        for secret in ('stripe', 'cs_', 'pi_', 'token'):
+        for secret in ('izipay', 'transaction_id', 'token'):
             self.assertNotIn(secret, raw)
 
 
@@ -11845,7 +12083,7 @@ class Phase2dTransferTest(TestCase):
         for log in logs:
             self.assertEqual(log.company_id, self.company.pk)
             blob = str(log.metadata).lower()
-            for sensitive in ('password', 'token', 'stripe', 'cookie'):
+            for sensitive in ('password', 'token', 'izipay', 'cookie'):
                 self.assertNotIn(sensitive, blob)
 
     def test_transfer_types_cannot_be_registered_by_hand(self):
@@ -12537,6 +12775,7 @@ class Phase2dMigrationRuleTest(TestCase):
         self.assertIn(company, needing)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class Phase2dStorefrontTest(TestCase):
     """
     The public store sells what the FULFILLMENT BRANCH can deliver.
@@ -12599,12 +12838,9 @@ class Phase2dStorefrontTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('errors', res.json())
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_checkout_stamps_the_fulfillment_branch_on_the_order(self, mock_create):
-        mock = MagicMock()
-        mock.id = 'cs_p2d_branch'
-        mock.url = 'https://checkout.stripe.com/pay/cs_p2d_branch'
-        mock_create.return_value = mock
+        mock_create.return_value = FAKE_SESSION_TOKEN
 
         CartItem.objects.create(
             session_key='p2d-store-4', product=self.product, quantity=2,
@@ -12619,7 +12855,7 @@ class Phase2dStorefrontTest(TestCase):
                 'accepted_terms': True, 'accepted_warranty_policy': True,
             }, format='json')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        order = Order.objects.get(stripe_session_id='cs_p2d_branch')
+        order = Order.objects.get()
         self.assertEqual(order.fulfillment_branch_id, self.main.pk)
 
     def test_a_company_with_no_fulfillment_branch_cannot_check_out(self):
@@ -13229,7 +13465,7 @@ class Phase3IdentitySnapshotTest(TestCase):
         snapshot = build_identity_snapshot(self.company)
         blob = str(snapshot).lower()
         for forbidden in ('interno@example.invalid', 'notification', 'password',
-                          'token', 'secret', 'stripe'):
+                          'token', 'secret', 'izipay'):
             self.assertNotIn(forbidden, blob)
 
     def test_the_pickup_point_is_the_branch_not_the_legal_address(self):
@@ -13672,7 +13908,7 @@ class Phase3StorefrontConfigTest(TestCase):
     def test_no_internal_or_membership_data_is_exposed(self):
         blob = str(self._config(self.a).data).lower()
         for forbidden in (
-            'membership', 'role', 'capabilit', 'audit', 'stripe', 'secret',
+            'membership', 'role', 'capabilit', 'audit', 'izipay', 'secret',
             'password', 'token', 'is_active',
         ):
             self.assertNotIn(forbidden, blob, f'la respuesta pública expone "{forbidden}"')
@@ -13860,8 +14096,8 @@ class Phase3SettingsApiTest(TestCase):
 
     def test_currency_is_read_only(self):
         """
-        Stored, but not editable: checkout charges through Stripe in one
-        platform-level currency. A dropdown offering USD while Stripe billed PEN
+        Stored, but not editable: checkout charges through the gateway in one
+        platform-level currency. A dropdown offering USD while the gateway billed PEN
         would be a lie with a UI on it.
         """
         res = self._as(self.admin_a).patch(
@@ -16262,14 +16498,14 @@ class Phase4ApiTest(TestCase):
         self.assertIsNotNone(summary['last_purchase_at'])
 
     def test_the_history_carries_no_payment_internals(self):
-        order = _p3_order(self.a, stripe_payment_intent_id='pi_secret_123')
+        order = _p3_order(self.a)
         order.customer = self.customer_a
         order.save(update_fields=['customer'])
         res = self._as(self.manager_a).get(f'/api/admin/customers/{self.customer_a.pk}/')
         # The RENDERED body, not `res.data`: what leaks is what goes on the wire.
         blob = res.content.decode()
         self.assertNotIn('pi_secret_123', blob)
-        self.assertNotIn('stripe', blob.lower())
+        self.assertNotIn('izipay', blob.lower())
 
     def test_the_history_shows_the_orders_own_snapshot(self):
         order = _p3_order(self.a, customer_name='Ana Quispe',
@@ -17061,7 +17297,7 @@ class V1PublicContractTest(TestCase):
 
     def test_no_internal_field_is_exposed(self):
         body = self.client.get(_v1('contrato')).content.decode()
-        for leaked in ('company', 'tax_id', 'legal_name', 'cost', 'branch', 'stripe'):
+        for leaked in ('company', 'tax_id', 'legal_name', 'cost', 'branch', 'izipay'):
             self.assertNotIn(leaked, body.lower())
 
     def test_the_list_is_a_raw_array_not_a_paginated_envelope(self):
@@ -18279,8 +18515,6 @@ class M4CustomerOrderContractTest(TestCase):
         product = _prod(self.company, 'MacBook Air', 'macbook-air-m4')
         self.order = _order(
             self.company, user=self.ana, total='4500.00', paid=True,
-            stripe_session_id='cs_test_secreto',
-            stripe_payment_intent_id='pi_test_secreto',
             cart_session_key='session-secreta',
             payment_error='tarjeta rechazada internamente',
             customer_phone='999888777',
@@ -18341,12 +18575,12 @@ class M4CustomerOrderContractTest(TestCase):
         self.assertEqual(str(item['price']), '2250.00')
         self.assertEqual(item['product_name'], 'MacBook Air')
 
-    def test_NO_stripe_identifier_reaches_the_customer(self):
+    def test_NO_gateway_identifier_reaches_the_customer(self):
         body = self.client_ana.get(_m4_orders_url('m4-contrato')).content.decode()
 
         self.assertNotIn('cs_test_secreto', body)
         self.assertNotIn('pi_test_secreto', body)
-        self.assertNotIn('stripe', body.lower())
+        self.assertNotIn('izipay', body.lower())
 
     def test_NO_operational_diagnostic_reaches_the_customer(self):
         body = self.client_ana.get(_m4_orders_url('m4-contrato')).content.decode()
@@ -18946,7 +19180,7 @@ class C1PosSaleTest(TestCase):
         """§36 — nothing about the storefront's semantics changes."""
         online = _p3_order(self.company)
         self.assertEqual(online.sales_channel, SalesChannel.ONLINE)
-        self.assertEqual(online.payment_method, PaymentMethod.STRIPE)
+        self.assertEqual(online.payment_method, PaymentMethod.ONLINE)
         self.assertIsNone(online.sold_by_id)
         self.assertEqual(online.pos_idempotency_key, '')
 
@@ -21822,11 +22056,9 @@ def _m5_checkout_url(slug):
     return f'/api/v1/customer/{slug}/checkout/'
 
 
-def _m5_stripe_session(session_id='cs_test_m5', url='https://checkout.stripe.com/pay/cs_test_m5'):
-    mock = MagicMock()
-    mock.id = session_id
-    mock.url = url
-    return mock
+def _m5_session_token(token=FAKE_SESSION_TOKEN):
+    """The native surface's session token. A string, like the browser's."""
+    return token
 
 
 def _m5_stock(product, branch, quantity):
@@ -21883,7 +22115,7 @@ class M5StorefrontConfigTest(TestCase):
         body = self.client.get(_m5_config_url('m5-cfg-a')).content.decode()
 
         for internal in (
-            'order_notification_email', 'stripe', 'secret', 'capabilit', 'membership',
+            'order_notification_email', 'izipay', 'secret', 'capabilit', 'membership',
         ):
             self.assertNotIn(internal, body.lower())
 
@@ -21971,6 +22203,7 @@ class M5CheckoutBase(TestCase):
         return body
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class M5CheckoutAuthTest(M5CheckoutBase):
     """Only a v1 Bearer token, held by a client of this company, opens this."""
 
@@ -21999,9 +22232,9 @@ class M5CheckoutAuthTest(M5CheckoutBase):
             bad.post(_m5_checkout_url('m5-shop'), self.body(), format='json').status_code, 401,
         )
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_a_customer_of_ANOTHER_company_cannot_check_out_here(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
         other = _saas_company('Otra', 'm5-otra', tax_id='20781000002')
         stranger = User.objects.create_user(
             username='ajena', email='ajena@example.com', password='Pass123!',
@@ -22019,11 +22252,11 @@ class M5CheckoutAuthTest(M5CheckoutBase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_an_EMPLOYEE_who_is_not_a_client_cannot_check_out(self, mock_create):
         # Signing in as staff is not a customer relation. A point of sale is a
         # different surface with a different permission.
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
         staff = User.objects.create_user(
             username='vendedor', email='vendedor@example.com', password='Pass123!',
         )
@@ -22039,9 +22272,9 @@ class M5CheckoutAuthTest(M5CheckoutBase):
             client.post(_m5_checkout_url('m5-shop'), self.body(), format='json').status_code, 404,
         )
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_an_employee_who_IS_also_a_client_may_buy_as_a_client(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
         staff = User.objects.create_user(
             username='empleada', email='empleada@example.com', password='Pass123!',
         )
@@ -22060,12 +22293,13 @@ class M5CheckoutAuthTest(M5CheckoutBase):
         self.assertEqual(Order.objects.get(pk=response.json()['order_id']).user, staff)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class M5CheckoutCommercialAuthorityTest(M5CheckoutBase):
     """The client proposes items. The server decides everything about money."""
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_it_creates_a_pending_order_priced_by_the_SERVER(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
 
         response = self.client.post(
             _m5_checkout_url('m5-shop'), self.body(items=[
@@ -22092,7 +22326,7 @@ class M5CheckoutCommercialAuthorityTest(M5CheckoutBase):
         for field, value in [
             ('price', '1.00'), ('subtotal', '1.00'), ('discount_amount', '999.00'),
             ('company_id', 99), ('branch_id', 99), ('status', 'paid'),
-            ('paid', True), ('user_id', 1), ('stripe_session_id', 'cs_fake'),
+            ('paid', True), ('user_id', 1), ('transaction_id', 'tx_fake'),
             ('session_key', 'abc'),
         ]:
             response = self.client.post(
@@ -22100,9 +22334,9 @@ class M5CheckoutCommercialAuthorityTest(M5CheckoutBase):
             )
             self.assertEqual(response.status_code, 400, field)
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_the_price_comes_from_the_product_even_if_it_changed(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
         self.product.price = Decimal('4500.00')
         self.product.save(update_fields=['price'])
 
@@ -22146,9 +22380,9 @@ class M5CheckoutCommercialAuthorityTest(M5CheckoutBase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(Order.objects.count(), 0)
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_a_coupon_of_another_company_is_refused(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
         other = _saas_company('Otra', 'm5-otra-3', tax_id='20781000004')
         Coupon.objects.create(company=other, code='AJENO50', discount_percent=50)
 
@@ -22158,9 +22392,9 @@ class M5CheckoutCommercialAuthorityTest(M5CheckoutBase):
 
         self.assertEqual(response.status_code, 400)
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_a_coupon_of_THIS_company_is_applied_by_the_server(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
         Coupon.objects.create(company=self.company, code='M5DIEZ', discount_percent=10)
 
         response = self.client.post(
@@ -22171,10 +22405,10 @@ class M5CheckoutCommercialAuthorityTest(M5CheckoutBase):
         self.assertEqual(order.discount_amount, Decimal('400.00'))
         self.assertEqual(order.total, Decimal('3600.00'))
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_the_same_slug_twice_becomes_ONE_line(self, mock_create):
         # Summing is what the shopper meant; taking the last would drop the first.
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
 
         response = self.client.post(
             _m5_checkout_url('m5-shop'),
@@ -22189,9 +22423,9 @@ class M5CheckoutCommercialAuthorityTest(M5CheckoutBase):
         self.assertEqual(order.items.count(), 1)
         self.assertEqual(order.items.first().quantity, 3)
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_it_stamps_the_fulfillment_branch_and_company_snapshot(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
 
         response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
@@ -22200,22 +22434,23 @@ class M5CheckoutCommercialAuthorityTest(M5CheckoutBase):
         self.assertTrue(order.company_snapshot)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class M5CheckoutOwnershipTest(M5CheckoutBase):
     """The order must belong to the person who bought it."""
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_order_user_is_the_authenticated_user(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
 
         response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
         self.assertEqual(Order.objects.get(pk=response.json()['order_id']).user, self.user)
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_the_new_order_APPEARS_in_customer_orders(self, mock_create):
         # The end-to-end claim of this phase: buy in the app, see it in "mis
         # pedidos" without any further wiring.
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
         created = self.client.post(
             _m5_checkout_url('m5-shop'), self.body(), format='json',
         ).json()['order_id']
@@ -22224,9 +22459,9 @@ class M5CheckoutOwnershipTest(M5CheckoutBase):
 
         self.assertIn(created, [row['id'] for row in rows])
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_it_links_the_CRM_record(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
 
         response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
@@ -22234,11 +22469,11 @@ class M5CheckoutOwnershipTest(M5CheckoutBase):
         self.assertIsNotNone(order.customer)
         self.assertEqual(order.customer.user, self.user)
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_a_contact_email_does_NOT_change_ownership(self, mock_create):
         # A buyer may want the receipt elsewhere. That is contact information,
         # never a claim about whose order it is.
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
 
         response = self.client.post(
             _m5_checkout_url('m5-shop'),
@@ -22250,9 +22485,9 @@ class M5CheckoutOwnershipTest(M5CheckoutBase):
         self.assertEqual(order.user, self.user)
         self.assertEqual(order.customer_email, 'otra.persona@example.com')
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_another_customer_cannot_read_the_resulting_order(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
         created = self.client.post(
             _m5_checkout_url('m5-shop'), self.body(), format='json',
         ).json()['order_id']
@@ -22273,14 +22508,13 @@ class M5CheckoutOwnershipTest(M5CheckoutBase):
         )
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class M5CheckoutIdempotencyTest(M5CheckoutBase):
     """A retry must not cost anyone twice."""
 
-    @patch('stripe.checkout.Session.retrieve')
-    @patch('stripe.checkout.Session.create')
-    def test_the_same_key_and_basket_yields_ONE_order(self, mock_create, mock_retrieve):
-        mock_create.return_value = _m5_stripe_session()
-        mock_retrieve.return_value = _m5_stripe_session()
+    @patch(SESSION_TOKEN_PATH)
+    def test_the_same_key_and_basket_yields_ONE_order(self, mock_create):
+        mock_create.return_value = _m5_session_token()
 
         first = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
         second = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
@@ -22290,32 +22524,54 @@ class M5CheckoutIdempotencyTest(M5CheckoutBase):
         self.assertEqual(first.json()['order_id'], second.json()['order_id'])
         self.assertEqual(Order.objects.count(), 1)
 
-    @patch('stripe.checkout.Session.retrieve')
-    @patch('stripe.checkout.Session.create')
-    def test_stripe_is_asked_to_CREATE_only_once(self, mock_create, mock_retrieve):
-        mock_create.return_value = _m5_stripe_session()
-        mock_retrieve.return_value = _m5_stripe_session()
+    @patch(SESSION_TOKEN_PATH)
+    def test_a_replay_reopens_the_payment_but_never_the_order(self, mock_create):
+        """
+        ONE order, TWO attempts — and that is the correct answer, not a leak.
 
-        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
-        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+        Idempotency protects the ORDER: the same key and the same basket must
+        never charge anyone twice, and never produce a second row to fulfil.
+        The payment session is a different thing. Tokens expire, and Izipay
+        refuses a repeated `orderNumber` (P69), so handing back the original
+        would give the client a token it cannot use and a number that would be
+        rejected. A fresh attempt against the same order is the honest answer,
+        and the extra row is exactly the history `PaymentTransaction` keeps.
+        """
+        mock_create.return_value = _m5_session_token()
 
-        self.assertEqual(mock_create.call_count, 1)
+        first = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+        second = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
-    @patch('stripe.checkout.Session.create')
-    def test_stripe_receives_its_OWN_idempotency_key(self, mock_create):
-        # A second layer, for the case where the order was created, Stripe
-        # accepted the call, and the response never arrived.
-        mock_create.return_value = _m5_stripe_session()
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(first.json()['order_id'], second.json()['order_id'])
+        self.assertEqual(mock_create.call_count, 2)
 
-        self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
+        attempts = PaymentTransaction.objects.filter(order_id=first.json()['order_id'])
+        self.assertEqual(attempts.count(), 2)
+        # Distinct on both axes the gateway cares about.
+        self.assertEqual(len({a.transaction_id for a in attempts}), 2)
+        self.assertEqual(len({a.order_number for a in attempts}), 2)
 
-        self.assertIn('idempotency_key', mock_create.call_args.kwargs)
+    @patch(SESSION_TOKEN_PATH)
+    def test_each_attempt_gets_its_own_transaction_id(self, mock_create):
+        """The correlation id is server-generated and reaches the gateway."""
+        mock_create.return_value = _m5_session_token()
 
-    @patch('stripe.checkout.Session.create')
+        response = self.client.post(
+            _m5_checkout_url('m5-shop'), self.body(), format='json')
+
+        sent = mock_create.call_args.kwargs['transaction_id']
+        attempt = PaymentTransaction.objects.get()
+        self.assertEqual(sent, attempt.transaction_id)
+        self.assertEqual(response.json()['payment']['transaction_id'], sent)
+        # Never supplied by the client — the request body has no such field.
+        self.assertNotIn('transaction_id', self.body())
+
+    @patch(SESSION_TOKEN_PATH)
     def test_the_same_key_with_a_DIFFERENT_basket_is_409(self, mock_create):
         # Returning the first order would tell the client its new basket was
         # accepted when it was not.
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
         self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
         conflict = self.client.post(
@@ -22327,13 +22583,11 @@ class M5CheckoutIdempotencyTest(M5CheckoutBase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(Order.objects.count(), 1)
 
-    @patch('stripe.checkout.Session.retrieve')
-    @patch('stripe.checkout.Session.create')
-    def test_a_DIFFERENT_key_creates_a_second_order(self, mock_create, mock_retrieve):
-        # Distinct session ids per call: `Order.stripe_session_id` is unique, as
-        # it should be, and real Stripe never returns the same id twice.
-        mock_create.side_effect = [_m5_stripe_session('cs_a'), _m5_stripe_session('cs_b')]
-        mock_retrieve.return_value = _m5_stripe_session()
+    @patch(SESSION_TOKEN_PATH)
+    def test_a_DIFFERENT_key_creates_a_second_order(self, mock_create):
+        # Distinct transaction ids per call: `PaymentTransaction` is unique per
+        # (provider, transaction_id), and Izipay refuses a repeated orderNumber.
+        mock_create.side_effect = [_m5_session_token(), _m5_session_token()]
 
         self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
         self.client.post(
@@ -22344,11 +22598,11 @@ class M5CheckoutIdempotencyTest(M5CheckoutBase):
 
         self.assertEqual(Order.objects.count(), 2)
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_two_users_may_use_the_SAME_key(self, mock_create):
         # The constraint is scoped to company AND user. A global one would make
         # one customer's checkout fail because of another's.
-        mock_create.side_effect = [_m5_stripe_session('cs_u1'), _m5_stripe_session('cs_u2')]
+        mock_create.side_effect = [_m5_session_token(), _m5_session_token()]
         self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
         other = User.objects.create_user(
@@ -22375,26 +22629,30 @@ class M5CheckoutIdempotencyTest(M5CheckoutBase):
 
         self.assertEqual(response.status_code, 400)
 
-    @patch('stripe.checkout.Session.retrieve')
-    @patch('stripe.checkout.Session.create')
-    def test_a_replay_never_echoes_a_stripe_identifier(self, mock_create, mock_retrieve):
-        mock_create.return_value = _m5_stripe_session()
-        mock_retrieve.return_value = _m5_stripe_session()
+    @patch(SESSION_TOKEN_PATH)
+    def test_a_replay_never_echoes_a_secret(self, mock_create):
+        """The replay carries the same public values as a first attempt, and no more."""
+        mock_create.return_value = _m5_session_token()
         self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
         replay = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
-        self.assertNotIn('cs_test_m5', str(replay.json().get('order_id')))
-        self.assertEqual(set(replay.json()), {'order_id', 'checkout_url'})
+        body = replay.json()
+        self.assertEqual(set(body), {'order_id', 'status', 'payment'})
+        blob = json.dumps(body)
+        self.assertNotIn(IZIPAY_TEST_SETTINGS['IZIPAY_API_KEY'], blob)
+        self.assertNotIn(IZIPAY_TEST_SETTINGS['IZIPAY_HASH_KEY'], blob)
+        self.assertNotIn(IZIPAY_TEST_SETTINGS['IZIPAY_TOKEN_URL'], blob)
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class M5CheckoutDoesNotConsumeTest(M5CheckoutBase):
-    """Nothing is spent before Stripe confirms."""
+    """Nothing is spent before the gateway confirms."""
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_stock_is_NOT_decremented_at_checkout(self, mock_create):
         # An order that never gets paid must not cost the shop its inventory.
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
 
         self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
@@ -22402,9 +22660,9 @@ class M5CheckoutDoesNotConsumeTest(M5CheckoutBase):
             _M5BranchStock.objects.get(branch=self.branch, product=self.product).quantity, 10,
         )
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_the_order_is_not_marked_paid(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
 
         response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
@@ -22412,24 +22670,25 @@ class M5CheckoutDoesNotConsumeTest(M5CheckoutBase):
         self.assertFalse(order.paid)
         self.assertIsNone(order.paid_at)
 
-    @patch('stripe.checkout.Session.create')
-    def test_a_stripe_failure_marks_the_order_failed_and_answers_502(self, mock_create):
-        mock_create.side_effect = stripe_lib.StripeError('boom')
+    @patch(SESSION_TOKEN_PATH)
+    def test_a_gateway_failure_marks_the_order_failed_and_answers_502(self, mock_create):
+        mock_create.side_effect = izipay.IzipayError('boom')
 
         response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
         self.assertEqual(response.status_code, 502)
         self.assertEqual(Order.objects.first().status, Order.Status.FAILED)
 
-    @patch('stripe.checkout.Session.create')
-    def test_a_stripe_failure_does_not_leak_the_provider_message(self, mock_create):
-        mock_create.side_effect = stripe_lib.StripeError('api key rotated: sk_live_xxx')
+    @patch(SESSION_TOKEN_PATH)
+    def test_a_gateway_failure_does_not_leak_the_provider_message(self, mock_create):
+        mock_create.side_effect = izipay.IzipayError('api key rotated: sk_live_xxx')
 
         response = self.client.post(_m5_checkout_url('m5-shop'), self.body(), format='json')
 
         self.assertNotIn('sk_live', response.content.decode())
 
 
+@override_settings(**IZIPAY_TEST_SETTINGS)
 class M5CheckoutValidationTest(M5CheckoutBase):
     """The form rules, matched to the web where the business is the same."""
 
@@ -22454,9 +22713,9 @@ class M5CheckoutValidationTest(M5CheckoutBase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('address_line', response.json())
 
-    @patch('stripe.checkout.Session.create')
+    @patch(SESSION_TOKEN_PATH)
     def test_a_delivery_WITH_an_address_is_accepted(self, mock_create):
-        mock_create.return_value = _m5_stripe_session()
+        mock_create.return_value = _m5_session_token()
 
         response = self.client.post(
             _m5_checkout_url('m5-shop'),
@@ -24782,7 +25041,7 @@ class M6InternalContextTest(M6InternalBase):
         self.assertEqual(set(payload['company']), {'slug', 'name'})
 
         body = self.client.get(_m6_ctx_url('m6-shop')).content.decode().lower()
-        for leaked in ('customer_email', 'stripe', 'token', 'secret', 'tax_id', 'total'):
+        for leaked in ('customer_email', 'izipay', 'token', 'secret', 'tax_id', 'total'):
             self.assertNotIn(leaked, body)
 
     def test_a_web_cookie_does_not_open_it(self):
@@ -24896,8 +25155,11 @@ class M6InternalOrderDetailTest(M6InternalBase):
 
     def setUp(self):
         super().setUp()
-        self.order.stripe_session_id = 'cs_interno_secreto'
-        self.order.stripe_payment_intent_id = 'pi_interno_secreto'
+        # The gateway identifiers live on the payment attempt now. They are
+        # still secrets as far as this surface is concerned, so the test still
+        # has to prove they do not reach it.
+        _pay_attempt(self.order, transaction_id='tx-interno-secreto',
+                     order_number='on-interno-secreto')
         self.order.payment_error = 'fallo interno del proveedor'
         self.order.cart_session_key = 'session-secreta'
         self.order.customer_phone = '987654321'
@@ -24918,12 +25180,12 @@ class M6InternalOrderDetailTest(M6InternalBase):
         self.assertIn('delivery_method', payload)
         self.assertIn('document_number', payload)
 
-    def test_NO_stripe_identifier_reaches_it(self):
+    def test_NO_gateway_identifier_reaches_it(self):
         body = self.client.get(_m6_order_url('m6-shop', self.order.id)).content.decode()
 
         self.assertNotIn('cs_interno_secreto', body)
         self.assertNotIn('pi_interno_secreto', body)
-        self.assertNotIn('stripe', body.lower())
+        self.assertNotIn('izipay', body.lower())
 
     def test_NO_raw_operational_string_reaches_it(self):
         body = self.client.get(_m6_order_url('m6-shop', self.order.id)).content.decode()
@@ -25077,7 +25339,7 @@ class M6InternalFulfillmentTest(M6InternalBase):
         self.assertEqual(response.status_code, 404)
 
     def test_it_does_NOT_touch_payment_state(self):
-        # Whether money arrived is Stripe's answer, delivered by the webhook —
+        # Whether money arrived is the gateway's answer, delivered by the notification —
         # never a staff member saying so.
         client = self._manage_client()
         before = self.order.status
@@ -29043,7 +29305,7 @@ class M9QuoteTest(M9ServiceBase):
         # Approval authorises work. It settles nothing.
         fields = {f.name for f in _M9Quote._meta.get_fields()}
         for forbidden in (
-            'paid', 'paid_at', 'payment_status', 'stripe_session_id', 'order',
+            'paid', 'paid_at', 'payment_status', 'transaction_id', 'order',
         ):
             self.assertNotIn(forbidden, fields, forbidden)
 
@@ -29690,7 +29952,7 @@ class M9StructuralTest(M9ServiceBase):
             re.search(r'(?<![A-Za-z])Order\.objects', code),
             'el módulo de servicio no debe tocar Order de e-commerce',
         )
-        for forbidden in ('CartItem', 'stripe', 'StockMovement', 'OrderItem'):
+        for forbidden in ('CartItem', 'izipay', 'StockMovement', 'OrderItem'):
             self.assertNotIn(forbidden, code, forbidden)
 
     def test_the_diagnostic_and_quote_models_hold_no_file_field(self):
@@ -30008,7 +30270,7 @@ class P0DProductRatingIsolationTest(TestCase):
 #   2. The WEB checkout turned each cart row into its own line without merging,
 #      and validated stock LINE BY LINE — so 3 + 3 against a shelf of 5 passed.
 #   3. `record_sale_stock_movements` is idempotent per `(order, product)`. That
-#      guard is what makes a replayed Stripe webhook safe, and it CANNOT tell a
+#      guard is what makes a replayed notification safe, and it CANNOT tell a
 #      replay from an order that genuinely carries two lines of one product: it
 #      writes the exit for the first and skips the second.
 #
@@ -30057,7 +30319,7 @@ class P0EStockMovementWithDuplicateLinesTest(TestCase):
         recorded half of them.
 
         The cause is not a bug in the movement service. Its idempotency key is
-        `(order, product)`, which is precisely what stops a replayed Stripe
+        `(order, product)`, which is precisely what stops a replayed gateway
         webhook decrementing twice, and it cannot tell a replay from an order
         that genuinely holds the same article on two lines: it writes the exit
         for the first and skips the second.
@@ -30522,3 +30784,725 @@ class P0ECartWriterStructureTest(TestCase):
                 n.id for n in names if isinstance(n, ast.Name)
             )
         self.assertIn('IntegrityError', caught)
+
+
+# ===========================================================================
+# P0-F — Izipay payment gateway & monetary integrity
+# ===========================================================================
+#
+# THE ONE INVARIANT THIS SECTION DEFENDS:
+#
+#     An order becomes PAID only when a message SIGNED WITH A KEY THE BROWSER
+#     HAS NEVER SEEN says the exact amount, in the exact currency, for the
+#     exact transaction, from the exact merchant, was authorised.
+#
+# Everything else — the SDK callback, the success page, an authenticated
+# session, a POST that looks right — is a hint about what probably happened.
+# Hints do not move stock and do not empty carts.
+#
+# NOTHING ABOUT THE SIGNATURE IS MOCKED IN THIS SECTION. Every HMAC is computed
+# for real, by a helper that re-implements the documented algorithm rather than
+# calling the adapter's, so a bug in the adapter cannot cancel itself out
+# across an assertion. The only thing patched anywhere is the network call that
+# fetches a session token.
+# ===========================================================================
+
+
+class P0FSignatureTest(TestCase):
+    """
+    §66 — the signature is the authority, and it is checked properly.
+
+    Five ways a message can be wrong, and all five must be refused.
+    """
+
+    KEY = 'test-hash-key-not-real'
+
+    def setUp(self):
+        self.payload = _izipay_payload(
+            transaction_id='17370677285350',
+            order_number='173706772800',
+            amount=Decimal('149.00'),
+        )
+
+    def test_a_correct_signature_verifies(self):
+        signature = _izipay_sign(self.payload, self.KEY)
+        self.assertTrue(izipay.verify_signature(self.payload, signature, self.KEY))
+
+    def test_the_adapter_agrees_with_an_independent_implementation(self):
+        """
+        The adapter's own `sign()` must produce what the documented algorithm
+        produces — base64(HMAC-SHA256(payloadHttp, claveHash)) — as computed
+        here from `hmac` and `base64` directly.
+        """
+        self.assertEqual(
+            izipay.sign(self.payload, self.KEY),
+            _izipay_sign(self.payload, self.KEY),
+        )
+
+    def test_a_modified_signature_is_refused(self):
+        signature = _izipay_sign(self.payload, self.KEY)
+        tampered = ('A' if signature[0] != 'A' else 'B') + signature[1:]
+        self.assertFalse(izipay.verify_signature(self.payload, tampered, self.KEY))
+
+    def test_a_modified_payload_is_refused(self):
+        """One character of the amount is enough."""
+        signature = _izipay_sign(self.payload, self.KEY)
+        tampered = self.payload.replace('"amount": "149.00"', '"amount": "1.00"')
+        tampered = tampered.replace('"amount":"149.00"', '"amount":"1.00"')
+        self.assertNotEqual(tampered, self.payload)
+        self.assertFalse(izipay.verify_signature(tampered, signature, self.KEY))
+
+    def test_the_wrong_key_is_refused(self):
+        signature = _izipay_sign(self.payload, 'a-different-hash-key')
+        self.assertFalse(izipay.verify_signature(self.payload, signature, self.KEY))
+
+    def test_an_empty_signature_is_refused(self):
+        self.assertFalse(izipay.verify_signature(self.payload, '', self.KEY))
+
+    def test_an_empty_key_verifies_nothing(self):
+        """
+        A deployment that lost its hash key must REJECT, not accept.
+
+        The tempting failure is to compare against a signature computed with
+        the empty string, which an attacker can also compute.
+        """
+        self.assertFalse(izipay.verify_signature(self.payload, _izipay_sign(self.payload, ''), ''))
+
+    def test_the_comparison_is_constant_time(self):
+        """
+        `hmac.compare_digest`, not `==`.
+
+        `==` on strings returns at the first differing byte, and that timing is
+        an oracle: an attacker who can measure it recovers a valid signature
+        one byte at a time. Read from the source so the property cannot quietly
+        regress into an equality check.
+        """
+        import inspect
+        source = inspect.getsource(izipay.verify_signature)
+        self.assertIn('compare_digest', source)
+
+
+class P0FPayloadAuthorityTest(TestCase):
+    """
+    §29 — the SIGNED bytes are the message; the envelope around them is not.
+
+    Izipay signs `payloadHttp` and nothing else. The decoded `response` object
+    that travels beside it is convenient and completely unprotected: anyone who
+    can reach the endpoint can edit it without invalidating anything. So every
+    figure the domain acts on must be read from inside `payloadHttp`.
+    """
+
+    def setUp(self):
+        self.credentials = izipay.IzipayCredentials(
+            environment='sandbox', merchant_code='4001061',
+            api_key='k', hash_key='test-hash-key-not-real',
+            public_key='pk', token_url='https://izipay.invalid/token', currency='PEN',
+        )
+
+    def test_the_amount_is_read_from_the_signed_payload_not_the_envelope(self):
+        payload = _izipay_payload(
+            transaction_id='tx1', order_number='on1', amount=Decimal('149.00'),
+        )
+        body = _izipay_notification(payload)
+        # The unsigned copy claims a different amount. The signature still
+        # verifies, because it never covered this.
+        body['response']['order'][0]['amount'] = '1.00'
+        result = izipay.parse_notification(body, self.credentials)
+        self.assertEqual(result.amount, Decimal('149.00'))
+
+    def test_the_response_code_is_read_from_the_signed_payload(self):
+        payload = _izipay_payload(
+            transaction_id='tx2', order_number='on2', amount=Decimal('10.00'), code='A02',
+        )
+        body = _izipay_notification(payload)
+        body['code'] = '00'          # the envelope lies
+        result = izipay.parse_notification(body, self.credentials)
+        self.assertEqual(result.response_code, 'A02')
+        self.assertFalse(result.authorized)
+
+    def test_the_payload_is_not_reserialized_before_verifying(self):
+        """
+        A payload with non-ASCII text and unusual spacing must still verify.
+
+        This is the concrete failure §29 warns about: parse the JSON, dump it
+        again, and "Operación" becomes "Operaci\u00f3n", key order shifts and
+        the separators change. The bytes differ, the HMAC differs, and every
+        genuine notification is rejected.
+        """
+        payload = (
+            '{"code": "00",  "message": "Operación exitosa",'
+            ' "transactionId": "tx3",'
+            ' "response": {"payMethod": "CARD", "order": [{"amount": "50.00",'
+            ' "currency": "PEN", "orderNumber": "on3", "codeAuth": "1", "uniqueId": "1",'
+            ' "referenceNumber": "1", "stateMessage": "Autorizado"}],'
+            ' "merchant": {"merchantCode": "4001061"}}}'
+        )
+        body = _izipay_notification(payload)
+        result = izipay.parse_notification(body, self.credentials)
+        self.assertEqual(result.amount, Decimal('50.00'))
+        self.assertEqual(result.transaction_id, 'tx3')
+
+
+class P0FAuthorizationCodeTest(TestCase):
+    """§37 — one definition of "authorised", written down once."""
+
+    def test_00_is_authorized(self):
+        self.assertTrue(izipay.is_authorized('00'))
+
+    def test_a_decline_is_not_authorized(self):
+        for code in ('A02', 'A03', 'A08', 'P63', 'P68', 'P69', '021', ''):
+            self.assertFalse(izipay.is_authorized(code), code)
+
+    def test_the_authorized_set_is_explicit(self):
+        """
+        Not a scattered `if code == '00'`.
+
+        `P66` also reads "Operación exitosa" in Izipay's response-code table and
+        is deliberately excluded until confirmed: a wrongly-accepted code ships
+        goods for free, a wrongly-rejected one leaves a visible pending order.
+        """
+        self.assertEqual(izipay.AUTHORIZED_RESPONSE_CODES, frozenset({'00'}))
+        self.assertNotIn('P66', izipay.AUTHORIZED_RESPONSE_CODES)
+
+
+class P0FMoneyFormatTest(TestCase):
+    """§24 — money is never a float."""
+
+    def test_the_amount_is_a_quantised_decimal_string(self):
+        self.assertEqual(izipay.format_amount(Decimal('149')), '149.00')
+        self.assertEqual(izipay.format_amount(Decimal('149.5')), '149.50')
+        self.assertEqual(izipay.format_amount(Decimal('1299.00')), '1299.00')
+
+    def test_no_float_ever_reaches_the_gateway(self):
+        import inspect
+        source = inspect.getsource(izipay.format_amount)
+        self.assertNotIn('float(', source)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class P0FMonetaryIntegrityTest(TestCase):
+    """
+    §26, §27 — the amount must match EXACTLY, in both directions.
+
+    A cent short is obviously wrong. A cent over is equally wrong: it means the
+    authorisation belongs to some other intent, and quietly banking the
+    difference is reconciling by accident.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.product = _seeded(Product.objects.create(
+            company=_pilot_company(), name='P0F Money', slug='p0f-money',
+            price=Decimal('100.00'), inventory=10,
+        ))
+        self.session_key = 'p0f-money-session'
+        self.order = Order.objects.create(
+            company=_pilot_company(), customer_email='money@example.com',
+            total=Decimal('100.00'), cart_session_key=self.session_key,
+            status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(order=self.order, product=self.product,
+                                 quantity=1, price=self.product.price)
+        CartItem.objects.create(session_key=self.session_key, product=self.product, quantity=1)
+        self.attempt = _pay_attempt(self.order, transaction_id='tx-money-0001',
+                                    order_number='on-money-0001')
+
+    def _assert_nothing_happened(self, response, expected_status=400):
+        self.assertEqual(response.status_code, expected_status)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PENDING_PAYMENT)
+        self.assertFalse(self.order.paid)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+        self.assertEqual(
+            CartItem.objects.filter(session_key=self.session_key).count(), 1)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_the_exact_amount_is_paid(self):
+        response = _post_izipay_ipn(self.client, self.order, attempt=self.attempt)
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+
+    def test_a_cent_short_is_refused(self):
+        response = _post_izipay_ipn(
+            self.client, self.order, attempt=self.attempt,
+            payload_amount=Decimal('99.99'),
+        )
+        self._assert_nothing_happened(response)
+
+    def test_a_cent_over_is_refused(self):
+        """More money is not a reason to hand over goods against a mismatch."""
+        response = _post_izipay_ipn(
+            self.client, self.order, attempt=self.attempt,
+            payload_amount=Decimal('100.01'),
+        )
+        self._assert_nothing_happened(response)
+
+    def test_a_much_larger_amount_is_refused(self):
+        response = _post_izipay_ipn(
+            self.client, self.order, attempt=self.attempt,
+            payload_amount=Decimal('110.00'),
+        )
+        self._assert_nothing_happened(response)
+
+    def test_the_wrong_currency_is_refused(self):
+        """100.00 USD is not 100.00 PEN."""
+        response = _post_izipay_ipn(
+            self.client, self.order, attempt=self.attempt, currency='USD',
+        )
+        self._assert_nothing_happened(response)
+
+    def test_an_integrity_failure_is_recorded_as_such(self):
+        """
+        A mismatch is NOT a decline.
+
+        A decline is the gateway saying no; this is the gateway and the
+        database saying different things, and it needs a person, not a retry.
+        """
+        _post_izipay_ipn(self.client, self.order, attempt=self.attempt,
+                         payload_amount=Decimal('99.99'))
+        self.attempt.refresh_from_db()
+        self.assertEqual(self.attempt.status, PaymentTransaction.Status.INTEGRITY_FAILED)
+        self.assertTrue(self.attempt.signature_verified)
+        self.assertIn('amount', self.attempt.failure_reason)
+
+    def test_an_integrity_failure_records_no_personal_data(self):
+        """§21 — the payments table is not a copy of the customer database."""
+        _post_izipay_ipn(self.client, self.order, attempt=self.attempt,
+                         payload_amount=Decimal('99.99'))
+        self.attempt.refresh_from_db()
+        blob = ' '.join(str(getattr(self.attempt, f.name)) for f in
+                        PaymentTransaction._meta.fields).lower()
+        for leaked in ('luchotorres', 'street', 'billing', 'documenttype', '511842'):
+            self.assertNotIn(leaked, blob)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class P0FIdentityTest(TestCase):
+    """§38, §39, §40 — the message must be about THIS order, from OUR merchant."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.product = _seeded(Product.objects.create(
+            company=_pilot_company(), name='P0F Identity', slug='p0f-identity',
+            price=Decimal('100.00'), inventory=10,
+        ))
+        self.order_a = Order.objects.create(
+            company=_pilot_company(), customer_email='a@example.com',
+            total=Decimal('100.00'), status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(order=self.order_a, product=self.product,
+                                 quantity=1, price=self.product.price)
+        self.order_b = Order.objects.create(
+            company=_pilot_company(), customer_email='b@example.com',
+            total=Decimal('100.00'), status=Order.Status.PENDING_PAYMENT,
+        )
+        self.attempt_a = _pay_attempt(self.order_a, transaction_id='tx-a', order_number='on-a')
+        self.attempt_b = _pay_attempt(self.order_b, transaction_id='tx-b', order_number='on-b')
+
+    def test_a_transaction_paired_with_another_orders_number_is_refused(self):
+        """
+        transactionId of A, orderNumber of B. Neither half is believed.
+
+        There is no way to tell which one is the truth, and picking either
+        would pay one order with another's authorisation.
+        """
+        response = _post_izipay_ipn(
+            self.client, self.order_a, attempt=self.attempt_a,
+            payload_order_number=self.attempt_b.order_number,
+        )
+        self.assertEqual(response.status_code, 400)
+        for order in (self.order_a, self.order_b):
+            order.refresh_from_db()
+            self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+
+    def test_another_merchants_authorization_is_refused(self):
+        """A correctly signed message from a different merchant pays nothing."""
+        response = _post_izipay_ipn(
+            self.client, self.order_a, attempt=self.attempt_a,
+            merchant_code='9999999',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.order_a.refresh_from_db()
+        self.assertEqual(self.order_a.status, Order.Status.PENDING_PAYMENT)
+        self.attempt_a.refresh_from_db()
+        self.assertEqual(self.attempt_a.status, PaymentTransaction.Status.INTEGRITY_FAILED)
+        self.assertIn('merchant', self.attempt_a.failure_reason)
+
+    def test_an_unknown_transaction_creates_nothing(self):
+        payload = _izipay_payload(
+            transaction_id='tx-not-ours', order_number='on-not-ours',
+            amount=Decimal('100.00'),
+        )
+        before = Order.objects.count()
+        response = self.client.post(
+            IPN_URL, data=json.dumps(_izipay_notification(payload)),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(Order.objects.count(), before)
+        self.assertFalse(Order.objects.filter(status=Order.Status.PAID).exists())
+
+    def test_a_forged_signature_changes_nothing(self):
+        response = _post_izipay_ipn(
+            self.client, self.order_a, attempt=self.attempt_a,
+            signature='ZmFrZS1zaWduYXR1cmUtdmFsdWU=',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.order_a.refresh_from_db()
+        self.assertEqual(self.order_a.status, Order.Status.PENDING_PAYMENT)
+        self.attempt_a.refresh_from_db()
+        self.assertEqual(self.attempt_a.status, PaymentTransaction.Status.PENDING)
+        self.assertFalse(self.attempt_a.signature_verified)
+
+    def test_a_message_signed_with_the_wrong_key_changes_nothing(self):
+        response = _post_izipay_ipn(
+            self.client, self.order_a, attempt=self.attempt_a,
+            hash_key='an-attackers-key',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.order_a.refresh_from_db()
+        self.assertEqual(self.order_a.status, Order.Status.PENDING_PAYMENT)
+
+    def test_code_00_without_a_valid_signature_is_worth_nothing(self):
+        """§30 — `code: "00"` is not a password."""
+        response = self.client.post(
+            IPN_URL,
+            data=json.dumps({'code': '00', 'message': 'Operación exitosa',
+                             'transactionId': self.attempt_a.transaction_id}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.order_a.refresh_from_db()
+        self.assertEqual(self.order_a.status, Order.Status.PENDING_PAYMENT)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class P0FIdempotencyAndStockTest(TestCase):
+    """§34, §67, §70, §71 — ten notifications, one payment."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.product = _seeded(Product.objects.create(
+            company=_pilot_company(), name='P0F Replay', slug='p0f-replay',
+            price=Decimal('250.00'), inventory=10,
+        ))
+        self.session_key = 'p0f-replay-session'
+        self.order = Order.objects.create(
+            company=_pilot_company(), customer_email='replay@example.com',
+            total=Decimal('500.00'), cart_session_key=self.session_key,
+            status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(order=self.order, product=self.product,
+                                 quantity=2, price=self.product.price)
+        CartItem.objects.create(session_key=self.session_key, product=self.product, quantity=2)
+        self.attempt = _pay_attempt(self.order, transaction_id='tx-replay-1',
+                                    order_number='on-replay-1')
+
+    def _replay(self, times=10):
+        with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
+            for _ in range(times):
+                _post_izipay_ipn(self.client, self.order, attempt=self.attempt)
+
+    def test_ten_notifications_leave_one_paid_order(self):
+        self._replay()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertTrue(self.order.paid)
+
+    def test_ten_notifications_decrement_stock_once(self):
+        self._replay()
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 8)
+
+    def test_ten_notifications_write_one_sale_exit(self):
+        from .models import StockMovement
+        self._replay()
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=self.order, movement_type=StockMovement.SALE_EXIT).count(),
+            1,
+        )
+
+    def test_ten_notifications_clear_the_cart_once_and_leave_it_clear(self):
+        self._replay()
+        self.assertEqual(
+            CartItem.objects.filter(session_key=self.session_key).count(), 0)
+
+    def test_ten_notifications_send_one_confirmation(self):
+        self._replay()
+        self.order.refresh_from_db()
+        stamped = self.order.confirmation_email_sent_at
+        self.assertIsNotNone(stamped)
+        self._replay(3)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.confirmation_email_sent_at, stamped)
+
+    def test_a_replay_does_not_move_the_payment_timestamp(self):
+        """
+        The moment the money arrived is a FACT, and a replay must not rewrite it.
+
+        This is what the status guard inside the lock actually protects. Stock
+        and e-mails are independently idempotent — the inventory service is keyed
+        `(order, product)` and the e-mail flags are stamped once — so without
+        this assertion the guard could be deleted and every other replay test
+        would still pass. It was found exactly that way: by removing the guard
+        and watching nothing break.
+        """
+        _post_izipay_ipn(self.client, self.order, attempt=self.attempt)
+        self.order.refresh_from_db()
+        self.attempt.refresh_from_db()
+        first_paid_at = self.order.paid_at
+        first_confirmed_at = self.attempt.confirmed_at
+        self.assertIsNotNone(first_paid_at)
+
+        for _ in range(5):
+            _post_izipay_ipn(self.client, self.order, attempt=self.attempt)
+
+        self.order.refresh_from_db()
+        self.attempt.refresh_from_db()
+        self.assertEqual(self.order.paid_at, first_paid_at)
+        self.assertEqual(self.attempt.confirmed_at, first_confirmed_at)
+
+    def test_ten_notifications_confirm_one_attempt(self):
+        self._replay()
+        self.attempt.refresh_from_db()
+        self.assertEqual(self.attempt.status, PaymentTransaction.Status.AUTHORIZED)
+        self.assertEqual(
+            PaymentTransaction.objects.filter(order=self.order).count(), 1)
+
+    def test_the_database_refuses_a_duplicate_attempt(self):
+        """
+        §36 — the uniqueness that makes replay safe is in the DATABASE.
+
+        P0-E settled this: a guard that reads before it writes is a guard two
+        concurrent writers both walk past.
+        """
+        from django.db import IntegrityError as _IE
+        with self.assertRaises(_IE):
+            PaymentTransaction.objects.create(
+                order=self.order, provider=izipay.PROVIDER,
+                transaction_id=self.attempt.transaction_id,
+                order_number='on-replay-different',
+                amount=self.order.total, currency='PEN',
+            )
+
+    def test_a_rejected_payment_leaves_the_cart_and_the_stock_alone(self):
+        _post_izipay_ipn(self.client, self.order, attempt=self.attempt, code='A02')
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+        self.assertEqual(
+            CartItem.objects.filter(session_key=self.session_key).count(), 1)
+
+    def test_a_forged_notification_leaves_the_cart_and_the_stock_alone(self):
+        _post_izipay_ipn(self.client, self.order, attempt=self.attempt,
+                         signature='bm90LWEtcmVhbC1zaWduYXR1cmU=')
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 10)
+        self.assertEqual(
+            CartItem.objects.filter(session_key=self.session_key).count(), 1)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class P0FCartTenantIsolationTest(TestCase):
+    """§71 — paying at one storefront must not empty the browser's other cart."""
+
+    SESSION = 'p0f-two-tenants'
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.a = _saas_company('P0F Empresa A', 'p0f-a', tax_id='20780000101')
+        self.b = _saas_company('P0F Empresa B', 'p0f-b', tax_id='20780000102')
+        self.prod_a = _seeded(Product.objects.create(
+            company=self.a, name='A', slug='p0f-prod-a',
+            price=Decimal('100.00'), inventory=5))
+        self.prod_b = _seeded(Product.objects.create(
+            company=self.b, name='B', slug='p0f-prod-b',
+            price=Decimal('100.00'), inventory=5))
+        self.order = Order.objects.create(
+            company=self.a, customer_email='two@example.com',
+            total=Decimal('100.00'), cart_session_key=self.SESSION,
+            status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(order=self.order, product=self.prod_a,
+                                 quantity=1, price=self.prod_a.price)
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_a, quantity=1)
+        CartItem.objects.create(session_key=self.SESSION, product=self.prod_b, quantity=1)
+        self.attempt = _pay_attempt(self.order, transaction_id='tx-two-tenants',
+                                    order_number='on-two-tenants')
+
+    def test_paying_tenant_a_leaves_tenant_bs_cart_intact(self):
+        _post_izipay_ipn(self.client, self.order, attempt=self.attempt)
+        remaining = CartItem.objects.filter(session_key=self.SESSION)
+        self.assertEqual(remaining.count(), 1)
+        self.assertEqual(remaining.first().product_id, self.prod_b.pk)
+
+    def test_the_payment_moves_only_the_paying_tenants_stock(self):
+        _post_izipay_ipn(self.client, self.order, attempt=self.attempt)
+        self.prod_a.refresh_from_db()
+        self.prod_b.refresh_from_db()
+        self.assertEqual(self.prod_a.inventory, 4)
+        self.assertEqual(self.prod_b.inventory, 5)
+
+
+class P0FConfigurationTest(TestCase):
+    """§12 — sandbox and production are told apart explicitly, never guessed."""
+
+    def test_the_environment_is_not_inferred_from_debug(self):
+        import inspect
+        source = inspect.getsource(izipay)
+        self.assertNotIn('settings.DEBUG', source)
+
+    @override_settings(**{**IZIPAY_TEST_SETTINGS, 'IZIPAY_ENV': 'produccion'})
+    def test_an_unrecognised_environment_is_refused(self):
+        with self.assertRaises(izipay.IzipayError):
+            izipay.load_credentials()
+
+    @override_settings(**{**IZIPAY_TEST_SETTINGS, 'IZIPAY_HASH_KEY': ''})
+    def test_a_missing_secret_fails_closed_and_names_the_variable(self):
+        with self.assertRaises(izipay.IzipayError) as ctx:
+            izipay.load_credentials()
+        self.assertIn('IZIPAY_HASH_KEY', str(ctx.exception))
+
+    @override_settings(**{**IZIPAY_TEST_SETTINGS, 'IZIPAY_TOKEN_URL': ''})
+    def test_a_missing_endpoint_fails_closed(self):
+        with self.assertRaises(izipay.IzipayError) as ctx:
+            izipay.load_credentials()
+        self.assertIn('IZIPAY_TOKEN_URL', str(ctx.exception))
+
+    @override_settings(**{
+        **IZIPAY_TEST_SETTINGS, 'IZIPAY_ENV': 'production',
+        'IZIPAY_TOKEN_URL': 'https://sandbox-api.izipay.invalid/token',
+    })
+    def test_production_pointed_at_sandbox_is_refused(self):
+        """The deployment mistake that takes real orders nobody ever charged."""
+        with self.assertRaises(izipay.IzipayError):
+            izipay.load_credentials()
+
+    @override_settings(**{**IZIPAY_TEST_SETTINGS, 'IZIPAY_TOKEN_URL': 'http://izipay.invalid/token'})
+    def test_a_plaintext_endpoint_is_refused(self):
+        with self.assertRaises(izipay.IzipayError):
+            izipay.load_credentials()
+
+    def test_the_sdk_urls_are_the_official_ones(self):
+        """
+        Quoted verbatim from the official quickstart. Constants, never data:
+        a URL that arrived in a response could point the checkout page — the
+        one page where card data is typed — at someone else's script.
+        """
+        self.assertEqual(
+            izipay.SDK_URLS['sandbox'],
+            'https://sandbox-checkout.izipay.pe/payments/v1/js/index.js')
+        self.assertEqual(
+            izipay.SDK_URLS['production'],
+            'https://checkout.izipay.pe/payments/v1/js/index.js')
+
+    @override_settings(**IZIPAY_TEST_SETTINGS)
+    def test_the_transaction_id_is_unguessable_and_server_side(self):
+        """§22 — never from the client, never reused, long enough not to be counted to."""
+        ids = {izipay.new_transaction_id() for _ in range(500)}
+        self.assertEqual(len(ids), 500)
+        for value in list(ids)[:20]:
+            self.assertEqual(len(value), izipay.TRANSACTION_ID_DIGITS)
+            self.assertTrue(value.isdigit())
+            self.assertGreaterEqual(len(value), 5)
+            self.assertLessEqual(len(value), 40)
+
+    def test_order_numbers_are_unique_per_attempt(self):
+        """Izipay refuses a repeated orderNumber (P69), so retries need a new one."""
+        numbers = {izipay.new_order_number() for _ in range(500)}
+        self.assertEqual(len(numbers), 500)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class P0FSecretsNeverLeaveTheBackendTest(TestCase):
+    """§5, §10, §78 — the API key and the hash key stay on the server."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.product = _seeded(Product.objects.create(
+            company=_pilot_company(), name='P0F Secrets', slug='p0f-secrets',
+            price=Decimal('100.00'), inventory=5))
+        self.session_key = 'p0f-secrets-session'
+        CartItem.objects.create(session_key=self.session_key, product=self.product, quantity=1)
+
+    def _body(self):
+        return {
+            'session_key': self.session_key, 'customer_name': 'Ana Torres',
+            'customer_email': 'ana@example.com', 'customer_phone': '936449536',
+            'document_type': 'dni', 'document_number': '12345678',
+            'delivery_method': 'pickup_store', 'receipt_type': 'boleta',
+            'accepted_terms': True, 'accepted_warranty_policy': True,
+        }
+
+    @patch(SESSION_TOKEN_PATH, return_value=FAKE_SESSION_TOKEN)
+    def test_the_checkout_response_carries_no_secret(self, _mock):
+        response = self.client.post(
+            '/api/payments/create-checkout-session/', self._body(), format='json')
+        blob = json.dumps(response.json())
+        self.assertNotIn(IZIPAY_TEST_SETTINGS['IZIPAY_API_KEY'], blob)
+        self.assertNotIn(IZIPAY_TEST_SETTINGS['IZIPAY_HASH_KEY'], blob)
+        self.assertNotIn('hash_key', blob)
+        self.assertNotIn('api_key', blob)
+
+    @patch(SESSION_TOKEN_PATH, return_value=FAKE_SESSION_TOKEN)
+    def test_the_checkout_response_carries_no_endpoint(self, _mock):
+        """
+        The frontend is told WHICH environment, never which URL to load.
+
+        A script address travelling as data is a script address an attacker who
+        can shape the response gets to choose.
+        """
+        response = self.client.post(
+            '/api/payments/create-checkout-session/', self._body(), format='json')
+        payload = response.json()
+        self.assertEqual(payload['environment'], 'sandbox')
+        blob = json.dumps(payload)
+        self.assertNotIn(IZIPAY_TEST_SETTINGS['IZIPAY_TOKEN_URL'], blob)
+        self.assertNotIn('izipay.pe', blob)
+
+    @patch(SESSION_TOKEN_PATH, return_value=FAKE_SESSION_TOKEN)
+    def test_the_amount_sent_to_the_gateway_is_the_orders_total(self, mock_token):
+        """§24 — not a sum of line prices recomputed at the boundary."""
+        self.client.post(
+            '/api/payments/create-checkout-session/', self._body(), format='json')
+        order = Order.objects.get()
+        config = mock_token.call_args.kwargs['payload']
+        self.assertEqual(config['order']['amount'], str(order.total))
+        self.assertEqual(config['order']['currency'], 'PEN')
+        self.assertEqual(config['action'], 'pay')
+
+    @patch(SESSION_TOKEN_PATH, return_value=FAKE_SESSION_TOKEN)
+    def test_no_card_data_is_ever_requested_by_this_project(self, _mock):
+        """§42, §78 — no tokenisation, no stored cards, no PAN field anywhere."""
+        self.client.post(
+            '/api/payments/create-checkout-session/', self._body(), format='json')
+        attempt = PaymentTransaction.objects.get()
+        field_names = {f.name for f in PaymentTransaction._meta.fields}
+        for forbidden in ('pan', 'card_number', 'cvv', 'expiry', 'card_token'):
+            self.assertNotIn(forbidden, field_names)
+        self.assertEqual(attempt.provider, izipay.PROVIDER)
+
+    def test_the_adapter_implements_no_tokenisation_flow(self):
+        """
+        §42 — `action = pay`, and no card-storage flow exists.
+
+        WORD BOUNDARIES, not substrings. A plain `in` check here matched
+        `pay_token` inside `IZIPAY_TOKEN_URL` and failed on the adapter's own
+        configuration variable — the same way P0-D's no-hardcode scan tripped
+        over its own prose. A scan that cannot tell an identifier from a
+        fragment of one reports noise, and noise gets silenced.
+        """
+        import inspect
+        import re as _re
+        source = inspect.getsource(izipay).lower()
+        for forbidden in ('pay_token', 'register_card', 'card_token', 'cvv', 'pan'):
+            self.assertIsNone(
+                _re.search(rf'\b{forbidden}\b', source),
+                f'{forbidden} aparece en el adaptador',
+            )

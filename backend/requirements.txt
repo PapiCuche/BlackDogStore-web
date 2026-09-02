@@ -24,9 +24,6 @@ psycopg2-binary==2.9.12
 # CORS headers middleware
 django-cors-headers==4.9.0
 
-# Stripe payments SDK
-stripe==15.2.1
-
 # Image processing. Django imports it for ImageField validation; this project
 # has NO ImageField and NO FileField (product images are URLField), and nothing
 # under backend/ imports PIL. So the thirteen CVEs fixed in 12.3.0 have no

@@ -1,7 +1,7 @@
+import json
 import logging
 from decimal import Decimal
 
-import stripe
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import F
@@ -14,10 +14,11 @@ from rest_framework.views import APIView
 
 from .customer_services import link_order_to_customer
 from .models import (
-    BranchStock, Category, Product, Order, OrderItem, CartItem, Review, Coupon,
-    UserProfile, assert_items_match_order,
+    BranchStock, Category, Product, Order, OrderItem, CartItem, PaymentTransaction,
+    Review, Coupon, UserProfile, assert_items_match_order,
 )
 from . import checkout_services as checkout
+from .payments import izipay
 from .company_settings import build_identity_snapshot
 from .inventory_services import record_sale_stock_movements
 from .tenancy import (
@@ -207,8 +208,10 @@ class CreateCheckoutSessionView(APIView):
     throttle_classes = [CheckoutThrottle]
 
     def post(self, request):
+        # Before an Order exists: a checkout that cannot be paid should fail
+        # here, not leave an unpayable row behind.
         try:
-            checkout.require_stripe_configured()
+            credentials = checkout.require_payment_provider_configured()
         except checkout.CheckoutError as exc:
             return Response(exc.as_payload(), status=exc.status_code)
 
@@ -279,190 +282,316 @@ class CreateCheckoutSessionView(APIView):
         except checkout.CheckoutError as exc:
             return Response(exc.as_payload(), status=exc.status_code)
 
-        line_items = checkout.build_stripe_line_items(order, pricing.discount_multiplier)
         try:
-            stripe_session = checkout.create_stripe_session(
-                order, line_items, customer_email=validated['customer_email'],
-            )
-        except stripe.StripeError as e:
-            checkout.mark_stripe_failure(order, e)
-            return Response(
-                {'detail': 'Error al crear la sesión de Stripe. Intenta de nuevo.'},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            payment = checkout.start_payment_attempt(order, credentials=credentials)
+        except checkout.CheckoutError as exc:
+            checkout.mark_payment_failure(order, exc.args[0] if exc.args else '')
+            return Response(exc.as_payload(), status=exc.status_code)
 
-        order.stripe_session_id = stripe_session.id
-        order.save(update_fields=['stripe_session_id'])
-
-        return Response({'url': stripe_session.url, 'order_id': order.id})
+        # THE SESSION TOKEN IS NOT A CONFIRMATION. Nothing has been charged, no
+        # stock has moved and the cart is untouched — this response only lets the
+        # SDK draw a form.
+        return Response(_payment_session_payload(order, payment))
 
 
-class StripeWebhookView(APIView):
+def _payment_session_payload(order, payment) -> dict:
+    """
+    The checkout response.
+
+    PUBLIC VALUES ONLY. The merchant code and the RSA public key are documented
+    as browser-safe; the session token authorises exactly one transaction. The
+    API key and the hash key are not here, are not in `config`, and have no path
+    to any response in this project.
+    """
+    return {
+        'order_id': order.id,
+        'provider': izipay.PROVIDER,
+        'environment': payment.environment,
+        'transaction_id': payment.transaction_id,
+        'authorization': payment.authorization,
+        'merchant_code': payment.merchant_code,
+        'public_key': payment.public_key,
+        'config': payment.config,
+    }
+
+
+class IzipayNotificationView(APIView):
+    """
+    POST /api/payments/izipay/notification/ — the gateway's own word on a payment.
+
+    THIS IS THE ONLY THING IN THE PROJECT THAT CAN MARK AN ORDER PAID.
+
+    It takes no session, no login and no CSRF token, and that is not a gap: the
+    caller is Izipay, not a browser, and the message authenticates itself
+    cryptographically. A signature made with a key only the two parties hold is
+    a stronger statement about who sent this than any cookie, and unlike a
+    cookie it also proves the CONTENT was not edited in transit.
+
+    Source IP is deliberately NOT a gate. Izipay does not publish stable ranges,
+    and an allowlist built on guesses either rejects real payments after an
+    infrastructure change or lulls us into treating the signature as optional.
+
+    WHAT IS CHECKED, IN ORDER, AND WHY EACH ONE MATTERS
+    ---------------------------------------------------
+      signature        the message is genuinely Izipay's and unmodified
+      transaction id   it refers to an attempt this database actually started
+      order number     that attempt's own number, not another order's
+      merchant         our merchant account, not someone else's
+      currency         the currency we asked to be paid in
+      amount           EXACTLY `Order.total` — not more, not less
+      response code    the gateway actually authorised it
+
+    Only then, under a row lock, does anything change.
+
+    NO THROTTLE, DELIBERATELY. Every other public endpoint here declares one;
+    this must not. A rate limit on the gateway's notifications is a rate limit
+    on hearing that customers paid — the dropped message is a real payment that
+    silently never confirms, and the retry it triggers arrives into the same
+    limit. What protects this endpoint is that an unsigned message costs an
+    attacker a 400 and changes nothing.
+    """
+
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        webhook_secret = settings.STRIPE_WEBHOOK_SECRET
-        if not webhook_secret:
+        try:
+            credentials = izipay.load_credentials()
+        except izipay.IzipayError as exc:
+            logger.error('IPN recibido con la pasarela mal configurada: %s', exc)
             return Response(
-                {'detail': 'Stripe webhook secret no configurado.'},
+                {'detail': 'Pasarela no configurada.'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-        payload = request.body
-        sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
-
+        # Parsed from the RAW body rather than `request.data` so the exact
+        # `payloadHttp` string Izipay signed is the one that gets verified. DRF
+        # would give the same string here, but reading the body directly makes
+        # it impossible for a parser or renderer setting to quietly reshape the
+        # bytes the signature covers.
         try:
-            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-        except ValueError:
+            body = json.loads(request.body.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
             return Response({'detail': 'Payload inválido.'}, status=status.HTTP_400_BAD_REQUEST)
-        except stripe.SignatureVerificationError:
-            return Response({'detail': 'Firma Stripe inválida.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        event_type = event['type']
-        if event_type == 'checkout.session.completed':
-            self._handle_checkout_completed(event['data']['object'])
-        elif event_type == 'checkout.session.expired':
-            self._handle_checkout_expired(event['data']['object'])
-        elif event_type == 'payment_intent.payment_failed':
-            self._handle_payment_failed(event['data']['object'])
-
-        return Response({'status': 'success'})
-
-    def _handle_checkout_completed(self, session_obj):
-        """
-        Confirm a payment.
-
-        TENANT RESOLUTION IN A WEBHOOK (Phase 2C)
-        -----------------------------------------
-        The company comes from `Order.company` — the database — and from nowhere
-        else. Specifically NOT from the request host: Stripe calls a single
-        endpoint, so the host says nothing about which tenant sold what. And not
-        from Stripe metadata either: metadata is convenient for humans reading
-        the dashboard, but it is data we sent to a third party and got back, so
-        it can only ever be CHECKED against the database, never trusted over it.
-        """
-        stripe_session_id = session_obj.get('id', '')
-        payment_intent_id = session_obj.get('payment_intent', '') or ''
-
-        if not stripe_session_id:
-            return
 
         try:
-            order = Order.objects.get(stripe_session_id=stripe_session_id)
-        except Order.DoesNotExist:
-            return
-        except Order.MultipleObjectsReturned:
-            # stripe_session_id has a unique constraint but catch defensively
-            return
+            result = izipay.parse_notification(body, credentials)
+        except izipay.IzipayError as exc:
+            # No order is touched, no stock moves, no cart is cleared. 400 and
+            # nothing else: an unverified message has told us nothing.
+            logger.warning('IPN rechazado: %s', exc)
+            return Response({'detail': 'Notificación rechazada.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # If we did send a company in the metadata, it must agree with the order.
-        # A mismatch means something is wrong upstream; refuse rather than guess.
-        metadata = session_obj.get('metadata') or {}
-        metadata_company = metadata.get('company_id')
-        if metadata_company not in (None, '') and str(metadata_company) != str(order.company_id):
+        # --- everything below reads ONLY from the signed payload -------------
+        attempt = PaymentTransaction.objects.filter(
+            provider=izipay.PROVIDER, transaction_id=result.transaction_id,
+        ).select_related('order').first()
+        if attempt is None:
+            # Correctly signed but unknown to us. It does NOT create an order and
+            # it does not get to pick one. Logged with the identifier only.
             logger.error(
-                'Stripe metadata company mismatch for order %s: metadata=%s, order=%s',
-                order.pk, metadata_company, order.company_id,
+                'IPN con transactionId desconocido: %s', result.transaction_id,
             )
-            return
+            return Response({'detail': 'Transacción desconocida.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Same treatment for the branch: checked against the database, never
-        # allowed to override it. Stock comes off the shelf the ORDER names.
-        metadata_branch = metadata.get('branch_id')
-        if metadata_branch not in (None, '') and str(metadata_branch) != str(
-            order.fulfillment_branch_id or ''
-        ):
+        failure = self._integrity_failure(attempt, result, credentials)
+        if failure is not None:
+            self._record_integrity_failure(attempt, result, failure)
             logger.error(
-                'Stripe metadata branch mismatch for order %s: metadata=%s, order=%s',
-                order.pk, metadata_branch, order.fulfillment_branch_id,
+                'IPN con fallo de integridad en la transacción %s: %s',
+                result.transaction_id, failure,
             )
-            return
+            return Response({'detail': 'Datos inconsistentes.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Idempotency guard — if already paid, do nothing
-        if order.status == Order.Status.PAID:
-            return
+        if not result.authorized:
+            self._record_rejection(attempt, result)
+            # A decline is a normal outcome and a well-formed message: 200, so
+            # the gateway does not retry it forever.
+            return Response({'status': 'received'})
 
+        self._confirm(attempt, result)
+        return Response({'status': 'received'})
+
+    # -- checks ----------------------------------------------------------------
+
+    def _integrity_failure(self, attempt, result, credentials) -> str | None:
+        """
+        Compare what the gateway says against what the database already knew.
+
+        Returns the reason, or None when everything agrees. Each of these is a
+        separate sentence because each fails for a different reason and an
+        operator needs to know which.
+        """
+        order = attempt.order
+
+        if attempt.order_number and result.order_number != attempt.order_number:
+            # A valid transaction paired with someone else's order number. There
+            # is no way to tell which half is the truth, so neither is believed.
+            return 'order_number mismatch'
+
+        if result.merchant_code and result.merchant_code != credentials.merchant_code:
+            # Another merchant's authorisation cannot pay our order.
+            return 'merchant mismatch'
+
+        expected_currency = (attempt.currency or credentials.currency).upper()
+        if result.currency != expected_currency:
+            # 100 of the wrong currency is not 100.
+            return 'currency mismatch'
+
+        expected_amount = Decimal(order.total).quantize(Decimal('0.01'))
+        if result.amount != expected_amount:
+            # BOTH DIRECTIONS. Less is obviously wrong; more is equally wrong —
+            # it means this authorisation belongs to a different intent, and
+            # keeping the difference would be reconciling by accident.
+            return 'amount mismatch'
+
+        if attempt.amount is not None and result.amount != attempt.amount:
+            # The order's total was edited between opening the attempt and the
+            # answer arriving. The buyer authorised the old figure.
+            return 'amount differs from the attempt'
+
+        return None
+
+    # -- outcomes --------------------------------------------------------------
+
+    def _record_integrity_failure(self, attempt, result, reason: str) -> None:
+        PaymentTransaction.objects.filter(pk=attempt.pk).update(
+            status=PaymentTransaction.Status.INTEGRITY_FAILED,
+            signature_verified=True,
+            response_code=result.response_code[:8],
+            failure_reason=reason[:200],
+        )
+
+    def _record_rejection(self, attempt, result) -> None:
+        PaymentTransaction.objects.filter(
+            pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
+        ).update(
+            status=PaymentTransaction.Status.REJECTED,
+            signature_verified=True,
+            response_code=result.response_code[:8],
+            payment_method=result.pay_method[:32],
+            failure_reason=(result.state_message or 'rechazado')[:200],
+        )
+
+    def _confirm(self, attempt, result) -> None:
+        """
+        Make the order paid — once, whatever happens.
+
+        UNDER A ROW LOCK, because two valid notifications can arrive at the same
+        instant and `if order.paid: return` is not a decision, it is a read that
+        another writer can walk past between the read and the write. P0-E
+        settled that argument: the database decides.
+
+        Idempotent at three levels that each cover what the others cannot:
+        the lock serialises concurrent notifications; the status re-read inside
+        the lock stops the second one doing the work again; and the sale exits
+        are keyed `(order, product)` in the inventory service, so even a replay
+        that got past both would not subtract stock twice.
+        """
         with transaction.atomic():
-            order = Order.objects.select_for_update().get(pk=order.pk)
+            order = Order.objects.select_for_update().get(pk=attempt.order_id)
 
-            # Double-check after acquiring row lock
             if order.status == Order.Status.PAID:
+                # Already confirmed — record the attempt's outcome and stop.
+                # No stock, no cart, no second e-mail.
+                PaymentTransaction.objects.filter(
+                    pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
+                ).update(
+                    status=PaymentTransaction.Status.AUTHORIZED,
+                    signature_verified=True,
+                    response_code=result.response_code[:8],
+                    payment_method=result.pay_method[:32],
+                    authorization_code=result.authorization_code[:32],
+                    reference_number=result.reference_number[:64],
+                    provider_unique_id=result.unique_id[:64],
+                    confirmed_at=timezone.now(),
+                )
                 return
 
-            # Decrement inventory AND write the Kardex in the same transaction.
-            # record_sale_stock_movements is idempotent per (order, product): a
-            # replayed webhook never subtracts stock twice. Insufficient stock is
-            # recorded on order.payment_error (money is already captured) rather
-            # than raising — same behaviour as before Phase 6.0.
+            # Stock and the Kardex in the SAME transaction as the payment.
+            # Idempotent per (order, product); a shortfall is recorded on the
+            # order rather than raised, because the money is already captured.
             record_sale_stock_movements(order)
 
+            now = timezone.now()
             order.status = Order.Status.PAID
             order.paid = True
-            order.paid_at = timezone.now()
-            order.stripe_payment_intent_id = payment_intent_id
+            order.paid_at = now
+            # `payment_method` is not touched: it already says ONLINE by
+            # default for a storefront order, and a POS sale that was recorded
+            # as cash does not become a gateway payment by being confirmed.
             order.save(update_fields=[
-                'status', 'paid', 'paid_at', 'stripe_payment_intent_id', 'payment_error',
+                'status', 'paid', 'paid_at', 'payment_error',
             ])
 
-            # Clear cart only after payment is confirmed
+            PaymentTransaction.objects.filter(pk=attempt.pk).update(
+                status=PaymentTransaction.Status.AUTHORIZED,
+                signature_verified=True,
+                response_code=result.response_code[:8],
+                payment_method=result.pay_method[:32],
+                authorization_code=result.authorization_code[:32],
+                reference_number=result.reference_number[:64],
+                provider_unique_id=result.unique_id[:64],
+                confirmed_at=now,
+            )
+
+            # ONLY NOW. The cart survives a decline, a cancellation and a forged
+            # notification; it is emptied when, and only when, a verified payment
+            # says so. Scoped to this order's tenant: one browser session may
+            # hold carts in several storefronts and paying at one must not empty
+            # the others.
             if order.cart_session_key:
-                # Scoped to the order's own tenant. A browser may hold carts in
-                # several storefronts under one session key; paying at one must
-                # not empty the others.
                 CartItem.objects.filter(
                     session_key=order.cart_session_key,
                     product__company=order.company_id,
                 ).delete()
 
-            # Schedule transactional emails to fire after this transaction commits.
-            # on_commit guarantees payment is persisted before email goes out.
-            # Email failures never revert the payment (captured in email_send_error).
             _order_pk = order.pk
-            transaction.on_commit(
-                lambda: send_order_emails_after_payment(_order_pk)
-            )
-
-    def _handle_checkout_expired(self, session_obj):
-        stripe_session_id = session_obj.get('id', '')
-        if stripe_session_id:
-            Order.objects.filter(
-                stripe_session_id=stripe_session_id,
-                status=Order.Status.PENDING_PAYMENT,
-            ).update(status=Order.Status.EXPIRED)
-
-    def _handle_payment_failed(self, payment_intent_obj):
-        # For Stripe Checkout + card payments, a declined card fires this event
-        # but the checkout session REMAINS OPEN so the user can retry with another card.
-        # Marking the order as FAILED here would be wrong — the session may still result in payment.
-        # Failure cases are handled by checkout.session.expired (_handle_checkout_expired).
-        # For async payment methods (bank transfer, etc.) this would need different handling,
-        # but those are out of scope for the current MVP.
-        pass
+            transaction.on_commit(lambda: send_order_emails_after_payment(_order_pk))
 
 
 class PaymentStatusView(APIView):
-    """GET /api/payments/status/?session_id=cs_xxx — returns order payment status."""
+    """
+    GET /api/payments/status/?reference=<transaction_id> — has the payment landed?
+
+    WHAT THE BROWSER IS TOLD, AND WHY IT ASKS AT ALL. The SDK's callback fires in
+    the buyer's page and can be replayed, edited or fabricated; it is a hint that
+    the form finished, not evidence of a payment. The success page therefore says
+    "verificando" and asks this endpoint, which answers from the order — which
+    only the notification endpoint can have changed.
+
+    The reference is the attempt's own `transaction_id`: twenty digits generated
+    server-side, so possession of one is not something a stranger can arrive at
+    by counting. That is the same possession-only model the previous gateway's
+    session id had, carried over rather than downgraded to an enumerable
+    `order_id` — see the P1-D note in the docs.
+
+    The response carries no personal data: a status, a total and a message.
+    """
+
     permission_classes = [permissions.AllowAny]
     throttle_classes = [PaymentStatusThrottle]
 
     def get(self, request):
-        session_id = request.query_params.get('session_id', '').strip()
-        if not session_id:
+        reference = request.query_params.get('reference', '').strip()
+        if not reference:
             return Response(
-                {'detail': 'session_id es requerido.'},
+                {'detail': 'reference es requerido.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
-            order = Order.objects.get(stripe_session_id=session_id)
-        except Order.DoesNotExist:
+        attempt = PaymentTransaction.objects.filter(
+            transaction_id=reference,
+        ).select_related('order').first()
+        if attempt is None:
             return Response(
                 {'detail': 'Orden no encontrada.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        order = attempt.order
 
-        # Prevent authenticated users from reading other users' orders
+        # An order that belongs to somebody's account is theirs to read. An
+        # anonymous guest order has no owner to compare against and is protected
+        # by the reference alone.
         if (
             request.user.is_authenticated
             and order.user
@@ -471,7 +600,7 @@ class PaymentStatusView(APIView):
             return Response({'detail': 'No autorizado.'}, status=status.HTTP_403_FORBIDDEN)
 
         status_messages = {
-            Order.Status.PENDING_PAYMENT: 'Verificando pago con Stripe...',
+            Order.Status.PENDING_PAYMENT: 'Verificando pago...',
             Order.Status.PAID: 'Pago confirmado',
             Order.Status.FAILED: 'El pago no pudo procesarse',
             Order.Status.CANCELLED: 'Orden cancelada',

@@ -1,7 +1,7 @@
 # Black Dog Store — Web
 
 E-commerce Apple Specialist. Arequipa, Perú.
-Stack: Next.js 16 (App Router) + Django 5.2 LTS + DRF + Stripe + PostgreSQL.
+Stack: Next.js 16 (App Router) + Django 5.2 LTS + DRF + Izipay + PostgreSQL.
 
 ---
 
@@ -21,10 +21,13 @@ SECRET_KEY=changeme-dev-only   # OK solo en dev (DEBUG=True)
 DEBUG=1
 ALLOWED_HOSTS=localhost,127.0.0.1
 DATABASE_URL=                   # vacío = SQLite automático
-STRIPE_SECRET_KEY=sk_test_xxx  # clave de test Stripe
-STRIPE_WEBHOOK_SECRET=whsec_xxx
-STRIPE_CURRENCY=pen             # Soles peruanos — NO cambiar a usd
-STRIPE_DOMAIN=http://localhost:3000
+IZIPAY_ENV=sandbox              # sandbox | production — explícito, nunca deducido de DEBUG
+IZIPAY_MERCHANT_CODE=xxxxxxx    # público
+IZIPAY_PUBLIC_KEY=pk_xxx        # público (RSA, lo usa el SDK)
+IZIPAY_API_KEY=xxx              # SECRETO — sólo backend
+IZIPAY_HASH_KEY=xxx             # SECRETO — sólo backend, valida la firma
+IZIPAY_TOKEN_URL=https://...    # endpoint del token de sesión de tu panel
+IZIPAY_CURRENCY=PEN             # Soles peruanos — NO cambiar a USD
 
 ### Integridad de cantidades (Fase 0.3 / P0-E)
 
@@ -41,7 +44,7 @@ Webhook de pago   → inventario bajo lock, salida idempotente por (order, produ
 
 La regla que sostiene todo: **una línea por producto**. El descuento de stock es
 idempotente por `(order, product)` —eso es lo que hace seguro repetir un webhook
-de Stripe— y esa clave sólo es correcta mientras un pedido no lleve el mismo
+de la pasarela— y esa clave sólo es correcta mientras un pedido no lleve el mismo
 artículo dos veces.
 
 ### Autoridad de plataforma vs. de empresa (Fase 0.3 / P0-C)
@@ -189,10 +192,10 @@ python manage.py check
 python manage.py check --deploy   # Solo para simular entorno de producción
 ```
 
-### Verificar que Stripe usa PEN
+### Verificar que la pasarela cobra en PEN
 
 ```bash
-grep -i "stripe_currency" backend/backend/settings.py backend/.env .env.example
+grep -i "izipay_currency" backend/backend/settings.py backend/.env .env.example
 # Todos deben mostrar "pen", ninguno "usd"
 ```
 
@@ -254,7 +257,7 @@ BlackDogStore-web/
 │   │   └── urls.py
 │   ├── store/            # App principal
 │   │   ├── models.py     # Category, Product, Order, CartItem, Coupon, Review
-│   │   ├── views.py      # ViewSets + Stripe checkout + Webhook
+│   │   ├── views.py      # ViewSets + checkout + notificación Izipay
 │   │   ├── serializers.py
 │   │   ├── urls.py
 │   │   ├── throttles.py  # Clases de throttle por endpoint
@@ -266,7 +269,7 @@ BlackDogStore-web/
     │   ├── components/   # Header, Footer, Hero, ProductCard, ProductDetail
     │   ├── lib/          # api.ts, auth.ts, cart.ts, format.ts
     │   ├── cart/         # Carrito con cupones
-    │   ├── checkout/     # Pago Stripe
+    │   ├── checkout/     # Pago Izipay (SDK oficial)
     │   ├── orders/       # Historial de pedidos
     │   └── product/      # Catálogo y detalle
     ├── public/assets/branding/  # Logo, favicon
@@ -289,7 +292,7 @@ BlackDogStore-web/
 | DELETE | `/api/cart/{id}/?session_key=xxx` | Público (invitado) | 60/min | Solo elimina ítems de la propia sesión |
 | POST | `/api/coupons/validate/` | Público | 20/min | Normaliza código a mayúsculas |
 | POST | `/api/payments/create-checkout-session/` | Público (guest checkout) | 10/min | Total calculado en backend |
-| POST | `/api/payments/webhook/` | Público + firma Stripe | — | No usar JWT; idempotente |
+| POST | `/api/payments/izipay/notification/` | Público + firma HMAC | — | No usar JWT; idempotente |
 | GET | `/api/payments/status/?session_id=cs_xxx` | Público | 30/min | Cross-user: 403 si usuario ajeno |
 | GET | `/api/orders/` | **Auth requerida** | — | Solo propias órdenes |
 | GET | `/api/orders/{id}/` | **Auth requerida** | — | 404 si orden ajena |
@@ -393,7 +396,7 @@ pedidos de la empresa será `sales.orders.view` en la superficie interna.
 Empresa desconocida, inactiva y "no eres cliente" → **el mismo 404**.
 
 `fulfillment_status` se expone por fin (**BR-003**, cerrado para v1). No viajan
-identificadores de Stripe, diagnósticos operativos ni claves de sesión.
+identificadores de la pasarela, diagnósticos operativos ni claves de sesión.
 
 ### `access_contexts` en el contrato de auth
 
@@ -416,7 +419,7 @@ Detalle en `docs/saas-multiempresa.md` § 8-undevicies.
 | Método | Endpoint | Auth | Notas |
 |--------|----------|------|-------|
 | GET | `/api/v1/storefront/<slug>/config/` | pública | Marca, contacto y políticas. **BR-006** |
-| POST | `/api/v1/customer/<slug>/checkout/` | **Bearer v1** | Crea pedido + sesión de Stripe. Idempotente |
+| POST | `/api/v1/customer/<slug>/checkout/` | **Bearer v1** | Crea pedido + intento de pago Izipay. Idempotente |
 
 **El checkout web no cambia.** `/api/payments/create-checkout-session/` sigue
 siendo `AllowAny` y sigue aceptando pedidos de invitados: esta tienda los toma
@@ -433,7 +436,7 @@ empresa.
 
 **Idempotencia** en tres capas: búsqueda previa, `UniqueConstraint(company, user,
 idempotency_key)` parcial en la base de datos, y la clave de idempotencia de
-Stripe. Misma clave con distinto contenido → **409**.
+la pasarela. Misma clave con distinto contenido → **409**.
 
 **Nada se consume antes de pagar**: ni carrito ni stock. Eso sigue ocurriendo en
 el webhook.
@@ -511,7 +514,7 @@ Detalle en `docs/saas-multiempresa.md` § 8-unvicies.
 
 **Una orden de servicio no es un pedido.** No hay herencia ni ForeignKey entre
 `RepairOrder` y `Order`: una venta tiene carrito, total, pago y sesión de
-Stripe; una reparación no tiene nada de eso hasta que alguien diagnostique y
+la pasarela; una reparación no tiene nada de eso hasta que alguien diagnostique y
 cotice, que es la fase siguiente.
 
 **Cuatro estados, no trece.** `received` → `diagnosing` → `waiting_approval`, y
@@ -572,7 +575,7 @@ ninguna parte. Inventar un 18% porque el piloto es peruano sería escribir la le
 de un país en el esquema de un SaaS.
 
 **Aprobar no es pagar** y **cotizar una pieza no la reserva**: sin `Order`, sin
-Stripe, sin `StockMovement`.
+la pasarela, sin `StockMovement`.
 
 ### Reglas de contraseña (registro)
 
@@ -591,10 +594,14 @@ DEBUG=0
 ALLOWED_HOSTS=yourdomain.com,www.yourdomain.com
 DATABASE_URL=postgres://user:password@host:5432/dbname
 CORS_ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
-STRIPE_SECRET_KEY=sk_live_...   # NUNCA commitear
-STRIPE_WEBHOOK_SECRET=whsec_... # NUNCA commitear
-STRIPE_CURRENCY=pen
-STRIPE_DOMAIN=https://yourdomain.com
+IZIPAY_ENV=production           # explícito; DEBUG=0 NO significa producción
+IZIPAY_API_KEY=...              # NUNCA commitear
+IZIPAY_HASH_KEY=...             # NUNCA commitear
+IZIPAY_MERCHANT_CODE=...
+IZIPAY_PUBLIC_KEY=...
+IZIPAY_TOKEN_URL=https://...
+IZIPAY_CURRENCY=PEN
+IZIPAY_IPN_URL=https://yourdomain.com/api/payments/izipay/notification/
 SECURE_SSL_REDIRECT=1
 SECURE_HSTS_SECONDS=31536000
 ```
@@ -727,7 +734,7 @@ python manage.py migrate  # aplica store.0007_account_token
 ## Flujo de checkout seguro (Fase 1)
 
 ```
-[Frontend]                    [Backend]                     [Stripe]
+[Frontend]                    [Backend]                     [Izipay]
    |                              |                              |
    |-- POST /payments/create-checkout-session/ -->              |
    |   (session_key, name, email, coupon?)                      |
@@ -736,30 +743,39 @@ python manage.py migrate  # aplica store.0007_account_token
    |          Calcula total desde precios en DB (no frontend)   |
    |          Valida cupón desde DB                             |
    |          Crea Order(status=pending_payment)                |
+   |          Crea PaymentTransaction(pending)                  |
    |          Carrito NO se elimina aún                         |
    |          Inventario NO se decrementa aún                   |
    |                              |                              |
-   |                              |-- stripe.Session.create() -->|
-   |                              |<- {id: cs_xxx, url: ...} ---|
+   |                              |-- API Token de Sesión ------>|
+   |                              |   (API key, SÓLO backend)    |
+   |                              |<- authorization ------------|
    |                              |                              |
-   |          Guarda stripe_session_id en Order                 |
-   |<-- {url: "https://checkout.stripe.com/..."} --------------|
+   |<-- {environment, transaction_id, authorization,            |
+   |     merchant_code, public_key, config} -------------------|
    |                              |                              |
-   |-- redirect to Stripe URL -->                               |
+   |   Carga el SDK oficial de ESE entorno (URL constante,      |
+   |   nunca recibida como dato) y muestra el formulario        |
    |                              |                              |
-   |                              |       Usuario paga          |
+   |            El comprador paga — los datos de tarjeta        |
+   |            NUNCA tocan este backend ni este frontend       |
    |                              |                              |
-   |                              |<-- POST /payments/webhook/ --|
-   |                              |   (checkout.session.completed)
-   |          Verifica firma Stripe                             |
+   |<-- callback del SDK ---------|                              |
+   |   SÓLO UX. No confirma nada. |                              |
+   |                              |                              |
+   |                              |<-- POST /payments/izipay/ ---|
+   |                              |         notification/        |
+   |          Verifica HMAC-SHA256(payloadHttp, claveHash)      |
+   |          con hmac.compare_digest                           |
+   |          Lee amount/currency/orderNumber/merchant          |
+   |          DESDE DENTRO del payloadHttp firmado              |
+   |          Comprueba importe EXACTO contra Order.total       |
    |          select_for_update() (idempotencia)                |
    |          Decrementa inventario con F()                     |
    |          Order.status = paid, paid_at = now()              |
-   |          Elimina carrito                                   |
+   |          Elimina el carrito de ESE tenant                  |
    |                              |                              |
-   |<-- redirect to /checkout/success?session_id=cs_xxx --------|
-   |                              |                              |
-   |-- GET /payments/status/?session_id=cs_xxx -->              |
+   |-- GET /payments/status/?reference=<transaction_id> -->     |
    |<-- {status: "paid", paid: true, total: "..."} ------------|
    |                              |                              |
    |  Muestra "¡Pago confirmado!" SOLO con confirmación backend |
@@ -768,10 +784,10 @@ python manage.py migrate  # aplica store.0007_account_token
 ### Invariantes de seguridad
 
 - Precios, totales y descuentos calculados **solo en backend**
-- El carrito se elimina **solo** cuando el webhook de Stripe confirma el pago
-- El inventario se decrementa **solo** en el webhook, usando `F()` expressions atómicas
+- El carrito se elimina **solo** cuando una notificación Izipay **firmada** confirma el pago
+- El inventario se decrementa **solo** en la notificación verificada, usando `F()` atómicas
 - La página de éxito consulta el backend antes de mostrar cualquier mensaje positivo
-- El webhook es idempotente: un segundo evento `completed` no decrementa inventario dos veces
+- La notificación es idempotente: diez repeticiones dejan un pago, un descuento de stock y un correo
 
 ---
 
@@ -844,7 +860,7 @@ Todo cambio de stock pasa por `store/inventory_services.py` y genera una línea 
 Kardex (`StockMovement`) en la misma transacción: stock y Kardex nunca divergen.
 
 - **Kardex completo** — cada movimiento guarda `stock_before`, `stock_after`, motivo, responsable y referencia.
-- **Salidas por venta idempotentes** — un webhook de Stripe reintentado nunca descuenta stock dos veces.
+- **Salidas por venta idempotentes** — una notificación reintentada nunca descuenta stock dos veces.
 - **Stock nunca negativo** — una salida que lo dejaría bajo cero se rechaza y hace rollback.
 - **Reportes operativos** — bajo/alto stock, agotados, más vendidos, valor del inventario, productos sin movimiento.
 - **Notas de venta internas** (`NV-000001`) con PDF para órdenes pagadas.
@@ -903,7 +919,7 @@ Coupon tenant-aware                      IMPLEMENTADO
 Cart tenant-aware                        IMPLEMENTADO
 Order tenant-aware                       IMPLEMENTADO
 Checkout tenant-aware                    IMPLEMENTADO
-Stripe tenant-safe                       IMPLEMENTADO
+Pasarela tenant-safe                     IMPLEMENTADO
 Customer order isolation                 IMPLEMENTADO
 Admin order isolation                    IMPLEMENTADO
 Sales capabilities                       IMPLEMENTADO
@@ -939,7 +955,7 @@ Datos de negocio por sucursal            IMPLEMENTADO
 Pantalla de Configuración                IMPLEMENTADO
 Pantalla de Sucursales                   IMPLEMENTADO
 Timezone por empresa                     PARCIAL (almacenado y validado)
-Currency por empresa                     PARCIAL (solo lectura: Stripe en PEN)
+Currency por empresa                     PARCIAL (solo lectura: pasarela en PEN)
 Favicon por empresa                      PENDIENTE
 Contenido de landing por empresa         PENDIENTE
 Subida de logos                          PENDIENTE (hoy es una URL)
@@ -1260,12 +1276,12 @@ cifra que parece autoritativa y es ficción.
 ### Comercio multiempresa (Fase 2C)
 
 `Order` y `Coupon` pertenecen a una `Company`. El flujo completo —carrito,
-checkout, Stripe, webhook, inventario— conserva el tenant de punta a punta.
+checkout, pasarela, notificación, inventario— conserva el tenant de punta a punta.
 
 - **Un navegador puede tener un carrito por tienda** a la vez: el carrito es
   `session_key` + la empresa del producto, sin modelo `Cart`.
 - **El checkout toma su empresa del storefront**, nunca del body.
-- **El webhook resuelve el tenant desde `Order.company`**, no desde el host (Stripe
+- **La notificación resuelve el tenant desde `Order.company`**, no desde el host (Izipay
   llama a un único endpoint) ni desde la metadata (que solo se contrasta).
 - **El cliente ve en cada tienda solo sus pedidos de esa tienda**, con una única cuenta.
 - Dos empresas pueden correr el mismo código de cupón.

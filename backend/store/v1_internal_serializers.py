@@ -104,7 +104,7 @@ class V1InternalOrderDetailSerializer(serializers.ModelSerializer):
 
     # ── Absent on purpose ───────────────────────────────────────────────────
     #
-    # stripe_session_id, stripe_payment_intent_id
+    # gateway identifiers (see PaymentTransaction)
     #     Payment-processor handles. Nothing internal staff can do with one, and
     #     everything an attacker with a leaked response could.
     # payment_error, email_send_error

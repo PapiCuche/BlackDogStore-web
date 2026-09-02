@@ -5,7 +5,7 @@ Generates an internal purchase document (constancia de compra) for paid orders.
 This is NOT an electronic receipt (comprobante electrónico SUNAT).
 
 Security rules (hard):
-- Never include stripe_session_id, stripe_payment_intent_id, or payment_error.
+- Never include any payment-gateway identifier, or payment_error.
 - Never include raw tokens, cookie values, or secrets.
 - Only generate PDF when order.paid is True AND order.status is PAID.
 - Raises ValueError if order is not paid.
@@ -76,7 +76,7 @@ _FULFILLMENT_LABELS = {
 def build_order_pdf_context(order) -> dict:
     """
     Returns a plain-data dict for PDF rendering.
-    Stripe fields are explicitly excluded.
+    Gateway identifiers are explicitly excluded.
     """
     items = []
     for item in order.items.select_related("product").all():

@@ -249,7 +249,7 @@ export default function CartPage() {
               </div>
 
               <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-4 text-xs text-zinc-600 space-y-2">
-                <p className="flex items-center gap-2"><span className="text-white">✓</span> Pago seguro con Stripe</p>
+                <p className="flex items-center gap-2"><span className="text-white">✓</span> Pago seguro</p>
                 <p className="flex items-center gap-2"><span className="text-white">✓</span> Envío a todo el Perú</p>
                 <p className="flex items-center gap-2"><span className="text-white">✓</span> Soporte por WhatsApp</p>
               </div>

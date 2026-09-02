@@ -21,19 +21,25 @@ their own input shape, and both funnel into the functions below.
 subtotal, a discount or a total from a request. Every figure is recomputed from
 `Product.price` and `Coupon.discount_percent` at the moment of checkout.
 """
+import logging
 from dataclasses import dataclass, field
+from datetime import timezone as dt_timezone
 from decimal import Decimal
 
-import stripe
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 
 from .company_settings import build_identity_snapshot
 from .customer_services import link_order_to_customer
 from .models import (
-    BranchStock, Coupon, Order, OrderItem, Product, assert_items_match_order,
+    BranchStock, Coupon, Order, OrderItem, PaymentTransaction, Product,
+    assert_items_match_order,
 )
+from .payments import izipay
 from .tenancy import company_fulfillment_branch
+
+logger = logging.getLogger(__name__)
 
 CENTS = Decimal('0.01')
 
@@ -75,7 +81,7 @@ def merge_lines(lines: list[CheckoutLine]) -> list[CheckoutLine]:
     WHY THIS IS CORRECTNESS AND NOT TIDINESS
     ----------------------------------------
     `inventory_services.record_sale_stock_movements` is idempotent per
-    `(order, product)`, and that guard is what makes a replayed Stripe webhook
+    `(order, product)`, and that guard is what makes a replayed notification
     safe. It cannot tell a replay from an order that genuinely carries two lines
     of one product: it writes the exit for the first and skips the second. Six
     units charged, three decremented.
@@ -113,7 +119,7 @@ class CheckoutPricing:
     subtotal: Decimal
     discount_amount: Decimal
     total: Decimal
-    # Applied to each line when building Stripe's line items, so the discount is
+    # Applied to each line when a per-line view of the basket is needed, so the discount is
     # distributed across the basket rather than shown as a phantom extra line.
     discount_multiplier: Decimal
     coupon: Coupon | None = None
@@ -326,7 +332,7 @@ def create_pending_order(
     NOTHING IS CONSUMED HERE. The cart is not cleared and stock is not
     decremented: payment has not happened yet, and an order that never gets paid
     must not have cost anyone their basket or the shop its inventory. Both
-    happen in the webhook, once Stripe confirms.
+    happen when the gateway's notification confirms.
 
     `order_user` is separate from `actor` on purpose. `actor` is who performed
     the action (used as `created_by` on a new CRM record); `order_user` is who
@@ -394,68 +400,185 @@ def create_pending_order(
     return order
 
 
-def build_stripe_line_items(order: Order, discount_multiplier: Decimal) -> list[dict]:
+@dataclass(frozen=True)
+class PaymentSession:
     """
-    Stripe's view of the basket.
+    Everything the browser needs to render the gateway's form — and nothing else.
 
-    The discount is folded into each unit price rather than sent as a separate
-    negative line, which Stripe does not accept, and rather than adjusting only
-    the total, which would make the receipt disagree with itself.
+    Every field here is public by the provider's own documentation: the merchant
+    code, the RSA public key and a session token minted for ONE transaction. The
+    API key and the hash key are not in this object and never reach a response;
+    that is the whole point of it being a declared shape rather than an ad-hoc
+    dict a view assembles.
+
+    `environment` is a NAME, not a URL. The frontend holds the two official SDK
+    addresses and picks by name, so no script source ever travels as data and a
+    tampered response cannot point the page at someone else's script.
     """
-    items = []
-    for item in order.items.select_related('product').all():
-        items.append({
-            'price_data': {
-                'currency': settings.STRIPE_CURRENCY,
-                'product_data': {'name': item.product.name},
-                'unit_amount': int(item.price * discount_multiplier * 100),
-            },
-            'quantity': item.quantity,
-        })
-    return items
+
+    transaction_id: str
+    order_number: str
+    authorization: str
+    environment: str
+    merchant_code: str
+    public_key: str
+    config: dict
 
 
-def require_stripe_configured() -> None:
-    if not settings.STRIPE_SECRET_KEY:
+def require_payment_provider_configured() -> izipay.IzipayCredentials:
+    """
+    Load the gateway credentials, or refuse the checkout before creating an order.
+
+    Checked FIRST, deliberately. Creating a pending order and only then finding
+    out there is no gateway leaves a row nobody can pay and a buyer looking at an
+    error, every single time, until someone sets the variable.
+    """
+    try:
+        return izipay.load_credentials()
+    except izipay.IzipayError as exc:
+        # The operator needs the detail; it names variables, never values.
+        logger.error('Pasarela de pago mal configurada: %s', exc)
         raise CheckoutError(
-            'Stripe no está configurado. Define STRIPE_SECRET_KEY.', status_code=500,
+            'La pasarela de pago no está configurada.', status_code=500,
         )
-    stripe.api_key = settings.STRIPE_SECRET_KEY
 
 
-def create_stripe_session(order: Order, line_items: list[dict], *, customer_email: str = ''):
+def build_payment_config(
+    order: Order,
+    *,
+    credentials: izipay.IzipayCredentials,
+    transaction_id: str,
+    order_number: str,
+) -> dict:
     """
-    Open a hosted Stripe Checkout session for this order.
+    The provider's view of this payment, assembled entirely from the database.
 
-    HOSTED, not an in-app card form. Card data never touches this application or
-    the mobile client, which is the entire reason the hosted page exists.
+    THE AMOUNT IS `Order.total`, quantised once, as a string. Not a sum of line
+    prices recomputed here — that is the arithmetic that produces a figure a
+    cent away from the order for a basket of three items at 33.333, and then a
+    notification that fails the equality check for a payment that was perfectly
+    fine.
 
-    A SECOND LAYER OF IDEMPOTENCY, and it is not the same one as the database's.
-    The constraint on Order stops a replay creating two orders; this stops a
-    retried request creating two Stripe sessions for the ONE order — which can
-    still happen when the connection drops after Stripe accepted the call. Keyed
-    on the order id, so it is stable across retries and unique across orders.
+    The buyer's own name, e-mail and document go in the billing block because
+    the gateway requires them to authorise. Nothing is read from the request:
+    every value comes off the Order that was already validated.
     """
-    domain = settings.STRIPE_DOMAIN
-    return stripe.checkout.Session.create(
-        payment_method_types=['card'],
-        line_items=line_items,
-        mode='payment',
-        success_url=f"{domain}/checkout/success?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{domain}/checkout?cancelled=true",
-        customer_email=customer_email or None,
-        # Informational only. The webhook CHECKS this against Order.company; it
-        # never resolves the tenant from it.
-        metadata={
-            'order_id': str(order.id),
-            'company_id': str(order.company_id),
-            'branch_id': str(order.fulfillment_branch_id or ''),
+    config = {
+        'transactionId': transaction_id,
+        # `pay` — a single immediate charge. NOT `register` or a token flow:
+        # this project stores no cards, so there is no PCI surface to defend.
+        'action': 'pay',
+        'merchantCode': credentials.merchant_code,
+        'order': {
+            'orderNumber': order_number,
+            'currency': credentials.currency,
+            'amount': izipay.format_amount(order.total),
+            # 'AT' as shown in every official example for an immediate
+            # authorisation.
+            'processType': 'AT',
+            'merchantBuyerId': str(order.customer_id or order.pk),
+            # Epoch milliseconds. The exact format is not stated on any
+            # server-rendered page of the official documentation; this matches
+            # the shape of every published example, and is one of the values to
+            # confirm against sandbox.
+            'dateTimeTransaction': str(
+                int(timezone.now().astimezone(dt_timezone.utc).timestamp() * 1000)
+            ),
         },
-        idempotency_key=f'checkout-order-{order.id}',
+        'billing': {
+            'firstName': (order.customer_name or '').strip()[:60] or 'Cliente',
+            'lastName': '',
+            'email': order.customer_email or '',
+            'phoneNumber': order.customer_phone or '',
+            'street': order.address_line or '',
+            'city': order.city or '',
+            'state': order.district or '',
+            'country': 'PE',
+            'postalCode': '',
+            'documentType': (order.document_type or '').upper(),
+            'document': order.document_number or '',
+        },
+    }
+    # Told per transaction when we have a public address for it; otherwise the
+    # merchant panel holds it. Either way the endpoint trusts the signature and
+    # not the route the message took.
+    if settings.IZIPAY_IPN_URL:
+        config['urlIPN'] = settings.IZIPAY_IPN_URL
+    return config
+
+
+def start_payment_attempt(
+    order: Order, *, credentials: izipay.IzipayCredentials,
+) -> PaymentSession:
+    """
+    Open ONE attempt to charge this order.
+
+    A row first, then the network call. The `PaymentTransaction` is what a later
+    notification is resolved by, so it has to exist before anything can arrive
+    about it — the reverse order leaves a window in which a genuine, correctly
+    signed notification refers to an attempt this database has never heard of.
+
+    NOTHING IS DECREMENTED HERE. No stock, no cart, no order status. Creating a
+    payment attempt is asking a question, and the answer only arrives, verified,
+    at the notification endpoint.
+
+    A NEW `order_number` EVERY TIME. Izipay rejects a repeated one (P69), so a
+    buyer retrying after a decline needs a fresh one, and the previous attempt
+    keeps its own record of having been declined.
+    """
+    transaction_id = izipay.new_transaction_id()
+    order_number = izipay.new_order_number()
+
+    attempt = PaymentTransaction.objects.create(
+        order=order,
+        provider=izipay.PROVIDER,
+        transaction_id=transaction_id,
+        order_number=order_number,
+        amount=Decimal(order.total).quantize(CENTS),
+        currency=credentials.currency,
+        status=PaymentTransaction.Status.PENDING,
+    )
+
+    config = build_payment_config(
+        order,
+        credentials=credentials,
+        transaction_id=transaction_id,
+        order_number=order_number,
+    )
+
+    try:
+        authorization = izipay.request_session_token(
+            credentials=credentials,
+            transaction_id=transaction_id,
+            payload=config,
+        )
+    except izipay.IzipayError as exc:
+        attempt.status = PaymentTransaction.Status.REJECTED
+        attempt.failure_reason = str(exc)[:200]
+        attempt.save(update_fields=['status', 'failure_reason'])
+        raise CheckoutError(
+            'No pudimos iniciar el pago. Vuelve a intentarlo.', status_code=502,
+        )
+
+    return PaymentSession(
+        transaction_id=transaction_id,
+        order_number=order_number,
+        authorization=authorization,
+        environment=credentials.environment,
+        merchant_code=credentials.merchant_code,
+        public_key=credentials.public_key,
+        config=config,
     )
 
 
-def mark_stripe_failure(order: Order, error: Exception) -> None:
+def mark_payment_failure(order: Order, message: str) -> None:
+    """
+    Record that this order could not be paid.
+
+    `payment_error` is for an operator. The message handed to the buyer is
+    written at the view, generic on purpose: a provider's error text can name
+    internal endpoints and configuration.
+    """
     order.status = Order.Status.FAILED
-    order.payment_error = str(error)
+    order.payment_error = (message or '')[:500]
     order.save(update_fields=['status', 'payment_error'])

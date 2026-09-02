@@ -23,7 +23,7 @@ Coupon tenant-aware                      IMPLEMENTADO
 Cart tenant-aware                        IMPLEMENTADO
 Order tenant-aware                       IMPLEMENTADO
 Checkout tenant-aware                    IMPLEMENTADO
-Stripe tenant-safe                       IMPLEMENTADO
+Pasarela tenant-safe                     IMPLEMENTADO
 Customer order isolation                 IMPLEMENTADO
 Admin order isolation                    IMPLEMENTADO
 Sales capabilities                       IMPLEMENTADO
@@ -62,7 +62,7 @@ IMEI/Serial                              PENDIENTE
 ## 1. Qué introduce esta fase
 
 Tres modelos y un módulo de resolución de tenant. **Nada del flujo actual los
-lee todavía**: catálogo, carrito, checkout, Stripe, inventario, Kardex y notas de
+lee todavía**: catálogo, carrito, checkout, pasarela, inventario, Kardex y notas de
 venta se comportan exactamente igual que antes.
 
 ```
@@ -1034,9 +1034,9 @@ visible** para este checkout: el estado mixto no llega al paso de crear la orden
 
 `Order.company`, de la base de datos, y de ningún otro sitio.
 
-- **No del host**: Stripe llama a un único endpoint, así que el host no dice nada
+- **No del host**: Izipay llama a un único endpoint, así que el host no dice nada
   sobre quién vendió.
-- **No de la metadata**: enviamos `company_id` a Stripe y vuelve; es dato que pasó
+- **No del mensaje**: lo que la pasarela devuelve es dato que pasó
   por un tercero, así que solo puede **contrastarse** contra la base, nunca
   imponerse sobre ella. Si no coincide, se registra y se rechaza.
 
@@ -1467,9 +1467,9 @@ actualizarlo.
 
 ### Currency — almacenado, no editable
 
-El checkout cobra por Stripe en una moneda configurada a nivel de plataforma. El
+El checkout cobra por la pasarela en una moneda configurada a nivel de plataforma. El
 campo existe para que el modelo esté listo, pero es de solo lectura en la UI: un
-desplegable que dejara elegir USD mientras Stripe cobra PEN sería una mentira con
+desplegable que dejara elegir USD mientras la pasarela cobra PEN sería una mentira con
 interfaz. Clasificación honesta: **PARCIAL**.
 
 ---
@@ -2192,7 +2192,7 @@ pantalla ya publicada.
 Campos expuestos: `id`, `name`, `slug`, `description`, `price`, `inventory`,
 `category`, `image_url`, `average_rating`, `review_count`. Nada interno: ni
 costos, ni márgenes, ni proveedor, ni reparto por sucursal, ni identidad fiscal,
-ni identificadores de Stripe.
+ni identificadores de pasarela.
 
 ### Autenticación: deliberadamente apagada
 
@@ -2762,11 +2762,11 @@ nunca lo expuso: un cliente veía que su pago salió bien y **nada** sobre si la
 mercancía se había movido. El serializer v1 lo incluye, con su etiqueta legible.
 
 No se modificó el serializer legacy: pertenece al frontend web, y además lista
-`stripe_session_id` entre sus campos.
+un identificador de pasarela entre sus campos.
 
 ### Qué NO viaja al cliente
 
-Identificadores de Stripe · `payment_error` · `email_send_error` ·
+Identificadores de pasarela · `payment_error` · `email_send_error` ·
 `cart_session_key` · marcas de envío de correos internos · `company_snapshot` ·
 `fulfillment_branch` · notas internas · costos · márgenes · capabilities · datos
 de otros clientes.
@@ -2818,7 +2818,7 @@ la superficie de cliente, con test.
 
 ### Sin cambios
 
-`/api/` legacy, autenticación web por cookie + CSRF, admin, Stripe, checkout web,
+`/api/` legacy, autenticación web por cookie + CSRF, admin, pasarela, checkout web,
 `DEFAULT_AUTHENTICATION_CLASSES`, migraciones. Con tests de regresión.
 
 ### Estado de los requerimientos de Mobile
@@ -3010,7 +3010,7 @@ aparecer en «mis pedidos».
 
 `V1CheckoutSerializer` **rechaza** —no ignora— `price`, `subtotal`, `total`,
 `discount_amount`, `stock`, `company_id`, `branch_id`, `status`, `paid`,
-`user_id`, `stripe_session_id` y `session_key`. Un cliente que manda un precio
+`user_id`, `transaction_id` y `session_key`. Un cliente que manda un precio
 cree que fija precios; el silencio le dejaría seguir creyéndolo hasta el día en
 que los importes no cuadraran.
 
@@ -3031,7 +3031,7 @@ no:
    decide la base de datos. Parcial a propósito: cada pedido de navegador tiene
    la clave nula, y una constraint no parcial permitiría exactamente **un**
    pedido de invitado por empresa.
-3. **`idempotency_key` de Stripe** — para cuando el pedido se creó, Stripe
+3. **Un intento de pago nuevo en el replay** — para cuando el pedido se creó, la pasarela
    aceptó la llamada y la respuesta se perdió.
 
 Acotada a **empresa + usuario**, no a la clave sola: dos clientes pueden generar
@@ -3047,7 +3047,7 @@ guarda dos veces.
 
 Ni se vacía el carrito ni se descuenta stock al crear el checkout. Un pedido que
 nunca se pague no debe haberle costado a nadie su cesta ni a la tienda su
-inventario. Ambas cosas ocurren en el webhook, cuando Stripe confirma —
+inventario. Ambas cosas ocurren en la notificación, cuando Izipay confirma —
 exactamente como ya hacía la web.
 
 ### Configuración pública por slug — BR-006
@@ -3250,7 +3250,7 @@ presentación: el PATCH vuelve a comprobar.
 ### Nada de pagos
 
 Cambiar el fulfillment no toca el estado de pago, no manda correo y no mueve
-stock — igual que la vista legacy. Si el dinero llegó lo dice Stripe, por el
+stock — igual que la vista legacy. Si el dinero llegó lo dice Izipay, por el
 webhook, nunca un miembro del personal afirmándolo.
 
 ### Capabilities promovidas a ACTIVE
@@ -3478,7 +3478,7 @@ vida de M8 tiene cuatro estados y no trece.
 
 No hay herencia y no hay ForeignKey entre los dos, y eso es deliberado. Un
 `Order` es una **venta**: tiene carrito, total, estado de pago y sesión de
-Stripe. Una `RepairOrder` no tiene nada de eso — no se compra nada, y no hay
+la pasarela. Una `RepairOrder` no tiene nada de eso — no se compra nada, y no hay
 precio hasta que alguien diagnostique y cotice, que es M9. Comparten una palabra
 en inglés y ningún campo. Un test estructural comprueba que ninguna FK de
 `RepairOrder` apunta a `Order`.
@@ -3585,7 +3585,7 @@ comparte dirección y a menudo bandeja de entrada.
 
 ### Lo que NO se tocó
 
-`Order`, `OrderItem`, carrito, checkout, Stripe, inventario, `/api/admin/`,
+`Order`, `OrderItem`, carrito, checkout, pasarela, inventario, `/api/admin/`,
 cookie + CSRF. M8 **no descuenta repuestos** y no vincula `RepairOrder` a
 `StockMovement`: eso es una fase posterior.
 
@@ -3724,7 +3724,7 @@ cambio de política de acabar publicado.
 
 ### Aprobar no es pagar
 
-No se crea `Order`, ni carrito, ni sesión de Stripe, ni pago. **Y cotizar una
+No se crea `Order`, ni carrito, ni intento de pago. **Y cotizar una
 pieza no la reserva**: sin `StockMovement`, sin reserva, sin `PartUsage`. La
 línea puede apuntar a un `Product` como referencia, y el precio queda congelado
 aunque el catálogo cambie mañana.

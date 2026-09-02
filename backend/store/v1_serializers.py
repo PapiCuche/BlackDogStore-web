@@ -17,7 +17,7 @@ of quietly emptying a screen in a shipped build.
 WHAT IS DELIBERATELY ABSENT
 
 Nothing internal. No cost, no margin, no supplier, no branch layout, no company
-tax identity, no per-branch stock breakdown, no Stripe identifiers. This is a
+tax identity, no per-branch stock breakdown, no gateway identifiers. This is a
 shop window: the only numbers on it are the ones a shopper is meant to read.
 """
 from rest_framework import serializers

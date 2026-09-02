@@ -7,10 +7,10 @@ from the ORDER's own company, through store.company_settings. There are no store
 constants in this module any more, and a test scans the file to keep it that way.
 
 Idempotency: confirmation_email_sent_at / internal_notification_sent_at flags
-prevent duplicate sends if the Stripe webhook fires more than once.
+prevent duplicate sends if the gateway notification fires more than once.
 
 Security rules (hard):
-- Never include stripe_session_id, stripe_payment_intent_id, or payment_error.
+- Never include any payment-gateway identifier, or payment_error.
 - Never include raw tokens or cookie values.
 - Only send when order.paid is True AND order.status is PAID.
 - Only send once per order (flag check before send, flag set after success).
@@ -70,7 +70,7 @@ def _h(value: str) -> str:
 def build_order_confirmation_context(order) -> dict:
     """
     Returns a plain-data dict (no model references) safe for use in email templates.
-    Stripe fields are explicitly excluded.
+    Gateway identifiers are explicitly excluded.
     """
     items = []
     for item in order.items.select_related("product").all():
@@ -441,7 +441,7 @@ def resend_order_confirmation_email(order) -> dict:
     PDF attachment is best-effort — if PDF fails, email still sends.
     Updates confirmation_email_sent_at on success.
     Does NOT send internal notification.
-    Does NOT modify paid, status, total, inventory, or Stripe fields.
+    Does NOT modify paid, status, total, inventory, or payment records.
 
     Returns {"had_pdf": bool}.
     Raises on SMTP failure — caller must handle.

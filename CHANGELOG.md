@@ -9,6 +9,146 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase 0.3 / P0-F — Migración de pasarela a Izipay e integridad monetaria
+
+**Estado: IMPLEMENTADO** — con la verificación en sandbox **pendiente de
+credenciales**. Migraciones **0043** (`PaymentTransaction`), **0044** (traspaso de
+pagos históricos) y **0045** (retirada de columnas heredadas).
+
+### Decisión de producto
+
+La pasarela anterior deja de formar parte del producto. No queda como fallback,
+no hay arquitectura dual y no queda código muerto "por si acaso": el paquete de
+Python, los ajustes, las variables de entorno, las vistas, los campos del modelo,
+el frontend y los textos salieron del runtime en esta fase.
+
+### El callback del navegador no es autoridad de pago
+
+Es la regla de la que cuelga todo lo demás. El SDK devuelve un resultado a la
+página del comprador, y esa página es el peor testigo disponible: se puede
+editar, repetir e inventar desde la consola. Sirve para decidir qué pantalla
+mostrar. **No** puede marcar un pedido como pagado.
+
+Lo único que puede es una notificación firmada con
+`HMAC-SHA256(payloadHttp, claveHash)`, verificada con `hmac.compare_digest` —no
+con `==`, cuyo cortocircuito al primer byte distinto es un oráculo temporal que
+se recorre byte a byte hasta falsificar una firma.
+
+### Sólo los bytes firmados son el mensaje
+
+Izipay firma `payloadHttp` y nada más. La copia decodificada que viaja al lado
+—`response`— es cómoda y **no está protegida**: cualquiera que alcance el
+endpoint puede editarla sin invalidar nada. Así que **todo** valor con
+consecuencias —importe, moneda, número de orden, comercio, transacción, código
+de respuesta— se lee de dentro del `payloadHttp` parseado.
+
+Y ese payload **no se vuelve a serializar** para verificarlo. Parsearlo y
+volcarlo otra vez reordena claves, cambia espacios y re-escapa el acento de
+"Operación": otros bytes, otro HMAC, y el rechazo de todas las notificaciones
+legítimas.
+
+### El importe cuadra exacto, en las dos direcciones
+
+`100.00` esperado y `99.99` recibido no paga. `100.01` **tampoco**: recibir de
+más no es un golpe de suerte, es una autorización que pertenece a otra
+intención, y quedarse con la diferencia es reconciliar por accidente. Una
+discrepancia no se registra como rechazo sino como `integrity_failed` —un
+rechazo lo dice la pasarela; esto lo dicen la pasarela y la base de datos a la
+vez, y necesita una persona, no un reintento.
+
+### `PaymentTransaction`: los intentos son filas
+
+Un comprador al que le rechazan dos tarjetas y le aceptan la tercera produjo
+tres intentos. Dos columnas en `Order` sólo guardan el último, y borran
+justamente el historial que hace falta cuando alguien impugna un cargo.
+
+Además Izipay rechaza un `orderNumber` repetido (código **P69**), así que un
+reintento necesita uno nuevo — otra razón por la que el número pertenece al
+intento y no al pedido.
+
+`UNIQUE(provider, transaction_id)` es la pieza que hace segura la repetición:
+la decide la base de datos, no una comprobación en Python. P0-E ya zanjó ese
+argumento.
+
+### Qué NO se guarda
+
+No el payload completo. No el bloque de facturación, no el de envío, no la
+tarjeta enmascarada, no el documento que la pasarela devuelve. Guardarlo "para
+auditoría" construiría una segunda copia de la base de clientes dentro de la
+tabla de pagos, con otra política de retención y sin que nadie la haya pedido.
+
+### Secretos
+
+`IZIPAY_API_KEY` e `IZIPAY_HASH_KEY` no salen del backend y no aparecen en
+ninguna respuesta. Al navegador van sólo el código de comercio, la clave pública
+RSA y un token de sesión emitido para **una** transacción — los tres públicos
+por documentación de Izipay.
+
+El frontend recibe el **nombre** del entorno, nunca una URL: las dos direcciones
+oficiales del SDK son constantes en el código. Una dirección de script que viaja
+como dato es una dirección que elige quien pueda modificar la respuesta, en la
+única página donde se teclea una tarjeta.
+
+### Sandbox y producción
+
+Explícito con `IZIPAY_ENV`. Nunca deducido de `DEBUG`: un staging con `DEBUG=0`
+no es producción, y deducirlo es la forma de empezar a cobrar de verdad sin que
+nadie lo haya decidido. Un `IZIPAY_ENV=production` apuntando a un host de
+sandbox se rechaza al arrancar.
+
+### Multiempresa
+
+Hoy: **un comercio Izipay por instalación** (Modelo A), igual que la
+configuración anterior. Las credenciales se pasan como un valor
+(`IzipayCredentials`) a cada llamada, de modo que el día que un tenant tenga su
+propia cuenta sólo cambia de dónde sale ese valor.
+
+`multi-merchant Izipay por tenant` = **PENDIENTE DE DECISIÓN / INFRA**. No se
+inventa la decisión comercial, y no se guardan secretos en `CompanySettings`.
+
+### Migración de datos
+
+`0044` **no borra** los identificadores de la pasarela anterior: los traslada a
+`PaymentTransaction` con `provider` puesto al nombre de aquel proveedor. Es un
+dato sobre el pasado, no una integración viva — ningún código se ramifica por
+ese valor. Si alguien impugna un cargo anterior a esta fase, la respuesta sigue
+existiendo. Borrarlos para que un `git grep` saliera limpio habría sido ordenar
+la evidencia.
+
+El valor heredado de `payment_method` pasa a `'online'`: nombraba una empresa,
+y la columna significa un **canal**.
+
+### Verificación
+
+- `2521` → **[pendiente de cierre de suite]** tests.
+- Prueba negativa por cada defensa: firma, importe, moneda e idempotencia.
+- Las firmas se calculan **de verdad** en los tests, con una implementación
+  independiente del algoritmo documentado, para que un fallo del adaptador no se
+  cancele a sí mismo a ambos lados de una aserción.
+
+### Deuda declarada
+
+- **Verificación en sandbox Izipay: PENDIENTE DE CREDENCIALES.**
+- `IZIPAY_TOKEN_URL` es configuración sin valor por defecto: la referencia REST
+  de Izipay se renderiza en el navegador y la autoridad es el panel del
+  comercio. Poner una URL adivinada habría sido inventar un endpoint.
+- `dateTimeTransaction` se envía en milisegundos de época, la forma de todos los
+  ejemplos oficiales; el formato exacto no está publicado en ninguna página
+  servida estáticamente.
+- El código `P66` figura como "Operación exitosa" en la tabla oficial y **no**
+  se acepta como autorización mientras no se confirme con Izipay.
+- **Expiración automática de pedidos pendientes: PENDIENTE.** La pasarela
+  anterior emitía un evento de sesión expirada y eso ponía la orden en
+  `expired`. El contrato de notificación de Izipay informa el resultado de una
+  transacción, no la caducidad de un intento, así que hoy **nada** pone ese
+  estado: un pedido que nunca se paga se queda en `pending_payment`. El estado
+  de dominio y su mensaje siguen existiendo; falta quien lo dispare, y eso es
+  una tarea programada, no parte de esta migración.
+- Refunds por API: **PENDIENTE / fase posterior**.
+- Pago de `RepairOrder`: **fuera de alcance** (M9: aprobar ≠ pagar).
+
+---
+
 ## Fase 0.3 / P0-E — Integridad de cantidades: carrito, pedido e inventario
 
 **Estado: IMPLEMENTADO.** Migraciones **0041** (consolidación) y **0042** (constraints).
@@ -20,7 +160,7 @@ el stock en 10 → **7**, con **un solo** movimiento de venta. Seis unidades sal
 de la tienda y los libros registraban la mitad.
 
 La causa **no** es un fallo del servicio de inventario. Su clave de idempotencia
-es `(order, product)`, que es exactamente lo que impide que un webhook de Stripe
+es `(order, product)`, que es exactamente lo que impide que una notificación
 repetido descuente dos veces, y **no puede distinguir** un replay de un pedido que
 de verdad lleva el mismo artículo en dos líneas: escribe la salida de la primera y
 se salta la segunda.
@@ -241,7 +381,7 @@ y `service.quality.manage`.
 
 ### No tocado
 
-`Order`, carrito, checkout, Stripe, POS, inventario, `/api/admin/`, P0-B.
+`Order`, carrito, checkout, pasarela, POS, inventario, `/api/admin/`, P0-B.
 
 ---
 ## Fase 0.3 / P0-B — Trusted proxy, IP del cliente y rate limiting
@@ -348,7 +488,7 @@ Cuatro estados, y la máquina se detiene en `waiting_approval` a propósito.
 
 ### No tocado
 
-`Order`, `OrderItem`, carrito, checkout, Stripe, inventario, `/api/admin/`,
+`Order`, `OrderItem`, carrito, checkout, pasarela, inventario, `/api/admin/`,
 cookie + CSRF.
 
 ---
@@ -883,7 +1023,7 @@ acaba el jueves».
   numeración de la Fase 2E.
 - El stock se descuenta **de la sucursal donde se vende**, dentro de la misma
   transacción que crea la venta.
-- Los pedidos históricos quedan `online` / `stripe` por el default de columna,
+- Los pedidos históricos quedan `online` por el default de columna,
   que es la evidencia real: todos se hicieron por la tienda.
 
 ### Decisiones
@@ -963,7 +1103,7 @@ la Fase 2D; M7A las consume.
 
 ### No tocado
 
-`/api/admin/`, cookie + CSRF, Stripe, `inventory_services`, modelos, migraciones,
+`/api/admin/`, cookie + CSRF, pasarela, `inventory_services`, modelos, migraciones,
 catálogo público, cliente.
 
 ---
@@ -999,7 +1139,7 @@ Las de servicio técnico siguen RESERVED.
 
 ### No tocado
 
-`/api/admin/`, cookie + CSRF, Stripe, inventario, catálogo público, cliente.
+`/api/admin/`, cookie + CSRF, pasarela, inventario, catálogo público, cliente.
 
 ---
 
@@ -1064,7 +1204,7 @@ devolver el conjunto equivocado, en silencio.
 
 ### No tocado
 
-`/api/` legacy, cookie + CSRF, admin, Stripe, checkout web, migraciones.
+`/api/` legacy, cookie + CSRF, admin, pasarela, checkout web, migraciones.
 
 ---
 
@@ -1498,7 +1638,7 @@ anunciado en la bandeja de esa otra empresa. No es un problema estético.
   un sitio donde cabe cualquier URL, y esta se renderiza como enlace en el correo
   de un cliente.
 - **`currency` es de solo lectura**: el checkout cobra en la moneda de la
-  plataforma. Un desplegable que ofreciera USD mientras Stripe cobra PEN sería
+  plataforma. Un desplegable que ofreciera USD mientras la pasarela cobra PEN sería
   una mentira con interfaz.
 - **La auditoría guarda nombres de campo, nunca valores.**
 
@@ -1618,7 +1758,7 @@ anunciado en la bandeja de esa otra empresa. No es un problema estético.
   `Cart` ni columna `CartItem.company`. Un navegador puede tener un carrito por
   storefront a la vez.
 - Checkout: tenant del storefront, cupón scopeado, carrito scopeado.
-- Webhook: tenant desde `Order.company`; la metadata de Stripe se **contrasta**,
+- Notificación: tenant desde `Order.company`; lo que devuelve la pasarela se **contrasta**,
   nunca se impone; mismatch → rechazo registrado.
 - Limpieza de carrito post-pago acotada a la empresa del pedido.
 - Historial de cliente aislado por storefront; id ajeno → 404.
@@ -1679,7 +1819,7 @@ escala zinc) más la textura `dot-grid` ya existente.
   `StockMovement` sean tenant-aware.
 
 ### Sin cambios
-E-commerce público, checkout, Stripe, webhook, carrito, auth, guards de negocio.
+E-commerce público, checkout, pasarela, notificación, carrito, auth, guards de negocio.
 
 ---
 
@@ -1708,7 +1848,7 @@ E-commerce público, checkout, Stripe, webhook, carrito, auth, guards de negocio
 - Order / Cart / Checkout tenant-aware (2C) · `StockMovement` (2D) · `Product.inventory` por sucursal.
 
 ### Sin cambios
-Stripe, webhook, `PaymentStatusView`, checkout, emails, PDFs, login, JWT, cookies, CSRF.
+Pasarela, notificación, `PaymentStatusView`, checkout, emails, PDFs, login, JWT, cookies, CSRF.
 
 ---
 
@@ -1742,7 +1882,7 @@ Stripe, webhook, `PaymentStatusView`, checkout, emails, PDFs, login, JWT, cookie
 
 ### Sin cambios
 Guards legacy de negocio (`StaffGuard`/`AdminGuard` en products/orders/inventory/
-audit), `lib/auth.ts`, checkout, Stripe, webhook, emails, PDFs, e-commerce público.
+audit), `lib/auth.ts`, checkout, pasarela, notificación, emails, PDFs, e-commerce público.
 
 ---
 
@@ -1807,7 +1947,7 @@ cambio de esquema. `0016` y `0017` sin tocar.
   Membership Invitation Flow · tenantización del dominio comercial.
 
 ### Sin cambios
-Frontend, catálogo, carrito, checkout, Stripe, webhook, `PaymentStatusView`,
+Frontend, catálogo, carrito, checkout, pasarela, notificación, `PaymentStatusView`,
 emails, PDFs, inventario legacy, `SalesNote`, login, JWT, cookies, CSRF,
 migraciones 0001–0017.
 
@@ -1903,7 +2043,7 @@ Coupon tenant-aware                      IMPLEMENTADO
 Cart tenant-aware                        IMPLEMENTADO
 Order tenant-aware                       IMPLEMENTADO
 Checkout tenant-aware                    IMPLEMENTADO
-Stripe tenant-safe                       IMPLEMENTADO
+Pasarela tenant-safe                     IMPLEMENTADO
 Customer order isolation                 IMPLEMENTADO
 Admin order isolation                    IMPLEMENTADO
 Sales capabilities                       IMPLEMENTADO
@@ -1963,7 +2103,7 @@ IMEI/Serial                              PENDIENTE
 
 ### Sin cambios
 `email_services.py`, `pdf_services.py`, `sales_note_services.py`,
-`inventory_services.py`, carrito, checkout, webhook de Stripe,
+`inventory_services.py`, carrito, checkout, notificación de pago,
 `PaymentStatusView`, autenticación y todo el frontend.
 
 Detalle: [docs/saas-multiempresa.md](docs/saas-multiempresa.md)
@@ -2002,5 +2142,5 @@ Reconstruidas del historial de git. El detalle vive en la cabecera de
 | 3.0-3.1 | RBAC, auditoría admin, paginación y rate limits | IMPLEMENTADO |
 | 2.1-2.3 | Cookies HttpOnly + CSRF, verificación de email, reset de contraseña | IMPLEMENTADO |
 | 2.0 | Endurecimiento de registro/login, validación de carrito, permisos de reseñas | IMPLEMENTADO |
-| 1 | Checkout, Stripe, webhook idempotente, descuento de inventario | IMPLEMENTADO |
+| 1 | Checkout, pasarela, notificación idempotente, descuento de inventario | IMPLEMENTADO |
 | 0.1 | Catálogo, carrito, cupones | IMPLEMENTADO |

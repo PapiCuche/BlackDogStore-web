@@ -15,24 +15,39 @@ type StatusData = {
   message: string;
 };
 
+/**
+ * "Gracias por tu compra" is a claim about money, and this page is not entitled
+ * to make it on its own.
+ *
+ * The buyer arrives here straight from the gateway's form, carrying a
+ * reference in the URL — nothing more. The reference proves which attempt was
+ * made; it proves nothing about whether it was paid. So the page opens saying
+ * "Verificando pago", asks our backend, and only repeats what the backend says.
+ * The backend, in turn, will not say `paid` until a notification signed with a
+ * key the browser has never seen has been verified server-side.
+ *
+ * The polling exists because the two events race: the buyer's redirect and the
+ * gateway's server-to-server notification are independent, and the redirect
+ * usually wins.
+ */
 export default function CheckoutSuccessPage() {
   // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
   const whatsappLink = useStorefront().contact.whatsapp_link;
-  const [sessionId] = useState<string | null>(() => {
+  const [reference] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
-    return new URLSearchParams(window.location.search).get("session_id");
+    return new URLSearchParams(window.location.search).get("reference");
   });
   const [statusData, setStatusData] = useState<StatusData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(
-    () => (typeof window !== "undefined" && !new URLSearchParams(window.location.search).get("session_id")
+    () => (typeof window !== "undefined" && !new URLSearchParams(window.location.search).get("reference")
       ? "No se recibió la referencia del pago."
       : null),
   );
   const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
-    if (!sessionId) {
+    if (!reference) {
       setLoading(false);
       return;
     }
@@ -40,7 +55,7 @@ export default function CheckoutSuccessPage() {
     async function checkStatus() {
       try {
         const res = await fetch(
-          `${API_BASE}/payments/status/?session_id=${encodeURIComponent(sessionId as string)}`,
+          `${API_BASE}/payments/status/?reference=${encodeURIComponent(reference as string)}`,
           { credentials: "include" },
         );
         if (!res.ok) {
@@ -52,7 +67,8 @@ export default function CheckoutSuccessPage() {
         const data: StatusData = await res.json();
         setStatusData(data);
 
-        // If still pending, poll up to 5 more times (Stripe webhook may be in flight)
+        // Still pending: the gateway's notification may simply not have
+        // arrived yet. Poll a few times before showing the pending screen.
         if (data.status === "pending_payment" && retryCount < 5) {
           setTimeout(() => setRetryCount((n) => n + 1), 2000);
         } else {
@@ -65,7 +81,7 @@ export default function CheckoutSuccessPage() {
     }
 
     checkStatus();
-  }, [sessionId, retryCount]);
+  }, [reference, retryCount]);
 
   // Loading / polling state
   if (loading) {
@@ -93,13 +109,13 @@ export default function CheckoutSuccessPage() {
               />
             </svg>
           </div>
-          <p className="text-sm text-zinc-400">Verificando pago con Stripe...</p>
+          <p className="text-sm text-zinc-400">Verificando pago...</p>
         </div>
       </div>
     );
   }
 
-  // Generic error or missing session_id
+  // Generic error or missing reference
   if (error) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
@@ -182,7 +198,7 @@ export default function CheckoutSuccessPage() {
           </div>
           <h1 className="mb-2 text-3xl font-bold text-white">Verificando pago</h1>
           <p className="mb-8 text-zinc-400">
-            Tu pago está siendo procesado. Si ya completaste el pago en Stripe,
+            Tu pago está siendo procesado. Si ya completaste el pago,
             espera unos segundos y recarga la página.
           </p>
           <button

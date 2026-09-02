@@ -38,7 +38,7 @@ FORBIDDEN_FIELDS = (
     'discount_percent', 'stock', 'inventory', 'company', 'company_id', 'company_slug',
     'branch', 'branch_id', 'fulfillment_branch', 'status', 'payment_status',
     'fulfillment_status', 'paid', 'user', 'user_id', 'customer', 'customer_id',
-    'stripe_session_id', 'session_key',
+    'payment_reference', 'transaction_id', 'session_key',
 )
 
 MAX_LINES = 50

@@ -252,7 +252,7 @@ class V1InternalOrderFulfillmentView(V1InternalOrderDetailView):
     and inventing an implication would quietly widen a role someone configured
     deliberately.
 
-    Payment state is untouched. Whether money arrived is Stripe's answer, and it
+    Payment state is untouched. Whether money arrived is the gateway's answer, and it
     reaches the order through the webhook — never through a staff member saying
     so.
     """

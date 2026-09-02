@@ -2,7 +2,7 @@
 
 // Phase 6.0 — INTERNAL sales note for a paid order.
 // This is NOT a SUNAT electronic receipt. Issuing it never touches payment
-// state and never touches inventory. No Stripe identifier is shown here.
+// state and never touches inventory. No gateway identifier is shown here.
 
 import { useEffect, useState } from "react";
 import {

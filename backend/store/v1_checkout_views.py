@@ -20,7 +20,6 @@ import hashlib
 import json
 import logging
 
-import stripe
 from django.db import IntegrityError, transaction
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -28,6 +27,7 @@ from rest_framework.views import APIView
 
 from . import checkout_services as checkout
 from .models import Order
+from .payments import izipay
 from .throttles import CheckoutThrottle
 from .v1_checkout_serializers import V1CheckoutSerializer
 from .v1_customer_views import V1CustomerSurfaceMixin
@@ -61,9 +61,32 @@ def payload_fingerprint(validated: dict) -> str:
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
 
 
+def _payment_payload(order, payment) -> dict:
+    """
+    What the native client gets back.
+
+    The SAME public values the browser surface returns, and the same omissions:
+    no API key, no hash key. A mobile app is not a more trusted place to keep a
+    secret than a browser — it is a binary on someone else's device.
+    """
+    return {
+        'order_id': order.id,
+        'status': order.status,
+        'payment': {
+            'provider': izipay.PROVIDER,
+            'environment': payment.environment,
+            'transaction_id': payment.transaction_id,
+            'authorization': payment.authorization,
+            'merchant_code': payment.merchant_code,
+            'public_key': payment.public_key,
+            'config': payment.config,
+        },
+    }
+
+
 class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
     """
-    Create one pending order and a hosted Stripe session for it.
+    Create one pending order and open a gateway payment attempt for it.
 
     IDEMPOTENT BY CONTRACT. A double tap, a retry after a timeout, or a request
     that succeeded on the server while the connection died must all yield the
@@ -73,8 +96,9 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
       1. a lookup before doing any work — cheap, and handles the common retry;
       2. a UNIQUE constraint on (company, user, idempotency_key) — the only
          thing that holds when two requests race, because the database decides;
-      3. Stripe's own idempotency key — for the case where the order was
-         created, Stripe accepted the call, and the response never arrived.
+      3. a fresh payment attempt on replay — the ORDER is never duplicated,
+         but a payment session expires, so a repeat gets a new attempt
+         against the same order rather than a dead token.
     """
 
     throttle_classes = [CheckoutThrottle]
@@ -98,7 +122,7 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
             return self._replay(existing, fingerprint)
 
         try:
-            checkout.require_stripe_configured()
+            credentials = checkout.require_payment_provider_configured()
 
             branch = checkout.resolve_fulfillment_branch(company)
             lines = checkout.resolve_lines_from_intents(company, validated['items'])
@@ -154,23 +178,17 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
                 raise
             return self._replay(winner, fingerprint)
 
-        line_items = checkout.build_stripe_line_items(order, pricing.discount_multiplier)
         try:
-            stripe_session = checkout.create_stripe_session(
-                order, line_items, customer_email=contact_email,
-            )
-        except stripe.StripeError as exc:
-            checkout.mark_stripe_failure(order, exc)
+            payment = checkout.start_payment_attempt(order, credentials=credentials)
+        except checkout.CheckoutError as exc:
+            checkout.mark_payment_failure(order, exc.args[0] if exc.args else '')
             return Response(
                 {'detail': 'No pudimos iniciar el pago. Vuelve a intentarlo.'},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        order.stripe_session_id = stripe_session.id
-        order.save(update_fields=['stripe_session_id'])
-
         return Response(
-            {'order_id': order.id, 'checkout_url': stripe_session.url},
+            _payment_payload(order, payment),
             status=status.HTTP_201_CREATED,
         )
 
@@ -183,10 +201,15 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
         second request was accepted. The client's fix is a new key, and saying so
         is more useful than a mystery.
 
-        The payment URL is fetched from Stripe rather than stored: a checkout URL
-        expires, and handing back a dead one would look like a broken payment
-        rather than a stale link. `checkout_url` may legitimately be null, and
-        the client then reads the order's real status.
+        A payment session is NOT replayed, it is reopened. Session tokens expire
+        and Izipay rejects a repeated order number (P69), so handing back the
+        original would give the client a token that cannot be used and a number
+        that would be refused. A fresh attempt against the SAME order is the
+        honest answer; the order is still the one and only order, and the extra
+        attempt is exactly the history `PaymentTransaction` exists to keep.
+
+        An order that is already paid gets no new attempt at all — there is
+        nothing left to charge.
         """
         if order.idempotency_fingerprint and order.idempotency_fingerprint != fingerprint:
             return Response(
@@ -198,18 +221,28 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        url = None
-        if order.stripe_session_id:
-            try:
-                checkout.require_stripe_configured()
-                url = stripe.checkout.Session.retrieve(order.stripe_session_id).url
-            except (stripe.StripeError, checkout.CheckoutError):
-                # Not fatal: the order exists and the client can read its status.
-                # No identifier is echoed back — a Stripe session id is not the
-                # customer's to hold.
-                logger.warning('v1 checkout replay: could not retrieve session for order %s', order.id)
+        if order.status != Order.Status.PENDING_PAYMENT:
+            return Response(
+                {'order_id': order.id, 'status': order.status, 'payment': None},
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            credentials = checkout.require_payment_provider_configured()
+            payment = checkout.start_payment_attempt(order, credentials=credentials)
+        except checkout.CheckoutError:
+            # Not fatal: the order exists and the client can read its status. No
+            # identifier is echoed back on failure.
+            logger.warning(
+                'v1 checkout replay: no se pudo abrir un intento de pago para el pedido %s',
+                order.id,
+            )
+            return Response(
+                {'order_id': order.id, 'status': order.status, 'payment': None},
+                status=status.HTTP_200_OK,
+            )
 
         return Response(
-            {'order_id': order.id, 'checkout_url': url},
+            _payment_payload(order, payment),
             status=status.HTTP_200_OK,
         )

@@ -55,7 +55,7 @@ const GENERAL: FieldProps[] = [
   FIELD("Zona horaria", "timezone", { placeholder: "America/Lima", hint: "Nombre IANA." }),
   FIELD("Moneda", "currency", {
     readOnly: true,
-    hint: "El checkout cobra en la moneda configurada por la plataforma. Cambiarla aquí no cambiaría lo que Stripe cobra.",
+    hint: "El checkout cobra en la moneda configurada por la plataforma. Cambiarla aquí no cambiaría lo que la pasarela cobra.",
   }),
 ];
 

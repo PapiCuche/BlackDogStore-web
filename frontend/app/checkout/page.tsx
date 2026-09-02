@@ -2,6 +2,8 @@
 
 import { useEffect, useReducer, useState } from "react";
 import Link from "next/link";
+import Script from "next/script";
+import { useRouter } from "next/navigation";
 import { getSessionKey } from "../lib/cart";
 import { API_BASE } from "../lib/api";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
@@ -11,6 +13,11 @@ import {
   warrantyText,
 } from "../lib/business";
 import { useStorefront } from "../components/StorefrontProvider";
+import {
+  openPaymentForm,
+  sdkUrlFor,
+  type PaymentSession,
+} from "../lib/payments";
 
 type Coupon = { code: string; discount_percent: number };
 type FieldErrors = Record<string, string>;
@@ -86,6 +93,10 @@ export default function CheckoutPage() {
   const deliveryCopy = deliveryDescriptions(storefront);
   const [form, dispatch] = useReducer(formReducer, initialForm);
   const [loading, setLoading] = useState(false);
+  // Set once the backend has opened a payment attempt. Its presence is what
+  // causes the official SDK to be loaded — never a URL from the response.
+  const [payment, setPayment] = useState<PaymentSession | null>(null);
+  const router = useRouter();
   const [message, setMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [cancelled, setCancelled] = useState(false);
@@ -167,15 +178,36 @@ export default function CheckoutPage() {
         throw new Error((err as { detail?: string })?.detail ?? "No se pudo crear la sesión de pago.");
       }
 
-      const data = await res.json() as { url?: string };
-      if (data.url) {
-        sessionStorage.removeItem("blackdog_coupon");
-        window.location.href = data.url;
+      // A pending order now exists and the gateway has issued a session token
+      // for ONE attempt against it. Nothing has been charged: this only lets
+      // the SDK draw its form.
+      const data = (await res.json()) as PaymentSession;
+      if (!sdkUrlFor(data.environment)) {
+        throw new Error("Entorno de pago no reconocido.");
       }
+      sessionStorage.removeItem("blackdog_coupon");
+      setPayment(data);
     } catch (e: unknown) {
       setMessage(e instanceof Error ? e.message : "Error al iniciar el pago.");
       setLoading(false);
     }
+  }
+
+  /**
+   * The gateway's form has closed.
+   *
+   * WHATEVER IT SAID, THIS DOES NOT MEAN PAID. The result object lives in the
+   * buyer's browser and can be replayed or fabricated; treating a `code: "00"`
+   * here as confirmation would let anyone with a console mark their own order
+   * paid. So the page goes to the success screen carrying only the reference,
+   * and that screen asks our backend — which will not say "paid" until a
+   * signed notification has been verified server-side.
+   */
+  function handlePaymentSettled() {
+    if (!payment) return;
+    router.push(
+      `/checkout/success?reference=${encodeURIComponent(payment.transaction_id)}`,
+    );
   }
 
   const fe = fieldErrors;
@@ -192,12 +224,35 @@ export default function CheckoutPage() {
 
   return (
     <div className="min-h-screen bg-[#080808] px-4 py-12">
+      {/* Loaded ONLY from the constant map in lib/payments, and only once the
+          backend has said which environment. The response never supplies a
+          script address. */}
+      {payment && (
+        <Script
+          src={sdkUrlFor(payment.environment) as string}
+          strategy="afterInteractive"
+          onLoad={() => {
+            try {
+              openPaymentForm(payment, handlePaymentSettled);
+            } catch (e: unknown) {
+              setMessage(
+                e instanceof Error ? e.message : "No se pudo abrir el pago.",
+              );
+              setLoading(false);
+            }
+          }}
+          onError={() => {
+            setMessage("No se pudo cargar el formulario de pago.");
+            setLoading(false);
+          }}
+        />
+      )}
       <div className="mx-auto max-w-xl">
 
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-white">Checkout</h1>
           <p className="mt-1 text-sm text-zinc-500">
-            Pago procesado de forma segura por Stripe.
+            Pago procesado de forma segura.
           </p>
         </div>
 
@@ -512,7 +567,7 @@ export default function CheckoutPage() {
             className="w-full rounded-xl bg-white px-6 py-3.5 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={loading}
           >
-            {loading ? "Redirigiendo a Stripe…" : "Continuar al pago →"}
+            {loading ? "Abriendo el pago…" : "Continuar al pago →"}
           </button>
 
           <div className="text-center">
@@ -527,7 +582,7 @@ export default function CheckoutPage() {
 
         <div className="mt-6 flex justify-center gap-6 text-xs text-zinc-700">
           <span>SSL Encriptado</span>
-          <span>Stripe Payments</span>
+          <span>Pago seguro</span>
           <span>Compra protegida</span>
         </div>
       </div>

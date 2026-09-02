@@ -866,7 +866,7 @@ class AdminOrderDetailView(APIView):
     """
     GET /api/admin/orders/{pk}/ — order detail.
     Roles: inventory, sales, admin, superadmin.
-    No stripe_session_id, no payment_error.
+    No gateway identifier, no payment_error.
     """
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrdersThrottle]

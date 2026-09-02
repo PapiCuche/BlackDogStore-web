@@ -212,11 +212,54 @@ JWT_COOKIE_HTTPONLY = True
 JWT_COOKIE_SAMESITE = env('JWT_COOKIE_SAMESITE', default='Lax')
 JWT_COOKIE_SECURE = not DEBUG
 
-# Stripe
-STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY', default='')
-STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET', default='')
-STRIPE_DOMAIN = env('STRIPE_DOMAIN', default='http://localhost:3000')
-STRIPE_CURRENCY = env('STRIPE_CURRENCY', default='pen')
+# --- Payments -------------------------------------------------------------
+#
+# The gateway is Izipay. `PAYMENT_PROVIDER` is not a switch for running two of
+# them — there is one integration and it is the one below. It exists so the
+# name of the provider is a configured fact rather than something the domain
+# has to know, and so an installation with no gateway can say so.
+PAYMENT_PROVIDER = env('PAYMENT_PROVIDER', default='izipay')
+
+# SANDBOX OR PRODUCTION, SAID OUT LOUD.
+#
+# Never derived from DEBUG. `DEBUG = False` means "this is not a developer's
+# laptop"; it does not mean "charge real cards", and a staging box that is not
+# in debug mode is exactly the deployment that would have silently gone live.
+IZIPAY_ENV = env('IZIPAY_ENV', default='sandbox')
+
+# Public — Izipay documents both as browser-safe. They are sent to the frontend
+# because the SDK needs them there.
+IZIPAY_MERCHANT_CODE = env('IZIPAY_MERCHANT_CODE', default='')
+IZIPAY_PUBLIC_KEY = env('IZIPAY_PUBLIC_KEY', default='')
+
+# SECRET — backend only, and never serialised to any response. The API key
+# mints session tokens; the hash key verifies notification signatures. Either
+# one in a browser is the whole integration.
+IZIPAY_API_KEY = env('IZIPAY_API_KEY', default='')
+IZIPAY_HASH_KEY = env('IZIPAY_HASH_KEY', default='')
+
+# Endpoint for the session-token API of THIS environment.
+#
+# Configuration rather than a constant, and with no default, because the URL
+# could not be read from Izipay's public documentation — the API reference is
+# rendered client-side and the operator's merchant panel is the authority. A
+# guessed default would be an invented endpoint; an empty one fails closed with
+# a message naming the variable. The SDK URLs, which ARE documented verbatim,
+# are constants in the adapter instead.
+IZIPAY_TOKEN_URL = env('IZIPAY_TOKEN_URL', default='')
+
+# The currency the storefront charges in. One value, resolved here, so no part
+# of the code decides for itself what "PEN" was.
+IZIPAY_CURRENCY = env('IZIPAY_CURRENCY', default='PEN')
+
+# Absolute, publicly reachable URL of our own notification endpoint, handed to
+# Izipay per transaction as `urlIPN`. Empty means notifications are configured
+# in the merchant panel instead; payments still work, because the endpoint's
+# security is its signature and not how Izipay learned the address.
+IZIPAY_IPN_URL = env('IZIPAY_IPN_URL', default='')
+
+# Where the buyer comes back to after paying.
+CHECKOUT_RETURN_URL = env('CHECKOUT_RETURN_URL', default='http://localhost:3000')
 
 # Email
 EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')

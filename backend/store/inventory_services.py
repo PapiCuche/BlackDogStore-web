@@ -4,7 +4,7 @@ Inventory service layer — Phase 6.0, rebuilt for multiple branches in Phase 2D
 THE ONE RULE
 ------------
 Stock is `BranchStock.quantity`, and it changes HERE or nowhere. Views, the
-Stripe webhook, transfers, physical counts and the Django admin all come
+payment notification, transfers, physical counts and the Django admin all come
 through these functions so that stock, the Kardex (StockMovement) and the
 `Product.inventory` compatibility aggregate move together inside one
 transaction. There is no second inventory system and no shortcut around this
@@ -34,7 +34,7 @@ HARD RULES, UNCHANGED SINCE 6.0
     a client-supplied stock value is never trusted.
   - quantity is always positive; movement_type decides whether it adds or subtracts.
   - Manual movements require an actor and a non-empty reason.
-  - Sale exits are idempotent per (order, product): replaying a Stripe webhook
+  - Sale exits are idempotent per (order, product): replaying a gateway notification
     never subtracts twice.
 
 LOCK ORDERING — deadlock safety
@@ -388,7 +388,7 @@ def record_sale_stock_movements(
     TWO CHANNELS, TWO POLICIES ON SHORTFALL — and one implementation
     ----------------------------------------------------------------
     `strict=False` (ONLINE, the default and the original behaviour): the money
-    is already captured by the time Stripe's webhook arrives, so a shortfall is
+    is already captured by the time the gateway's notification arrives, so a shortfall is
     recorded on the order and the item is skipped. Refusing here would leave a
     paid order that never decremented stock.
 
@@ -406,7 +406,7 @@ def record_sale_stock_movements(
     shop that never had them.
 
     IDEMPOTENT: if a sale_exit already exists for (order, product) that product
-    is skipped, so a replayed Stripe webhook never subtracts stock twice. The
+    is skipped, so a replayed gateway notification never subtracts stock twice. The
     key stays (order, product) rather than (order, product, branch) because an
     order has exactly ONE fulfillment branch — adding the branch would widen the
     key and weaken the guarantee, not strengthen it. If orders ever ship from

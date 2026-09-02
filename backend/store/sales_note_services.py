@@ -11,7 +11,7 @@ Hard rules:
   - One note per order (OneToOne) — get_or_create_sales_note is idempotent.
   - The internal correlativo is allocated by store.sequences, from the series
     that belongs to the order's own company (and branch, under branch scope).
-  - The PDF never contains stripe_session_id, stripe_payment_intent_id,
+  - The PDF never contains any payment-gateway identifier,
     payment_error, tokens, cookies or secrets.
   - Issuing a note never touches payment state and never touches inventory.
 """
@@ -124,7 +124,7 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
     """
     Plain-data dict for PDF rendering.
 
-    Deliberately excludes every Stripe identifier and payment_error — the PDF is
+    Deliberately excludes every gateway identifier and payment_error — the PDF is
     handed to customers and staff and must not leak payment internals.
     """
     order = sales_note.order

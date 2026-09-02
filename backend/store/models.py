@@ -66,14 +66,17 @@ class PaymentMethod(models.TextChoices):
     """
     How the money arrived.
 
-    `STRIPE` is what every historical order used. The rest are what a person at
-    a counter reports having received — this records the fact, it does not
-    process a payment. A card terminal integration, a cash drawer and a till
-    reconciliation are a different phase, and this field is shaped so that phase
-    does not have to migrate it.
+    `ONLINE` means the storefront's payment gateway took it. It is named for
+    the CHANNEL, not for the company processing it — P0-F replaced one gateway
+    with another, and a value called after the old provider would have had to
+    be migrated again, in every order, report and receipt, for no commercial
+    reason. WHICH gateway, and which attempt, is `PaymentTransaction`.
+
+    The rest are what a person at a counter reports having received: this
+    records the fact, it does not process a payment.
     """
 
-    STRIPE = 'stripe', 'Stripe (online)'
+    ONLINE = 'online', 'Pago en línea'
     CASH = 'cash', 'Efectivo'
     CARD = 'card', 'Tarjeta'
     TRANSFER = 'transfer', 'Transferencia'
@@ -335,7 +338,7 @@ class Order(models.Model):
     )
     payment_method = models.CharField(
         max_length=16, choices=PaymentMethod.choices,
-        default=PaymentMethod.STRIPE, db_index=True,
+        default=PaymentMethod.ONLINE, db_index=True,
     )
     # Who rang it up. Null for every online order and for history — nobody sold
     # those. NEVER consulted for permissions: recording who did something is not
@@ -422,8 +425,11 @@ class Order(models.Model):
         default=FulfillmentStatus.PENDING,
         db_index=True,
     )
-    stripe_session_id = models.CharField(max_length=255, blank=True, null=True, unique=True, default=None)
-    stripe_payment_intent_id = models.CharField(max_length=255, blank=True)
+    # NO GATEWAY IDENTIFIER LIVES HERE. It used to: one session id and one
+    # payment-intent id, both named after the provider, both single-valued. A
+    # single field cannot hold three attempts, so a buyer whose first card was
+    # declined overwrote the record of that decline with the record of the
+    # retry. Attempts are rows now — see PaymentTransaction.
     paid_at = models.DateTimeField(null=True, blank=True)
     cart_session_key = models.CharField(max_length=100, blank=True)
     payment_error = models.TextField(blank=True)
@@ -542,7 +548,7 @@ class OrderItem(models.Model):
 
     INVARIANT: `item.product.company == item.order.company`. Without it a tenant
     could attach another tenant's product to its own order and drag it through
-    checkout, Stripe, the webhook and stock.
+    checkout, the gateway, the notification and stock.
 
     Enforced in `clean()` (covering every ORM object write) AND, critically, in
     `assert_items_match_order()` for bulk paths — `bulk_create()` does NOT call
@@ -568,7 +574,7 @@ class OrderItem(models.Model):
             # not.
             #
             # It is here because `record_sale_stock_movements` is keyed on
-            # (order, product). That key is what stops a replayed Stripe webhook
+            # (order, product). That key is what stops a replayed notification
             # decrementing stock twice, and it is only sound while an order has
             # at most one line per product. This constraint is what keeps it
             # sound against a writer nobody has written yet.
@@ -616,6 +622,124 @@ def assert_items_match_order(order, products):
             f'Los productos {[p.pk for p in foreign]} no pertenecen a la empresa '
             f'{order.company_id} del pedido {order.pk}.'
         )
+
+
+
+class PaymentTransaction(models.Model):
+    """
+    ONE ATTEMPT to charge one order through a payment gateway.
+
+    An attempt, not a payment. A buyer whose card is declined twice and accepted
+    on the third try produced three of these; the order has one total and three
+    rows, and the two declines are still readable afterwards. That is why this
+    is a table and not a pair of columns on `Order`: a single
+    `transaction_id` field cannot hold three values, so it holds the last one
+    and quietly loses the history of everything that went wrong — which is
+    precisely the history anyone investigating a disputed charge needs.
+
+    It is also what makes a replayed notification safe. `UNIQUE(provider,
+    transaction_id)` means the database, not a Python check, decides that a
+    notification has already been seen. P0-E settled this argument once: a guard
+    that reads before it writes is a guard two concurrent writers can both walk
+    past.
+
+    NO TENANT COLUMN, on purpose. The company is `order.company`, and adding a
+    second copy here would create two answers to "whose payment is this" that a
+    bug could put out of step — the same reasoning that kept `company` off
+    `Review` in P0-D and off `CartItem` in P0-E.
+
+    WHAT IS DELIBERATELY NOT STORED
+    -------------------------------
+    Not the raw provider payload. Not the billing block, not the shipping
+    block, not the masked card, not the document number the gateway echoes
+    back. Izipay returns all of it, and keeping it "for auditing" would build a
+    second copy of the customer database inside the payments table, with a
+    different retention story and no one asking for it. What is kept is what
+    reconciliation actually needs: which attempt, for how much, in which
+    currency, authorised or not, and the codes the provider will ask for.
+    """
+
+    class Status(models.TextChoices):
+        # Created, handed to the gateway, no outcome yet.
+        PENDING = 'pending', 'Pendiente'
+        # The gateway authorised it AND every check against the order passed.
+        AUTHORIZED = 'authorized', 'Autorizada'
+        # The gateway declined it. A normal commercial outcome.
+        REJECTED = 'rejected', 'Rechazada'
+        # Correctly signed, but it disagreed with the order about money,
+        # currency, order number or merchant. NOT a decline: a decline is the
+        # gateway saying no, this is the gateway and the database saying
+        # different things, and it needs a human rather than a retry.
+        INTEGRITY_FAILED = 'integrity_failed', 'Falla de integridad'
+
+    order = models.ForeignKey(
+        Order, on_delete=models.PROTECT, related_name='payment_transactions',
+    )
+    # The gateway that ran this attempt. Historical rows migrated from the
+    # previous integration keep its name here — that is a fact about the past
+    # and stays true; no code branches on it.
+    provider = models.CharField(max_length=32, db_index=True)
+
+    # What we told the gateway to call this attempt. Server-generated, never
+    # accepted from a client, and the value a notification is resolved by.
+    transaction_id = models.CharField(max_length=64)
+
+    # The order number the gateway sees. UNIQUE and per-ATTEMPT, because Izipay
+    # rejects a repeated one (response code P69) — so a retry needs a new one
+    # and it cannot simply be `Order.id`.
+    #
+    # Nullable so that rows carried over from the previous provider, which never
+    # had such a number, can say so instead of being given an invented one.
+    order_number = models.CharField(
+        max_length=64, unique=True, null=True, blank=True, default=None,
+    )
+
+    # WHAT WAS ASKED FOR, frozen at the moment the attempt was created. The
+    # notification is compared against THIS as well as against the order, so a
+    # total edited between the request and the answer cannot be made to match.
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3)
+
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True,
+    )
+
+    # As reported by the gateway. `payment_method` is the provider's own word
+    # for how it was paid (card, wallet, QR…) and is stored rather than assumed:
+    # this integration is not card-only, so hardcoding CARD would misfile every
+    # other method.
+    payment_method = models.CharField(max_length=32, blank=True)
+    authorization_code = models.CharField(max_length=32, blank=True)
+    reference_number = models.CharField(max_length=64, blank=True)
+    provider_unique_id = models.CharField(max_length=64, blank=True)
+    response_code = models.CharField(max_length=8, blank=True)
+
+    # Whether the message that produced this outcome carried a signature that
+    # verified. Recorded, not inferred: "we believed it" is an auditable fact.
+    signature_verified = models.BooleanField(default=False)
+
+    # Free text for an operator, e.g. which check failed. Never the payload.
+    failure_reason = models.CharField(max_length=200, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # THE IDEMPOTENCY PRIMITIVE. Two notifications for one attempt race;
+            # the loser gets an IntegrityError instead of a second confirmation.
+            models.UniqueConstraint(
+                fields=['provider', 'transaction_id'],
+                name='unique_payment_transaction_per_provider',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['order', 'created_at']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.provider}:{self.transaction_id} ({self.status})'
 
 
 class CartItem(models.Model):
@@ -2252,8 +2376,8 @@ class CompanySettings(models.Model):
     # READ-ONLY IN THE UI, AND THAT IS THE POINT.
     #
     # The value is stored so the model is ready for multi-currency, but checkout
-    # charges through Stripe in a single currency configured at the platform
-    # level. A settings screen that let a tenant pick USD while Stripe billed PEN
+    # charges through the gateway in a single currency configured at the platform
+    # level. A settings screen that let a tenant pick USD while the gateway billed PEN
     # would be a lie with a dropdown on it. See docs/saas-multiempresa.md.
     currency = models.CharField(max_length=3, blank=True, default='PEN')
 
@@ -3638,7 +3762,7 @@ class ImportMappingProfile(models.Model):
 #
 # WHY THIS IS NOT `Order`
 # -----------------------
-# `Order` is a SALE. It has a cart, a total, a payment status, a Stripe session
+# `Order` is a SALE. It has a cart, a total, a payment status, a gateway transaction
 # and a fulfilment state that ends in "delivered". A `RepairOrder` has none of
 # those: nothing is bought, there is no price at intake, and its lifecycle is
 # about a physical object somebody left on a counter. The two share the word
@@ -3876,7 +4000,7 @@ class RepairOrder(models.Model):
     One visit of one device to the workshop.
 
     NOT AN `Order`. Nothing is sold here. There is no total at intake, no
-    payment, no cart and no Stripe session — a price only exists once somebody
+    payment, no cart and no gateway transaction — a price only exists once somebody
     has diagnosed the fault and quoted it, which is M9. The two models share a
     word in English and no fields, and there is deliberately no ForeignKey
     between them: a repair that later becomes a sale is a decision with business
@@ -4166,7 +4290,7 @@ class TechnicianAssignment(models.Model):
 #
 # THREE THINGS THIS MODULE IS NOT
 # -------------------------------
-#   · A QUOTE IS NOT AN ORDER. Nothing is sold, no cart exists, no Stripe
+#   · A QUOTE IS NOT AN ORDER. Nothing is sold, no cart exists, no gateway
 #     session is created and no `Order` row is written. A repair that is later
 #     paid for is a decision with commercial consequences, not a foreign key.
 #   · APPROVAL IS NOT PAYMENT. A customer saying "go ahead" is authorising work,
