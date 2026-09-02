@@ -28,6 +28,7 @@ import {
 } from "../../../components/InternalControlGuard";
 import { Button, Confirm, ErrorNote, Field, Panel, Pill, dateTime } from "../../components/ServiceUi";
 import {
+  CAP_DELIVERY_MANAGE,
   CAP_DIAGNOSTIC_MANAGE,
   CAP_ORDERS_MANAGE,
   CAP_ORDERS_VIEW,
@@ -41,6 +42,7 @@ import {
   createDiagnostic,
   createQuote,
   failQualityCheck,
+  fetchDelivery,
   fetchServiceAssignmentOptions,
   fetchServiceDiagnostics,
   fetchServiceExecution,
@@ -55,6 +57,7 @@ import {
   passQualityCheck,
   pauseForParts,
   publishQuote,
+  recordDelivery,
   recordPartUsage,
   recordQualityResult,
   removeQuoteItem,
@@ -64,6 +67,7 @@ import {
   startRepair,
   transitionServiceOrder,
   updateExecution,
+  type ServiceDelivery,
   type ServiceDiagnostic,
   type ServiceExecution,
   type ServiceHistoryEntry,
@@ -83,6 +87,7 @@ type Data = {
   parts: ServicePartUsage[];
   candidates: ServicePartCandidate[];
   quality: ServiceQualityCheck | null;
+  delivery: ServiceDelivery | null;
   qualityHistory: ServiceQualityCheck[];
   technicians: { id: number; name: string }[];
 };
@@ -120,7 +125,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
     setLoading(true);
     setError(null);
     try {
-      const [order, history, diagnostics, quotes, execution, parts, candidates, quality, qualityHistory, assignment] =
+      const [order, history, diagnostics, quotes, execution, parts, candidates, quality, qualityHistory, delivery, assignment] =
         await Promise.all([
           fetchServiceOrder(slug, orderId),
           fetchServiceHistory(slug, orderId),
@@ -131,6 +136,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
           fetchServicePartCandidates(slug, orderId),
           fetchServiceQuality(slug, orderId),
           fetchServiceQualityHistory(slug, orderId),
+          fetchDelivery(slug, orderId),
           may(CAP_ORDERS_MANAGE)
             ? fetchServiceAssignmentOptions(slug, orderId)
             : Promise.resolve({ current: null, technicians: [] }),
@@ -145,6 +151,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         candidates: candidates.results,
         quality: quality.quality_check,
         qualityHistory: qualityHistory.results,
+        delivery: delivery.delivery,
         technicians: assignment.technicians ?? [],
       });
     } catch (err) {
@@ -244,6 +251,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         <ExecutionSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <PartsSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <QualitySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
+        <DeliverySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <HistorySection history={data.history} />
       </div>
     </AdminShell>
@@ -1017,6 +1025,93 @@ function QualitySection({ data, may, busy, run, slug, orderId }: SectionProps) {
           </ul>
         </div>
       ) : null}
+    </Panel>
+  );
+}
+
+/**
+ * The handover.
+ *
+ * THIS SCREEN DOES NOT COLLECT MONEY, and the copy says so out loud rather than
+ * leaving the counter to assume. The platform has no way to charge for a repair
+ * — `PaymentTransaction` is bound to an e-commerce order by a non-null FK — so a
+ * "Cobrado" checkbox here would be a lie the shop believes. Service payment is
+ * its own phase.
+ */
+function DeliverySection({ data, may, busy, run, slug, orderId }: SectionProps) {
+  const canManage = may(CAP_DELIVERY_MANAGE);
+  const delivery = data.delivery;
+  const ready = data.order.status === "ready_for_pickup";
+  const [recipient, setRecipient] = useState("");
+  const [notes, setNotes] = useState("");
+  // Held OUTSIDE render state, exactly as the parts section does: a retry must
+  // resend the SAME key, and a key that changed on re-render would be no key.
+  const [keys] = useState<Map<string, string>>(() => new Map());
+
+  function keyFor(shape: string): string {
+    const existing = keys.get(shape);
+    if (existing) return existing;
+    const minted = makeIdempotencyKey(shape);
+    keys.set(shape, minted);
+    return minted;
+  }
+
+  return (
+    <Panel
+      title="Entrega"
+      subtitle="Quién se llevó el equipo y cuándo. No registra cobro: esta plataforma
+                todavía no puede cobrar una reparación."
+    >
+      {delivery !== null ? (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm text-white/80">{delivery.recipient_name}</span>
+            <Pill label="Entregado" tone="good" />
+          </div>
+          <p className="text-xs text-white/40">
+            {dateTime(delivery.delivered_at)}
+            {delivery.delivered_by_name ? ` · ${delivery.delivered_by_name}` : ""}
+          </p>
+          {delivery.notes ? <p className="text-xs text-white/30">{delivery.notes}</p> : null}
+          <p className="pt-2 text-xs text-white/30">
+            El registro no se puede editar ni borrar. Una entrega es un hecho con fecha.
+          </p>
+        </div>
+      ) : !ready ? (
+        <p className="text-sm text-white/50">
+          Solo se entrega un equipo que aprobó el control de calidad.
+        </p>
+      ) : !canManage ? (
+        <p className="text-sm text-white/50">
+          Este equipo está listo. Tu cuenta no tiene permiso para registrar la entrega.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <Field
+            label="Quién recibe"
+            value={recipient}
+            onChange={setRecipient}
+            placeholder="Nombre de quien se lleva el equipo"
+          />
+          <Field label="Observaciones" value={notes} onChange={setNotes} textarea />
+          <Confirm
+            label="Registrar entrega"
+            question={`¿Entregar el equipo a ${recipient.trim() || "…"}? No se puede deshacer.`}
+            tone="primary"
+            disabled={busy || recipient.trim() === ""}
+            onConfirm={() => void run(async () => {
+              const name = recipient.trim();
+              await recordDelivery(slug, orderId, {
+                recipient_name: name,
+                ...(notes.trim() ? { notes: notes.trim() } : {}),
+                idempotency_key: keyFor(`${orderId}:${name}`),
+              });
+              setRecipient("");
+              setNotes("");
+            })}
+          />
+        </div>
+      )}
     </Panel>
   );
 }

@@ -11,7 +11,7 @@ información que no esté respaldada por código o commits.
 
 ## M12A — Acceso real del técnico y «Mis reparaciones»
 
-**Estado: IMPLEMENTADO.** Migración **0052**.
+**Estado: IMPLEMENTADO.** Migración **0057**.
 
 ### El técnico entraba y no había taller
 

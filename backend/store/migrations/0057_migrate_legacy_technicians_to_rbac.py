@@ -123,7 +123,7 @@ def unmigrate(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0051_merge_rbac_and_quality_control'),
+        ('store', '0056_role_assignment_uniqueness'),
     ]
 
     operations = [

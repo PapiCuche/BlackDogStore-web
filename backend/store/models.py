@@ -3958,24 +3958,30 @@ class RepairStatusCode(models.TextChoices):
     M11 added `QUALITY_CONTROL` and `READY_FOR_PICKUP`, because it built the
     checklist that gives the first meaning and the pass that gives the second.
 
-    `DELIVERED` and `WARRANTY` are still real states of a real repair shop that
-    mean nothing here yet: delivery needs a handover flow, warranty needs
-    something to warrant it against. Shipping the words without the modules
+    M12 added `DELIVERED`, because it built the handover that gives it meaning:
+    a record of who collected the device and when.
+
+    `WARRANTY` is still a real state that means nothing here yet — it needs
+    something to warrant against, and the shape it will take is a RE-ENTRY: a
+    new order citing the old one, never an edit to a delivered one. Shipping the words without the modules
     would let an order be moved into a state no code can act on — a status that
     lies.
 
-    `READY_FOR_PICKUP` is now the deliberate edge, and it means ONE thing: the
-    device passed its tests and may go to the handover stage. It does NOT mean
-    the customer was told — there is no notification channel in this platform —
-    and it does not mean anything was paid or collected.
+    `DELIVERED` is now the end of the line, and the only state besides
+    `CANCELLED` that closes an order. It means the device left with somebody. It
+    does NOT mean anything was paid: this platform has no way to charge for a
+    repair — `PaymentTransaction` is bound to an e-commerce `Order` by a
+    non-null FK — and a status implying otherwise would be a lie in the one
+    place a shop checks.
 
-    SEVEN OF THE ELEVEN ARE NOT REACHABLE BY MOVING AN ORDER. `WAITING_APPROVAL`
+    EIGHT OF THE TWELVE ARE NOT REACHABLE BY MOVING AN ORDER. `WAITING_APPROVAL`
     is produced by publishing a quote; `APPROVED` and `REJECTED` by a customer
     deciding on one; `IN_REPAIR`, `WAITING_PARTS` and `REPAIRED` by starting,
     pausing and finishing the work; `QUALITY_CONTROL` by opening a real
     checklist and `READY_FOR_PICKUP` by passing it. `service_services` refuses
     to set any of them any other way. Beginning a repair is a fact about a
-    workbench, not an option in a dropdown — and so is passing a test.
+    workbench, not an option in a dropdown — and so is passing a test, and so
+    is letting a device leave with somebody.
     """
 
     RECEIVED = 'received', 'Recibido'
@@ -3990,6 +3996,8 @@ class RepairStatusCode(models.TextChoices):
     # M11 / BR-005D.
     QUALITY_CONTROL = 'quality_control', 'En control de calidad'
     READY_FOR_PICKUP = 'ready_for_pickup', 'Listo para recoger'
+    # M12 / BR-005E.
+    DELIVERED = 'delivered', 'Entregado'
     CANCELLED = 'cancelled', 'Cancelado'
 
 
@@ -5472,3 +5480,115 @@ class QualityCheckItem(models.Model):
     def is_blocking(self) -> bool:
         """A FAIL blocks a pass. `not_applicable` does not — it is an answer."""
         return self.result == QualityResultCode.FAIL
+
+
+class RepairDelivery(models.Model):
+    """
+    The device left with somebody. M12 / BR-005E.
+
+    ONE PER ORDER, as a `OneToOneField`, because a repair is handed over once. A
+    device that comes back under warranty comes back as a NEW order citing this
+    one — the shape M11's rework already established for a second attempt, and
+    the shape that keeps this record from ever being rewritten.
+
+    WHAT IS RECORDED, AND WHAT IS NOT. Who handed it over, who took it, when,
+    and an optional internal note. That is the whole of it.
+
+    `recipient_name` IS FREE TEXT AND STAYS THAT WAY. It is the name the person
+    at the counter wrote down — often the customer, often a relative, sometimes
+    a courier — and the platform has no way to verify any of them. Storing an
+    identity document would be storing personal data to support a claim this
+    software cannot actually make.
+
+    NO SIGNATURE, NO PHOTO. DEC-016 still has no storage provider, and a
+    `conformity` flag with nothing behind it would be a claim of consent nobody
+    captured. When evidence exists it will be a phase, not a column snuck in
+    here.
+
+    NO PAYMENT. This platform cannot charge for a repair: `PaymentTransaction`
+    is bound to an e-commerce `Order` by a non-null FK, with no tenant column
+    and no generic relation. So delivery does NOT check a balance and does not
+    pretend one was settled. Service payment is its own phase, and writing
+    `paid = True` here to look complete would be the worst kind of lie — the
+    kind a shop would believe.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='repair_deliveries',
+    )
+    # OneToOne: a repair is delivered once. PROTECT because a delivered order is
+    # the evidence that it was.
+    repair_order = models.OneToOneField(
+        RepairOrder, on_delete=models.PROTECT, related_name='delivery',
+    )
+
+    #: Whoever was at the counter. Server-stamped from the authenticated caller;
+    #: there is no field for it on any serializer.
+    delivered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='repair_deliveries_made',
+    )
+    #: The name the counter wrote down. Free text on purpose — see the class
+    #: docstring. Required: "somebody took it" without a name is not a record.
+    recipient_name = models.CharField(max_length=160)
+    #: Internal. The customer contract has no field for it.
+    notes = models.TextField(max_length=1000, blank=True)
+
+    delivered_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # --- Idempotency (same shape as PartUsage, the POS sale and the checkout) ---
+    #
+    # Handing a device over is a physical fact and the request is not
+    # idempotent from the client's side: two tablets at one counter, or a
+    # timeout and a second tap, must not produce two handovers of one device.
+    idempotency_key = models.CharField(max_length=64, blank=True, default='')
+    request_fingerprint = models.CharField(max_length=64, blank=True, default='')
+
+    class Meta:
+        ordering = ['-delivered_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'idempotency_key'],
+                condition=~models.Q(idempotency_key=''),
+                name='unique_delivery_idempotency_key_per_company',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'delivered_at']),
+        ]
+
+    def __str__(self):
+        return f'Entrega · orden {self.repair_order_id}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.repair_order_id and self.company_id:
+            if self.repair_order.company_id != self.company_id:
+                raise ValidationError(
+                    'La orden no pertenece a la empresa de esta entrega.'
+                )
+        if not (self.recipient_name or '').strip():
+            raise ValidationError('Registra quién recibió el equipo.')
+
+    def save(self, *args, **kwargs):
+        """
+        A HANDOVER IS EVIDENCE. It is written once and never edited.
+
+        The same guarantee M9 gave a published quote, M10 a finished execution
+        and M11 a settled check. This is the record a warranty claim and a
+        dispute will be read against, and the last thing that should be
+        revisable is who said they collected the device.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            raise ValidationError('Una entrega no se puede modificar.')
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('Una entrega no se puede borrar.')

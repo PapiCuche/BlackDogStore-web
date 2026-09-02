@@ -4,7 +4,7 @@ M11.1 — collapse duplicate role assignments to ONE ROW, so 0049 can be applied
 WHAT THIS MIGRATION GOT WRONG THE FIRST TIME
 --------------------------------------------
 It deactivated the extra rows and kept them. That prepares the data for a
-constraint on `(membership, role, is_active)` — and 0049's constraint is on
+constraint on `(membership, role, is_active)` — and 0056's constraint is on
 `(membership, role) WHERE area IS NULL`, which does not mention `is_active` at
 all. Two rows for one pair collide whether they are active or not, so
 deactivating them changed nothing that the constraint cares about and
@@ -104,7 +104,7 @@ def unconsolidate(apps, schema_editor):
 
     The duplicates were redundant copies of one logical assignment; there is no
     honest way to recreate "how many identical rows there used to be", and
-    nothing needs them back. Reversing 0049 removes the constraint, which is
+    nothing needs them back. Reversing 0056 removes the constraint, which is
     what a downgrade actually requires.
     """
 
@@ -112,7 +112,7 @@ def unconsolidate(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0047_sales_reception_and_service_supervisor'),
+        ('store', '0054_sales_reception_and_service_supervisor'),
     ]
 
     operations = [

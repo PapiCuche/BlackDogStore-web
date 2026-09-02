@@ -2059,3 +2059,90 @@ lugar de disimularlo.
 Entrega, cobro, garantía, evidencias, BR-008. Interfaz Web de servicio técnico.
 Editor de roles en la Web — mientras no exista, «que lo conceda el
 administrador» no es una salida real para un tenant.
+
+---
+
+## M12 / BR-005E — Entrega del equipo
+
+### Lo que se construyó
+
+`RepairDelivery` + `deliver_repair()` +
+`POST /api/v1/internal/<slug>/service/orders/<id>/delivery/` + botón en la
+consola Web + sección en Mobile. Doce estados de ciclo de vida; `DELIVERED` es
+el duodécimo y el segundo terminal.
+
+### El hallazgo que ordenaba la fase: no hay cobro de servicio
+
+La instrucción decía «si NO existe integración financiera correcta: SERVICE
+PAYMENT = PENDIENTE. No crear `paid = true` como sustituto». Se verificó leyendo
+el modelo, no la documentación:
+
+```python
+class PaymentTransaction(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.PROTECT,
+                              related_name='payment_transactions')
+```
+
+**Sin `null=True`, sin columna de empresa, sin relación genérica.** Una
+`RepairOrder` no puede pagarse por ahí. No hay puente que construir sin cambiar
+ese modelo, y cambiarlo es una decisión de esquema que toca el checkout de
+e-commerce y la pasarela izipay — fuera del alcance de una fase de entrega.
+
+**SERVICE PAYMENT = PENDIENTE.** La fase se partió: M12A (entrega) se
+implementa, M12B (cobro) se declara. `DELIVERED` significa que el equipo salió
+con alguien y nada más. No se escribió ningún booleano de pago, no se creó
+ninguna `Order` de e-commerce, y un test estructural prohíbe `PaymentTransaction`,
+`paid = True`, `Order.objects`, `stripe` e `izipay` en el módulo de servicio y en
+sus vistas.
+
+### Separación de deberes, ahora expresable
+
+`service.delivery.manage` es capability propia. La matriz, ejecutada contra
+`resolve_capabilities()` y no leída:
+
+```
+                                  VIEW  ORDERS.MANAGE  REPAIR  QUALITY  DELIVERY
+platform master (tenant explícito)  sí        sí          sí      sí       sí
+company admin                       sí        sí          sí      sí       sí
+preset Servicio Técnico             sí        sí          sí      sí       sí
+preset Ventas / Inventario          no        no          no      no       no
+técnico "solo taller" (custom)      sí        no          sí      sí       no
+mostrador "solo entrega" (custom)   sí        no          no      no       sí
+rol vacío / nombre "technician"     no        no          no      no       no
+cliente / admin de otra empresa     no        no          no      no       no
+```
+
+Las dos filas custom son el punto: **`service.orders.manage` sola NO entrega**, y
+**`service.delivery.manage` sola no mueve ni cancela nada**. Un taller que quiere
+que el técnico repare y el mostrador libere puede decirlo; si la entrega hubiera
+colgado de la capability ancha, no podría.
+
+### Paridad de superficies
+
+| Acción | Backend | Web UI | Mobile |
+|---|---|---|---|
+| Listar / abrir orden | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Cambiar estado / asignar | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Diagnosticar / cotizar / publicar | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Reparar / repuestos / reverso | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Control de calidad | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| **Registrar entrega** | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| **Cobro de servicio** | **NO EXISTE** | **NO EXISTE** | **NO EXISTE** |
+| Garantía / reentrada | NO EXISTE | NO EXISTE | NO EXISTE |
+| Evidencias (firma/foto) | NO EXISTE (DEC-016) | — | — |
+| Portal de cliente de reparación | IMPLEMENTADO | **PENDIENTE** | INTEGRADO |
+
+### Deuda que deja M12
+
+1. **Cobro de servicio (M12B)** — la mayor. Requiere decidir si es documento
+   nuevo o si `PaymentTransaction` se generaliza, y arrastra la política
+   tributaria que `tax_amount` deja en cero desde M9.
+2. **Portal Web de cliente de reparaciones** — sigue PENDIENTE desde H2. El
+   cliente autenticado sigue sin poder seguir su equipo desde la Web.
+3. **Sin tests de frontend en el repositorio** — sin runner, sin configuración,
+   sin script. La consola de servicio se valida con `tsc`, `eslint` y
+   `next build`. Es la misma deuda que dejó H2 y M12 no la paga.
+4. **Garantía** — será una reentrada que cita a la orden anterior, nunca una
+   edición de una orden cerrada.
+5. **Evidencias** (DEC-016), **notificaciones**, **BR-008**, **editor de roles en
+   la Web**.

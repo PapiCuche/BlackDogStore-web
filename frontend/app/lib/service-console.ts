@@ -225,6 +225,21 @@ export type ServiceQualityItem = {
   sort_order: number;
 };
 
+/**
+ * A handover. Append-only on the server, so this app never edits one.
+ *
+ * There is deliberately no `idempotency_key` and no fingerprint: they are the
+ * caller's own bookkeeping and echoing them back serves nothing.
+ */
+export type ServiceDelivery = {
+  id: number;
+  recipient_name: string;
+  notes: string;
+  delivered_by_name: string;
+  delivered_at: string;
+  created_at: string;
+};
+
 export type ServiceQualityCheck = {
   id: number;
   status: string;
@@ -420,6 +435,26 @@ export const failQualityCheck = (slug: string, id: number, notes: string) =>
   post<ServiceQualityCheck>(`${order(slug, id)}/quality/fail/`,
     notes.trim() ? { notes: notes.trim() } : {});
 
+export const fetchDelivery = (slug: string, id: number) =>
+  get<{ delivery: ServiceDelivery | null }>(`${order(slug, id)}/delivery/`);
+
+/**
+ * Hand the device over. Three fields, and none of them is a clock.
+ *
+ * `delivered_at` and `delivered_by` are the server's; sending them changes
+ * nothing. The idempotency key IS sent, because only the caller can mint one
+ * that survives the caller's own double-click — and a device handed over twice
+ * is a record that says two different people took it.
+ *
+ * This does NOT record a payment. The platform has no way to charge for a
+ * repair: `PaymentTransaction` is bound to an e-commerce order by a non-null
+ * FK. A button here implying otherwise would be a lie the shop believes.
+ */
+export const recordDelivery = (
+  slug: string, id: number,
+  body: { recipient_name: string; notes?: string; idempotency_key: string },
+) => post<ServiceDelivery>(`${order(slug, id)}/delivery/`, body);
+
 // ---------------------------------------------------------------------------
 // Capabilities — the SAME strings the backend enforces
 // ---------------------------------------------------------------------------
@@ -434,6 +469,7 @@ export const CAP_ORDERS_MANAGE = "service.orders.manage";
 export const CAP_DIAGNOSTIC_MANAGE = "service.diagnostic.manage";
 export const CAP_REPAIR_MANAGE = "service.repair.manage";
 export const CAP_QUALITY_MANAGE = "service.quality.manage";
+export const CAP_DELIVERY_MANAGE = "service.delivery.manage";
 
 /** A key that is stable for one intention and different for the next. */
 export function makeIdempotencyKey(shape: string): string {
