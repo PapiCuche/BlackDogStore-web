@@ -3738,7 +3738,16 @@ endpoints, que consultan `has_capability` sin ruta de rol legacy.
 puede ver la cotización que hay en ella, y pedir una segunda capability para ver
 lo que la orden ya muestra sería teatro.
 
-Siguen **RESERVED** `service.repair.manage` y `service.quality.manage`.
+M10 promueve `service.repair.manage` a **ACTIVE** por la misma regla: existe el
+módulo que la consume. Es la primera capacidad del catálogo que **gasta stock**,
+y por eso conviene decir con precisión qué no es: no es `inventory.adjust`.
+Permite consumir una pieza aprobada dentro de una reparación, desde la sucursal
+de esa reparación. No permite ajustar una estantería, transferir entre tiendas ni
+hacer recuentos, y el rol `Servicio Técnico` sigue sin `inventory.adjust`.
+
+**Leer** el banco de trabajo usa `service.orders.view`, igual que la cotización.
+
+Sigue **RESERVED** `service.quality.manage`.
 
 ### Deuda registrada
 
@@ -3749,7 +3758,18 @@ Siguen **RESERVED** `service.repair.manage` y `service.quality.manage`.
 - **Sin evidencias** (DEC-016).
 - **Asimetría de presets**: una empresa registrada antes de M9 no recibe
   `service.diagnostic.manage` en su rol `Servicio Técnico`, solo en
-  `Administrador` y solo si no lo editó. Misma decisión que 0033 y que M8.
+  `Administrador` y solo si no lo editó. Misma decisión que 0033 y que M8, y M10
+  la repite con `service.repair.manage`: la migración 0045 solo toca roles cuyo
+  conjunto de capacidades es EXACTAMENTE el preset de administrador anterior a la
+  fase. Autoridad que llega porque se desplegó software no es una decisión que la
+  empresa tomó.
+- **Sin reserva de stock**: cotizar una pieza no la aparta. El stock cambia
+  cuando la pieza se usa (M10) y nunca antes. Dos técnicos pueden cotizar la
+  misma última unidad y solo uno la consumirá; la carrera se resuelve en la base
+  de datos, no en la cotización.
+- **Sin devolución posterior a la finalización**: una pieza consumida en un
+  trabajo ya cerrado no vuelve al inventario. Necesita una inspección física que
+  el producto todavía no modela.
 
 ---
 

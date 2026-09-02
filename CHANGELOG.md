@@ -9,6 +9,117 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M10 / BR-005C — Ejecución de la reparación y consumo de repuestos
+
+**Estado: IMPLEMENTADO.** Migraciones **0043** (esquema), **0044** (estados) y
+**0045** (capability). Primera integración Servicio ↔ Inventario.
+
+### Lo que cierra
+
+`APPROVED → IN_REPAIR → REPAIRED`, con `WAITING_PARTS` para la pausa real que
+existe cuando una pieza no ha llegado. Un técnico abre el trabajo, registra lo
+que hizo, consume los repuestos que el cliente aprobó, y termina.
+
+### Dos modelos, y por qué no uno
+
+`RepairOrder` es el ticket: quién trajo qué, en qué punto de su vida está, qué se
+le dijo al cliente. `RepairExecution` es el banco de trabajo: cuándo empezó
+alguien, qué hizo de verdad, cuándo paró. Juntarlos habría ahorrado medio día y
+habría dejado sin respuesta «¿cuánto tarda un cambio de pantalla?» — el reloj del
+ticket arranca en el mostrador, horas o días antes de que un técnico toque nada.
+
+`PartUsage` responde «qué pieza usó esta reparación». `StockMovement` responde
+«qué pasó físicamente con el inventario». Están enlazados uno a uno y ninguno
+sustituye al otro: una usage sin movimiento sería una pieza que no dejó hueco, y
+un movimiento sin usage sería un hueco que nadie sabe explicar.
+
+### El orden de bloqueo, que es todo el riesgo de esta fase
+
+Es la primera operación que cruza dos agregados con disciplinas propias.
+Equivocarse no rompe un test: bloquea una caja contra un banco de trabajo un
+sábado por la tarde.
+
+No hubo nada que reconciliar, solo que obedecer. `service_services` bloquea el
+DOCUMENTO primero (`RepairOrder`, luego `RepairQuote`). `inventory_services`
+también (`StockTransfer`, `InventoryCount`) y después las filas de `BranchStock`
+en orden `(branch_id, product_id)` vía `_locked_branch_stocks`, y deliberadamente
+**nunca** `Product` — bloquear el artículo serializaría todas las sucursales de
+una cadena entre sí.
+
+    RepairOrder → RepairExecution → PartUsage → BranchStock
+
+`BranchStock` va siempre al final y siempre a través de
+`inventory_services.create_stock_movement`, que es la única función del
+repositorio que escribe stock. M10 no toca `BranchStock.quantity` ni
+`Product.inventory`: ese agregado **no tiene check constraint**, así que una
+segunda implementación equivocada lo corrompería sin que nada saltara.
+
+Un test estructural comprueba las posiciones relativas en el AST, porque los dos
+tests concurrentes se saltan en SQLite y una garantía que solo existe en un test
+que no corre no es una garantía.
+
+### `service_exit` llevaba dos años declarado y sin usar
+
+Existía desde la migración 0013, excluido de `MANUAL_TYPES`, sin un solo camino
+de código que lo creara. M10 es ese camino. Se añade su espejo, `service_return`,
+para el reverso: `return_entry` habría funcionado y habría perdido el origen — una
+línea de Kardex que dice solo «devolución» no distingue el cambio de opinión de un
+cliente de un técnico corrigiendo una pieza mal escaneada.
+
+Ninguno de los dos entra en `MANUAL_TYPES`. Un `service_exit` escrito a mano sería
+una línea de Kardex que reclama una reparación que no se puede encontrar.
+
+### Idempotencia: columnas, no convención
+
+La misma forma que ya usan la venta POS y el checkout nativo: clave acuñada por
+el cliente más huella SHA-256 de la petición, guardadas como columnas de la fila,
+con un `UniqueConstraint` parcial que decide en la base de datos. Reservar una
+pieza es un hecho físico y un timeout no puede producir dos.
+
+Misma clave + misma petición → se devuelve la fila original. Misma clave + otra
+petición → 409. El chequeo va **antes** que cualquier validación de negocio: un
+reintento se responde desde la clave, no se vuelve a juzgar, porque el cupo que
+llenó está lleno precisamente por su culpa.
+
+### Reversión es compensación
+
+`reverse_part_usage` escribe un movimiento contrario y marca la fila. No borra
+nada y no edita una cantidad histórica. Es idempotente: revertir dos veces no
+devuelve el stock dos veces.
+
+Y **no** sirve para devolver a la estantería una batería ya instalada. Una vez
+finalizado el trabajo la usage queda congelada; las devoluciones posteriores a la
+finalización son una necesidad real y necesitan su propia fase, con una
+inspección física que hoy no existe.
+
+### `service.repair.manage` no es `inventory.adjust`
+
+Consumir una pieza aquí es un paso de una reparación cuya cotización aprobó un
+cliente, desde la sucursal de esa reparación, contra una línea que alguien
+cotizó. Nada de eso es autoridad para ajustar una estantería, transferir entre
+tiendas o hacer un recuento. Dos tests lo fijan en ambas direcciones.
+
+### Lo que el cliente sigue sin ver
+
+`work_performed`, notas internas, piezas consumidas, stock, coste, identidad del
+técnico, sucursal. El serializer de cliente es una allowlist cerrada y M10 no le
+añadió un solo campo; un test estructural comprueba su lista exacta.
+
+### Un 500 preexistente corregido de paso
+
+`GET` sobre `/api/v1/customer/<slug>/repairs/<pk>/quotes/<id>/decision/` heredaba
+el `get()` de la vista padre, cuya firma no acepta `quote_id`: TypeError sin
+convertir, 500 en vez de 405. Se declara `http_method_names = ['post']`.
+
+### Deuda declarada
+
+Reserva de stock al cotizar: **no existe y no se inventó**. El stock cambia
+cuando la pieza se usa, nunca antes. Control de calidad, entrega, pago del
+servicio, garantía, evidencias fotográficas (DEC-016, sin proveedor) y
+seguimiento público BR-008 siguen PENDIENTES. `REPAIRED` no es terminal.
+
+---
+
 ## Fase 0.3 / P0-E — Integridad de cantidades: carrito, pedido e inventario
 
 **Estado: IMPLEMENTADO.** Migraciones **0041** (consolidación) y **0042** (constraints).
