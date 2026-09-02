@@ -33,6 +33,9 @@ type Assignment = {
   membership: number;
   role: number;
   role_name: string;
+  // The serializer returns the area id as well as its name; the id is what
+  // decides whether a role is already held in this exact slot.
+  area: number | null;
   area_name: string | null;
   capabilities: string[];
   is_active: boolean;
@@ -65,6 +68,13 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   });
   if (!res.ok) throw new Error(await readDetail(res, "No se pudo asignar el rol."));
   return res.json();
+}
+
+async function deleteJson(path: string): Promise<void> {
+  // The server answers 204 with no body, so this returns nothing rather than
+  // trying to parse one.
+  const res = await fetchWithAuth(`${API_BASE}${path}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo quitar el rol."));
 }
 
 function PermissionSummary({ codes }: { codes: string[] }) {
@@ -132,6 +142,13 @@ function MemberCard({
     }
   }
 
+  async function revokeRole(assignmentId: number) {
+    // DELETE is a SOFT disable server-side: the row survives as the audit trail
+    // of who granted what and when. Removing one role never touches the others,
+    // and — since the backend fix — never resurrects the legacy role either.
+    await perform(() => deleteJson(`/admin/membership-role-assignments/${assignmentId}/`));
+  }
+
   async function assignRole() {
     if (!roleId) return;
     await perform(() => postJson("/admin/membership-role-assignments/", {
@@ -197,9 +214,11 @@ function MemberCard({
 
       {open ? (
         <div className="border-t border-white/[0.06] px-5 py-5">
-          <div className="mb-5 rounded-lg border border-amber-500/15 bg-amber-500/[0.04] px-4 py-3 text-xs leading-5 text-amber-200/70">
-            Por seguridad, esta consola permite <strong>asignar</strong> roles pero todavía no retirar el último rol personalizado. La revocación total queda bloqueada en UI hasta endurecer el fallback legacy del backend.
-          </div>
+          {activeAssignments.length === 0 && assignments.length > 0 ? (
+            <div className="mb-5 rounded-lg border border-amber-500/20 bg-amber-500/[0.05] px-4 py-3 text-xs leading-5 text-amber-200/80">
+              <strong>Sin roles activos.</strong> Esta persona no tiene ninguna capacidad en la empresa. No vuelve al rol heredado «{membership.role_label}»: ya usa RBAC configurable, y quitarle el último rol significa exactamente eso.
+            </div>
+          ) : null}
 
           <div className="grid gap-6 xl:grid-cols-2">
             <section>
@@ -211,7 +230,19 @@ function MemberCard({
                   <div key={assignment.id} className="rounded-lg border border-white/[0.06] px-3 py-2.5">
                     <div className="flex items-center justify-between gap-3">
                       <span className={assignment.is_active ? "text-sm text-zinc-200" : "text-sm text-zinc-600 line-through"}>{assignment.role_name}</span>
-                      <span className="text-[10px] text-zinc-600">{assignment.is_active ? "Activo" : "Histórico"}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-zinc-600">{assignment.is_active ? "Activo" : "Histórico"}</span>
+                        {canManage && assignment.is_active ? (
+                          <button
+                            type="button"
+                            onClick={() => void revokeRole(assignment.id)}
+                            disabled={busy}
+                            className="rounded-md border border-white/10 px-2 py-1 text-[10px] text-zinc-400 hover:border-red-500/40 hover:text-red-300 disabled:opacity-40"
+                          >
+                            Quitar
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                     <p className="mt-1 text-[11px] text-zinc-600">{assignment.area_name || "Sin área"} · {assignment.capabilities.length} permisos</p>
                   </div>
@@ -226,7 +257,13 @@ function MemberCard({
                 <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
                   <select value={roleId} onChange={(event) => setRoleId(event.target.value)} disabled={busy} className="rounded-lg border border-white/[0.08] bg-black/50 px-3 py-2 text-sm text-zinc-300">
                     <option value="">Elegir rol…</option>
-                    {roles.filter((role) => role.is_active).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                    {roles
+                      .filter((role) => role.is_active)
+                      // Un rol ya activo sin área no puede volver a asignarse:
+                      // la base de datos lo rechaza desde M11, así que no se
+                      // ofrece una acción que va a fallar.
+                      .filter((role) => !activeAssignments.some((row) => row.role === role.id && !row.area))
+                      .map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
                   </select>
                   <select value={areaId} onChange={(event) => setAreaId(event.target.value)} disabled={busy} className="rounded-lg border border-white/[0.08] bg-black/50 px-3 py-2 text-sm text-zinc-300">
                     <option value="">Sin área</option>

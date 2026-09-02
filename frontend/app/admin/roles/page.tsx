@@ -155,6 +155,24 @@ function RoleCard({
     setSelected((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code].sort());
   }
 
+  async function toggleActive() {
+    // Deactivating a role is safe as of M11: the people holding it lose these
+    // capabilities and, if it was their only role, hold none — they are NOT
+    // handed their legacy role back. That was the bug this console refused to
+    // expose until the backend closed it.
+    if (!canManage || roleExceedsMyAuthority) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await saveJson(`/admin/roles/${role.id}/`, "PATCH", { is_active: !role.is_active });
+      await onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo cambiar el estado del rol.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function save() {
     if (!editable || !name.trim()) return;
     setBusy(true);
@@ -197,7 +215,9 @@ function RoleCard({
             <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/[0.05] px-4 py-3 text-xs text-amber-200/75">Este rol contiene permisos superiores a tu autoridad. Puedes revisarlo, pero no modificarlo ni conservar esos privilegios mediante una edición indirecta.</div>
           ) : null}
           {role.assignment_count > 0 ? (
-            <div className="mb-4 rounded-lg border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-xs text-zinc-500">La desactivación de roles en uso no se expone en esta consola hasta cerrar el fallback legacy detectado en la auditoría. Editar sus capacidades sí mantiene el control en el modelo personalizado.</div>
+            <div className="mb-4 rounded-lg border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-xs leading-5 text-zinc-500">
+              Este rol está asignado a <strong className="text-zinc-300">{role.assignment_count}</strong> persona(s). Desactivarlo les retira estas capacidades de inmediato; si era su único rol quedan <strong className="text-zinc-300">sin permisos</strong>, no con el rol heredado. Las asignaciones se conservan como historial.
+            </div>
           ) : null}
 
           <div className="mb-5 grid gap-4 md:grid-cols-[1fr_2fr]">
@@ -207,7 +227,21 @@ function RoleCard({
 
           <CapabilityMatrix catalog={catalog} selected={selected} disabled={!editable || busy} onToggle={toggle} />
           {error ? <p className="mt-4 text-sm text-red-400">{error}</p> : null}
-          {editable ? <div className="mt-5 flex justify-end"><button type="button" disabled={busy || !name.trim()} onClick={() => void save()} className="rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-black hover:bg-zinc-200 disabled:opacity-40">Guardar rol</button></div> : null}
+          {canManage && !roleExceedsMyAuthority ? (
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void toggleActive()}
+                className={`rounded-lg border px-4 py-2.5 text-sm disabled:opacity-40 ${role.is_active ? "border-white/10 text-zinc-300 hover:border-red-500/40 hover:text-red-300" : "border-emerald-500/30 text-emerald-300 hover:border-emerald-400/60"}`}
+              >
+                {role.is_active ? "Desactivar rol" : "Reactivar rol"}
+              </button>
+              {editable ? (
+                <button type="button" disabled={busy || !name.trim()} onClick={() => void save()} className="rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-black hover:bg-zinc-200 disabled:opacity-40">Guardar rol</button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </article>
