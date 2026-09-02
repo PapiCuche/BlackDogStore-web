@@ -460,7 +460,17 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
   }, [memberships, search]);
 
   return (
-    <AdminShell user={ctx.user}>
+    // G3 — `dashboard` and `onSelectCompany` were both missing, so the page
+    // told a platform master to "selecciona una empresa" and then handed them a
+    // switcher whose click did nothing: `AdminShell` calls `onSelectCompany?.()`,
+    // and an undefined prop makes that a no-op. Nine other admin pages pass both.
+    // Without `dashboard` the shell also refetched the dashboard on its own, so
+    // the topbar's company name came from a different response than the body's.
+    <AdminShell
+      user={ctx.user}
+      dashboard={ctx.dashboard}
+      onSelectCompany={ctx.selectCompany}
+    >
       <div className="space-y-7">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>

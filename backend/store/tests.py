@@ -13024,9 +13024,17 @@ class Phase2dBranchAccessApiTest(TestCase):
         self.other = _p2d_company('p2d-api-other')
         self.foreign = _p2d_branch(self.other, 'Ajena')
 
+        # The inventory capabilities are here as SCAFFOLDING, and G3 added them.
+        # These tests are about branch access; the payload happens to create an
+        # `inventory` membership, and G3 closed the hole that let a caller grant
+        # a legacy role conferring capabilities they do not hold themselves.
+        # Without them the fixture is now refused at the door and every
+        # assertion below would be about the wrong thing.
         self.admin, self.admin_m = _p2d_member(
             self.company, 'p2d_api_admin',
-            ['company.view', 'company.manage', 'memberships.view', 'memberships.manage'],
+            ['company.view', 'company.manage', 'memberships.view', 'memberships.manage',
+             'products.view', 'reports.view',
+             'inventory.view', 'inventory.adjust', 'inventory.reports'],
         )
         self.target = User.objects.create_user(username='p2d_api_target', password='x')
         self.client = APIClient()
@@ -37086,21 +37094,407 @@ class M12ConcurrencyTest(TransactionTestCase):
         self.assertEqual(
             AdminAuditLog.objects.filter(action='service_repair_delivered').count(), 1,
         )
-# ===========================================================================
-# M12A — acceso real del técnico
-# ===========================================================================
-#
-# THE PROBLEM, MEASURED FIRST:
-#
-#   A membership with `role='technician'` and no custom role resolves to
-#   `company.view` + `service.manage`, and every module of the service console
-#   asks for one of the nine capabilities the module was decomposed into. So
-#   the technician logs in and the whole section is missing — not some screens,
-#   all of them.
-#
-# `service.manage` was the technical-service module in Phase 2A. M8, M9, M10
-# and quality split it up; the legacy matrix never learned about the split.
-# ===========================================================================
+
+
+class G3LegacyRoleEscalationTest(TestCase):
+    """
+    The hole `can_delegate_capabilities` was written to close, and did not.
+
+    THE FINDING. Anti-escalation guards the RBAC path completely: authoring a
+    role, editing one, assigning one and reactivating one all call
+    `can_delegate_capabilities()`, and a limited administrator cannot put a
+    capability into a role that they do not hold themselves.
+
+    The LEGACY path was left open. `can_grant_company_role()` asked only whether
+    the value was in `GRANTABLE_BY_COMPANY_ADMIN` — which excludes `superadmin`
+    and includes `admin`. And `LEGACY_ROLE_CAPABILITIES[admin]` is
+    `ASSIGNABLE_CAPABILITY_CODES`: every capability in the tenant.
+
+    So a caller holding only `memberships.manage` could mint a colleague with
+    `role='admin'`. That membership has no RBAC history, the legacy fallback
+    answers for it, and the colleague resolves to everything — including the
+    capabilities the caller was refused two lines earlier for their own role.
+    Escalation by proxy, through the one door nobody was checking.
+
+    The fix asks the same question of the same authority: a legacy role may be
+    granted only by somebody who could have delegated what it confers.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _m11_company('Proxy SA', 'g3-proxy', tax_id='20780006777')
+        # Provisioned, because the tests below need the real `administrador`
+        # preset to prove the fix does not narrow a full company admin.
+        provision_company_access_defaults(self.company)
+        self.user, self.membership = _m11_member(self.company, 'g3_limited', 'staff')
+        limited = _role(
+            self.company, 'Admin limitado',
+            ['company.view', 'roles.manage', 'memberships.manage'],
+            slug='g3-limitado',
+        )
+        _m11_assign(self.membership, limited)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.outsider = _saas_user('g3_confederate')
+
+    def _post(self, role):
+        return self.client.post('/api/admin/memberships/', {
+            'company': self.company.pk, 'user': self.outsider.pk, 'role': role,
+        }, format='json')
+
+    # -- the hole ----------------------------------------------------------
+
+    def test_it_cannot_mint_a_legacy_admin_it_could_not_have_authored(self):
+        self.assertFalse(has_capability(self.user, self.company, 'inventory.adjust'))
+        res = self._post('admin')
+        self.assertEqual(res.status_code, 403)
+        self.assertFalse(
+            Membership.objects.filter(user=self.outsider, company=self.company).exists()
+        )
+
+    def test_the_confederate_would_have_held_everything(self):
+        # Why the refusal above matters, stated as the fact it prevents.
+        from .tenancy import LEGACY_ROLE_CAPABILITIES, ASSIGNABLE_CAPABILITY_CODES
+        from .models import UserProfile
+        self.assertEqual(
+            LEGACY_ROLE_CAPABILITIES[UserProfile.ROLE_ADMIN], ASSIGNABLE_CAPABILITY_CODES,
+        )
+        self.assertIn('inventory.adjust', ASSIGNABLE_CAPABILITY_CODES)
+
+    def test_it_cannot_promote_an_existing_membership_either(self):
+        # The PATCH path routes through the same check, and must not be a way
+        # around the POST one.
+        target = Membership.objects.create(
+            user=self.outsider, company=self.company, role='sales', is_active=True,
+        )
+        res = self.client.patch(
+            f'/api/admin/memberships/{target.pk}/', {'role': 'admin'}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        target.refresh_from_db()
+        self.assertEqual(target.role, 'sales')
+
+    # -- what must still work ----------------------------------------------
+
+    def test_it_can_still_grant_a_role_within_its_own_authority(self):
+        # `technician` confers {company.view, service.manage}; grant the caller
+        # service.manage and the same request succeeds. The rule is about
+        # authority, never about the word "admin".
+        role = CompanyRole.objects.get(company=self.company, slug='g3-limitado')
+        role.capabilities = sorted(set(role.capabilities) | {'service.manage'})
+        role.save(update_fields=['capabilities'])
+        cache.clear()
+
+        res = self._post('technician')
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_a_role_that_confers_nothing_is_still_grantable(self):
+        res = self._post('customer')
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_a_full_company_admin_is_unaffected(self):
+        admin_user, admin_membership = _m11_member(self.company, 'g3_full', 'staff')
+        _m11_assign(
+            admin_membership,
+            CompanyRole.objects.get(company=self.company, slug='administrador'),
+        )
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        res = client.post('/api/admin/memberships/', {
+            'company': self.company.pk, 'user': self.outsider.pk, 'role': 'admin',
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_a_platform_master_is_exempt(self):
+        master = _saas_user('g3_master')
+        master.is_superuser = True
+        master.is_staff = True
+        master.save(update_fields=['is_superuser', 'is_staff'])
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=master)
+        res = client.post('/api/admin/memberships/', {
+            'company': self.company.pk, 'user': self.outsider.pk, 'role': 'admin',
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_superadmin_is_still_refused_to_a_company_admin(self):
+        # The pre-existing rule, unchanged: the value's semantics are legacy and
+        # a company admin does not hand it out, however much authority they hold.
+        admin_user, admin_membership = _m11_member(self.company, 'g3_full2', 'staff')
+        _m11_assign(
+            admin_membership,
+            CompanyRole.objects.get(company=self.company, slug='administrador'),
+        )
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        res = client.post('/api/admin/memberships/', {
+            'company': self.company.pk, 'user': self.outsider.pk, 'role': 'superadmin',
+        }, format='json')
+        self.assertEqual(res.status_code, 403)
+
+
+class G3SalesPresetDiscriminatorTest(TestCase):
+    """
+    The sales grant identified a preset by its capability set ALONE.
+
+    THE PATTERN EVERY OTHER CAPABILITY MIGRATION USES. H1B's service grant,
+    M11's quality grant and M12's delivery grant all require a CONJUNCTION —
+    slug, name, an era-specific description, and exact set equality — precisely
+    because a capability set on its own can describe a role a tenant built.
+
+    The sales half iterated EVERY `CompanyRole` on the platform with no slug
+    filter at all, and widened any whose capabilities matched a seven-code set:
+
+        company.view, products.view, reports.view, sales.orders.view,
+        sales.orders.manage, sales.notes.manage, sales.pos.use
+
+    That is not an obscure fingerprint. It is "the shop-counter role", the most
+    natural set a tenant would assemble by hand, and matching it granted SIX
+    TECHNICAL-SERVICE capabilities to a role somebody had built to sell cables.
+
+    The fix keeps the migration's stated intent — a company that RENAMED the
+    preset still counts as untouched, because a label is presentation — and adds
+    the one field a tenant cannot collide with by accident: the platform's own
+    slug. `CompanyRole` is unique on (company, slug), so in a provisioned company
+    the preset already owns `ventas` and nothing a tenant creates can claim it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Discrim SA', 'g3-discrim', tax_id='20780006888')
+        provision_company_access_defaults(self.company)
+
+    def _module(self):
+        import importlib
+        return importlib.import_module(
+            'store.migrations.0054_sales_reception_and_service_supervisor',
+        )
+
+    def _run(self):
+        from django.apps import apps as django_apps
+        self._module().extend_untouched_sales_presets(django_apps, None)
+
+    def test_a_tenant_role_that_happens_to_match_the_set_is_left_alone(self):
+        # THE BUG. A hand-built counter role with exactly the old preset's
+        # capabilities — different name, different slug, its own row.
+        mine = _role(
+            self.company, 'Mostrador', sorted(self._module().PREVIOUS_SALES_PRESET),
+            slug='g3-mostrador',
+        )
+        self._run()
+        mine.refresh_from_db()
+
+        self.assertEqual(
+            set(mine.capabilities), set(self._module().PREVIOUS_SALES_PRESET),
+        )
+        for granted in self._module().RECEPTION_CAPABILITIES:
+            self.assertNotIn(granted, mine.capabilities, granted)
+
+    def test_it_never_crosses_into_another_company(self):
+        other = _saas_company('Ajena Discrim', 'g3-discrim-otra', tax_id='20780006889')
+        provision_company_access_defaults(other)
+        theirs = _role(
+            other, 'Su mostrador', sorted(self._module().PREVIOUS_SALES_PRESET),
+            slug='g3-suyo',
+        )
+        self._run()
+        theirs.refresh_from_db()
+        self.assertNotIn('service.orders.create', theirs.capabilities)
+
+    # -- what must still happen --------------------------------------------
+
+    def test_the_untouched_preset_is_still_extended(self):
+        preset = CompanyRole.objects.get(company=self.company, slug='ventas')
+        preset.capabilities = sorted(self._module().PREVIOUS_SALES_PRESET)
+        preset.save(update_fields=['capabilities'])
+
+        self._run()
+        preset.refresh_from_db()
+        for granted in self._module().RECEPTION_CAPABILITIES:
+            self.assertIn(granted, preset.capabilities, granted)
+
+    def test_a_RENAMED_preset_still_counts_as_untouched(self):
+        # The migration's own stated intent, kept: a label is presentation, and
+        # a shop that calls it "Mostrador" but never changed what it grants is
+        # still running the platform's role.
+        preset = CompanyRole.objects.get(company=self.company, slug='ventas')
+        preset.name = 'Mostrador'
+        preset.capabilities = sorted(self._module().PREVIOUS_SALES_PRESET)
+        preset.save(update_fields=['name', 'capabilities'])
+
+        self._run()
+        preset.refresh_from_db()
+        self.assertIn('service.orders.create', preset.capabilities)
+
+    def test_an_EDITED_preset_is_still_refused(self):
+        preset = CompanyRole.objects.get(company=self.company, slug='ventas')
+        preset.capabilities = sorted(
+            set(self._module().PREVIOUS_SALES_PRESET) - {'sales.pos.use'}
+        )
+        preset.save(update_fields=['capabilities'])
+
+        self._run()
+        preset.refresh_from_db()
+        self.assertNotIn('service.orders.create', preset.capabilities)
+
+    def test_it_is_idempotent(self):
+        preset = CompanyRole.objects.get(company=self.company, slug='ventas')
+        preset.capabilities = sorted(self._module().PREVIOUS_SALES_PRESET)
+        preset.save(update_fields=['capabilities'])
+
+        self._run()
+        preset.refresh_from_db()
+        once = sorted(preset.capabilities)
+        self._run()
+        preset.refresh_from_db()
+        self.assertEqual(sorted(preset.capabilities), once)
+
+
+class G3DeactivationEscalationTest(TestCase):
+    """
+    Anti-escalation could be walked around by turning a role off and on again.
+
+    THREE FACTS THAT COMBINE INTO A CHAIN.
+
+      1. `CompanyRole.capability_set` returns `frozenset()` while the role is
+         INACTIVE (models.py). It is the right answer for resolution — an
+         inactive role grants nothing — and the wrong input for a delegation
+         check, which is a question about what the role WOULD grant.
+      2. Assigning a role checks `role.capability_set`. Against an inactive
+         role that check is vacuous: the empty set is a subset of everything.
+      3. The role PATCH only re-checks delegation when the request carries a
+         `capabilities` key. A body of `{"is_active": ...}` skips it entirely.
+
+    So an admin holding `roles.manage` and `memberships.manage`, but NOT the
+    capability X that role R grants:
+
+        PATCH  /admin/roles/R/                {"is_active": false}   → 200
+        POST   /admin/membership-role-assignments/  {me, R}          → 201  (!)
+        PATCH  /admin/roles/R/                {"is_active": true}    → 200
+        …and they now resolve X.
+
+    Every individual step looks authorised. The composition is the escalation,
+    and it is the one the console's whole delegation rule exists to prevent.
+
+    THE FIX, IN TWO PLACES. Delegation is asked about what a role CONTAINS, so
+    both checks now read the raw `capabilities` field rather than the
+    activation-dependent `capability_set`, and turning a role back on re-checks
+    delegation the same way turning its capabilities up already did.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _m11_company('Vaivén SA', 'g3-vaiven', tax_id='20780006999')
+        provision_company_access_defaults(self.company)
+        self.user, self.membership = _m11_member(self.company, 'g3_swinger', 'staff')
+        _m11_assign(self.membership, _role(
+            self.company, 'Admin limitado',
+            ['company.view', 'roles.manage', 'memberships.manage'],
+            slug='g3-vaiven-limitado',
+        ))
+        # The prize: a role granting a capability the caller does not hold.
+        self.powerful = _role(
+            self.company, 'Almacén', ['company.view', 'inventory.adjust'],
+            slug='g3-vaiven-almacen',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _assign_to_self(self):
+        return self.client.post('/api/admin/membership-role-assignments/', {
+            'membership': self.membership.pk, 'role': self.powerful.pk,
+        }, format='json')
+
+    def _set_active(self, value):
+        return self.client.patch(
+            f'/api/admin/roles/{self.powerful.pk}/', {'is_active': value}, format='json',
+        )
+
+    # -- the chain, step by step -------------------------------------------
+
+    def test_the_direct_assignment_is_refused(self):
+        # The guard that works, pinned so the fix cannot be mistaken for it.
+        self.assertFalse(has_capability(self.user, self.company, 'inventory.adjust'))
+        self.assertEqual(self._assign_to_self().status_code, 403)
+
+    def test_assigning_a_DEACTIVATED_role_is_also_refused(self):
+        # THE HOLE. `capability_set` is empty while inactive, so the delegation
+        # check passed against nothing at all.
+        self.assertEqual(self._set_active(False).status_code, 200)
+        self.powerful.refresh_from_db()
+        self.assertEqual(self.powerful.capability_set, frozenset())
+        self.assertEqual(self._assign_to_self().status_code, 403)
+
+    def test_the_whole_round_trip_never_grants_the_capability(self):
+        # End to end, the way somebody would actually do it.
+        self._set_active(False)
+        self._assign_to_self()
+        self._set_active(True)
+        cache.clear()
+        self.assertFalse(has_capability(self.user, self.company, 'inventory.adjust'))
+
+    def test_turning_a_role_back_on_re_checks_delegation(self):
+        # The other half: even with the assignment already in place from before
+        # the caller was narrowed, they cannot flip the switch themselves.
+        self.powerful.is_active = False
+        self.powerful.save(update_fields=['is_active'])
+        _m11_assign(self.membership, self.powerful)
+        cache.clear()
+        self.assertFalse(has_capability(self.user, self.company, 'inventory.adjust'))
+
+        self.assertEqual(self._set_active(True).status_code, 403)
+        self.powerful.refresh_from_db()
+        self.assertFalse(self.powerful.is_active)
+
+    def test_reactivating_an_assignment_of_an_inactive_role_is_refused(self):
+        # Same vacuous-check shape, on the assignment endpoint.
+        self.powerful.is_active = False
+        self.powerful.save(update_fields=['is_active'])
+        assignment = _m11_assign(self.membership, self.powerful, is_active=False)
+
+        res = self.client.patch(
+            f'/api/admin/membership-role-assignments/{assignment.pk}/',
+            {'is_active': True}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+
+    # -- what must still work ----------------------------------------------
+
+    def test_it_can_still_switch_a_role_within_its_own_authority(self):
+        harmless = _role(
+            self.company, 'Solo lectura', ['company.view'], slug='g3-vaiven-lectura',
+        )
+        for value in (False, True):
+            res = self.client.patch(
+                f'/api/admin/roles/{harmless.pk}/', {'is_active': value}, format='json',
+            )
+            self.assertEqual(res.status_code, 200, res.data)
+
+    def test_a_full_admin_can_still_switch_any_role(self):
+        admin_user, admin_membership = _m11_member(self.company, 'g3_vaiven_full', 'staff')
+        _m11_assign(
+            admin_membership,
+            CompanyRole.objects.get(company=self.company, slug='administrador'),
+        )
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+        res = client.patch(
+            f'/api/admin/roles/{self.powerful.pk}/', {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def test_an_inactive_role_still_grants_nothing_while_off(self):
+        # The semantics `capability_set` exists for are unchanged.
+        self.powerful.is_active = False
+        self.powerful.save(update_fields=['is_active'])
+        other, other_m = _m11_member(self.company, 'g3_vaiven_other', 'staff')
+        _m11_assign(other_m, self.powerful)
+        cache.clear()
+        self.assertFalse(has_capability(other, self.company, 'inventory.adjust'))
 
 
 class M12ALegacyTechnicianAccessTest(TestCase):
@@ -37302,7 +37696,6 @@ class M12ALegacyTechnicianAccessTest(TestCase):
             self.assertNotIn(code, caps, code)
 
 
-@override_settings(**IZIPAY_TEST_SETTINGS)
 class M12AMyRepairsFilterTest(TestCase):
     """
     §6 — "Mis reparaciones": the technician's own queue, resolved server-side.
