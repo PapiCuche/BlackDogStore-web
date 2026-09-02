@@ -238,8 +238,21 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('service.diagnostic.manage', 'service', 'Diagnóstico y cotización',
          'Registrar diagnósticos y componer, publicar o anular cotizaciones.',
          STATUS_ACTIVE),
+    # M10 — BR-005C. The module exists: an execution row with the bench work on
+    # it, and parts consumed out of the order's own branch through the one
+    # inventory primitive that writes stock. ACTIVE on the same terms as the
+    # rest — every write calls `has_capability` and there is no legacy role
+    # path behind it.
+    #
+    # IT IS NOT `inventory.adjust`, AND MUST NOT BECOME IT. This lets somebody
+    # consume an approved part inside a repair they can already open. It does
+    # not let them adjust a shelf, move stock between shops, or run a count;
+    # those stay behind the inventory capabilities, and a technician holding
+    # this one has no route to them. Authority follows the workflow, not the
+    # table it happens to touch.
     _cap('service.repair.manage', 'service', 'Reparación',
-         'RESERVADO — ejecución de reparación no implementada.', STATUS_RESERVED),
+         'Ejecutar la reparación y consumir los repuestos aprobados.',
+         STATUS_ACTIVE),
     _cap('service.quality.manage', 'service', 'Control de calidad',
          'RESERVADO — control de calidad no implementado.', STATUS_RESERVED),
 )

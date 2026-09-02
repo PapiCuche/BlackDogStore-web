@@ -29,28 +29,35 @@ Nothing outside this module writes either one.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from decimal import Decimal
 
-from django.db import transaction
-from django.db.models import Max
+from django.db import IntegrityError, transaction
+from django.db.models import Max, Sum
 from django.utils import timezone
 
-from . import sequences
+from . import inventory_services, sequences
 from .models import (
     AdminAuditLog,
+    BranchStock,
     CompanySettings,
     Customer,
     Device,
     Membership,
+    PartUsage,
     Product,
     RepairDiagnostic,
+    RepairExecution,
     RepairOrder,
     RepairQuote,
     RepairQuoteDecision,
     RepairQuoteItem,
+    RepairResultCode,
     RepairStatusCode,
     RepairStatusHistory,
     RepairStatusSetting,
+    StockMovement,
     TechnicianAssignment,
 )
 
@@ -97,11 +104,34 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
         RepairStatusCode.DIAGNOSING,
         RepairStatusCode.CANCELLED,
     ),
-    # M9. The customer said go ahead; the work has not started, because there is
-    # no execution module yet. An approved order can still be cancelled — a
-    # customer changes their mind, a part turns out to be unobtainable — and
-    # that is a decision the shop records, not a state it is trapped in.
+    # M9 said go ahead; M10 built the bench. An approved order moves on when a
+    # technician STARTS, which is an event, not a selector — see
+    # `EVENT_ONLY_STATES`. It can still be cancelled: a customer changes their
+    # mind, a part turns out to be unobtainable, and that is a decision the shop
+    # records rather than a state it is trapped in.
     RepairStatusCode.APPROVED: (
+        RepairStatusCode.IN_REPAIR,
+        RepairStatusCode.CANCELLED,
+    ),
+    # M10 — the bench. Work pauses when a part is missing and resumes when it
+    # arrives; both are things somebody does, so both are event-only. Finishing
+    # is `complete_repair`. Cancelling mid-repair is legitimate and generic: a
+    # device turns out to be unrepairable and the shop says so.
+    RepairStatusCode.IN_REPAIR: (
+        RepairStatusCode.WAITING_PARTS,
+        RepairStatusCode.REPAIRED,
+        RepairStatusCode.CANCELLED,
+    ),
+    RepairStatusCode.WAITING_PARTS: (
+        RepairStatusCode.IN_REPAIR,
+        RepairStatusCode.CANCELLED,
+    ),
+    # NOT TERMINAL, and not "ready to collect". The technician finished; the
+    # device still has to pass quality control (M11) and be handed over (M12).
+    # Until those modules exist the only onward move is cancellation, and an
+    # order sitting here is waiting for a phase that has not shipped — which is
+    # the honest answer, not a state that pretends otherwise.
+    RepairStatusCode.REPAIRED: (
         RepairStatusCode.CANCELLED,
     ),
     # A rejection is not the end of the conversation. The usual next move is a
@@ -131,10 +161,18 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
 #: the GENERIC path: `transition_repair_order` refuses them, and
 #: `available_transitions` does not offer them, so the app cannot draw a button
 #: that fabricates a customer's decision.
+#: M10 adds three more, on the same principle. Starting work is a fact about a
+#: workbench — somebody opened the device — and `start_repair` is what records
+#: it, together with the execution row that gives `in_repair` its meaning.
+#: Pausing for parts and finishing are the same kind of fact. A dropdown that
+#: could assert any of them would let an order claim work that nobody did.
 EVENT_ONLY_STATES: frozenset[str] = frozenset({
     RepairStatusCode.WAITING_APPROVAL,
     RepairStatusCode.APPROVED,
     RepairStatusCode.REJECTED,
+    RepairStatusCode.IN_REPAIR,
+    RepairStatusCode.WAITING_PARTS,
+    RepairStatusCode.REPAIRED,
 })
 
 #: Edges that exist for one operation only, even though their TARGET is an
@@ -1281,3 +1319,812 @@ def record_quote_decision(
         company=locked_order.company,
     )
     return record
+
+
+# ===========================================================================
+# M10 / BR-005C — executing the repair, and consuming the parts it needs
+# ===========================================================================
+#
+# THE LOCK ORDER, WHICH IS THE WHOLE RISK OF THIS PHASE
+# -----------------------------------------------------
+# M10 is the first operation that touches two aggregates that already have
+# their own locking disciplines. Getting the sequence wrong does not fail a
+# test; it deadlocks a till against a workbench on a Saturday afternoon.
+#
+# Both existing disciplines say the same thing, so there was nothing to
+# reconcile — only something to obey:
+#
+#   · `service_services` locks the DOCUMENT first: `RepairOrder`, then
+#     `RepairQuote`. Never the other way round.
+#   · `inventory_services` locks the document first too (`StockTransfer`,
+#     `InventoryCount`), then `BranchStock` rows in ascending
+#     `(branch_id, product_id)` through `_locked_branch_stocks`, and
+#     deliberately never locks `Product` — locking the article would serialise
+#     every branch of a chain against every other for the same part.
+#
+# So M10's order is the concatenation, with nothing invented:
+#
+#       RepairOrder  →  RepairExecution  →  PartUsage  →  BranchStock
+#
+# `BranchStock` is always LAST and is always taken by
+# `inventory_services.create_stock_movement`, which is the only function in
+# this codebase that writes stock. Nothing here touches `BranchStock.quantity`
+# or `Product.inventory` — those have exactly one writer and this module is not
+# it. `Product` is never locked.
+#
+# WHY THE PART GOES THROUGH INVENTORY AND NOT AROUND IT
+# ------------------------------------------------------
+# `create_stock_movement` maintains the Kardex, the branch row and the
+# `Product.inventory` aggregate in one transaction. `Product.inventory` has no
+# database check constraint, so a second implementation that got it wrong would
+# corrupt the number the storefront reads with nothing to raise. Service
+# orchestrates; inventory mutates.
+
+
+class RepairExecutionError(ServiceError):
+    """The bench operation is not legal in this state. Views render 400."""
+
+
+class PartUsageError(ServiceError):
+    """A part cannot be consumed or reversed as asked. Views render 400."""
+
+
+class StockUnavailableError(PartUsageError):
+    """
+    The order's own branch does not hold enough of the part.
+
+    Its own class, and its own HTTP status, because it is the one failure here
+    that is nobody's mistake: the shop simply does not have the piece today.
+    The caller's next move is to order it and pause the repair, not to correct
+    a bad request — so it must be distinguishable without reading Spanish
+    prose. Same reason the POS answers 409 for the same condition.
+    """
+
+
+class _PartUsageRaceLost(Exception):
+    """
+    Internal. Another caller committed this idempotency key while we worked.
+
+    Never leaves this module. It exists so the losing attempt can unwind its
+    OWN stock movement — by letting the transaction roll back — before the
+    outer wrapper replays the winner's row. Returning the winner from inside
+    the transaction would commit an orphan decrement, which is precisely the
+    double-consumption this whole mechanism exists to prevent.
+    """
+
+
+class IdempotencyConflict(ServiceError):
+    """
+    The key has been used, for a different request.
+
+    Not an error about parts: an error about a client reusing a key it minted
+    for something else. Replaying the SAME request returns the original row and
+    raises nothing at all.
+    """
+
+
+#: States in which a technician may record work and consume parts.
+#:
+#: `waiting_parts` is included deliberately: the moment the missing piece
+#: arrives is exactly when somebody records it, and forcing a resume first
+#: would make the pause a trap rather than a note.
+WORKABLE_STATES: frozenset[str] = frozenset({
+    RepairStatusCode.IN_REPAIR,
+    RepairStatusCode.WAITING_PARTS,
+})
+
+#: The only state a repair may START from. The customer said yes; nothing
+#: earlier means that and nothing later needs saying twice.
+STARTABLE_STATES: frozenset[str] = frozenset({RepairStatusCode.APPROVED})
+
+#: Fields a caller may change on an open execution.
+#:
+#: Everything absent is either the server's (`started_at`, `started_by`,
+#: `completed_at`, `completed_by`, `company`, `repair_order`) or a decision
+#: rather than a draft (finishing). DEC-020's rule, once more: having a field is
+#: being able to fill it in.
+EDITABLE_EXECUTION_FIELDS: frozenset[str] = frozenset({
+    'work_performed', 'result', 'internal_notes',
+})
+
+
+def approved_quote(repair_order):
+    """
+    The quote this repair is authorised by, or None.
+
+    The LATEST approved revision. A shop that quoted twice and had the second
+    approved is working to the second one, and the first is history.
+    """
+    return (
+        repair_order.quotes
+        .filter(status=RepairQuote.STATUS_APPROVED)
+        .order_by('-revision', '-pk')
+        .first()
+    )
+
+
+def open_execution(repair_order):
+    """The execution currently being worked on, or None."""
+    return (
+        repair_order.executions
+        .filter(completed_at__isnull=True)
+        .order_by('-started_at', '-pk')
+        .first()
+    )
+
+
+def latest_execution(repair_order):
+    """The most recent execution, open or finished, or None."""
+    return repair_order.executions.order_by('-started_at', '-pk').first()
+
+
+def executions_for(repair_order):
+    """Every execution on this order, newest first."""
+    return repair_order.executions.all()
+
+
+@transaction.atomic
+def start_repair(*, repair_order, actor=None, request=None):
+    """
+    Begin the work. APPROVED → IN_REPAIR, and an execution row to hold it.
+
+    ONE OPERATION, NOT A STATUS WRITE. `transition_repair_order` refuses
+    `in_repair` outright — it is in `EVENT_ONLY_STATES` — because moving the
+    order without opening an execution would produce an order that claims to be
+    on a bench with no record of who put it there or when.
+
+    THE APPROVAL IS RE-CHECKED HERE even though M9 already guarantees it. The
+    order's status alone is a projection; this reads the quote and its decision
+    row, because `in_repair` is the first state that spends the customer's
+    money and "the status said approved" is not the same sentence as "somebody
+    approved it". Defence in depth costs one query.
+
+    IDEMPOTENT IN THE ONLY WAY THAT HELPS: a second call while work is already
+    open returns the SAME execution instead of raising, so a double tap or a
+    retried request does not produce an error the technician has to interpret.
+    Starting an order that is not approved is still a refusal.
+    """
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+
+    existing = open_execution(locked)
+    if existing is not None and locked.status in WORKABLE_STATES:
+        return existing
+
+    if locked.status not in STARTABLE_STATES:
+        raise RepairExecutionError(
+            'Solo se puede iniciar una reparación aprobada por el cliente.'
+        )
+
+    quote = approved_quote(locked)
+    if quote is None:
+        raise RepairExecutionError(
+            'No hay una cotización aprobada para esta orden.'
+        )
+    decision = RepairQuoteDecision.objects.filter(quote=quote).first()
+    if decision is None or decision.decision != RepairQuoteDecision.DECISION_APPROVE:
+        raise RepairExecutionError(
+            'No hay una aprobación registrada del cliente para esta cotización.'
+        )
+
+    execution = RepairExecution(
+        company_id=locked.company_id,
+        repair_order=locked,
+        started_at=timezone.now(),
+        started_by=actor,
+    )
+    execution.save()
+
+    _apply_transition(
+        locked,
+        to_status=RepairStatusCode.IN_REPAIR,
+        actor=actor,
+        origin=RepairStatusHistory.ORIGIN_INTERNAL,
+        comment='',
+        request=request,
+    )
+
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_repair_started',
+        target_type='repair_execution',
+        target_id=execution.pk,
+        metadata={
+            'repair_order_id': locked.pk,
+            'number': locked.number,
+            'quote_id': quote.pk,
+            'revision': quote.revision,
+        },
+        request=request,
+        company=locked.company,
+    )
+    return execution
+
+
+@transaction.atomic
+def update_execution(*, execution, actor=None, request=None, **fields):
+    """
+    Amend the bench notes while the work is open.
+
+    NOT AUDITED, deliberately. This is a draft somebody types into over an
+    afternoon, and an audit row per keystroke is an audit log nobody reads. The
+    write that matters — finishing — is audited, and after it this function
+    refuses.
+    """
+    locked = RepairExecution.objects.select_for_update().get(pk=execution.pk)
+    if locked.completed_at is not None:
+        raise RepairExecutionError('Un trabajo finalizado no se puede modificar.')
+
+    unknown = set(fields) - EDITABLE_EXECUTION_FIELDS
+    if unknown:
+        raise RepairExecutionError(
+            f'Campos no editables: {", ".join(sorted(unknown))}.'
+        )
+
+    result = fields.get('result')
+    if result is not None and result != '':
+        if result not in RepairResultCode.values:
+            raise RepairExecutionError('Ese resultado no existe.')
+
+    for name, value in fields.items():
+        setattr(locked, name, value)
+    locked.save(update_fields=[*fields, 'updated_at'])
+    return locked
+
+
+@transaction.atomic
+def pause_for_parts(*, repair_order, actor=None, comment='', request=None):
+    """
+    IN_REPAIR → WAITING_PARTS. An explicit act, never a side effect.
+
+    A failed consumption does NOT move an order here. That was the tempting
+    design and it is wrong: a request that fails for a technical reason must not
+    change the lifecycle behind the operator's back, or the shop discovers its
+    own state by reading error logs. Running out of a part answers 409; pausing
+    the repair is a separate decision somebody takes, having seen it.
+    """
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+    if locked.status != RepairStatusCode.IN_REPAIR:
+        raise RepairExecutionError(
+            'Solo se puede pausar una reparación en curso.'
+        )
+    if open_execution(locked) is None:
+        raise RepairExecutionError('Esta orden no tiene un trabajo abierto.')
+
+    _apply_transition(
+        locked,
+        to_status=RepairStatusCode.WAITING_PARTS,
+        actor=actor,
+        origin=RepairStatusHistory.ORIGIN_INTERNAL,
+        comment=comment or '',
+        request=request,
+    )
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_repair_paused_for_parts',
+        target_type='repair_order',
+        target_id=locked.pk,
+        metadata={'number': locked.number},
+        request=request,
+        company=locked.company,
+    )
+    return locked
+
+
+@transaction.atomic
+def resume_repair(*, repair_order, actor=None, request=None):
+    """WAITING_PARTS → IN_REPAIR. The piece arrived."""
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+    if locked.status != RepairStatusCode.WAITING_PARTS:
+        raise RepairExecutionError(
+            'Solo se puede reanudar una reparación en espera de repuestos.'
+        )
+    if open_execution(locked) is None:
+        raise RepairExecutionError('Esta orden no tiene un trabajo abierto.')
+
+    _apply_transition(
+        locked,
+        to_status=RepairStatusCode.IN_REPAIR,
+        actor=actor,
+        origin=RepairStatusHistory.ORIGIN_INTERNAL,
+        comment='',
+        request=request,
+    )
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_repair_resumed',
+        target_type='repair_order',
+        target_id=locked.pk,
+        metadata={'number': locked.number},
+        request=request,
+        company=locked.company,
+    )
+    return locked
+
+
+@transaction.atomic
+def complete_repair(
+    *, repair_order, work_performed=None, result=None, internal_notes=None,
+    actor=None, request=None,
+):
+    """
+    Finish the bench work. IN_REPAIR → REPAIRED, and the execution freezes.
+
+    WHAT `REPAIRED` DOES NOT MEAN: checked, ready to collect, notified, paid,
+    delivered, warranted. It means a technician put the device down. M11 is
+    quality control and M12 is handover; neither exists, and naming this state
+    "listo para entregar" would promise both.
+
+    WHAT IT REQUIRES: an open execution, a description of what was actually
+    done, and a result. A repair with no record of the work is a repair that
+    cannot be argued about later — and `work_performed` is deliberately not
+    seeded from the diagnosis, so an empty one means nobody wrote anything
+    rather than that somebody accepted a default.
+
+    Half-finished part consumption blocks it. A usage row exists or it does
+    not; there is no partial state to strand, and the check below is there to
+    catch a future path that introduces one.
+    """
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+    if locked.status != RepairStatusCode.IN_REPAIR:
+        raise RepairExecutionError(
+            'Solo se puede finalizar una reparación en curso.'
+        )
+
+    execution = open_execution(locked)
+    if execution is None:
+        raise RepairExecutionError('Esta orden no tiene un trabajo abierto.')
+    locked_execution = (
+        RepairExecution.objects.select_for_update().get(pk=execution.pk)
+    )
+    if locked_execution.completed_at is not None:
+        raise RepairExecutionError('Este trabajo ya está finalizado.')
+
+    work = (
+        locked_execution.work_performed if work_performed is None
+        else work_performed
+    )
+    outcome = locked_execution.result if result is None else result
+    notes = (
+        locked_execution.internal_notes if internal_notes is None
+        else internal_notes
+    )
+
+    if not (work or '').strip():
+        raise RepairExecutionError(
+            'Describe el trabajo realizado antes de finalizar.'
+        )
+    if outcome not in RepairResultCode.values:
+        raise RepairExecutionError('Indica el resultado de la reparación.')
+
+    locked_execution.work_performed = work
+    locked_execution.result = outcome
+    locked_execution.internal_notes = notes
+    locked_execution.completed_at = timezone.now()
+    locked_execution.completed_by = actor
+    locked_execution.save(update_fields=[
+        'work_performed', 'result', 'internal_notes', 'completed_at',
+        'completed_by', 'updated_at',
+    ])
+
+    _apply_transition(
+        locked,
+        to_status=RepairStatusCode.REPAIRED,
+        actor=actor,
+        origin=RepairStatusHistory.ORIGIN_INTERNAL,
+        comment='',
+        request=request,
+    )
+
+    parts = (
+        PartUsage.objects
+        .filter(execution=locked_execution, reversed_at__isnull=True)
+        .aggregate(lines=Sum('quantity'))
+    )
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_repair_completed',
+        target_type='repair_execution',
+        target_id=locked_execution.pk,
+        metadata={
+            'repair_order_id': locked.pk,
+            'number': locked.number,
+            'result': outcome,
+            'parts_consumed': parts['lines'] or 0,
+        },
+        request=request,
+        company=locked.company,
+    )
+    return locked_execution
+
+
+# ---------------------------------------------------------------------------
+# Parts
+# ---------------------------------------------------------------------------
+
+def _usage_fingerprint(*, quote_item_id: int, quantity: int) -> str:
+    """
+    A stable SHA-256 of what was asked for.
+
+    Same shape the POS sale and the native checkout already use: the key says
+    "this is the same attempt", the fingerprint says "and it is asking for the
+    same thing". Replaying with a changed quantity under a reused key is a
+    client bug, and answering it with the original row would silently ignore
+    what the second request actually said.
+    """
+    canonical = json.dumps(
+        {'quote_item': int(quote_item_id), 'quantity': int(quantity)},
+        sort_keys=True, separators=(',', ':'),
+    )
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+def _consumed_for_item(quote_item_id: int) -> int:
+    """Units of one quoted line already consumed and not reversed."""
+    return (
+        PartUsage.objects
+        .filter(quote_item_id=quote_item_id, reversed_at__isnull=True)
+        .aggregate(used=Sum('quantity'))['used'] or 0
+    )
+
+
+def _integral_quantity(value) -> int:
+    """
+    A quoted decimal quantity as whole units, or a refusal.
+
+    `RepairQuoteItem.quantity` is a Decimal because a quote can legitimately
+    price 1.5 hours of labour. `BranchStock.quantity` is an integer with a
+    non-negative check constraint. Half a battery is not representable, and
+    rounding one into somebody's inventory silently is how a shelf ends up
+    disagreeing with a shelf.
+    """
+    amount = Decimal(value)
+    if amount != amount.to_integral_value():
+        raise PartUsageError(
+            'Un repuesto se consume en unidades enteras.'
+        )
+    return int(amount)
+
+
+def part_candidates(repair_order) -> list[dict]:
+    """
+    The parts this repair MAY consume, and how many are left to consume.
+
+    A service-shaped answer, not an inventory one. It names only the `part`
+    lines of the approved quote, and for each the number still outstanding and
+    what the order's own branch happens to hold. It does NOT expose the Kardex,
+    costs, other branches, or anything about the catalogue beyond the line the
+    customer already saw — a technician needs `service.repair.manage`, never
+    `inventory.view`, and this is why that is honest rather than a loophole.
+    """
+    quote = approved_quote(repair_order)
+    if quote is None:
+        return []
+
+    items = list(
+        quote.items
+        .filter(item_type=RepairQuoteItem.TYPE_PART, product__isnull=False)
+        .select_related('product')
+        .order_by('sort_order', 'pk')
+    )
+    if not items:
+        return []
+
+    on_hand = {
+        row.product_id: row.quantity
+        for row in BranchStock.objects.filter(
+            branch_id=repair_order.branch_id,
+            product_id__in=[i.product_id for i in items],
+        )
+    }
+
+    rows = []
+    for item in items:
+        try:
+            approved_units = _integral_quantity(item.quantity)
+        except PartUsageError:
+            # A fractional PART line cannot be consumed, but it must not hide
+            # the rest of the list. It is offered with nothing outstanding and
+            # the reason attached.
+            approved_units = 0
+        used = _consumed_for_item(item.pk)
+        rows.append({
+            'quote_item_id': item.pk,
+            'product_id': item.product_id,
+            'description': item.description,
+            'approved_quantity': approved_units,
+            'used_quantity': used,
+            'outstanding_quantity': max(approved_units - used, 0),
+            'available_in_branch': on_hand.get(item.product_id, 0),
+        })
+    return rows
+
+
+def record_part_usage(
+    *, repair_order, quote_item, quantity, idempotency_key='',
+    actor=None, request=None,
+):
+    """
+    Book ONE approved part out of the order's OWN branch. The heart of M10.
+
+    This wrapper is NOT the transaction — `_record_part_usage` is. It exists for
+    exactly one case: two callers racing the same idempotency key. The loser's
+    INSERT fails, its whole transaction rolls back (taking its stock movement
+    with it), and only then is it safe to hand back the row the winner wrote.
+    """
+    key = (idempotency_key or '').strip()
+    try:
+        return _record_part_usage(
+            repair_order=repair_order, quote_item=quote_item, quantity=quantity,
+            idempotency_key=key, actor=actor, request=request,
+        )
+    except _PartUsageRaceLost:
+        winner = (
+            PartUsage.objects
+            .filter(company_id=repair_order.company_id, idempotency_key=key)
+            .first()
+        )
+        if winner is None:
+            raise PartUsageError('No se pudo registrar el consumo.') from None
+        expected = _usage_fingerprint(
+            quote_item_id=quote_item.pk, quantity=int(quantity),
+        )
+        if winner.request_fingerprint != expected:
+            raise IdempotencyConflict(
+                'Esa clave ya se usó para un consumo diferente.'
+            ) from None
+        return winner
+
+
+@transaction.atomic
+def _record_part_usage(
+    *, repair_order, quote_item, quantity, idempotency_key='',
+    actor=None, request=None,
+):
+    """
+    The transactional body. See `record_part_usage` for the wrapper's job.
+
+    LOCK ORDER — RepairOrder → RepairExecution → PartUsage → BranchStock.
+    `BranchStock` is taken last and only by `create_stock_movement`. See the
+    block comment at the top of this section; do not reorder these lines.
+
+    THE BRANCH IS `repair_order.branch` AND THERE IS NO PARAMETER FOR IT. A
+    technician cannot spend another shop's stock: there is no transfer in this
+    flow, so it would be units moving on paper that nobody carried. If the part
+    is elsewhere, the answer is 409 and somebody decides what to do about it.
+
+    THE PART MUST TRACE TO AN APPROVED `part` LINE. Not a product id — a line
+    the customer was quoted and said yes to. An extra part nobody approved goes
+    back through diagnosis and a new quote, which is slower and is the whole
+    difference between a bill and a surprise.
+
+    IDEMPOTENT AT THE DATABASE. The unique constraint decides, not a
+    read-then-write: two tablets retrying the same confirmation are a race the
+    application cannot win in Python. Same key + same request replays the
+    original row; same key + different request is a conflict.
+    """
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+    if locked.status not in WORKABLE_STATES:
+        raise PartUsageError(
+            'Solo se pueden consumir repuestos en una reparación en curso.'
+        )
+
+    execution = open_execution(locked)
+    if execution is None:
+        raise PartUsageError('Esta orden no tiene un trabajo abierto.')
+    locked_execution = (
+        RepairExecution.objects.select_for_update().get(pk=execution.pk)
+    )
+    if locked_execution.completed_at is not None:
+        raise PartUsageError('Este trabajo ya está finalizado.')
+
+    key = (idempotency_key or '').strip()
+    units = int(quantity)
+    if units <= 0:
+        raise PartUsageError('La cantidad debe ser mayor que cero.')
+
+    # --- idempotency FIRST, before any rule that could have moved ---
+    #
+    # A replayed request is answered from the key, not re-judged. Validating
+    # first would fail the retry of a consumption that already succeeded — the
+    # quota it filled is now full BECAUSE of it — and report the retry as
+    # "already consumed" instead of handing back what happened. That reads as a
+    # bug to a technician who tapped once and lost a connection.
+    fingerprint = _usage_fingerprint(quote_item_id=quote_item.pk, quantity=units)
+    if key:
+        existing = (
+            PartUsage.objects
+            .filter(company_id=locked.company_id, idempotency_key=key)
+            .first()
+        )
+        if existing is not None:
+            if existing.request_fingerprint != fingerprint:
+                raise IdempotencyConflict(
+                    'Esa clave ya se usó para un consumo diferente.'
+                )
+            return existing
+
+    # --- the line must belong to the approved quote of THIS order ---
+    quote = approved_quote(locked)
+    if quote is None:
+        raise PartUsageError('No hay una cotización aprobada para esta orden.')
+    if quote_item.quote_id != quote.pk:
+        raise PartUsageError(
+            'Ese repuesto no pertenece a la cotización aprobada de esta orden.'
+        )
+    if quote_item.item_type != RepairQuoteItem.TYPE_PART:
+        raise PartUsageError('Esa línea de la cotización no es un repuesto.')
+    if quote_item.product_id is None:
+        raise PartUsageError(
+            'Esa línea no está asociada a un producto del inventario.'
+        )
+    product = quote_item.product
+    if product.company_id != locked.company_id:
+        raise PartUsageError('El producto no pertenece a esta empresa.')
+
+    approved_units = _integral_quantity(quote_item.quantity)
+    already = _consumed_for_item(quote_item.pk)
+    if already + units > approved_units:
+        raise PartUsageError(
+            f'La cotización aprobó {approved_units} unidad(es) de '
+            f'"{quote_item.description}" y ya se consumieron {already}.'
+        )
+
+    # --- stock. The ONE writer, taken last. ---
+    try:
+        movement = inventory_services.create_stock_movement(
+            branch=locked.branch,
+            product_id=product.pk,
+            movement_type=StockMovement.SERVICE_EXIT,
+            quantity=units,
+            reason=f'Reparación {locked.number}',
+            actor=actor,
+            reference_type='repair_order',
+            reference_id=str(locked.pk),
+            metadata={
+                'repair_order_number': locked.number,
+                'quote_item_id': quote_item.pk,
+                'execution_id': locked_execution.pk,
+            },
+        )
+    except inventory_services.InsufficientStockError as exc:
+        raise StockUnavailableError(str(exc)) from exc
+    except inventory_services.InventoryError as exc:
+        raise PartUsageError(str(exc)) from exc
+
+    usage = PartUsage(
+        company_id=locked.company_id,
+        repair_order=locked,
+        execution=locked_execution,
+        quote_item=quote_item,
+        product=product,
+        branch=locked.branch,
+        quantity=units,
+        stock_movement=movement,
+        description=quote_item.description or product.name,
+        actor=actor,
+        idempotency_key=key,
+        request_fingerprint=fingerprint if key else '',
+    )
+    try:
+        # Its own savepoint: an IntegrityError marks the enclosing transaction
+        # for rollback, and querying inside it afterwards raises
+        # TransactionManagementError instead of answering. Same shape as the
+        # checkout's recovery path.
+        with transaction.atomic():
+            usage.save()
+    except IntegrityError:
+        if not key:
+            raise
+        # Somebody else committed this key between our pre-check and our
+        # INSERT. Unwind — the wrapper replays theirs.
+        raise _PartUsageRaceLost() from None
+
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_part_used',
+        target_type='part_usage',
+        target_id=usage.pk,
+        metadata={
+            'repair_order_id': locked.pk,
+            'number': locked.number,
+            'product_id': product.pk,
+            'quantity': units,
+            'branch_id': locked.branch_id,
+            'stock_movement_id': movement.pk,
+        },
+        request=request,
+        company=locked.company,
+    )
+    return usage
+
+
+@transaction.atomic
+def reverse_part_usage(*, usage, reason='', actor=None, request=None):
+    """
+    Undo a consumption by COMPENSATING it. Never by deleting it.
+
+    WHAT THIS IS FOR: a technician recorded the wrong part, or the wrong
+    number of them, and catches it before finishing. The original row and its
+    original movement stay exactly as written; a second movement puts the units
+    back and this row is stamped with when and by whom.
+
+    WHAT THIS IS NOT FOR: getting a fitted battery back onto a shelf after the
+    job is done. Once the execution is complete the usage is frozen — a
+    completed repair's parts are evidence, and a shop that can quietly un-consume
+    them can quietly change what a customer was charged for. Returns after
+    completion are a real business need and they need their own phase, with a
+    physical inspection step that does not exist yet.
+
+    IDEMPOTENT: reversing twice returns the same row. It does not put the units
+    back a second time, and it does not raise — a double tap on "deshacer" is
+    not an error worth a dialog.
+    """
+    locked_order = RepairOrder.objects.select_for_update().get(
+        pk=usage.repair_order_id,
+    )
+    locked_execution = RepairExecution.objects.select_for_update().get(
+        pk=usage.execution_id,
+    )
+    locked_usage = PartUsage.objects.select_for_update().get(pk=usage.pk)
+
+    if locked_usage.reversed_at is not None:
+        return locked_usage
+
+    if locked_execution.completed_at is not None:
+        raise PartUsageError(
+            'Un repuesto de un trabajo finalizado no se puede revertir.'
+        )
+    if locked_order.status not in WORKABLE_STATES:
+        raise PartUsageError(
+            'Solo se pueden revertir repuestos de una reparación en curso.'
+        )
+
+    movement = inventory_services.create_stock_movement(
+        branch=locked_usage.branch,
+        product_id=locked_usage.product_id,
+        movement_type=StockMovement.SERVICE_RETURN,
+        quantity=locked_usage.quantity,
+        reason=(reason or '').strip() or f'Reverso · reparación {locked_order.number}',
+        actor=actor,
+        reference_type='repair_order',
+        reference_id=str(locked_order.pk),
+        metadata={
+            'repair_order_number': locked_order.number,
+            'reverses_part_usage_id': locked_usage.pk,
+            'reverses_stock_movement_id': locked_usage.stock_movement_id,
+        },
+    )
+
+    locked_usage.reversed_at = timezone.now()
+    locked_usage.reversed_by = actor
+    locked_usage.reversal_movement = movement
+    locked_usage.reversal_reason = (reason or '')[:300]
+    locked_usage.save(update_fields=[
+        'reversed_at', 'reversed_by', 'reversal_movement', 'reversal_reason',
+    ])
+
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_part_usage_reversed',
+        target_type='part_usage',
+        target_id=locked_usage.pk,
+        metadata={
+            'repair_order_id': locked_order.pk,
+            'number': locked_order.number,
+            'product_id': locked_usage.product_id,
+            'quantity': locked_usage.quantity,
+            'stock_movement_id': movement.pk,
+        },
+        request=request,
+        company=locked_order.company,
+    )
+    return locked_usage
+
+
+def part_usages_for(repair_order):
+    """Every part booked against this order, newest first, reversals included."""
+    return (
+        repair_order.part_usages
+        .select_related('product', 'quote_item', 'actor', 'reversed_by')
+        .all()
+    )

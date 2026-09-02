@@ -20,11 +20,14 @@ from rest_framework import serializers
 
 from .models import (
     Device,
+    PartUsage,
     RepairDiagnostic,
+    RepairExecution,
     RepairOrder,
     RepairQuote,
     RepairQuoteDecision,
     RepairQuoteItem,
+    RepairResultCode,
     RepairStatusHistory,
     RepairStatusSetting,
     TechnicianAssignment,
@@ -682,3 +685,188 @@ class V1CustomerQuoteDecisionSerializer(serializers.Serializer):
     #                                         endpoint may record "approved by
     #                                         phone"; it will have its own
     #                                         authority, not a string in a body.
+
+
+# ---------------------------------------------------------------------------
+# M10 / BR-005C — execution and parts. INTERNAL ONLY.
+# ---------------------------------------------------------------------------
+#
+# There is deliberately no customer counterpart to anything below. A customer
+# learns that their device is `in_repair` from the status and its tenant label,
+# which they already receive; they do not learn which battery went in, what it
+# cost the shop, which shelf it came off or who fitted it. The approved quote
+# is what they were told and what they agreed to, and M9 already shows them
+# that.
+#
+# The rule is structural, not a habit: `V1CustomerRepairDetailSerializer` is a
+# closed allowlist with `read_only_fields = fields`, and nothing here is added
+# to it.
+
+
+class V1ServicePartUsageSerializer(serializers.ModelSerializer):
+    """One part booked against a repair, and its reversal if it has one."""
+
+    product_id = serializers.IntegerField(read_only=True)
+    quote_item_id = serializers.IntegerField(read_only=True)
+    stock_movement_id = serializers.IntegerField(read_only=True)
+    actor_name = serializers.SerializerMethodField()
+    reversed_by_name = serializers.SerializerMethodField()
+    is_reversed = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = PartUsage
+        fields = (
+            'id', 'quote_item_id', 'product_id', 'description', 'quantity',
+            'stock_movement_id', 'actor_name', 'created_at',
+            'is_reversed', 'reversed_at', 'reversed_by_name', 'reversal_reason',
+        )
+        read_only_fields = fields
+
+    # `branch` is absent because there is only ever one answer — the order's —
+    # and a field that can only hold one value invites a client to send it.
+    # `company` likewise. `idempotency_key` and `request_fingerprint` are the
+    # caller's own bookkeeping and echoing them back serves nothing.
+
+    def get_actor_name(self, obj):
+        user = obj.actor
+        return user.get_full_name() or user.username if user else ''
+
+    def get_reversed_by_name(self, obj):
+        user = obj.reversed_by
+        return user.get_full_name() or user.username if user else ''
+
+
+class V1ServiceExecutionSerializer(serializers.ModelSerializer):
+    """The bench record, with the parts it consumed."""
+
+    parts = V1ServicePartUsageSerializer(source='part_usages', many=True, read_only=True)
+    result_label = serializers.SerializerMethodField()
+    started_by_name = serializers.SerializerMethodField()
+    completed_by_name = serializers.SerializerMethodField()
+    is_completed = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = RepairExecution
+        fields = (
+            'id', 'started_at', 'completed_at', 'is_completed',
+            'work_performed', 'result', 'result_label', 'internal_notes',
+            'started_by_name', 'completed_by_name', 'parts',
+            'created_at', 'updated_at',
+        )
+        read_only_fields = fields
+
+    def get_result_label(self, obj):
+        return obj.get_result_display() if obj.result else ''
+
+    def get_started_by_name(self, obj):
+        user = obj.started_by
+        return user.get_full_name() or user.username if user else ''
+
+    def get_completed_by_name(self, obj):
+        user = obj.completed_by
+        return user.get_full_name() or user.username if user else ''
+
+
+class V1ServiceExecutionWriteSerializer(serializers.Serializer):
+    """
+    What a technician may change on an OPEN execution. Three fields.
+
+    Absent on purpose: `started_at`, `started_by`, `completed_at`,
+    `completed_by`, `company`, `repair_order`, `status`. The server knows when
+    work began, who is calling, and what the order's state is; a bench clock
+    somebody can set is not evidence, and having a field is being able to fill
+    it in.
+    """
+
+    work_performed = serializers.CharField(
+        max_length=4000, required=False, allow_blank=True,
+    )
+    result = serializers.ChoiceField(
+        choices=RepairResultCode.choices, required=False, allow_blank=True,
+    )
+    internal_notes = serializers.CharField(
+        max_length=2000, required=False, allow_blank=True,
+    )
+
+
+class V1ServiceExecutionCompleteSerializer(serializers.Serializer):
+    """
+    Finishing. Optional overrides for what was already typed, and nothing else.
+
+    `result` is required here even though it is optional on the draft: a repair
+    that ended has an outcome, and an unfinished one does not need to pretend.
+    """
+
+    work_performed = serializers.CharField(
+        max_length=4000, required=False, allow_blank=False,
+    )
+    result = serializers.ChoiceField(choices=RepairResultCode.choices)
+    internal_notes = serializers.CharField(
+        max_length=2000, required=False, allow_blank=True,
+    )
+
+
+class V1ServicePausePartsSerializer(serializers.Serializer):
+    """Why the bench stopped. One optional line, for the timeline."""
+
+    comment = serializers.CharField(
+        max_length=1000, required=False, allow_blank=True,
+    )
+
+
+class V1ServicePartUsageWriteSerializer(serializers.Serializer):
+    """
+    Consuming a part: WHICH APPROVED LINE, and HOW MANY. Nothing else.
+
+    Absent on purpose and each for its own reason:
+
+    · `branch_id` — the branch is the order's. There is no transfer in this
+      flow, so consuming another shop's stock would move units on paper that
+      nobody carried.
+    · `product_id` — the product is the quoted line's. Accepting one would let
+      a caller book a part the customer never approved against a line they did.
+    · `unit_price`, `unit_cost`, `total` — the money conversation happened once,
+      on the quote, and this does not reopen it.
+    · `stock_before`, `stock_after`, `movement_type` — the inventory module
+      computes those; a client that could state them could state a shelf that
+      does not exist.
+    · `company_id`, `actor` — the server knows who is calling.
+
+    `idempotency_key` IS accepted, because only the client can mint it: it has
+    to survive the client's own retry, and a key the server generates is a key
+    that changes on every attempt.
+    """
+
+    quote_item_id = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(min_value=1)
+    idempotency_key = serializers.CharField(
+        max_length=64, required=False, allow_blank=True,
+    )
+
+
+class V1ServicePartReversalSerializer(serializers.Serializer):
+    """Undoing a consumption. A reason, for whoever reads the Kardex later."""
+
+    reason = serializers.CharField(
+        max_length=300, required=False, allow_blank=True,
+    )
+
+
+class V1ServicePartCandidateSerializer(serializers.Serializer):
+    """
+    A part this repair may still consume. NOT an inventory row.
+
+    It carries the approved line, how much of it is left, and how many the
+    order's own branch holds. It does not carry cost, other branches, the
+    Kardex, or anything about the catalogue the customer was not already shown
+    — which is why this surface needs `service.repair.manage` and never
+    `inventory.view`.
+    """
+
+    quote_item_id = serializers.IntegerField(read_only=True)
+    product_id = serializers.IntegerField(read_only=True)
+    description = serializers.CharField(read_only=True)
+    approved_quantity = serializers.IntegerField(read_only=True)
+    used_quantity = serializers.IntegerField(read_only=True)
+    outstanding_quantity = serializers.IntegerField(read_only=True)
+    available_in_branch = serializers.IntegerField(read_only=True)

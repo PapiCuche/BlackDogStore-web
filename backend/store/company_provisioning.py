@@ -136,6 +136,13 @@ _TECHNICIAN_CAPS = (
     # technical-service role that can receive a device and not say what is wrong
     # with it is half a role.
     'service.diagnostic.manage',
+    # M10. And repairing it is the other half. This is the first capability in
+    # the preset that spends stock — but only inside a repair whose quote a
+    # customer approved, only from that repair's own branch, and only against a
+    # line somebody was quoted. It is emphatically NOT `inventory.adjust`, which
+    # this role still does not have and must not acquire by implication: a
+    # technician may fit an approved part, not correct a shelf.
+    'service.repair.manage',
 )
 
 # (name, slug, description, capabilities)
@@ -181,6 +188,14 @@ PRESET_REPAIR_STATUSES: tuple[tuple[str, str, bool, int], ...] = (
     # would be a strange default for a shop to inherit.
     ('approved', 'Aprobado', True, 40),
     ('rejected', 'Rechazado', True, 50),
+    # M10 — the bench. All three visible by default: somebody whose device is
+    # in pieces wants to know it is being worked on, and a shop that goes quiet
+    # for a week because a part is on order looks idle rather than blocked.
+    # `repaired` says the technician finished and NOTHING ELSE — not checked,
+    # not ready to collect, not paid — so the default label says exactly that.
+    ('in_repair', 'En reparación', True, 60),
+    ('waiting_parts', 'Esperando repuestos', True, 70),
+    ('repaired', 'Reparado', True, 80),
     ('cancelled', 'Cancelado', True, 90),
 )
 
