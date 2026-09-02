@@ -95,10 +95,52 @@ PRESET_AREAS: tuple[tuple[str, str, int], ...] = (
 # thereby need to see the company's turnover, its best branches or how their
 # colleagues are performing. A business that wants that grants it — one
 # checkbox, and a decision they get to make rather than inherit.
+# M11 — VENTAS ES EL MOSTRADOR: vender, cobrar y RECIBIR.
+#
+# The product decision is that one counter role covers sales, cashier and
+# reception, rather than three presets a small shop would have to combine by
+# hand. The capability catalogue stays granular underneath, so splitting them
+# later is a preset change and not a redesign.
+#
+# THE PART THAT REQUIRED CARE. Receiving a device into the workshop must NOT
+# arrive by handing over `service.manage`, which is the whole technical-service
+# module. It does not have to: every endpoint reception needs is already behind
+# its own capability, and none of them asks for `service.manage`.
+#
+#   search the client        service.customers.view
+#   register a new client    service.customers.manage
+#   record the device        service.devices.view / .manage
+#   open the intake order    service.orders.create
+#   follow it for the client service.orders.view
+#
+# What Ventas deliberately does NOT get, and why:
+#
+#   service.orders.manage     moving an order through the workshop, assigning
+#                             technicians — that is running the bench, not
+#                             receiving at the counter
+#   service.diagnostic.manage saying what is wrong with a device
+#   service.repair.manage     fixing it, and spending stock doing so
+#   service.manage            the blanket permission this list exists to avoid
+#   inventory.*               a counter that can sell is not a counter that can
+#                             correct the shelf
+#   sales.discounts.apply     deciding what a thing costs is a supervisor's
+#                             call; ringing it up is not
+#   sales.analytics.view      ringing up a cable does not require seeing the
+#                             company's turnover
+#
+# `service.customers.manage` IS granted here while the technician preset still
+# only gets `.view`, and the asymmetry is deliberate: the person at the counter
+# is the one who takes a new customer's details; the person at the bench should
+# not be editing client files.
 _SALES_CAPS = (
     'company.view', 'products.view', 'reports.view',
+    # Comercial y caja
     'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage',
     'sales.pos.use',
+    # Recepción técnica
+    'service.customers.view', 'service.customers.manage',
+    'service.devices.view', 'service.devices.manage',
+    'service.orders.create', 'service.orders.view',
 )
 _INVENTORY_CAPS = (
     'company.view', 'products.view', 'reports.view',
@@ -145,6 +187,31 @@ _TECHNICIAN_CAPS = (
     'service.repair.manage',
 )
 
+# M11 — SUPERVISOR TÉCNICO. Everything the technician preset has, plus running
+# the bench rather than only working at it.
+#
+# Modelled ENTIRELY from capabilities that already exist: this role needed no
+# new capability, no new endpoint and no new concept, which is the test the
+# phase set for whether it should exist at all. `service.orders.manage` is the
+# difference that matters — transitions and assignment, i.e. deciding who works
+# on what and when an order moves on.
+#
+# It gets `service.customers.manage` because a supervisor corrects the intake
+# record when the counter got it wrong.
+#
+# It does NOT get SaaS administration: no `roles.manage`, no
+# `memberships.manage`, no `settings.manage`, no `company.manage`. Supervising
+# a workshop is not administering a company, and a supervisor who could rewrite
+# roles could give themselves anything.
+#
+# `inventory.adjust` is also withheld. A supervisor approves the repair that
+# spends a part; correcting the shelf is the inventory role's job.
+_SERVICE_SUPERVISOR_CAPS = _TECHNICIAN_CAPS + (
+    'reports.view',
+    'service.customers.manage',
+    'service.orders.manage',
+)
+
 # (name, slug, description, capabilities)
 PRESET_ROLES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ('Administrador', 'administrador',
@@ -159,6 +226,9 @@ PRESET_ROLES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ('Servicio Técnico', 'servicio-tecnico',
      'Recepción de equipos, órdenes de servicio y su seguimiento.',
      _TECHNICIAN_CAPS),
+    ('Supervisor Técnico', 'supervisor-tecnico',
+     'Supervisión del taller: órdenes, asignación, diagnóstico y reparación.',
+     _SERVICE_SUPERVISOR_CAPS),
 )
 
 # A preset must never reference a capability the catalogue does not offer, or one
