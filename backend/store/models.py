@@ -1655,6 +1655,20 @@ class MembershipRoleAssignment(models.Model):
                 fields=['membership', 'role', 'area'],
                 name='unique_role_assignment_per_area',
             ),
+            # M11 — AND NOT TWICE WITH NO AREA AT ALL, which is the common case.
+            #
+            # The constraint above does not cover it. In SQL two NULLs are not
+            # equal, so `(membership, role, NULL)` never collides with itself
+            # and the database happily accepted two identical assignments —
+            # measured, not assumed. The only thing standing in the way was a
+            # `.exists()` check in the view, which is a read before a write and
+            # therefore something two concurrent requests both walk past. P0-E
+            # settled that argument for cart lines; this is the same shape.
+            models.UniqueConstraint(
+                fields=['membership', 'role'],
+                condition=models.Q(area__isnull=True),
+                name='unique_role_assignment_without_area',
+            ),
         ]
         indexes = [
             models.Index(fields=['membership', 'is_active']),

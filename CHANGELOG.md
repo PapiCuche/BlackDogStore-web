@@ -9,6 +9,163 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12A — Acceso real del técnico y «Mis reparaciones»
+
+**Estado: IMPLEMENTADO.** Migración **0057**.
+
+### El técnico entraba y no había taller
+
+Medido antes de escribir nada: una membresía con `role='technician'` y sin rol
+personalizado resuelve exactamente
+
+```
+company.view, service.manage
+```
+
+y cada módulo de la consola pide `service.orders.view`,
+`service.orders.create`, `service.diagnostic.manage`, `service.repair.manage`
+o `service.quality.manage`. Ninguna de las cuales tiene. Así que no faltaban
+algunas pantallas: faltaban todas, y `/admin/service` lo rechazaba.
+
+**No es un fallo de capacidades ni de la UI.** `LEGACY_ROLE_CAPABILITIES` se
+escribió en la Fase 2A, cuando `service.manage` **era** el módulo de servicio
+técnico. M8, M9, M10 y calidad lo descompusieron en nueve capacidades
+granulares, y la matriz heredada nunca se enteró de la descomposición.
+`service.manage` sigue existiendo y sigue resolviendo — simplemente ya no abre
+nada por sí solo.
+
+Estos técnicos no fueron privados de autoridad por nadie. Los estrechó una
+refactorización.
+
+### Por qué migra en vez de ampliar la matriz
+
+Añadir los nueve códigos a `LEGACY_ROLE_CAPABILITIES['technician']` arreglaría
+el síntoma en una línea y sería el arreglo equivocado: esa matriz es un puente
+para membresías que nadie ha modelado todavía, y ampliarla entrega capacidades
+nuevas a todos los técnicos heredados de todas las empresas, para siempre, sin
+registro y sin que una empresa pueda declinar. M11 la congeló justo por eso.
+
+Asignarles el rol `Servicio Técnico` **de su propia empresa** hace que la
+autoridad llegue por el mecanismo construido para transportarla: una fila que
+se ve en la consola, se revoca y se estrecha. Y es lo mismo que recibe un
+técnico contratado mañana, así que elimina una diferencia en vez de crear una.
+
+**Es de ida y eso es el punto.** Crear la asignación hace que
+`has_custom_role_history()` sea cierto, así que esas membresías ya no vuelven
+nunca a la matriz heredada — la regla de M11 funcionando como se diseñó.
+
+La migración se niega a tocar: membresías con cualquier asignación previa
+(su empresa ya decidió), empresas que personalizaron el rol (su definición
+manda), membresías inactivas, y cualquier otro rol heredado — sólo el módulo
+de servicio se descompuso.
+
+### «Mis reparaciones»
+
+`mine=true`, no `technician_id=<mi id>`. El técnico no necesita saber su propio
+id para ver su propio trabajo, y un filtro que acepta un id es un filtro que
+alguien puede apuntar a un compañero. Los supervisores siguen usando
+`technician_id`, porque mirar la cola de otro **es** su trabajo.
+
+La consola abre en «Mis reparaciones» con «Todo el taller» a un clic: supervisar
+también es parte del trabajo, y ocultarlo sería otra forma del mismo error.
+
+### Lo que M12A NO hizo, y por qué
+
+`service.orders.manage` concede a la vez **avanzar** una orden y **asignar**
+técnicos. La decisión de producto deseada es que un técnico avance lo suyo y
+que asignar sea de supervisión. Separarlo toca endpoints, presets, migraciones,
+frontend y tests de cuatro fases anteriores; queda como **PROPUESTA** con el
+análisis hecho, no colado dentro de una subfase que no lo planificó.
+
+---
+
+## M11 RBAC · M11.1 — Roles múltiples, revocación segura y lectura protegida
+
+**Estado: IMPLEMENTADO.** Migraciones **0047**, **0048**, **0049** y **0051**.
+
+> Nota de nombres: el ciclo de control de calidad, más abajo, también se publicó
+> como «M11». Son trabajos distintos que coincidieron en numeración; esta entrada
+> cubre RBAC.
+
+### Quitar autoridad devolvía autoridad
+
+`resolve_capabilities()` preguntaba «¿tiene asignaciones activas?» y, si no,
+caía a la matriz heredada. Pero revocar es `is_active=False`, no borrar. Así que
+a alguien con rol heredado `admin` y un único rol personalizado le bastaba con
+que se lo quitaran para **recuperar todas las capacidades de la empresa**:
+retirarle su único permiso lo ascendía a administrador.
+
+La pregunta correcta no es «cuántos roles activos tiene» sino «¿esta empresa ha
+expresado alguna vez su autoridad mediante RBAC?». Una vez que lo ha hecho, la
+matriz heredada ya no habla de esa persona y cero roles significa cero
+capacidades — un estado válido, porque un sistema donde no se puede revocar el
+último rol es un sistema donde nadie está revocado de verdad.
+
+### Pertenecer a la empresa no era autorización de lectura
+
+Dieciséis endpoints GET sólo exigían membresía activa: un técnico podía enumerar
+la plantilla completa y el mapa de autoridad de la empresa. Ahora piden
+`memberships.view` o `memberships.manage` —capacidad que ya existía— y responden
+**404, no 403**: quien no puede leer esa superficie tampoco debería averiguar qué
+ids hay en ella.
+
+### Ventas es el mostrador
+
+Vender, cobrar y **recibir**. Ningún endpoint de recepción exige
+`service.manage`, así que no hizo falta conceder el módulo entero. Ventas sigue
+sin diagnóstico, sin reparación, sin `service.orders.manage`, sin inventario,
+sin descuentos y sin analítica. **La matriz legacy no crece**: responde por
+operadores pre-SaaS y darles acceso al taller porque el software se publicó es
+autoridad que nadie decidió.
+
+### Duplicados: dos correcciones, no una
+
+`UniqueConstraint(membership, role, area)` no cubría el caso normal — `area` es
+nullable y dos NULL nunca son iguales, así que la base aceptaba dos asignaciones
+idénticas. Índice único parcial `WHERE area IS NULL`.
+
+**M11.1 corrigió la preparación de datos.** La migración de consolidación sólo
+desactivaba las filas sobrantes, y la constraint no menciona `is_active`: dos
+filas colisionan estén activas o no. Aplicada contra una base con duplicados,
+`AddConstraint` fallaba. Ahora consolida de verdad —una fila por asignación
+lógica, la más antigua, activa si alguna lo estaba— y hay un test de migración
+que ejecuta la secuencia con datos duplicados reales.
+
+### Una asignación lógica es una fila
+
+Quitar y reactivar reutilizan **la misma fila**, no crean una nueva. La consola
+ofrece «Reactivar» sobre las históricas y el selector propone reactivar en vez
+de intentar un alta que la base rechazaría. Reactivar es conceder, así que
+revalida delegación.
+
+La carrera del alta (`.exists()` antes de `create()`) ya no puede dar 500: la
+violación conocida se traduce a un 400 explicado, y cualquier otro
+`IntegrityError` se re-lanza intacto. Se reconocen las dos formas del mensaje —
+PostgreSQL nombra la constraint, SQLite nombra las columnas.
+
+### Tres estados en la consola, no dos
+
+`Legacy` (nunca migrado) · `Custom` (roles activos) · **`Custom sin roles
+activos`**. La tarjeta colapsada mostraba «Legacy: Administrador» a quien ya
+había migrado y se había quedado sin roles, insinuando una autoridad que el
+backend no le da.
+
+### Supervisor Técnico sí; Jefe de sucursal no
+
+Supervisor Técnico se modela entero con capacidades existentes. Jefe de sucursal
+queda en **PROPUESTA**: el alcance por sucursal vive en la membresía, no en el
+rol, así que un `CompanyRole` no puede exigir que sea obligatorio y el preset
+daría una garantía que el modelo no sostiene.
+
+### Fuente única de autorización
+
+`CompanyContext.can()` responde desde la matriz heredada y sería un riesgo de
+doble autoridad si algo la usara. No la usa nada — cero llamadores en runtime.
+No se reescribe código dormido; un test falla si alguien lo conecta.
+Clasificada **OBSOLETO**.
+
+---
+
 ## M11 / BR-005D — Control de calidad y avance visible para el cliente
 
 **Estado: IMPLEMENTADO.** Migraciones **0048** (esquema), **0049** (estados y

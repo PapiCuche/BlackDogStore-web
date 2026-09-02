@@ -268,12 +268,27 @@ export const fetchServiceContext = (slug: string) =>
 
 export function fetchServiceOrders(
   slug: string,
-  params: { status?: string; branch_id?: number | null; search?: string; page?: number } = {},
+  params: {
+    status?: string;
+    branch_id?: number | null;
+    search?: string;
+    page?: number;
+    /**
+     * "Mis reparaciones" — the caller's own queue.
+     *
+     * A flag, not an id: the server already knows who is asking, and a filter
+     * that took an id would be one somebody could point at a colleague.
+     * Supervisors look at other queues through `technician_id`, which is a
+     * different question and is authorised as one.
+     */
+    mine?: boolean;
+  } = {},
 ) {
   const qs = new URLSearchParams();
   if (params.status) qs.set("status", params.status);
   if (params.branch_id) qs.set("branch_id", String(params.branch_id));
   if (params.search) qs.set("search", params.search);
+  if (params.mine) qs.set("mine", "true");
   if (params.page && params.page > 1) qs.set("page", String(params.page));
   const query = qs.toString();
   return get<Page<ServiceOrderRow>>(`${base(slug)}/orders/${query ? `?${query}` : ""}`);

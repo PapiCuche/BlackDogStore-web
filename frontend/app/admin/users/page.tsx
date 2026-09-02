@@ -1,172 +1,536 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { AdminGuard } from "../components/AdminGuard";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
-import { UsersTable } from "../components/UsersTable";
-import { BranchAccessPanel } from "../components/BranchAccessPanel";
 import {
-  fetchAdminUsers,
-  changeUserRole,
-  ALL_ROLES,
-  type AdminUser,
-  type PaginatedResponse,
-} from "../../lib/admin";
-import type { AuthUser } from "../../lib/auth";
+  InternalControlGuard,
+  type InternalContext,
+} from "../components/InternalControlGuard";
+import { fetchWithAuth } from "../../lib/auth";
+import { API_BASE } from "../../lib/api";
 
-function Pagination({
-  page,
-  pageSize,
-  count,
-  onPage,
-}: {
-  page: number;
-  pageSize: number;
-  count: number;
-  onPage: (p: number) => void;
-}) {
-  const totalPages = Math.max(1, Math.ceil(count / pageSize));
-  if (totalPages <= 1) return null;
+type Branch = { id: number; name: string; is_active: boolean };
+type Membership = {
+  id: number;
+  username: string;
+  company: number;
+  company_name: string;
+  role_label: string;
+  branch_access_mode: "all" | "selected";
+  branch_access: Branch[];
+  is_active: boolean;
+};
+type Role = {
+  id: number;
+  name: string;
+  capabilities: string[];
+  is_active: boolean;
+};
+type Area = { id: number; name: string; is_active: boolean };
+type Assignment = {
+  id: number;
+  membership: number;
+  role: number;
+  role_name: string;
+  // The serializer returns the area id as well as its name; the id is what
+  // decides whether a role is already held in this exact slot.
+  area: number | null;
+  area_name: string | null;
+  capabilities: string[];
+  is_active: boolean;
+};
+
+async function readDetail(res: Response, fallback: string) {
+  const body = await res.json().catch(() => null);
+  return body?.detail ? String(body.detail) : fallback;
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetchWithAuth(`${API_BASE}${path}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar la información."));
+  return res.json();
+}
+
+async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetchWithAuth(`${API_BASE}${path}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo guardar el acceso."));
+  return res.json();
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetchWithAuth(`${API_BASE}${path}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo asignar el rol."));
+  return res.json();
+}
+
+async function deleteJson(path: string): Promise<void> {
+  // The server answers 204 with no body, so this returns nothing rather than
+  // trying to parse one.
+  const res = await fetchWithAuth(`${API_BASE}${path}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo quitar el rol."));
+}
+
+function PermissionSummary({ codes }: { codes: string[] }) {
+  const unique = Array.from(new Set(codes)).sort();
+  if (!unique.length) return <span className="text-xs text-zinc-600">Sin permisos efectivos</span>;
   return (
-    <div className="mt-4 flex items-center justify-between text-xs text-zinc-500">
-      <span>
-        Página {page} de {totalPages} ({count} usuarios)
-      </span>
-      <div className="flex gap-2">
-        <button
-          onClick={() => onPage(page - 1)}
-          disabled={page <= 1}
-          className="rounded border border-white/10 px-3 py-1.5 transition hover:border-white/20 hover:text-white disabled:opacity-30"
-        >
-          ← Anterior
-        </button>
-        <button
-          onClick={() => onPage(page + 1)}
-          disabled={page >= totalPages}
-          className="rounded border border-white/10 px-3 py-1.5 transition hover:border-white/20 hover:text-white disabled:opacity-30"
-        >
-          Siguiente →
-        </button>
-      </div>
+    <div className="flex flex-wrap gap-1.5">
+      {unique.slice(0, 4).map((code) => (
+        <code key={code} className="rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-1 text-[10px] text-zinc-500">
+          {code}
+        </code>
+      ))}
+      {unique.length > 4 ? (
+        <span className="rounded-md border border-white/[0.07] px-2 py-1 text-[10px] text-zinc-600">
+          +{unique.length - 4}
+        </span>
+      ) : null}
     </div>
   );
 }
 
-function UsersPageContent({ user }: { user: AuthUser }) {
-  const [data, setData] = useState<PaginatedResponse<AdminUser> | null>(null);
+function MemberCard({
+  membership,
+  assignments,
+  roles,
+  areas,
+  branches,
+  canManage,
+  onChanged,
+}: {
+  membership: Membership;
+  assignments: Assignment[];
+  roles: Role[];
+  areas: Area[];
+  branches: Branch[];
+  canManage: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const [search, setSearch] = useState("");
-  const [role, setRole] = useState("");
-  const [page, setPage] = useState(1);
-  const PAGE_SIZE = 25;
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await fetchAdminUsers({ search, role, page, page_size: PAGE_SIZE });
-      setData(result);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Error al cargar usuarios.");
-    } finally {
-      setLoading(false);
-    }
-  }, [search, role, page]);
+  const [roleId, setRoleId] = useState("");
+  const [areaId, setAreaId] = useState("");
+  const [mode, setMode] = useState<"all" | "selected">(membership.branch_access_mode);
+  const [selectedBranches, setSelectedBranches] = useState<number[]>(membership.branch_access.map((row) => row.id));
 
   useEffect(() => {
-    load();
-  }, [load]);
+    setMode(membership.branch_access_mode);
+    setSelectedBranches(membership.branch_access.map((row) => row.id));
+  }, [membership.branch_access, membership.branch_access_mode]);
 
-  function handleSearch(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setPage(1);
-    load();
+  const activeAssignments = assignments.filter((row) => row.is_active);
+  const effective = activeAssignments.flatMap((row) => row.capabilities);
+
+  // THREE STATES, NAMED ONCE, mirroring exactly what the backend resolves.
+  //
+  // The distinction that matters is between "never migrated" and "migrated and
+  // currently holds nothing". They look identical if you only count ACTIVE
+  // assignments — which is what this console used to do, so somebody stripped
+  // of their last role was labelled "Legacy: Administrador", implying they
+  // still had that authority. They do not: `resolve_capabilities()` returns an
+  // empty set for them, and saying otherwise on screen is the UI contradicting
+  // the system it is a window onto.
+  //
+  // `assignments` holds EVERY row including revoked ones, which is the same
+  // signal `has_custom_role_history()` reads server-side.
+  const accessState: "legacy" | "custom" | "custom-empty" =
+    assignments.length === 0 ? "legacy" : activeAssignments.length > 0 ? "custom" : "custom-empty";
+
+  async function perform(action: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo guardar.");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function handleRoleChange(userId: number, newRole: string) {
-    await changeUserRole(userId, newRole);
-    await load();
+  async function revokeRole(assignmentId: number) {
+    // DELETE is a SOFT disable server-side: the row survives as the audit trail
+    // of who granted what and when. Removing one role never touches the others,
+    // and — since the backend fix — never resurrects the legacy role either.
+    await perform(() => deleteJson(`/admin/membership-role-assignments/${assignmentId}/`));
+  }
+
+  async function reactivateRole(assignmentId: number) {
+    // PATCH, never POST. One logical assignment is ONE row that switches state;
+    // posting a second one would be refused by the database anyway, and if it
+    // were not, it would split this person's history across two records.
+    //
+    // The backend revalidates delegation on reactivation, because reactivating
+    // IS granting. A 403 from there is surfaced as-is rather than worked around.
+    await perform(() => patchJson(`/admin/membership-role-assignments/${assignmentId}/`, {
+      is_active: true,
+    }));
+  }
+
+  /**
+   * The row that already represents this (role, area) slot, active or not.
+   *
+   * Identity is role + area because the model allows the same role in two
+   * different areas — `Técnico / Taller` and `Técnico / Laboratorio` coexist.
+   * What cannot coexist is the same pair twice.
+   */
+  function existingAssignment(roleValue: number, areaValue: number | null) {
+    return assignments.find(
+      (row) => row.role === roleValue && (row.area ?? null) === areaValue,
+    );
+  }
+
+  async function assignRole() {
+    if (!roleId) return;
+    const targetArea = areaId ? Number(areaId) : null;
+    const existing = existingAssignment(Number(roleId), targetArea);
+    if (existing) {
+      // Reuse the historical row instead of creating a second one.
+      if (!existing.is_active) await reactivateRole(existing.id);
+      setRoleId("");
+      setAreaId("");
+      return;
+    }
+    await perform(() => postJson("/admin/membership-role-assignments/", {
+      membership: membership.id,
+      role: Number(roleId),
+      area: targetArea,
+    }));
+    setRoleId("");
+    setAreaId("");
+  }
+
+  async function saveBranches() {
+    await perform(() => patchJson(`/admin/memberships/${membership.id}/`, {
+      branch_access_mode: mode,
+      ...(mode === "selected" ? { branch_access: selectedBranches } : {}),
+    }));
   }
 
   return (
-    <AdminShell user={user}>
-      <div className="space-y-6">
+    <article className="rounded-xl border border-white/[0.07] bg-white/[0.02]">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="grid w-full gap-4 px-5 py-4 text-left lg:grid-cols-[1.1fr_1.2fr_1.5fr_auto] lg:items-center"
+      >
         <div>
-          <h1 className="text-xl font-semibold text-white">Usuarios</h1>
-          <p className="mt-1 text-sm text-zinc-500">
-            Gestión de cuentas, roles y acceso por sucursal.
-          </p>
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-zinc-100">{membership.username}</span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] ${membership.is_active ? "bg-white/[0.06] text-zinc-300" : "bg-red-500/10 text-red-400"}`}>
+              {membership.is_active ? "Activo" : "Inactivo"}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-zinc-600">Membresía #{membership.id}</p>
         </div>
 
-        {/* Filters */}
-        <form
-          onSubmit={handleSearch}
-          className="flex flex-wrap gap-3"
-        >
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar por usuario o email…"
-            className="min-w-[220px] flex-1 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:border-white/20 focus:outline-none"
-          />
-          <select
-            value={role}
-            onChange={(e) => { setRole(e.target.value); setPage(1); }}
-            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-200 focus:border-white/20 focus:outline-none"
-          >
-            <option value="">Todos los roles</option>
-            {ALL_ROLES.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-          <button
-            type="submit"
-            className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:border-white/20 hover:text-white"
-          >
-            Buscar
-          </button>
-        </form>
-
-        {/* Table */}
-        {loading && (
-          <div className="py-12 text-center text-zinc-600">Cargando…</div>
-        )}
-        {error && !loading && (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
-            {error}
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Rol empresarial</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {accessState === "custom" ? activeAssignments.map((assignment) => (
+              <span key={assignment.id} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-300">
+                {assignment.role_name}{assignment.area_name ? ` · ${assignment.area_name}` : ""}
+              </span>
+            )) : accessState === "legacy" ? (
+              <span className="text-xs text-amber-300/80">Rol heredado: {membership.role_label}</span>
+            ) : (
+              <span className="text-xs text-red-300/80">Sin roles activos</span>
+            )}
           </div>
-        )}
-        {data && !loading && (
+        </div>
+
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Permisos</p>
+          <div className="mt-1.5">
+            {accessState === "custom" ? (
+              <PermissionSummary codes={effective} />
+            ) : accessState === "legacy" ? (
+              <span className="text-xs text-zinc-500">Pendiente de migrar a roles configurables.</span>
+            ) : (
+              <span className="text-xs text-red-300/70">Sin permisos efectivos.</span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 lg:justify-end">
+          <span className="text-xs text-zinc-500">
+            {membership.branch_access_mode === "all" ? "Todas las sucursales" : `${membership.branch_access.length} sucursal(es)`}
+          </span>
+          <span className="text-zinc-600">{open ? "−" : "+"}</span>
+        </div>
+      </button>
+
+      {open ? (
+        <div className="border-t border-white/[0.06] px-5 py-5">
+          {accessState === "custom-empty" ? (
+            <div className="mb-5 rounded-lg border border-amber-500/20 bg-amber-500/[0.05] px-4 py-3 text-xs leading-5 text-amber-200/80">
+              <strong>Sin roles activos.</strong> Esta persona no tiene ninguna capacidad en la empresa. No vuelve al rol heredado «{membership.role_label}»: ya usa RBAC configurable, y quitarle el último rol significa exactamente eso.
+            </div>
+          ) : null}
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <section>
+              <h3 className="text-sm font-semibold text-zinc-200">Roles y área</h3>
+              <p className="mt-1 text-xs text-zinc-600">El rol concede autoridad; el área solo organiza al personal.</p>
+
+              <div className="mt-3 space-y-2">
+                {assignments.length ? assignments.map((assignment) => (
+                  <div key={assignment.id} className="rounded-lg border border-white/[0.06] px-3 py-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className={assignment.is_active ? "text-sm text-zinc-200" : "text-sm text-zinc-600 line-through"}>{assignment.role_name}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-zinc-600">{assignment.is_active ? "Activo" : "Histórico"}</span>
+                        {canManage ? (
+                          <button
+                            type="button"
+                            onClick={() => void (assignment.is_active
+                              ? revokeRole(assignment.id)
+                              : reactivateRole(assignment.id))}
+                            disabled={busy}
+                            className={`rounded-md border px-2 py-1 text-[10px] disabled:opacity-40 ${assignment.is_active
+                              ? "border-white/10 text-zinc-400 hover:border-red-500/40 hover:text-red-300"
+                              : "border-emerald-500/25 text-emerald-300/80 hover:border-emerald-400/60 hover:text-emerald-200"}`}
+                          >
+                            {assignment.is_active ? "Quitar" : "Reactivar"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                    <p className="mt-1 text-[11px] text-zinc-600">{assignment.area_name || "Sin área"} · {assignment.capabilities.length} permisos</p>
+                  </div>
+                )) : (
+                  <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.03] px-3 py-3 text-xs leading-5 text-amber-200/70">
+                    Nunca se le asignó un rol empresarial, así que sigue rigiéndose por «{membership.role_label}» del modelo heredado. Asignarle uno lo migra al RBAC configurable — y a partir de ahí el rol heredado deja de contar para siempre.
+                  </div>
+                )}
+              </div>
+
+              {canManage ? (
+                <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                  <select value={roleId} onChange={(event) => setRoleId(event.target.value)} disabled={busy} className="rounded-lg border border-white/[0.08] bg-black/50 px-3 py-2 text-sm text-zinc-300">
+                    <option value="">Elegir rol…</option>
+                    {roles
+                      .filter((role) => role.is_active)
+                      // Se ocultan los que YA están activos en este hueco: no
+                      // hay nada que hacer con ellos. Los que tienen una
+                      // asignación histórica SÍ se ofrecen — elegirlos la
+                      // reactiva en vez de intentar un POST que la base de
+                      // datos rechazaría.
+                      .filter((role) => {
+                        const existing = existingAssignment(role.id, areaId ? Number(areaId) : null);
+                        return !existing || !existing.is_active;
+                      })
+                      .map((role) => {
+                        const existing = existingAssignment(role.id, areaId ? Number(areaId) : null);
+                        return (
+                          <option key={role.id} value={role.id}>
+                            {role.name}{existing ? " · reactivar" : ""}
+                          </option>
+                        );
+                      })}
+                  </select>
+                  <select value={areaId} onChange={(event) => setAreaId(event.target.value)} disabled={busy} className="rounded-lg border border-white/[0.08] bg-black/50 px-3 py-2 text-sm text-zinc-300">
+                    <option value="">Sin área</option>
+                    {areas.filter((area) => area.is_active).map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
+                  </select>
+                  <button type="button" onClick={() => void assignRole()} disabled={busy || !roleId} className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40">
+                    {roleId && existingAssignment(Number(roleId), areaId ? Number(areaId) : null) ? "Reactivar" : "Asignar"}
+                  </button>
+                </div>
+              ) : null}
+            </section>
+
+            <section>
+              <h3 className="text-sm font-semibold text-zinc-200">Alcance por sucursal</h3>
+              <p className="mt-1 text-xs text-zinc-600">Responde dónde puede operar; nunca agrega capacidades.</p>
+
+              <div className="mt-3 flex gap-2">
+                {(["all", "selected"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    disabled={!canManage || busy}
+                    onClick={() => setMode(value)}
+                    className={`rounded-lg border px-3 py-2 text-xs ${mode === value ? "border-white/30 bg-white/[0.07] text-white" : "border-white/[0.07] text-zinc-500"}`}
+                  >
+                    {value === "all" ? "Todas" : "Seleccionadas"}
+                  </button>
+                ))}
+              </div>
+
+              {mode === "selected" ? (
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {branches.filter((branch) => branch.is_active).map((branch) => {
+                    const checked = selectedBranches.includes(branch.id);
+                    return (
+                      <label key={branch.id} className="flex items-center gap-2 rounded-lg border border-white/[0.06] px-3 py-2 text-sm text-zinc-400">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={!canManage || busy}
+                          onChange={() => setSelectedBranches((current) => checked ? current.filter((id) => id !== branch.id) : [...current, branch.id])}
+                        />
+                        {branch.name}
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {canManage ? (
+                <button type="button" onClick={() => void saveBranches()} disabled={busy} className="mt-3 rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:text-white disabled:opacity-40">
+                  Guardar sucursales
+                </button>
+              ) : null}
+            </section>
+          </div>
+
+          {!canManage ? <p className="mt-4 text-xs text-zinc-600">Modo lectura: necesitas <code>memberships.manage</code> para modificar accesos.</p> : null}
+          {error ? <p className="mt-4 text-sm text-red-400">{error}</p> : null}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function StaffAccess({ ctx }: { ctx: InternalContext }) {
+  const companyId = ctx.dashboard?.company?.id ?? null;
+  const access = ctx.dashboard?.access;
+  const caps = new Set(access?.capabilities ?? []);
+  const canManage = Boolean(access?.is_platform_admin || caps.has("memberships.manage"));
+  const canManageRoles = Boolean(access?.is_platform_admin || caps.has("roles.manage"));
+
+  const [memberships, setMemberships] = useState<Membership[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [assignments, setAssignments] = useState<Record<number, Assignment[]>>({});
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!companyId) {
+      setMemberships([]);
+      setAssignments({});
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const qs = `?company=${encodeURIComponent(String(companyId))}`;
+      const [memberData, roleData, areaData, branchData] = await Promise.all([
+        getJson<{ results: Membership[] }>(`/admin/memberships/${qs}`),
+        getJson<{ results: Role[] }>(`/admin/roles/${qs}`),
+        getJson<{ results: Area[] }>(`/admin/areas/${qs}`),
+        getJson<{ results: Branch[] }>(`/admin/branches/${qs}`),
+      ]);
+      const pairs = await Promise.all(memberData.results.map(async (membership) => {
+        const data = await getJson<{ results: Assignment[] }>(`/admin/membership-role-assignments/?membership=${membership.id}`);
+        return [membership.id, data.results] as const;
+      }));
+      setMemberships(memberData.results);
+      setRoles(roleData.results);
+      setAreas(areaData.results);
+      setBranches(branchData.results);
+      setAssignments(Object.fromEntries(pairs));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo cargar el personal.");
+    } finally {
+      setLoading(false);
+    }
+  }, [companyId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? memberships.filter((row) => row.username.toLowerCase().includes(q)) : memberships;
+  }, [memberships, search]);
+
+  return (
+    // G3 — `dashboard` and `onSelectCompany` were both missing, so the page
+    // told a platform master to "selecciona una empresa" and then handed them a
+    // switcher whose click did nothing: `AdminShell` calls `onSelectCompany?.()`,
+    // and an undefined prop makes that a no-op. Nine other admin pages pass both.
+    // Without `dashboard` the shell also refetched the dashboard on its own, so
+    // the topbar's company name came from a different response than the body's.
+    <AdminShell
+      user={ctx.user}
+      dashboard={ctx.dashboard}
+      onSelectCompany={ctx.selectCompany}
+    >
+      <div className="space-y-7">
+        <header className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-zinc-600">Administración</p>
+            <h1 className="mt-1 text-2xl font-semibold text-white">Personal y accesos</h1>
+            <p className="mt-2 max-w-3xl text-sm text-zinc-500">Administra el acceso real por empresa: rol = qué puede hacer; sucursal = dónde puede hacerlo.</p>
+          </div>
+          {canManageRoles ? <Link href="/admin/roles" className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-zinc-200">Roles y permisos</Link> : null}
+        </header>
+
+        {!companyId ? (
+          <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.05] p-5 text-sm text-amber-200/80">Selecciona una empresa. El master de plataforma tiene acceso global, pero debe elegir explícitamente sobre qué tenant actúa.</div>
+        ) : (
           <>
-            <UsersTable
-              users={data.results}
-              currentUser={user}
-              onRoleChange={handleRoleChange}
-            />
-            <Pagination
-              page={data.page}
-              pageSize={data.page_size}
-              count={data.count}
-              onPage={setPage}
-            />
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"><p className="text-xs text-zinc-600">Miembros</p><p className="mt-1 text-2xl font-semibold text-white">{memberships.length}</p></div>
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"><p className="text-xs text-zinc-600">Roles activos</p><p className="mt-1 text-2xl font-semibold text-white">{roles.filter((role) => role.is_active).length}</p></div>
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"><p className="text-xs text-zinc-600">Mi autoridad</p><p className="mt-1 text-sm font-medium text-zinc-200">{access?.is_platform_admin ? "Master de plataforma" : canManage ? "Administra accesos" : "Solo lectura"}</p></div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar usuario…" className="w-full max-w-sm rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-zinc-200 outline-none focus:border-white/25" />
+              <span className="hidden text-xs text-zinc-600 sm:block">{ctx.dashboard?.company?.name}</span>
+            </div>
+
+            {loading ? <p className="py-12 text-center text-sm text-zinc-600">Cargando accesos…</p> : null}
+            {error ? <div className="rounded-xl border border-red-500/20 bg-red-500/[0.05] p-4 text-sm text-red-400">{error}</div> : null}
+            {!loading && !error ? (
+              <div className="space-y-3">
+                {filtered.map((membership) => (
+                  <MemberCard
+                    key={membership.id}
+                    membership={membership}
+                    assignments={assignments[membership.id] ?? []}
+                    roles={roles}
+                    areas={areas}
+                    branches={branches}
+                    canManage={canManage}
+                    onChanged={load}
+                  />
+                ))}
+                {!filtered.length ? <div className="rounded-xl border border-white/[0.06] py-12 text-center text-sm text-zinc-500">No se encontraron miembros.</div> : null}
+              </div>
+            ) : null}
+
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+              <h2 className="text-sm font-semibold text-zinc-200">Jerarquía correcta</h2>
+              <div className="mt-3 grid gap-3 text-xs leading-5 text-zinc-500 md:grid-cols-3">
+                <p><strong className="text-zinc-300">Master de plataforma:</strong> <code>User.is_superuser</code>. Puede operar todas las empresas; no es un rol de tenant.</p>
+                <p><strong className="text-zinc-300">Administrador de empresa:</strong> recibe capacidades dentro de su tenant y no puede escalar por encima de su propia autoridad.</p>
+                <p><strong className="text-zinc-300">Roles operativos:</strong> ventas, inventario y técnico se limitan por capacidades y, cuando aplica, por sucursal.</p>
+              </div>
+            </div>
           </>
         )}
-
-        {/* Phase 2D — WHERE each person may work.
-            Deliberately a separate section from the role table above: that one
-            edits the legacy global role, this one edits branch scope on the
-            membership. Merging them would suggest the two are one decision. */}
-        <BranchAccessPanel companyId={null} canManage />
       </div>
     </AdminShell>
   );
 }
 
 export default function UsersPage() {
-  return <AdminGuard>{(user) => <UsersPageContent user={user} />}</AdminGuard>;
+  return <InternalControlGuard>{(ctx) => <StaffAccess ctx={ctx} />}</InternalControlGuard>;
 }
