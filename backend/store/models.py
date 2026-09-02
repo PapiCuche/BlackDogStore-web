@@ -3955,22 +3955,27 @@ class RepairStatusCode(models.TextChoices):
     execution that gives them meaning: a technician starts work, consumes
     approved parts out of the shop's own stock, and finishes.
 
-    `QUALITY_CONTROL`, `READY_FOR_PICKUP`, `DELIVERED` and `WARRANTY` are still
-    real states of a real repair shop that mean nothing here yet: quality
-    control needs a checklist, pickup needs a delivery flow, warranty needs a
-    completed repair to warrant. Shipping the words without the modules would
-    let an order be moved into a state no code can act on — a status that lies.
+    M11 added `QUALITY_CONTROL` and `READY_FOR_PICKUP`, because it built the
+    checklist that gives the first meaning and the pass that gives the second.
 
-    `REPAIRED` is now the deliberate edge: it is where M10 stops, and it means
-    ONLY that the technician finished. Not checked, not ready, not collected,
-    not paid.
+    `DELIVERED` and `WARRANTY` are still real states of a real repair shop that
+    mean nothing here yet: delivery needs a handover flow, warranty needs
+    something to warrant it against. Shipping the words without the modules
+    would let an order be moved into a state no code can act on — a status that
+    lies.
 
-    FIVE OF THE NINE ARE NOT REACHABLE BY MOVING AN ORDER. `WAITING_APPROVAL`
+    `READY_FOR_PICKUP` is now the deliberate edge, and it means ONE thing: the
+    device passed its tests and may go to the handover stage. It does NOT mean
+    the customer was told — there is no notification channel in this platform —
+    and it does not mean anything was paid or collected.
+
+    SEVEN OF THE ELEVEN ARE NOT REACHABLE BY MOVING AN ORDER. `WAITING_APPROVAL`
     is produced by publishing a quote; `APPROVED` and `REJECTED` by a customer
     deciding on one; `IN_REPAIR`, `WAITING_PARTS` and `REPAIRED` by starting,
-    pausing and finishing the work. `service_services` refuses to set any of
-    them any other way. Beginning a repair is a fact about a workbench, not an
-    option in a dropdown.
+    pausing and finishing the work; `QUALITY_CONTROL` by opening a real
+    checklist and `READY_FOR_PICKUP` by passing it. `service_services` refuses
+    to set any of them any other way. Beginning a repair is a fact about a
+    workbench, not an option in a dropdown — and so is passing a test.
     """
 
     RECEIVED = 'received', 'Recibido'
@@ -3982,6 +3987,9 @@ class RepairStatusCode(models.TextChoices):
     IN_REPAIR = 'in_repair', 'En reparación'
     WAITING_PARTS = 'waiting_parts', 'Esperando repuestos'
     REPAIRED = 'repaired', 'Reparado'
+    # M11 / BR-005D.
+    QUALITY_CONTROL = 'quality_control', 'En control de calidad'
+    READY_FOR_PICKUP = 'ready_for_pickup', 'Listo para recoger'
     CANCELLED = 'cancelled', 'Cancelado'
 
 
@@ -5184,3 +5192,283 @@ class PartUsage(models.Model):
         raise ValidationError(
             'Un consumo de repuesto no se puede borrar. Regístralo como reverso.'
         )
+
+
+class QualityResultCode(models.TextChoices):
+    """
+    How ONE check on a checklist came out.
+
+    `NOT_APPLICABLE` is a real answer and not a hedge: a checklist that asks
+    about a camera is asking a laptop a question it does not have. Without it
+    a technician either lies or leaves the row blank, and a blank row cannot be
+    told apart from one nobody got to.
+    """
+
+    PASS = 'pass', 'Correcto'
+    FAIL = 'fail', 'Falla'
+    NOT_APPLICABLE = 'not_applicable', 'No aplica'
+
+
+class QualityCheckStatus(models.TextChoices):
+    """
+    The state of ONE quality check. NOT a lifecycle state of the order.
+
+    Deliberately a separate enum from `RepairStatusCode`. The order and the
+    check move together today, but they are different objects with different
+    lives — a failed check stays FAILED forever while the order goes back to the
+    bench — and folding them into one vocabulary would make the second check on
+    the same order impossible to describe.
+    """
+
+    IN_PROGRESS = 'in_progress', 'En curso'
+    PASSED = 'passed', 'Aprobado'
+    FAILED = 'failed', 'Rechazado'
+
+
+class QualityChecklistTemplate(models.Model):
+    """
+    What a company tests, for one kind of device. M11 / BR-005D.
+
+    WHY A TEMPLATE AND NOT A HARDCODED LIST. The checks a shop runs on a laptop
+    are not the ones it runs on a games console, and a platform that shipped one
+    fixed list would be a platform that only fits the shop it was written in.
+    This is the smallest thing that adapts: a named list of items, owned by a
+    tenant, optionally tied to a device type.
+
+    WHY NOT MORE THAN THIS. No field types, no conditional logic, no scoring, no
+    branching. A quality checklist is a list of things somebody looks at and
+    marks; building a form engine to express that would be building a product
+    nobody asked for.
+
+    `device_type` NULL means "use this when nothing more specific exists". A
+    company gets one of those at provisioning and can add specific ones later.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='quality_templates',
+    )
+    name = models.CharField(max_length=120)
+    # Mirrors `Device.TYPE_CHOICES`; NULL is the fallback for every type.
+    device_type = models.CharField(max_length=16, blank=True, default='', db_index=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['company', 'device_type', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'device_type'],
+                condition=models.Q(is_active=True),
+                name='one_active_quality_template_per_device_type',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'is_active'])]
+
+    def __str__(self):
+        return f'{self.name} ({self.device_type or "general"})'
+
+
+class QualityChecklistTemplateItem(models.Model):
+    """One line of a template. Edited freely — a check copies it, never cites it."""
+
+    template = models.ForeignKey(
+        QualityChecklistTemplate, on_delete=models.CASCADE, related_name='items',
+    )
+    # A stable machine code so reports can count "how often does charging fail?"
+    # across companies that renamed the label.
+    code = models.CharField(max_length=40)
+    label = models.CharField(max_length=200)
+    #: A required item must be answered before the check can pass. `not_applicable`
+    #: counts as answered — it is a judgement, not a blank.
+    is_required = models.BooleanField(default=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['template', 'code'], name='unique_quality_item_code_per_template',
+            ),
+        ]
+
+    def __str__(self):
+        return self.label
+
+
+class QualityCheck(models.Model):
+    """
+    ONE inspection of ONE repair, at ONE moment. M11 / BR-005D.
+
+    IT IS A SNAPSHOT, NOT A VIEW OF A TEMPLATE. Its items are copied when it
+    opens, so an administrator who edits the checklist tomorrow does not rewrite
+    what was tested yesterday. That is the whole reason `QualityCheckItem` holds
+    its own `code` and `label` rather than a foreign key to the template line.
+
+    MORE THAN ONE PER ORDER. A failed check sends the device back to the bench
+    and the next attempt is inspected again — a second check, with the first
+    left exactly as it was. Same shape as `RepairExecution`, and the same
+    partial unique constraint keeps exactly one of them open.
+
+    `checked_by` IS RECORDED SEPARATELY FROM WHO DID THE WORK. M11 does not
+    require them to differ: no rule in this business says a technician may not
+    test their own repair, and inventing one would stop a one-person shop from
+    using the module at all. But the two names are stored apart, so the day a
+    company does require a second pair of eyes, the data to enforce it is
+    already there. Answering that question later is impossible if the columns
+    were never separate.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='quality_checks',
+    )
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.PROTECT, related_name='quality_checks',
+    )
+    # The work this check is judging. PROTECT: a completed execution is the
+    # evidence the check was run against.
+    execution = models.ForeignKey(
+        RepairExecution, on_delete=models.PROTECT, related_name='quality_checks',
+    )
+    # Which template it was copied from, for reporting. SET_NULL because the
+    # snapshot below is the record, and a deleted template must not take a
+    # historical inspection with it.
+    template = models.ForeignKey(
+        QualityChecklistTemplate, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='checks',
+    )
+    template_name = models.CharField(max_length=120, blank=True)
+
+    status = models.CharField(
+        max_length=16, choices=QualityCheckStatus.choices,
+        default=QualityCheckStatus.IN_PROGRESS, db_index=True,
+    )
+    # Internal. The customer never sees this — see the customer serializers.
+    notes = models.TextField(max_length=2000, blank=True)
+
+    checked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='quality_checks_started',
+    )
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='quality_checks_completed',
+    )
+    started_at = models.DateTimeField(default=timezone.now)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-started_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['repair_order'],
+                condition=models.Q(status='in_progress'),
+                name='one_open_quality_check_per_repair_order',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'started_at']),
+            models.Index(fields=['repair_order', 'started_at']),
+            models.Index(fields=['execution']),
+        ]
+
+    def __str__(self):
+        return f'Control de calidad · orden {self.repair_order_id}'
+
+    @property
+    def is_open(self) -> bool:
+        return self.status == QualityCheckStatus.IN_PROGRESS
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.repair_order_id and self.company_id:
+            if self.repair_order.company_id != self.company_id:
+                raise ValidationError(
+                    'La orden no pertenece a la empresa de este control.'
+                )
+
+    def save(self, *args, **kwargs):
+        """
+        A SETTLED CHECK IS EVIDENCE. It does not get edited.
+
+        Same guarantee M9 gave a published quote and M10 gave a finished
+        execution, for the same reason: a record somebody can revise after the
+        fact is a record nobody can rely on. This is what a warranty claim and a
+        dispute will be read against.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            stored = (
+                QualityCheck.objects.filter(pk=self.pk)
+                .values_list('status', flat=True)
+                .first()
+            )
+            if stored is not None and stored != QualityCheckStatus.IN_PROGRESS:
+                allowed = set(kwargs.get('update_fields') or [])
+                content = {
+                    'status', 'notes', 'checked_by', 'checked_by_id',
+                    'completed_by', 'completed_by_id', 'completed_at',
+                    'started_at', 'company', 'company_id', 'repair_order',
+                    'repair_order_id', 'execution', 'execution_id',
+                    'template_name',
+                }
+                if not allowed or (allowed & content):
+                    raise ValidationError(
+                        'Un control de calidad cerrado no se puede modificar.'
+                    )
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class QualityCheckItem(models.Model):
+    """
+    One thing that was looked at, and how it came out.
+
+    `code` and `label` are COPIED from the template, not joined to it. An
+    administrator who renames "Carga" to "Puerto de carga" tomorrow has not
+    changed what a technician read on the screen yesterday, and a report that
+    re-rendered old checks through today's template would be quietly rewriting
+    history.
+    """
+
+    quality_check = models.ForeignKey(
+        QualityCheck, on_delete=models.CASCADE, related_name='items',
+    )
+    code = models.CharField(max_length=40)
+    label = models.CharField(max_length=200)
+    is_required = models.BooleanField(default=True)
+    result = models.CharField(
+        max_length=16, choices=QualityResultCode.choices, blank=True,
+    )
+    # Internal. Why a check failed is a technician's note to the shop, and the
+    # customer serializers have no field for it.
+    notes = models.CharField(max_length=300, blank=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['sort_order', 'pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['quality_check', 'code'],
+                name='unique_quality_result_code_per_check',
+            ),
+        ]
+        indexes = [models.Index(fields=['quality_check', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.label}: {self.result or "sin responder"}'
+
+    @property
+    def is_answered(self) -> bool:
+        return bool(self.result)
+
+    @property
+    def is_blocking(self) -> bool:
+        """A FAIL blocks a pass. `not_applicable` does not — it is an answer."""
+        return self.result == QualityResultCode.FAIL

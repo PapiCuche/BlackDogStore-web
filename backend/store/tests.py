@@ -8257,7 +8257,18 @@ class Phase2a1CatalogTest(TestCase):
         self.assertEqual(len(CAPABILITIES), len(ALL_CAPABILITY_CODES))
 
     def test_reserved_capabilities_are_not_assignable(self):
-        self.assertTrue(RESERVED_CAPABILITY_CODES)
+        # M11 EMPTIED THIS SET, and that is the milestone rather than a
+        # regression: every capability the catalogue ever reserved has now had
+        # its module built, `service.quality.manage` last of all.
+        #
+        # The rule it enforced has not gone anywhere, so what is asserted is the
+        # rule — over whatever is reserved. The day a phase reserves a
+        # capability for a module it has not written, this checks it again with
+        # no edit.
+        self.assertEqual(
+            RESERVED_CAPABILITY_CODES,
+            ALL_CAPABILITY_CODES - ASSIGNABLE_CAPABILITY_CODES,
+        )
         self.assertFalse(RESERVED_CAPABILITY_CODES & ASSIGNABLE_CAPABILITY_CODES)
         for code in RESERVED_CAPABILITY_CODES:
             self.assertTrue(code.startswith('service.'), code)
@@ -8267,13 +8278,19 @@ class Phase2a1CatalogTest(TestCase):
             normalise_capabilities(['inventory.teleport'])
 
     def test_normalise_rejects_reserved_code(self):
-        # The example moves as modules ship. `service.repair.manage` was this
-        # test's reserved code until M10 built execution; the rule is unchanged
-        # and `service.quality.manage` now carries it. When quality control
-        # ships, this test needs a new example — and if there is none left, the
-        # catalogue has no reserved codes and that is worth noticing loudly.
-        with self.assertRaises(ValueError):
-            normalise_capabilities(['service.quality.manage'])
+        # The example moved with every phase — `service.repair.manage` until
+        # M10, `service.quality.manage` until M11 — and M11 ran out of examples
+        # by building the last reserved module.
+        #
+        # So it stops naming one and asks the catalogue. With nothing reserved
+        # it asserts THAT, which is worth pinning: no capability in this
+        # platform names code nobody wrote.
+        if not RESERVED_CAPABILITY_CODES:
+            self.assertEqual(ALL_CAPABILITY_CODES, ASSIGNABLE_CAPABILITY_CODES)
+            return
+        for code in RESERVED_CAPABILITY_CODES:
+            with self.assertRaises(ValueError, msg=code):
+                normalise_capabilities([code])
 
     def test_normalise_deduplicates_and_sorts(self):
         self.assertEqual(
@@ -8323,10 +8340,17 @@ class Phase2a1ModelInvariantTest(TestCase):
             _role(self.company_a, 'Malo', ['inventory.teleport'], 'malo')
 
     def test_role_rejects_reserved_capability(self):
-        # Example moved from `service.repair.manage` in M10 — see
-        # `test_normalise_rejects_reserved_code`.
-        with self.assertRaises(DjangoValidationError):
-            _role(self.company_a, 'Reservado', ['service.quality.manage'], 'reservado')
+        # See `test_normalise_rejects_reserved_code`: M11 emptied the reserved
+        # set, so this asserts the rule over whatever is reserved rather than
+        # over a name that keeps moving.
+        from .capabilities import RESERVED_CAPABILITY_CODES as _reserved
+
+        if not _reserved:
+            self.skipTest('el catálogo no reserva ninguna capacidad en esta fase')
+        for code in _reserved:
+            with self.assertRaises(DjangoValidationError, msg=code):
+                _role(self.company_a, f'Reservado {code}', [code],
+                      f'res-{code}'.replace('.', '-'))
 
     def test_role_capabilities_are_stored_sorted_and_deduplicated(self):
         role = _role(self.company_a, 'Orden', ['inventory.adjust', 'company.view', 'company.view'], 'orden')
@@ -8647,13 +8671,19 @@ class Phase2a1AccessApiTest(TestCase):
         self.assertEqual(role.data['capabilities'], ['company.view', 'sales.orders.view'])
 
     def test_role_rejects_reserved_capability_via_api(self):
-        # Example moved from `service.repair.manage` in M10 — see
-        # `test_normalise_rejects_reserved_code`.
-        res = self._as(self.admin_a).post('/api/admin/roles/', {
-            'company': self.company_a.pk, 'name': 'Reservado', 'slug': 'reservado',
-            'capabilities': ['service.quality.manage'],
-        }, format='json')
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        # See `test_normalise_rejects_reserved_code`: M11 emptied the reserved
+        # set, so this asserts the rule over whatever is reserved.
+        from .capabilities import RESERVED_CAPABILITY_CODES as _reserved
+
+        if not _reserved:
+            self.skipTest('el catálogo no reserva ninguna capacidad en esta fase')
+        for code in sorted(_reserved):
+            res = self._as(self.admin_a).post('/api/admin/roles/', {
+                'company': self.company_a.pk, 'name': f'Reservado {code}',
+                'slug': f'res-{code}'.replace('.', '-'),
+                'capabilities': [code],
+            }, format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, code)
 
     def test_role_rejects_unknown_capability_via_api(self):
         res = self._as(self.admin_a).post('/api/admin/roles/', {
@@ -8770,8 +8800,19 @@ class Phase2a1AccessApiTest(TestCase):
         res = self._as(self.admin_a).get('/api/admin/capabilities/')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(res.data['capabilities']), len(ALL_CAPABILITY_CODES))
-        reserved = [c for c in res.data['capabilities'] if not c['assignable']]
-        self.assertTrue(reserved)
+        # It reports EVERY code and marks which are assignable — including the
+        # reserved ones, so a future role editor can filter them out itself
+        # rather than discovering them as a 400.
+        #
+        # M11 emptied the reserved set by building the last reserved module, so
+        # this asserts the FLAG agrees with the catalogue rather than that some
+        # entry is unassignable. When a phase reserves something again, the
+        # assertion below starts proving it appears here.
+        reserved = {c['code'] for c in res.data['capabilities'] if not c['assignable']}
+        self.assertEqual(reserved, set(ALL_CAPABILITY_CODES - ASSIGNABLE_CAPABILITY_CODES))
+        self.assertEqual(
+            {c['code'] for c in res.data['capabilities']}, set(ALL_CAPABILITY_CODES),
+        )
         self.assertEqual(
             self._as(self.admin_a).post('/api/admin/capabilities/', {}, format='json').status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
@@ -25575,10 +25616,13 @@ class M6CapabilityStatusTest(TestCase):
         # modules nobody has written.
         from .capabilities import CAPABILITIES, STATUS_RESERVED
 
-        # `service.diagnostic.manage` left this list in M9 and
-        # `service.repair.manage` in M10, each when the module it names shipped.
-        # One remains, and the rule that put it here has not moved an inch.
-        for code in ('service.quality.manage',):
+        # `service.diagnostic.manage` left this list in M9,
+        # `service.repair.manage` in M10 and `service.quality.manage` in M11 —
+        # each when the module it names shipped. The catalogue now reserves
+        # NOTHING, which is what "a capability arrives with its module" looks
+        # like once every module has arrived. The rule is asserted directly.
+        from .capabilities import RESERVED_CAPABILITY_CODES
+        for code in RESERVED_CAPABILITY_CODES:
             self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
 
     def test_a_bare_module_prefix_is_still_not_an_endpoint(self):
@@ -27216,8 +27260,10 @@ class M8ProvisioningTest(M8ServiceBase):
         # `service.repair.manage` in M10, each when its module shipped. What
         # remains still describes absent code, and a preset must never carry
         # authority over something nobody wrote.
+        from .capabilities import RESERVED_CAPABILITY_CODES as _reserved
+
         role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
-        for code in ('service.quality.manage',):
+        for code in _reserved:
             self.assertNotIn(code, role.capabilities, code)
 
 
@@ -27239,9 +27285,11 @@ class M8CapabilityCatalogueTest(TestCase):
         # and quoting, and `service.repair.manage` until M10 built execution and
         # part consumption. The rule did not change; the set of absent modules
         # did, which is exactly what it is supposed to do.
-        from .capabilities import CAPABILITIES, STATUS_RESERVED
+        from .capabilities import (
+            CAPABILITIES, RESERVED_CAPABILITY_CODES, STATUS_RESERVED,
+        )
 
-        for code in ('service.quality.manage',):
+        for code in RESERVED_CAPABILITY_CODES:
             self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
 
     def test_M8_invented_no_capability(self):
@@ -27526,9 +27574,10 @@ class M8TransitionTest(M8ServiceBase):
         # state arrives with its module, because shipping the word without the
         # module lets an order enter a state no code can act on.
         codes = {code for code, _label in _M8Status.choices}
-        for absent in (
-            'quality_control', 'ready_for_pickup', 'delivered', 'warranty',
-        ):
+        # M11 claimed `quality_control` and `ready_for_pickup` by building the
+        # inspection and the pass. Two remain, and each still waits for the
+        # module that would give it meaning.
+        for absent in ('delivered', 'warranty'):
             self.assertNotIn(absent, codes, absent)
 
     def test_the_generic_path_to_waiting_approval_closed_in_M9(self):
@@ -29077,13 +29126,11 @@ class M9LifecycleTest(M9ServiceBase):
         self.assertIn('rejected', codes)
 
     def test_states_M9_still_cannot_support_do_not_exist(self):
-        # M10 claimed `in_repair`, `waiting_parts` and `repaired` by building
-        # the bench they describe. Four remain, and each still waits for the
-        # module that would give it meaning.
+        # M10 claimed `in_repair`, `waiting_parts` and `repaired`; M11 claimed
+        # `quality_control` and `ready_for_pickup`. Two remain, and each still
+        # waits for the module that would give it meaning.
         codes = {code for code, _label in _M8Status.choices}
-        for absent in (
-            'quality_control', 'ready_for_pickup', 'delivered', 'warranty',
-        ):
+        for absent in ('delivered', 'warranty'):
             self.assertNotIn(absent, codes, absent)
 
     def test_the_generic_endpoint_no_longer_offers_waiting_approval(self):
@@ -30046,8 +30093,10 @@ class M9StructuralTest(M9ServiceBase):
         # never that the catalogue is frozen.
         from .capabilities import CAPABILITIES, STATUS_ACTIVE, STATUS_RESERVED
 
+        from .capabilities import RESERVED_CAPABILITY_CODES as _reserved
+
         self.assertEqual(CAPABILITIES['service.diagnostic.manage'].status, STATUS_ACTIVE)
-        for code in ('service.quality.manage',):
+        for code in _reserved:
             self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
 
     def test_the_migration_and_the_runtime_status_defaults_agree(self):
@@ -31706,8 +31755,10 @@ class M10LifecycleTest(M10ServiceBase):
             self.assertIn(code, codes, code)
 
     def test_states_M10_still_cannot_support_do_not_exist(self):
+        # M11 built quality control, so two more left this list. `delivered` and
+        # `warranty` remain: handover and warranty have no module.
         codes = {code for code, _label in _M8Status.choices}
-        for absent in ('quality_control', 'ready_for_pickup', 'delivered', 'warranty'):
+        for absent in ('delivered', 'warranty'):
             self.assertNotIn(absent, codes, absent)
 
     def test_the_generic_endpoint_refuses_every_new_state(self):
@@ -32492,9 +32543,20 @@ class M10CapabilitySeparationTest(M10ServiceBase):
         from .capabilities import CAPABILITIES, STATUS_ACTIVE
         self.assertEqual(CAPABILITIES['service.repair.manage'].status, STATUS_ACTIVE)
 
-    def test_quality_control_stays_RESERVED(self):
-        from .capabilities import CAPABILITIES, STATUS_RESERVED
-        self.assertEqual(CAPABILITIES['service.quality.manage'].status, STATUS_RESERVED)
+    def test_quality_did_not_arrive_with_the_repair_capability(self):
+        # Was `test_quality_control_stays_RESERVED`. M11 promoted it, and what
+        # M10 actually established survives: quality is its OWN capability. A
+        # shop that wants a second pair of eyes grants one role the bench and
+        # another the inspection, and M10 must not have made that impossible by
+        # folding them together.
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+
+        self.assertEqual(CAPABILITIES['service.quality.manage'].status, STATUS_ACTIVE)
+        self.assertNotEqual(
+            'service.quality.manage', 'service.repair.manage',
+        )
+        from .v1_service_views import CAP_QUALITY_MANAGE, CAP_REPAIR_MANAGE
+        self.assertNotEqual(CAP_QUALITY_MANAGE, CAP_REPAIR_MANAGE)
 
     def test_a_technician_without_inventory_adjust_can_still_consume_a_part(self):
         quote, _ = self.started()
@@ -33763,13 +33825,34 @@ class M11AntiEscalationTest(TestCase):
         role.refresh_from_db()
         self.assertNotIn('inventory.adjust', role.capabilities)
 
-    def test_10d_a_reserved_capability_is_refused_even_to_a_master(self):
+    def test_10d_reserved_capabilities_are_never_assignable(self):
+        """
+        The invariant, stated so it survives the catalogue changing.
+
+        It used to take the only reserved code and assert a role containing it
+        was refused. Then the quality-control phase made that code assignable,
+        the reserved set became EMPTY, and the test quietly started posting an
+        empty capability list — which is legal, so it failed. A test whose
+        subject can disappear has to say what it does when it does.
+        """
+        self.assertEqual(
+            RESERVED_CAPABILITY_CODES & ASSIGNABLE_CAPABILITY_CODES, frozenset(),
+            'una capacidad no puede ser reservada y asignable a la vez',
+        )
+
+    def test_10e_a_reserved_capability_is_refused_even_to_a_master(self):
+        reserved = sorted(RESERVED_CAPABILITY_CODES)
+        if not reserved:
+            self.skipTest(
+                'no hay capacidades reservadas en el catálogo actual; '
+                'la regla se cubre en test_10d'
+            )
         master = _saas_user('m11_master_reserved', is_superuser=True)
         c = APIClient()
         c.force_authenticate(user=master)
         res = c.post('/api/admin/roles/', {
             'company': self.company.pk, 'name': 'Reservado', 'slug': 'm11-reservado',
-            'capabilities': sorted(RESERVED_CAPABILITY_CODES)[:1],
+            'capabilities': reserved[:1],
         }, format='json')
         self.assertEqual(res.status_code, 400)
 
@@ -34109,3 +34192,1254 @@ class M11SingleAuthorizationSourceTest(TestCase):
             if 'has_capability' in src or 'resolve_capabilities' in src
         ]
         self.assertGreater(len(users), 4, 'la autorización real pasa por capacidades')
+# ===========================================================================
+# H1B — parity for the historical Servicio Técnico preset
+# ===========================================================================
+
+from .tenancy import has_capability as _h1b_has_capability  # noqa: E402
+
+
+class H1BTechnicianPresetParityTest(TestCase):
+    """
+    The migration that closes the technician asymmetry, and everything it must
+    refuse to touch.
+
+    Seven grant migrations came before this one and every one targeted
+    `Administrador`, whose capability set is ~35 codes — a set no tenant
+    reproduces by accident. This preset holds TWO or THREE, which a tenant
+    plausibly does build by hand, so capability equality alone is not evidence.
+    The discriminator is four platform-authored fields at once, and each test
+    below breaks exactly one of them.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('H1B', 'h1b-taller', tax_id='20990000201')
+        self.other = _saas_company('H1B otra', 'h1b-otra', tax_id='20990000202')
+        # Provisioned so the OTHER presets exist and can be asserted untouched.
+        # The technician preset each test cares about is built by hand, in the
+        # historical shape provisioning no longer produces.
+        provision_company_access_defaults(self.company)
+        provision_company_access_defaults(self.other)
+        CompanyRole.objects.filter(slug='servicio-tecnico').delete()
+        import importlib
+        self.module = importlib.import_module(
+            'store.migrations.0047_service_capabilities_for_untouched_technician_presets',
+        )
+
+    def _run(self):
+        from django.apps import apps as django_apps
+        self.module.grant(django_apps, None)
+
+    def _role(self, *, company=None, name='Servicio Técnico', slug='servicio-tecnico',
+              description='Equivalente al rol legacy "technician".',
+              capabilities=('company.view', 'service.manage')):
+        return CompanyRole.objects.create(
+            company=company or self.company, name=name, slug=slug,
+            description=description, capabilities=sorted(capabilities),
+        )
+
+    # -- what it DOES -------------------------------------------------------
+
+    def test_the_0017_era_preset_receives_the_service_capabilities(self):
+        role = self._role()
+        self._run()
+        role.refresh_from_db()
+
+        for code in self.module.NEW_CAPABILITIES:
+            self.assertIn(code, role.capabilities, code)
+        # And keeps what it had.
+        self.assertIn('company.view', role.capabilities)
+        self.assertIn('service.manage', role.capabilities)
+
+    def test_the_pre_M8_provisioned_preset_receives_them_too(self):
+        role = self._role(
+            description='Servicio técnico. El módulo aún no existe; el rol reserva la autoridad.',
+            capabilities=('company.view', 'service.manage', 'service.customers.view'),
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertIn('service.repair.manage', role.capabilities)
+
+    def test_it_matches_the_shape_provisioning_produces_today(self):
+        # The whole point: after the migrations, a historical preset holds what
+        # a newly provisioned one holds. Anything else and the asymmetry
+        # survives in a new form.
+        #
+        # BOTH grants run, because each phase pays its own debt: H1B's frozen
+        # list is what H1B knew about, and M11 promoted `service.quality.manage`
+        # afterwards and grants it in its own migration. Asserting H1B alone
+        # against today's preset would be asserting that H1B could see the
+        # future.
+        import importlib
+        from django.apps import apps as django_apps
+        from .company_provisioning import _TECHNICIAN_CAPS
+
+        role = self._role()
+        self._run()
+        importlib.import_module(
+            'store.migrations.0050_quality_capability_for_untouched_presets',
+        ).grant(django_apps, None)
+        role.refresh_from_db()
+        self.assertEqual(set(role.capabilities), set(_TECHNICIAN_CAPS))
+
+    def test_every_tenant_with_the_untouched_preset_is_reached(self):
+        mine = self._role()
+        theirs = self._role(company=self.other)
+        self._run()
+        mine.refresh_from_db(); theirs.refresh_from_db()
+        self.assertIn('service.repair.manage', mine.capabilities)
+        self.assertIn('service.repair.manage', theirs.capabilities)
+
+    # -- what it REFUSES to touch ------------------------------------------
+
+    def test_one_capability_removed_and_the_role_is_the_tenants(self):
+        role = self._role(capabilities=('company.view',))
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(role.capabilities, ['company.view'])
+
+    def test_one_capability_added_and_the_role_is_the_tenants(self):
+        role = self._role(
+            capabilities=('company.view', 'service.manage', 'inventory.view'),
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_renamed_role_is_left_alone(self):
+        role = self._role(name='Taller')
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_re_described_role_is_left_alone(self):
+        # This is the field that makes the discriminator sound. A tenant who
+        # edited the description told us the row is theirs.
+        role = self._role(description='Nuestro equipo de reparaciones.')
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_different_slug_is_left_alone(self):
+        role = self._role(slug='tecnicos')
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_custom_role_that_merely_shares_the_capability_set_is_left_alone(self):
+        # THE CASE THAT RULES OUT CAPABILITY EQUALITY ON ITS OWN. A limited role
+        # holding exactly {company.view, service.manage} is an entirely ordinary
+        # thing for a shop to build, and it must not silently gain the authority
+        # to spend stock.
+        role = CompanyRole.objects.create(
+            company=self.company, name='Consulta técnica', slug='consulta-tecnica',
+            description='Solo mirar.',
+            capabilities=sorted(['company.view', 'service.manage']),
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(role.capabilities, ['company.view', 'service.manage'])
+
+    def test_a_role_with_the_right_name_but_a_tenant_description_is_left_alone(self):
+        role = self._role(description='Servicio Técnico de la sucursal norte.')
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_current_era_preset_is_not_double_granted(self):
+        # Provisioned from M8 onward: it already holds the capabilities and its
+        # description is the current one. The migration must not match it.
+        from .company_provisioning import _TECHNICIAN_CAPS
+        role = self._role(
+            description='Recepción de equipos, órdenes de servicio y su seguimiento.',
+            capabilities=_TECHNICIAN_CAPS,
+        )
+        before = list(role.capabilities)
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(role.capabilities, before)
+
+    def test_no_other_preset_is_touched(self):
+        admin = CompanyRole.objects.get(company=self.company, slug='administrador')
+        sales = CompanyRole.objects.get(company=self.company, slug='ventas')
+        before = (list(admin.capabilities), list(sales.capabilities))
+        self._run()
+        admin.refresh_from_db(); sales.refresh_from_db()
+        self.assertEqual((admin.capabilities, sales.capabilities), before)
+
+    def test_quality_is_not_granted_here(self):
+        # It is still RESERVED at this commit. M11 promotes it and M11 grants it.
+        role = self._role()
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.quality.manage', role.capabilities)
+
+    # -- reverse ------------------------------------------------------------
+
+    def test_the_reverse_restores_exactly_what_was_there(self):
+        role = self._role()
+        self._run()
+        from django.apps import apps as django_apps
+        self.module.revoke(django_apps, None)
+        role.refresh_from_db()
+        self.assertEqual(role.capabilities, ['company.view', 'service.manage'])
+
+    def test_the_reverse_leaves_a_tenant_edited_row_alone(self):
+        # Granted by the migration, then edited by the tenant. Rolling back must
+        # not undo the tenant's decision as well as ours.
+        role = self._role()
+        self._run()
+        role.refresh_from_db()
+        role.capabilities = sorted(set(role.capabilities) | {'inventory.view'})
+        role.save(update_fields=['capabilities'])
+
+        from django.apps import apps as django_apps
+        self.module.revoke(django_apps, None)
+        role.refresh_from_db()
+        self.assertIn('inventory.view', role.capabilities)
+        self.assertIn('service.repair.manage', role.capabilities)
+
+    # -- the resolver actually changes ---------------------------------------
+
+    def test_a_technician_on_the_migrated_preset_can_now_work_the_lifecycle(self):
+        # The migration is only worth anything if `has_capability` changes.
+        role = self._role()
+        user = _m7_user('h1b_tecnico')
+        membership = Membership.objects.create(
+            user=user, company=self.company, role='technician',
+        )
+        _assign(membership, role)
+        cache.clear()
+
+        for code in ('service.orders.view', 'service.diagnostic.manage',
+                     'service.repair.manage'):
+            self.assertFalse(_h1b_has_capability(user, self.company, code), code)
+
+        self._run()
+        cache.clear()
+
+        for code in ('service.orders.view', 'service.diagnostic.manage',
+                     'service.repair.manage'):
+            self.assertTrue(_h1b_has_capability(user, self.company, code), code)
+        # And still not a warehouse permission.
+        self.assertFalse(_h1b_has_capability(user, self.company, 'inventory.adjust'))
+
+
+# ===========================================================================
+# M11 / BR-005D — quality control, rework and customer-visible progress
+# ===========================================================================
+
+from .models import (  # noqa: E402
+    QualityCheck as _M11Check,
+    QualityCheckItem as _M11Item,
+    QualityChecklistTemplate as _M11Template,
+    QualityCheckStatus as _M11Status,
+    QualityResultCode as _M11Result,
+)
+
+
+class M11QualityBase(M10ServiceBase):
+    """M10's fixture, carried all the way to a repair the technician finished."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.only_capabilities(
+            'service.orders.view', 'service.orders.create', 'service.orders.manage',
+            'service.devices.view', 'service.devices.manage', 'service.customers.view',
+            'service.diagnostic.manage', 'service.repair.manage',
+            'service.quality.manage',
+            slug='m11-rol',
+        )
+
+    def repaired_order(self, *, consume=True):
+        quote, execution = self.started()
+        if consume:
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=self.part_line(quote),
+                quantity=1, actor=self.staff,
+            )
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Batería reemplazada.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        return execution
+
+    def answer_all(self, check, *, result=_M11Result.PASS):
+        for item in check.items.all():
+            _m8_service.record_quality_result(
+                item=item, result=result, actor=self.staff,
+            )
+        return check
+
+
+class M11QualityLifecycleTest(M11QualityBase):
+    """Two new states, and neither is reachable by pressing a button."""
+
+    def test_the_new_codes_exist(self):
+        codes = {code for code, _l in _M8Status.choices}
+        self.assertIn('quality_control', codes)
+        self.assertIn('ready_for_pickup', codes)
+
+    def test_states_M11_still_cannot_support_do_not_exist(self):
+        codes = {code for code, _l in _M8Status.choices}
+        for absent in ('delivered', 'warranty'):
+            self.assertNotIn(absent, codes, absent)
+
+    def test_the_generic_endpoint_refuses_both_new_states(self):
+        self.repaired_order()
+        for target in ('quality_control', 'ready_for_pickup'):
+            response = self.client.post(
+                _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+                {'status': target}, format='json',
+            )
+            self.assertEqual(response.status_code, 400, target)
+
+    def test_available_transitions_never_offers_them(self):
+        self.repaired_order()
+        self.assertEqual(
+            _m8_service.available_transitions(self.order), [_M8Status.CANCELLED],
+        )
+
+    def test_ready_for_pickup_is_not_terminal_and_does_not_close_the_order(self):
+        # M11 stops at "it passed its tests". Handover is M12; stamping
+        # closed_at here would claim a delivery nobody made.
+        self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.answer_all(check)
+        _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.status, _M8Status.READY_FOR_PICKUP)
+        self.assertIsNone(self.order.closed_at)
+
+    def test_the_default_labels_promise_no_notification(self):
+        for code, forbidden in (
+            ('ready_for_pickup', ('avisado', 'notificad', 'entregad', 'pagad')),
+            ('quality_control', ('entregad', 'listo para recoger')),
+        ):
+            setting = _M8StatusSetting.objects.get(company=self.company, code=code)
+            for word in forbidden:
+                self.assertNotIn(word, setting.label.lower(), f'{code}: {word}')
+
+
+class M11StartQualityTest(M11QualityBase):
+    """Opening an inspection is an event with a snapshot behind it."""
+
+    def test_a_repaired_order_can_be_inspected(self):
+        execution = self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.status, _M8Status.QUALITY_CONTROL)
+        self.assertEqual(check.status, _M11Status.IN_PROGRESS)
+        self.assertEqual(check.execution_id, execution.pk)
+        self.assertEqual(check.checked_by, self.staff)
+
+    def test_the_checklist_is_copied_not_referenced(self):
+        self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        template = _M11Template.objects.get(company=self.company, device_type='')
+
+        self.assertEqual(check.items.count(), template.items.count())
+        self.assertEqual(
+            {i.code for i in check.items.all()},
+            {i.code for i in template.items.all()},
+        )
+        self.assertEqual(check.template_name, template.name)
+
+    def test_editing_the_template_tomorrow_does_not_rewrite_yesterday(self):
+        # The whole reason the items are a snapshot. A report that re-rendered
+        # old inspections through today's list would be changing history.
+        self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        original = sorted((i.code, i.label) for i in check.items.all())
+
+        template = _M11Template.objects.get(company=self.company, device_type='')
+        template.items.update(label='ETIQUETA NUEVA')
+        template.items.create(code='nuevo', label='Punto añadido después', sort_order=99)
+
+        check.refresh_from_db()
+        self.assertEqual(sorted((i.code, i.label) for i in check.items.all()), original)
+        self.assertNotIn('nuevo', {i.code for i in check.items.all()})
+
+    def test_an_order_that_is_not_repaired_cannot_be_inspected(self):
+        self.started()
+        with self.assertRaises(_m8_service.QualityError):
+            _m8_service.start_quality_check(repair_order=self.order, actor=self.staff)
+
+    def test_starting_twice_returns_the_same_check(self):
+        self.repaired_order()
+        first = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        second = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(_M11Check.objects.filter(repair_order=self.order).count(), 1)
+
+    def test_the_database_forbids_two_open_checks(self):
+        execution = self.repaired_order()
+        _m8_service.start_quality_check(repair_order=self.order, actor=self.staff)
+        with self.assertRaises(IntegrityError):
+            _M11Check.objects.create(
+                company=self.company, repair_order=self.order, execution=execution,
+            )
+
+    def test_a_company_with_no_checklist_is_refused_rather_than_given_one(self):
+        # A platform that made up what to test would be asserting it knows the
+        # shop's trade.
+        self.repaired_order()
+        _M11Template.objects.filter(company=self.company).update(is_active=False)
+        with self.assertRaises(_m8_service.QualityError):
+            _m8_service.start_quality_check(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.REPAIRED)
+
+    def test_a_device_specific_template_wins_over_the_general_one(self):
+        specific = _M11Template.objects.create(
+            company=self.company, name='Control de teléfonos', device_type='phone',
+        )
+        specific.items.create(code='imei', label='IMEI legible', sort_order=10)
+
+        self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.assertEqual(check.template_name, 'Control de teléfonos')
+        self.assertEqual({i.code for i in check.items.all()}, {'imei'})
+
+    def test_starting_writes_history_and_audit(self):
+        self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        event = _M8History.objects.filter(repair_order=self.order).order_by('-pk').first()
+        self.assertEqual(event.to_status, _M8Status.QUALITY_CONTROL)
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='service_quality_started', target_id=str(check.pk),
+            ).exists()
+        )
+
+    def test_the_default_checklist_names_no_vendor(self):
+        # A platform whose default list asked about Face ID would be a platform
+        # that fits one shop.
+        template = _M11Template.objects.get(company=self.company, device_type='')
+        body = ' '.join(f'{i.code} {i.label}' for i in template.items.all()).lower()
+        for vendor in ('apple', 'iphone', 'face id', 'lightning', 'samsung', 'android'):
+            self.assertNotIn(vendor, body, vendor)
+
+
+class M11PassTest(M11QualityBase):
+    """The server computes the verdict. The caller never asserts it."""
+
+    def _open(self):
+        self.repaired_order()
+        return _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+
+    def test_passing_moves_the_order_and_freezes_the_check(self):
+        check = self._open()
+        self.answer_all(check)
+        passed = _m8_service.pass_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.status, _M8Status.READY_FOR_PICKUP)
+        self.assertEqual(passed.status, _M11Status.PASSED)
+        self.assertIsNotNone(passed.completed_at)
+        self.assertEqual(passed.completed_by, self.staff)
+
+    def test_a_settled_check_cannot_be_edited(self):
+        check = self._open()
+        self.answer_all(check)
+        _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+        check.refresh_from_db()
+        check.notes = 'otra cosa'
+        with self.assertRaises(DjangoValidationError):
+            check.save()
+
+    def test_it_cannot_pass_with_a_failed_point(self):
+        check = self._open()
+        self.answer_all(check)
+        first = check.items.first()
+        _m8_service.record_quality_result(
+            item=first, result=_M11Result.FAIL, notes='No enciende.', actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.QualityError):
+            _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.QUALITY_CONTROL)
+
+    def test_it_cannot_pass_with_a_required_point_unanswered(self):
+        check = self._open()
+        for item in check.items.filter(is_required=False):
+            _m8_service.record_quality_result(
+                item=item, result=_M11Result.PASS, actor=self.staff,
+            )
+        with self.assertRaises(_m8_service.QualityError):
+            _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+
+    def test_not_applicable_is_an_answer_and_does_not_block(self):
+        # A checklist asking a laptop about a camera is asking a question it
+        # does not have. Without N/A a technician either lies or leaves a blank,
+        # and a blank cannot be told from a point nobody reached.
+        check = self._open()
+        self.answer_all(check, result=_M11Result.NOT_APPLICABLE)
+        passed = _m8_service.pass_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.assertEqual(passed.status, _M11Status.PASSED)
+
+    def test_an_optional_point_may_stay_unanswered(self):
+        check = self._open()
+        for item in check.items.filter(is_required=True):
+            _m8_service.record_quality_result(
+                item=item, result=_M11Result.PASS, actor=self.staff,
+            )
+        passed = _m8_service.pass_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.assertEqual(passed.status, _M11Status.PASSED)
+
+    def test_passing_twice_is_refused(self):
+        check = self._open()
+        self.answer_all(check)
+        _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+        with self.assertRaises(_m8_service.QualityError):
+            _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+
+    def test_passing_writes_history_and_audit(self):
+        check = self._open()
+        self.answer_all(check)
+        _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+        event = _M8History.objects.filter(repair_order=self.order).order_by('-pk').first()
+        self.assertEqual(event.to_status, _M8Status.READY_FOR_PICKUP)
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='service_quality_passed', target_id=str(check.pk),
+            ).exists()
+        )
+
+    def test_passing_creates_no_delivery_no_payment_and_no_ecommerce_order(self):
+        check = self._open()
+        self.answer_all(check)
+        before = Order.objects.count()
+        _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(Order.objects.count(), before)
+        self.assertIsNone(self.order.closed_at)
+
+
+class M11FailAndReworkTest(M11QualityBase):
+    """A failure sends the device back WITHOUT touching what already happened."""
+
+    def _failed(self):
+        execution = self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.answer_all(check)
+        first = check.items.first()
+        _m8_service.record_quality_result(
+            item=first, result=_M11Result.FAIL, notes='Sigue sin cargar.',
+            actor=self.staff,
+        )
+        failed = _m8_service.fail_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        return execution, check, failed
+
+    def test_failing_returns_the_order_to_the_bench(self):
+        _execution, _check, failed = self._failed()
+        self.assertEqual(self.order.status, _M8Status.IN_REPAIR)
+        self.assertEqual(failed.status, _M11Status.FAILED)
+
+    def test_the_previous_execution_is_not_reopened(self):
+        execution, _check, _failed = self._failed()
+        execution.refresh_from_db()
+        self.assertIsNotNone(execution.completed_at)
+        self.assertEqual(execution.work_performed, 'Batería reemplazada.')
+
+    def test_a_second_execution_is_opened_for_the_rework(self):
+        # The device is already on the bench and whoever failed it knows what is
+        # wrong. Leaving the order in_repair with no open execution would be a
+        # trap: recording a part refuses without one.
+        execution, _check, _failed = self._failed()
+        rework = _m8_service.open_execution(self.order)
+
+        self.assertIsNotNone(rework)
+        self.assertNotEqual(rework.pk, execution.pk)
+        self.assertIsNone(rework.completed_at)
+        self.assertEqual(
+            _M10Execution.objects.filter(repair_order=self.order).count(), 2,
+        )
+
+    def test_the_first_executions_parts_are_untouched(self):
+        execution, _check, _failed = self._failed()
+        usages = _M10Usage.objects.filter(execution=execution)
+        self.assertEqual(usages.count(), 1)
+        self.assertFalse(usages.first().is_reversed)
+
+    def test_no_stock_moves_because_a_test_failed(self):
+        # A part that failed a test is still physically fitted. A failed
+        # inspection is not a returned component.
+        #
+        # The baseline is taken AFTER the repair consumed its part: the drop
+        # from that consumption is M10 working, and measuring before it would
+        # blame quality control for a movement it did not make.
+        execution = self.repaired_order()
+        before = self.stock()
+        movements = StockMovement.objects.count()
+
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.answer_all(check)
+        _m8_service.record_quality_result(
+            item=check.items.first(), result=_M11Result.FAIL, actor=self.staff,
+        )
+        _m8_service.fail_quality_check(repair_order=self.order, actor=self.staff)
+
+        self.assertEqual(self.stock(), before)
+        self.assertEqual(StockMovement.objects.count(), movements)
+        self.assertFalse(
+            _M10Usage.objects.filter(execution=execution, reversed_at__isnull=False).exists()
+        )
+
+    def test_the_failed_check_keeps_its_answers(self):
+        _execution, check, _failed = self._failed()
+        check.refresh_from_db()
+        self.assertEqual(check.items.filter(result=_M11Result.FAIL).count(), 1)
+        self.assertEqual(
+            check.items.filter(result=_M11Result.FAIL).first().notes,
+            'Sigue sin cargar.',
+        )
+
+    def test_failing_with_nothing_marked_wrong_is_refused(self):
+        # A rework order with no failed point tells the next technician nothing.
+        self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.answer_all(check)
+        with self.assertRaises(_m8_service.QualityError):
+            _m8_service.fail_quality_check(repair_order=self.order, actor=self.staff)
+
+    def test_the_rework_can_be_inspected_again_as_a_second_check(self):
+        _execution, first_check, _failed = self._failed()
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Cambiado el conector.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        second = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.answer_all(second)
+        _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.status, _M8Status.READY_FOR_PICKUP)
+        self.assertEqual(_M11Check.objects.filter(repair_order=self.order).count(), 2)
+        first_check.refresh_from_db()
+        self.assertEqual(first_check.status, _M11Status.FAILED)
+
+    def test_the_history_can_answer_what_failed_and_what_fixed_it(self):
+        # The whole reason nothing is overwritten.
+        execution, check, _failed = self._failed()
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Cambiado el conector.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        rework = _M10Execution.objects.filter(repair_order=self.order).order_by('pk').last()
+
+        execution.refresh_from_db()
+        rework.refresh_from_db()
+
+        self.assertEqual(check.execution_id, execution.pk)
+        self.assertNotEqual(rework.pk, execution.pk)
+        self.assertEqual(execution.work_performed, 'Batería reemplazada.')
+        self.assertEqual(rework.work_performed, 'Cambiado el conector.')
+
+    def test_failing_writes_history_and_audit(self):
+        _execution, check, _failed = self._failed()
+        event = _M8History.objects.filter(repair_order=self.order).order_by('-pk').first()
+        self.assertEqual(event.to_status, _M8Status.IN_REPAIR)
+        log = AdminAuditLog.objects.filter(
+            action='service_quality_failed', target_id=str(check.pk),
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertIn('rework_execution_id', log.metadata)
+
+
+class M11RbacMatrixTest(M11QualityBase):
+    """
+    Who may inspect, resolved by the resolver rather than asserted.
+
+    The owner's rule: Web and Mobile share ONE capability catalogue, the
+    standard technical preset works the lifecycle the platform implemented, and
+    a tenant that narrows a role keeps it narrowed.
+    """
+
+    def _may(self, user, code):
+        cache.clear()
+        return has_capability(user, self.company, code)
+
+    def test_the_capability_is_ACTIVE_now_that_the_module_exists(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+        self.assertEqual(CAPABILITIES['service.quality.manage'].status, STATUS_ACTIVE)
+
+    def test_the_catalogue_now_reserves_nothing(self):
+        # Every capability that ever named absent code has had its module
+        # built. Worth pinning: it is the sentence "no permission in this
+        # platform describes something nobody wrote".
+        from .capabilities import RESERVED_CAPABILITY_CODES
+        self.assertEqual(RESERVED_CAPABILITY_CODES, frozenset())
+
+    def test_the_standard_technician_preset_can_inspect(self):
+        # The owner's explicit product decision.
+        client = self.only_capabilities(slug='m11-vacio')
+        _MRA = MembershipRoleAssignment
+        _MRA.objects.filter(membership=self.membership).delete()
+        role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
+        _assign(self.membership, role)
+        cache.clear()
+
+        self.assertTrue(self._may(self.staff, 'service.quality.manage'))
+        self.assertTrue(self._may(self.staff, 'service.repair.manage'))
+        # And still not a warehouse permission.
+        self.assertFalse(self._may(self.staff, 'inventory.adjust'))
+        void = client
+
+    def test_a_company_admin_can_inspect(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='administrador'),
+        )
+        self.assertTrue(self._may(self.staff, 'service.quality.manage'))
+
+    def test_a_platform_master_can_inspect_in_an_EXPLICIT_tenant(self):
+        master = _m7_user('m11_master')
+        master.is_superuser = True
+        master.is_staff = True
+        master.save(update_fields=['is_superuser', 'is_staff'])
+
+        self.assertTrue(self._may(master, 'service.quality.manage'))
+        # No membership: a master is not a customer of the company.
+        self.assertFalse(
+            Membership.objects.filter(user=master, company=self.company).exists()
+        )
+
+    def test_a_tenant_can_build_a_technician_who_repairs_but_does_not_inspect(self):
+        # THE SEPARATION OF DUTIES THE PLATFORM MUST NOT PREVENT. M11 does not
+        # require it — a one-person shop would be locked out — but a shop that
+        # wants a second pair of eyes has to be able to express it.
+        self.only_capabilities(
+            'service.orders.view', 'service.repair.manage', slug='m11-solo-repara',
+        )
+        self.assertTrue(self._may(self.staff, 'service.repair.manage'))
+        self.assertFalse(self._may(self.staff, 'service.quality.manage'))
+
+    def test_a_tenant_can_build_an_inspector_who_does_not_repair(self):
+        self.only_capabilities(
+            'service.orders.view', 'service.quality.manage', slug='m11-solo-calidad',
+        )
+        self.assertTrue(self._may(self.staff, 'service.quality.manage'))
+        self.assertFalse(self._may(self.staff, 'service.repair.manage'))
+
+    def test_sales_and_inventory_presets_cannot_inspect(self):
+        for slug in ('ventas', 'inventario'):
+            MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+            _assign(
+                self.membership,
+                CompanyRole.objects.get(company=self.company, slug=slug),
+            )
+            self.assertFalse(self._may(self.staff, 'service.quality.manage'), slug)
+
+    def test_the_legacy_technician_fallback_was_NOT_widened(self):
+        # It exists so a company with no configured roles behaves as it did in
+        # Phase 2A. Broadening it would grant the lifecycle to every legacy
+        # technician in every such tenant without anybody choosing it.
+        from .tenancy import LEGACY_ROLE_CAPABILITIES
+        from .models import UserProfile
+
+        legacy = LEGACY_ROLE_CAPABILITIES[UserProfile.ROLE_TECHNICIAN]
+        self.assertEqual(legacy, frozenset({'company.view', 'service.manage'}))
+        self.assertNotIn('service.quality.manage', legacy)
+        self.assertNotIn('service.repair.manage', legacy)
+
+    def test_a_role_name_is_never_authority(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        cache.clear()
+        self.assertEqual(self.membership.role, 'technician')
+        self.assertFalse(self._may(self.staff, 'service.quality.manage'))
+
+    def test_an_admin_of_another_company_cannot_inspect_here(self):
+        outsider = _m7_user('m11_ajeno')
+        membership = Membership.objects.create(
+            user=outsider, company=self.other, role='admin',
+        )
+        _assign(
+            membership,
+            CompanyRole.objects.get(company=self.other, slug='administrador'),
+        )
+        self.assertFalse(self._may(outsider, 'service.quality.manage'))
+
+    def test_a_customer_holds_nothing_internal(self):
+        self.assertFalse(self._may(self.client_user, 'service.quality.manage'))
+        self.assertFalse(self._may(self.client_user, 'service.orders.view'))
+
+
+class M11InternalApiTest(M11QualityBase):
+    """The surface, its gates and its refusals."""
+
+    def _url(self, tail=''):
+        return _m10_url('m8-taller', self.order.pk, f'quality/{tail}')
+
+    def test_the_full_pass_flow_over_http(self):
+        self.repaired_order()
+
+        opened = self.client.post(self._url())
+        self.assertEqual(opened.status_code, 201)
+        items = opened.data['items']
+        self.assertGreater(len(items), 0)
+
+        for item in items:
+            res = self.client.patch(
+                self._url(f'items/{item["id"]}/'), {'result': 'pass'}, format='json',
+            )
+            self.assertEqual(res.status_code, 200)
+
+        passed = self.client.post(self._url('pass/'), {}, format='json')
+        self.assertEqual(passed.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.READY_FOR_PICKUP)
+
+    def test_an_order_with_no_check_answers_null_not_404(self):
+        self.repaired_order()
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.data['quality_check'])
+
+    def test_the_body_cannot_assert_a_verdict(self):
+        # A checklist whose result could be sent by whoever filled it in is a
+        # checklist that proves nothing.
+        self.repaired_order()
+        self.client.post(self._url())
+        res = self.client.post(
+            self._url('pass/'),
+            {'status': 'passed', 'completed_at': '2000-01-01T00:00:00Z'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.QUALITY_CONTROL)
+
+    def test_reading_needs_only_orders_view(self):
+        self.repaired_order()
+        client = self.only_capabilities('service.orders.view', slug='m11-lector')
+        for tail in ('', 'history/'):
+            res = client.get(self._url(tail))
+            self.assertEqual(res.status_code, 200, tail)
+
+    def test_reading_does_not_grant_inspecting(self):
+        self.repaired_order()
+        client = self.only_capabilities('service.orders.view', slug='m11-lector2')
+        for tail, payload in (('', {}), ('pass/', {}), ('fail/', {})):
+            res = client.post(self._url(tail), payload, format='json')
+            self.assertEqual(res.status_code, 403, tail)
+
+    def test_repair_manage_alone_cannot_inspect(self):
+        self.repaired_order()
+        client = self.only_capabilities(
+            'service.orders.view', 'service.repair.manage', slug='m11-solo-rep',
+        )
+        res = client.post(self._url(), {}, format='json')
+        self.assertEqual(res.status_code, 403)
+
+    def test_a_foreign_tenant_gets_404(self):
+        self.repaired_order()
+        for tail in ('', 'history/'):
+            res = self.client.get(_m10_url('m8-otra', self.order.pk, f'quality/{tail}'))
+            self.assertEqual(res.status_code, 404, tail)
+
+    def test_an_item_from_another_order_is_not_found(self):
+        self.repaired_order()
+        opened = self.client.post(self._url())
+        item_id = opened.data['items'][0]['id']
+
+        other = self.make_order()
+        res = self.client.patch(
+            _m10_url('m8-taller', other.pk, f'quality/items/{item_id}/'),
+            {'result': 'pass'}, format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_history_endpoint_returns_every_check(self):
+        self.repaired_order()
+        check = self.client.post(self._url())
+        for item in check.data['items']:
+            self.client.patch(
+                self._url(f'items/{item["id"]}/'), {'result': 'pass'}, format='json',
+            )
+        self.client.patch(
+            self._url(f'items/{check.data["items"][0]["id"]}/'),
+            {'result': 'fail', 'notes': 'No.'}, format='json',
+        )
+        self.client.post(self._url('fail/'), {}, format='json')
+
+        res = self.client.get(self._url('history/'))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['status'], 'failed')
+
+
+class M11CustomerPrivacyTest(M11QualityBase):
+    """A customer follows the stage. Never the checklist."""
+
+    def _customer(self):
+        return _m7_login('cliente_m8')
+
+    def _through_quality(self, *, fail=False):
+        self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.answer_all(check)
+        if fail:
+            _m8_service.record_quality_result(
+                item=check.items.first(), result=_M11Result.FAIL,
+                notes='La cámara frontal no enfoca.', actor=self.staff,
+            )
+            _m8_service.fail_quality_check(
+                repair_order=self.order, actor=self.staff,
+                notes='Devuelto al técnico.',
+            )
+        else:
+            _m8_service.pass_quality_check(
+                repair_order=self.order, actor=self.staff, notes='Todo correcto.',
+            )
+        self.order.refresh_from_db()
+        return check
+
+    def test_the_customer_sees_the_new_status_and_the_tenant_label(self):
+        self._through_quality()
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        self.assertEqual(res.data['status'], 'ready_for_pickup')
+        self.assertEqual(res.data['status_label'], 'Listo para recoger')
+
+    def test_the_customer_never_sees_the_checklist(self):
+        self._through_quality(fail=True)
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        body = json.dumps(res.data, ensure_ascii=False)
+
+        for forbidden in (
+            'cámara frontal', 'Devuelto al técnico', 'checklist', 'quality_check',
+            'items', 'result', 'checked_by', 'template', 'recepcion',
+            'Batería reemplazada', 'work_performed', 'internal_notes',
+        ):
+            self.assertNotIn(forbidden, body, forbidden)
+
+    def test_the_customer_payload_is_still_the_ten_allowlisted_fields(self):
+        self._through_quality()
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        self.assertEqual(
+            sorted(res.data),
+            ['closed_at', 'device_summary', 'id', 'number', 'received_at',
+             'reported_issue', 'status', 'status_label', 'timeline', 'updated_at'],
+        )
+
+    def test_a_failure_reads_as_a_neutral_stage_not_a_technical_reason(self):
+        # "Falló la cámara frontal" is a note between a shop and itself.
+        # Publishing it would turn every rework into an argument.
+        self._through_quality(fail=True)
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        codes = [e['status'] for e in res.data['timeline']]
+
+        self.assertIn('quality_control', codes)
+        self.assertIn('in_repair', codes)
+        self.assertNotIn('cámara', json.dumps(res.data, ensure_ascii=False))
+
+    def test_a_tenant_can_hide_the_quality_stage(self):
+        setting = _M8StatusSetting.objects.get(
+            company=self.company, code='quality_control',
+        )
+        setting.is_customer_visible = False
+        setting.save(update_fields=['is_customer_visible'])
+
+        self._through_quality()
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        codes = [e['status'] for e in res.data['timeline']]
+        self.assertNotIn('quality_control', codes)
+        self.assertIn('ready_for_pickup', codes)
+
+    def test_no_customer_route_exposes_quality(self):
+        self._through_quality()
+        client = self._customer()
+        for tail in ('quality/', 'quality/history/'):
+            res = client.get(
+                f'/api/v1/customer/m8-taller/repairs/{self.order.pk}/{tail}'
+            )
+            self.assertEqual(res.status_code, 404, tail)
+
+    def test_a_customer_cannot_invoke_the_internal_quality_endpoint(self):
+        self.repaired_order()
+        res = self._customer().post(
+            _m10_url('m8-taller', self.order.pk, 'quality/'), {}, format='json',
+        )
+        self.assertIn(res.status_code, (403, 404))
+
+
+class M11ProvisioningTest(M11QualityBase):
+    """A company can inspect the moment it exists, not the moment a migration ran."""
+
+    def test_provisioning_seeds_every_lifecycle_state(self):
+        codes = set(
+            _M8StatusSetting.objects.filter(company=self.company)
+            .values_list('code', flat=True)
+        )
+        self.assertEqual(codes, {c for c, _l in _M8Status.choices})
+
+    def test_a_brand_new_company_gets_a_checklist_it_can_use(self):
+        fresh = _saas_company('Nueva M11', 'm11-nueva', tax_id='20990000301')
+        provision_company_access_defaults(fresh)
+
+        template = _M11Template.objects.get(company=fresh, device_type='')
+        self.assertTrue(template.items.exists())
+        self.assertTrue(template.items.filter(is_required=True).exists())
+
+    def test_the_status_migration_and_the_runtime_defaults_agree(self):
+        import importlib
+        from .company_provisioning import PRESET_REPAIR_STATUSES
+
+        module = importlib.import_module(
+            'store.migrations.0049_seed_quality_statuses_and_checklists',
+        )
+        runtime = {
+            code: (label, visible, order)
+            for code, label, visible, order in PRESET_REPAIR_STATUSES
+        }
+        for code, label, visible, order in module.NEW_STATUSES:
+            self.assertEqual(runtime[code], (label, visible, order), code)
+
+    def test_the_checklist_migration_and_the_runtime_defaults_agree(self):
+        # The migration keeps a frozen copy; this is the one day it matters that
+        # the two say the same thing.
+        import importlib
+        from .company_provisioning import (
+            PRESET_QUALITY_ITEMS, PRESET_QUALITY_TEMPLATE_NAME,
+        )
+
+        module = importlib.import_module(
+            'store.migrations.0049_seed_quality_statuses_and_checklists',
+        )
+        self.assertEqual(module.TEMPLATE_NAME, PRESET_QUALITY_TEMPLATE_NAME)
+        self.assertEqual(module.TEMPLATE_ITEMS, PRESET_QUALITY_ITEMS)
+
+    def test_the_capability_migration_targets_both_presets(self):
+        import importlib
+        module = importlib.import_module(
+            'store.migrations.0050_quality_capability_for_untouched_presets',
+        )
+        self.assertEqual(module.NEW_CAPABILITIES, ('service.quality.manage',))
+        self.assertEqual(module.TECHNICIAN_SLUG, 'servicio-tecnico')
+        self.assertNotIn('service.quality.manage', module.TECHNICIAN_PREVIOUS)
+
+    def test_the_grant_reaches_a_preset_H1B_just_repaired(self):
+        # The bug this test exists for: H1B grants the lifecycle capabilities
+        # WITHOUT rewriting the description, so a role it just fixed still
+        # carries 0017's wording. A quality grant that matched only the current
+        # sentence would skip exactly those roles — the asymmetry would close
+        # for the bench and reopen for the inspection.
+        import importlib
+        from django.apps import apps as django_apps
+
+        module = importlib.import_module(
+            'store.migrations.0050_quality_capability_for_untouched_presets',
+        )
+        self.assertGreater(len(module.TECHNICIAN_DESCRIPTIONS), 1)
+
+        historical = CompanyRole.objects.get(company=self.other, slug='servicio-tecnico')
+        historical.description = 'Equivalente al rol legacy "technician".'
+        historical.capabilities = sorted(module.TECHNICIAN_PREVIOUS)
+        historical.save(update_fields=['description', 'capabilities'])
+
+        module.grant(django_apps, None)
+        historical.refresh_from_db()
+        self.assertIn('service.quality.manage', historical.capabilities)
+
+    def test_a_tenant_narrowed_technician_role_is_left_alone_by_the_grant(self):
+        import importlib
+        from django.apps import apps as django_apps
+
+        # The other tenant's preset, NARROWED by its own administrator. It keeps
+        # the platform's slug, name and description — only the capability set
+        # differs — which is exactly the case the four-field rule must refuse.
+        narrowed = CompanyRole.objects.get(
+            company=self.other, slug='servicio-tecnico',
+        )
+        narrowed.capabilities = sorted(['company.view', 'service.repair.manage'])
+        narrowed.save(update_fields=['capabilities'])
+        module = importlib.import_module(
+            'store.migrations.0050_quality_capability_for_untouched_presets',
+        )
+        module.grant(django_apps, None)
+        narrowed.refresh_from_db()
+        self.assertNotIn('service.quality.manage', narrowed.capabilities)
+
+    def test_the_technician_preset_now_carries_quality(self):
+        role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
+        self.assertIn('service.quality.manage', role.capabilities)
+
+
+class M11StructuralTest(M11QualityBase):
+    """Guarantees that must not be able to drift."""
+
+    def _module_source(self, module):
+        import ast, inspect, textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(module)))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)):
+                body = getattr(node, 'body', [])
+                if (
+                    body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                ):
+                    body.pop(0)
+                    if not body and not isinstance(node, ast.Module):
+                        body.append(ast.Pass())
+        ast.fix_missing_locations(tree)
+        return ast.unparse(tree)
+
+    def test_quality_never_writes_stock(self):
+        # A failed test is not a returned part. The device may still have the
+        # component fitted, and inventory is not the quality module's to move.
+        import ast
+        from . import service_services
+
+        tree = ast.parse(self._module_source(service_services))
+        for name in ('start_quality_check', 'pass_quality_check',
+                     'fail_quality_check', 'record_quality_result'):
+            fn = next(
+                n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == name
+            )
+            body = ast.unparse(fn)
+            for forbidden in ('create_stock_movement', 'BranchStock', 'StockMovement',
+                              'PartUsage'):
+                self.assertNotIn(forbidden, body, f'{name}: {forbidden}')
+
+    def test_quality_never_reopens_a_completed_execution(self):
+        import ast
+        from . import service_services
+
+        tree = ast.parse(self._module_source(service_services))
+        fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == 'fail_quality_check'
+        )
+        body = ast.unparse(fn)
+        # It CREATES an execution; it must never clear a completion.
+        self.assertIn('RepairExecution(', body)
+        self.assertNotIn('completed_at = None', body)
+        self.assertNotIn("completed_at=None", body)
+
+    def test_the_service_module_still_never_writes_an_ecommerce_order(self):
+        import re
+        from . import service_services
+        code = self._module_source(service_services)
+        self.assertIsNone(re.search(r'(?<![A-Za-z])Order\.objects', code))
+        for forbidden in ('CartItem', 'stripe', 'izipay', 'OrderItem'):
+            self.assertNotIn(forbidden, code, forbidden)
+
+    def test_the_views_never_write_status_or_history_directly(self):
+        from . import v1_service_views
+        code = self._module_source(v1_service_views)
+        for forbidden in ('RepairStatusHistory', 'QualityCheck.objects.create',
+                          'QualityCheckItem.objects.create'):
+            self.assertNotIn(forbidden, code, forbidden)
+
+    def test_no_write_serializer_accepts_a_verdict_or_a_clock(self):
+        from .v1_service_serializers import (
+            V1ServiceQualityDecisionSerializer, V1ServiceQualityResultSerializer,
+        )
+        self.assertEqual(
+            set(V1ServiceQualityResultSerializer().get_fields()), {'result', 'notes'},
+        )
+        self.assertEqual(
+            set(V1ServiceQualityDecisionSerializer().get_fields()), {'notes'},
+        )
+
+    def test_the_customer_serializer_gained_no_field(self):
+        from .v1_service_serializers import V1CustomerRepairDetailSerializer
+        self.assertEqual(
+            set(V1CustomerRepairDetailSerializer.Meta.fields),
+            {
+                'id', 'number', 'status', 'status_label', 'device_summary',
+                'received_at', 'closed_at', 'updated_at', 'reported_issue',
+                'timeline',
+            },
+        )
+
+    def test_the_check_serializer_never_exposes_the_template_id(self):
+        # The snapshot IS the record. Handing a client the template id invites
+        # it to render an old inspection through today's list.
+        from .v1_service_serializers import V1ServiceQualityCheckSerializer
+        fields = set(V1ServiceQualityCheckSerializer.Meta.fields)
+        self.assertIn('template_name', fields)
+        self.assertNotIn('template', fields)
+        self.assertNotIn('template_id', fields)
+
+    def test_no_m11_model_uses_a_file_field(self):
+        # DEC-016 — no storage provider. Photo evidence is a real need and it is
+        # not this phase's to invent, however natural it feels next to a
+        # checklist.
+        from django.db import models as dj_models
+        for model in (_M11Check, _M11Item, _M11Template):
+            for field in model._meta.get_fields():
+                self.assertNotIsInstance(
+                    field, dj_models.FileField, f'{model.__name__}.{field.name}',
+                )
+
+    def test_m11_invented_no_capability(self):
+        from .capabilities import CAPABILITIES
+        from .v1_service_views import CAP_QUALITY_MANAGE
+        self.assertIn(CAP_QUALITY_MANAGE, CAPABILITIES)
+
+    def test_the_graph_still_has_exactly_one_leaf(self):
+        from django.db.migrations.loader import MigrationLoader
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        leaves = [name for app, name in loader.graph.leaf_nodes() if app == 'store']
+        self.assertEqual(len(leaves), 1, leaves)
+
+    def test_no_service_view_authorizes_on_a_role_name(self):
+        # The owner's rule, as a structural guard: the role is a preset and a
+        # label, never authority. Every gate is `require_capability`.
+        import re
+        from . import v1_service_views
+        code = self._module_source(v1_service_views)
+
+        self.assertIn('require_capability', code)
+        for forbidden in (
+            r"role\s*==\s*'", r"\.role\s*in\s*\(", 'ROLE_TECHNICIAN', 'ROLE_ADMIN',
+            'get_user_role',
+        ):
+            self.assertIsNone(re.search(forbidden, code), forbidden)

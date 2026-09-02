@@ -158,3 +158,16 @@ No crear un “master” como otro rol configurable del tenant, porque permitir�
 2. Añadir regresiones para revocación, rol inactivo, cross-tenant y master.
 3. Ejecutar backend completo + typecheck + lint + build.
 4. Solo después, habilitar revocación completa desde la consola y considerar el merge.
+
+## Nota sobre capacidades reservadas (tras fusionar `master`)
+
+Esta fase tenía instrucción explícita de **no** convertir capacidades reservadas en asignables y de mantener `service.quality.manage` reservada. M11 la respetó: no la tocó.
+
+Durante el desarrollo, `master` incorporó el PR #12 (control de calidad), que **hizo asignable** `service.quality.manage` y la añadió al preset `Servicio Técnico`. Es una decisión de esa fase, posterior a este encargo, y M11 no la deshace.
+
+Consecuencias que sí corresponden anotar:
+
+- El catálogo se queda **sin ninguna capacidad reservada**: reservadas = 0, asignables = 36 de 36.
+- `Supervisor Técnico` la hereda, porque se define como `_TECHNICIAN_CAPS + (…)`. Es coherente con lo que la propia matriz de esta auditoría proponía para el rol («diagnóstico, reparación y futura calidad»).
+- **No se crea** ningún preset de Control de Calidad, ni navegación, ni pantalla, ni asignación estándar, como pedía el encargo.
+- Un test de M11 asumía que existía al menos una capacidad reservada y se volvió engañoso al vaciarse el conjunto. Reescrito: la invariante «reservada ⇒ no asignable» se comprueba siempre, y el caso concreto se omite con motivo explícito mientras no haya ninguna.
