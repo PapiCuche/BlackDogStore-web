@@ -8050,8 +8050,13 @@ class Phase2a1CatalogTest(TestCase):
             normalise_capabilities(['inventory.teleport'])
 
     def test_normalise_rejects_reserved_code(self):
+        # The example moves as modules ship. `service.repair.manage` was this
+        # test's reserved code until M10 built execution; the rule is unchanged
+        # and `service.quality.manage` now carries it. When quality control
+        # ships, this test needs a new example — and if there is none left, the
+        # catalogue has no reserved codes and that is worth noticing loudly.
         with self.assertRaises(ValueError):
-            normalise_capabilities(['service.repair.manage'])
+            normalise_capabilities(['service.quality.manage'])
 
     def test_normalise_deduplicates_and_sorts(self):
         self.assertEqual(
@@ -8101,8 +8106,10 @@ class Phase2a1ModelInvariantTest(TestCase):
             _role(self.company_a, 'Malo', ['inventory.teleport'], 'malo')
 
     def test_role_rejects_reserved_capability(self):
+        # Example moved from `service.repair.manage` in M10 — see
+        # `test_normalise_rejects_reserved_code`.
         with self.assertRaises(DjangoValidationError):
-            _role(self.company_a, 'Reservado', ['service.repair.manage'], 'reservado')
+            _role(self.company_a, 'Reservado', ['service.quality.manage'], 'reservado')
 
     def test_role_capabilities_are_stored_sorted_and_deduplicated(self):
         role = _role(self.company_a, 'Orden', ['inventory.adjust', 'company.view', 'company.view'], 'orden')
@@ -8423,9 +8430,11 @@ class Phase2a1AccessApiTest(TestCase):
         self.assertEqual(role.data['capabilities'], ['company.view', 'sales.orders.view'])
 
     def test_role_rejects_reserved_capability_via_api(self):
+        # Example moved from `service.repair.manage` in M10 — see
+        # `test_normalise_rejects_reserved_code`.
         res = self._as(self.admin_a).post('/api/admin/roles/', {
             'company': self.company_a.pk, 'name': 'Reservado', 'slug': 'reservado',
-            'capabilities': ['service.repair.manage'],
+            'capabilities': ['service.quality.manage'],
         }, format='json')
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -25278,8 +25287,10 @@ class M6CapabilityStatusTest(TestCase):
         # modules nobody has written.
         from .capabilities import CAPABILITIES, STATUS_RESERVED
 
-        # `service.diagnostic.manage` left this list in M9, which built it.
-        for code in ('service.repair.manage', 'service.quality.manage'):
+        # `service.diagnostic.manage` left this list in M9 and
+        # `service.repair.manage` in M10, each when the module it names shipped.
+        # One remains, and the rule that put it here has not moved an inch.
+        for code in ('service.quality.manage',):
             self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
 
     def test_a_bare_module_prefix_is_still_not_an_endpoint(self):
@@ -26913,11 +26924,12 @@ class M8ProvisioningTest(M8ServiceBase):
             self.assertIn(code, role.capabilities, code)
 
     def test_the_technician_preset_does_not_gain_reserved_capabilities(self):
-        # `service.diagnostic.manage` left this list in M9, which built the
-        # module it names. The two that remain still describe absent code, and a
-        # preset must never carry authority over something nobody wrote.
+        # `service.diagnostic.manage` left this list in M9 and
+        # `service.repair.manage` in M10, each when its module shipped. What
+        # remains still describes absent code, and a preset must never carry
+        # authority over something nobody wrote.
         role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
-        for code in ('service.repair.manage', 'service.quality.manage'):
+        for code in ('service.quality.manage',):
             self.assertNotIn(code, role.capabilities, code)
 
 
@@ -26936,10 +26948,12 @@ class M8CapabilityCatalogueTest(TestCase):
     def test_capabilities_for_modules_nobody_has_built_stay_RESERVED(self):
         # The rule that has held since Phase 2A: no permission over absent code.
         # `service.diagnostic.manage` was on this list until M9 built diagnosis
-        # and quoting; the rule did not change, the set of absent modules did.
+        # and quoting, and `service.repair.manage` until M10 built execution and
+        # part consumption. The rule did not change; the set of absent modules
+        # did, which is exactly what it is supposed to do.
         from .capabilities import CAPABILITIES, STATUS_RESERVED
 
-        for code in ('service.repair.manage', 'service.quality.manage'):
+        for code in ('service.quality.manage',):
             self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
 
     def test_M8_invented_no_capability(self):
@@ -27218,12 +27232,13 @@ class M8TransitionTest(M8ServiceBase):
     def test_states_no_module_supports_yet_do_not_exist(self):
         # Was `test_states_M8_cannot_support_do_not_exist`. `approved` and
         # `rejected` left this list in M9, which built the quote and the
-        # decision that give them meaning. The RULE has not changed: a state
-        # arrives with its module, because shipping the word without the module
-        # lets an order enter a state no code can act on.
+        # decision that give them meaning; `in_repair`, `waiting_parts` and
+        # `repaired` left it in M10, which built the execution and the part
+        # consumption. The RULE has not changed and is the point of the test: a
+        # state arrives with its module, because shipping the word without the
+        # module lets an order enter a state no code can act on.
         codes = {code for code, _label in _M8Status.choices}
         for absent in (
-            'in_repair', 'waiting_parts', 'repaired',
             'quality_control', 'ready_for_pickup', 'delivered', 'warranty',
         ):
             self.assertNotIn(absent, codes, absent)
@@ -28774,10 +28789,12 @@ class M9LifecycleTest(M9ServiceBase):
         self.assertIn('rejected', codes)
 
     def test_states_M9_still_cannot_support_do_not_exist(self):
+        # M10 claimed `in_repair`, `waiting_parts` and `repaired` by building
+        # the bench they describe. Four remain, and each still waits for the
+        # module that would give it meaning.
         codes = {code for code, _label in _M8Status.choices}
         for absent in (
-            'in_repair', 'waiting_parts', 'repaired', 'quality_control',
-            'ready_for_pickup', 'delivered', 'warranty',
+            'quality_control', 'ready_for_pickup', 'delivered', 'warranty',
         ):
             self.assertNotIn(absent, codes, absent)
 
@@ -28822,7 +28839,13 @@ class M9LifecycleTest(M9ServiceBase):
         self.assertIn(_M8Status.DIAGNOSING, _m8_service.available_transitions(self.order))
 
     def test_an_approved_order_does_not_advance_to_repair(self):
-        # There is no execution module. M9 stops at approved.
+        # STILL TRUE, for a different reason. M9's reason was that no execution
+        # module existed. M10 built one — and `in_repair` went straight into
+        # `EVENT_ONLY_STATES`, so the generic endpoint still cannot reach it and
+        # `available_transitions` still does not offer it. Starting work is
+        # `POST execution/start/`, which opens the row that gives the state its
+        # meaning. The assertion below is unchanged and now proves the stronger
+        # claim.
         quote = self.published_quote()
         _m8_service.record_quote_decision(
             quote=quote, customer=self.customer, user=self.client_user, decision='approve',
@@ -29690,8 +29713,35 @@ class M9StructuralTest(M9ServiceBase):
             re.search(r'(?<![A-Za-z])Order\.objects', code),
             'el módulo de servicio no debe tocar Order de e-commerce',
         )
-        for forbidden in ('CartItem', 'stripe', 'StockMovement', 'OrderItem'):
+        for forbidden in ('CartItem', 'stripe', 'OrderItem'):
             self.assertNotIn(forbidden, code, forbidden)
+
+        # `StockMovement` WAS on that list until M10, and the reason it was
+        # there has not changed one bit: QUOTING A PART DOES NOT RESERVE ONE.
+        # What changed is that the module gained functions whose entire job is
+        # to consume stock, so a module-wide ban would now forbid the feature
+        # instead of the mistake. The guarantee is therefore narrowed to the
+        # functions it was always about — every diagnosis and quote path — and
+        # M10's own `test_the_service_module_never_writes_stock_itself` covers
+        # the other half: even the consuming functions must go through
+        # `inventory_services`, never write a stock row themselves.
+        quoting = (
+            'create_diagnostic', 'update_diagnostic', '_finalize_diagnostic',
+            'latest_diagnostic', 'recalculate_quote', 'create_quote',
+            'update_quote', 'add_quote_item', 'remove_quote_item',
+            'publish_quote', 'cancel_quote', 'customer_visible_quote',
+            'record_quote_decision',
+        )
+        by_name = {
+            node.name: node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        for name in quoting:
+            self.assertIn(name, by_name, name)
+            body = ast.unparse(by_name[name])
+            self.assertNotIn('StockMovement', body, name)
+            self.assertNotIn('create_stock_movement', body, name)
+            self.assertNotIn('BranchStock', body, name)
 
     def test_the_diagnostic_and_quote_models_hold_no_file_field(self):
         from django.db import models as dj_models
@@ -29703,10 +29753,13 @@ class M9StructuralTest(M9ServiceBase):
                 )
 
     def test_the_capability_catalogue_moved_only_what_M9_enforces(self):
+        # M10 promoted `service.repair.manage` when it built the bench, so this
+        # test now asserts what M9 moved and that M10 moved exactly one more —
+        # never that the catalogue is frozen.
         from .capabilities import CAPABILITIES, STATUS_ACTIVE, STATUS_RESERVED
 
         self.assertEqual(CAPABILITIES['service.diagnostic.manage'].status, STATUS_ACTIVE)
-        for code in ('service.repair.manage', 'service.quality.manage'):
+        for code in ('service.quality.manage',):
             self.assertEqual(CAPABILITIES[code].status, STATUS_RESERVED, code)
 
     def test_the_migration_and_the_runtime_status_defaults_agree(self):
@@ -30522,3 +30575,1688 @@ class P0ECartWriterStructureTest(TestCase):
                 n.id for n in names if isinstance(n, ast.Name)
             )
         self.assertIn('IntegrityError', caught)
+
+
+# ===========================================================================
+# M10 / BR-005C — repair execution, part usage, atomic inventory consumption
+# ===========================================================================
+
+from .models import (  # noqa: E402
+    PartUsage as _M10Usage,
+    RepairExecution as _M10Execution,
+    RepairResultCode as _M10Result,
+)
+
+
+def _m10_url(slug, order_id, tail=''):
+    return f'/api/v1/internal/{slug}/service/orders/{order_id}/{tail}'
+
+
+class M10ServiceBase(M9ServiceBase):
+    """
+    M9's fixture, carried all the way to an APPROVED order with a quoted part.
+
+    The part is a real catalogue product with real stock in branch A, because
+    every interesting assertion here is about a number on a shelf moving — or
+    conspicuously not moving.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.part = _prod(self.company, 'Batería X100', 'bateria-x100-m10', price='185.00')
+        self.other_part = _prod(self.company, 'Pantalla X100', 'pantalla-x100-m10', price='420.00')
+        self.foreign_part = _prod(self.other, 'Ajena', 'bateria-ajena-m10', price='90.00')
+
+        _m7_stock(self.branch_a, self.part, 5)
+        _m7_stock(self.branch_b, self.part, 50)
+        _m7_stock(self.branch_a, self.other_part, 0)
+        _m7_stock(self.foreign_branch, self.foreign_part, 99)
+
+        self.client = self.with_capabilities(
+            'service.orders.view', 'service.orders.create', 'service.orders.manage',
+            'service.devices.view', 'service.devices.manage', 'service.customers.view',
+            'service.diagnostic.manage', 'service.repair.manage',
+            slug='m10-rol',
+        )
+
+    # -- helpers ------------------------------------------------------------
+
+    #: Sentinel so `product=None` can mean "a part line with NO product",
+    #: which is a real quote a shop can compose and a real thing to refuse.
+    _DEFAULT = object()
+
+    def quote_with_part(self, *, quantity=2, product=_DEFAULT, item_type=None):
+        quote = self.make_quote(with_item=False)
+        _m8_service.add_quote_item(
+            quote=quote, description='Batería original',
+            quantity=quantity, unit_price='185.00',
+            item_type=item_type or _M9Item.TYPE_PART,
+            product=self.part if product is self._DEFAULT else product,
+        )
+        _m8_service.add_quote_item(
+            quote=quote, description='Mano de obra', quantity=1, unit_price='80.00',
+        )
+        quote.refresh_from_db()
+        return quote
+
+    def approve(self, quote):
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        quote.refresh_from_db()
+        _m8_service.record_quote_decision(
+            quote=quote, customer=self.customer, user=self.client_user,
+            decision='approve',
+        )
+        self.order.refresh_from_db()
+        quote.refresh_from_db()
+        return quote
+
+    def approved_order(self, **kwargs):
+        return self.approve(self.quote_with_part(**kwargs))
+
+    def started(self, **kwargs):
+        quote = self.approved_order(**kwargs)
+        execution = _m8_service.start_repair(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        return quote, execution
+
+    def part_line(self, quote):
+        return quote.items.get(item_type=_M9Item.TYPE_PART)
+
+    def only_capabilities(self, *capabilities, slug='m10-exacto'):
+        """
+        EXACTLY these capabilities, and nothing inherited.
+
+        `with_capabilities` ADDS a role, and a member's capabilities are the
+        UNION of every role assigned to them — so layering a narrow role on top
+        of this fixture's full one would test nothing at all. Every prior
+        assignment goes first.
+        """
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        role = _role(
+            self.company, f'Rol {slug}', capabilities=list(capabilities), slug=slug,
+        )
+        _assign(self.membership, role)
+        cache.clear()
+        return _m7_login('recepcion')
+
+    def stock(self, product=None, branch=None):
+        return BranchStock.objects.get(
+            branch=branch or self.branch_a, product=product or self.part,
+        ).quantity
+
+
+class M10LifecycleTest(M10ServiceBase):
+    """Three new states, and not one of them reachable by pressing a button."""
+
+    def test_the_new_codes_exist(self):
+        codes = {code for code, _label in _M8Status.choices}
+        for code in ('in_repair', 'waiting_parts', 'repaired'):
+            self.assertIn(code, codes, code)
+
+    def test_states_M10_still_cannot_support_do_not_exist(self):
+        codes = {code for code, _label in _M8Status.choices}
+        for absent in ('quality_control', 'ready_for_pickup', 'delivered', 'warranty'):
+            self.assertNotIn(absent, codes, absent)
+
+    def test_the_generic_endpoint_refuses_every_new_state(self):
+        # They are facts about a workbench, not options in a dropdown. Starting,
+        # pausing and finishing each have their own operation, and each writes
+        # the row that gives the state its meaning.
+        self.approved_order()
+        for target in ('in_repair', 'waiting_parts', 'repaired'):
+            response = self.client.post(
+                _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+                {'status': target}, format='json',
+            )
+            self.assertEqual(response.status_code, 400, target)
+
+    def test_available_transitions_never_offers_them(self):
+        self.approved_order()
+        self.assertEqual(
+            _m8_service.available_transitions(self.order), [_M8Status.CANCELLED],
+        )
+
+    def test_repaired_is_not_terminal_and_does_not_close_the_order(self):
+        # M10 stops at "the technician finished". Quality control and handover
+        # are M11 and M12; stamping closed_at here would claim both.
+        _, _ = self.started()
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Puerto reemplazado.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.REPAIRED)
+        self.assertIsNone(self.order.closed_at)
+        self.assertNotEqual(_m8_service.available_transitions(self.order), [])
+
+    def test_the_default_label_for_repaired_does_not_promise_collection(self):
+        setting = _M8StatusSetting.objects.get(company=self.company, code='repaired')
+        self.assertEqual(setting.label, 'Reparado')
+        for forbidden in ('recoger', 'entrega', 'listo'):
+            self.assertNotIn(forbidden, setting.label.lower())
+
+
+class M10StartRepairTest(M10ServiceBase):
+    """Beginning work is an event with a record, not a status write."""
+
+    def test_an_approved_order_starts(self):
+        self.approved_order()
+        execution = _m8_service.start_repair(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.IN_REPAIR)
+        self.assertIsNotNone(execution.started_at)
+        self.assertEqual(execution.started_by, self.staff)
+        self.assertIsNone(execution.completed_at)
+
+    def test_the_approval_itself_is_re_checked_not_just_the_status(self):
+        # Defence in depth. The status is a projection; this reads the quote and
+        # its decision row, because `in_repair` is the first state that spends
+        # the customer's money.
+        self.approved_order()
+        _M9Decision.objects.all().delete()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+
+    def test_an_order_with_no_approved_quote_cannot_start(self):
+        quote = self.quote_with_part()
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        self.order.refresh_from_db()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+
+    def test_a_rejected_order_cannot_start(self):
+        quote = self.published_quote()
+        _m8_service.record_quote_decision(
+            quote=quote, customer=self.customer, user=self.client_user,
+            decision='reject',
+        )
+        self.order.refresh_from_db()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+
+    def test_a_waiting_approval_order_cannot_start(self):
+        quote = self.quote_with_part()
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.WAITING_APPROVAL)
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+
+    def test_a_cancelled_order_cannot_start(self):
+        self.approved_order()
+        _m8_service.transition_repair_order(
+            repair_order=self.order, to_status=_M8Status.CANCELLED, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+
+    def test_starting_twice_returns_the_same_execution(self):
+        # A double tap on a slow connection is one start. Raising would hand the
+        # technician an error to interpret about something that already worked.
+        self.approved_order()
+        first = _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        second = _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(_M10Execution.objects.filter(repair_order=self.order).count(), 1)
+
+    def test_the_database_forbids_two_open_executions(self):
+        # The constraint, not the query. Two tablets is not a hypothetical.
+        self.approved_order()
+        _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+        with self.assertRaises(IntegrityError):
+            _M10Execution.objects.create(
+                company=self.company, repair_order=self.order,
+            )
+
+    def test_starting_writes_history_and_audit(self):
+        self.approved_order()
+        before = _M8History.objects.filter(repair_order=self.order).count()
+        execution = _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+
+        event = _M8History.objects.filter(repair_order=self.order).order_by('-pk').first()
+        self.assertEqual(
+            _M8History.objects.filter(repair_order=self.order).count(), before + 1,
+        )
+        self.assertEqual(event.to_status, _M8Status.IN_REPAIR)
+        self.assertEqual(event.from_status, _M8Status.APPROVED)
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='service_repair_started', target_id=str(execution.pk),
+            ).exists()
+        )
+
+    def test_a_failed_start_creates_no_execution(self):
+        # All or nothing: an execution row for an order that never moved would
+        # be a repair nobody can find.
+        self.published_quote()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+        self.assertFalse(_M10Execution.objects.filter(repair_order=self.order).exists())
+
+
+class M10PartUsageTest(M10ServiceBase):
+    """One approved part, one branch, one movement, once."""
+
+    def test_consuming_a_part_moves_stock_exactly_once(self):
+        quote, execution = self.started()
+        before = self.stock()
+
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=2, actor=self.staff,
+        )
+
+        self.assertEqual(self.stock(), before - 2)
+        self.assertEqual(_M10Usage.objects.filter(repair_order=self.order).count(), 1)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                movement_type=StockMovement.SERVICE_EXIT, product=self.part,
+            ).count(),
+            1,
+        )
+        self.assertEqual(usage.stock_movement.movement_type, StockMovement.SERVICE_EXIT)
+        self.assertEqual(usage.branch, self.branch_a)
+
+    def test_the_movement_type_is_the_service_one_and_not_a_sale(self):
+        # Reusing `sale_exit` would corrupt sales reporting: the sale idempotency
+        # guard and the ['order','movement_type'] index both assume those rows
+        # are sales.
+        quote, _ = self.started()
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        self.assertEqual(usage.stock_movement.movement_type, 'service_exit')
+        self.assertIsNone(usage.stock_movement.order_id)
+        self.assertEqual(
+            StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT).count(), 0,
+        )
+
+    def test_the_movement_carries_the_repair_as_its_reference(self):
+        quote, execution = self.started()
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        movement = usage.stock_movement
+        self.assertEqual(movement.reference_type, 'repair_order')
+        self.assertEqual(movement.reference_id, str(self.order.pk))
+        self.assertEqual(movement.metadata['execution_id'], execution.pk)
+
+    def test_the_product_aggregate_moves_with_the_branch_row(self):
+        # `Product.inventory` has no check constraint, so a second
+        # implementation that got it wrong would corrupt it silently. Going
+        # through `create_stock_movement` is what keeps them agreeing.
+        quote, _ = self.started()
+        before = Product.objects.get(pk=self.part.pk).inventory
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=2, actor=self.staff,
+        )
+        self.assertEqual(Product.objects.get(pk=self.part.pk).inventory, before - 2)
+
+    def test_insufficient_stock_moves_nothing_at_all(self):
+        quote, _ = self.started(quantity=9)
+        before = self.stock()
+
+        with self.assertRaises(_m8_service.StockUnavailableError):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=self.part_line(quote),
+                quantity=9, actor=self.staff,
+            )
+
+        self.assertEqual(self.stock(), before)
+        self.assertFalse(_M10Usage.objects.filter(repair_order=self.order).exists())
+        self.assertFalse(
+            StockMovement.objects.filter(
+                movement_type=StockMovement.SERVICE_EXIT,
+            ).exists()
+        )
+
+    def test_stock_never_goes_negative(self):
+        quote, _ = self.started(quantity=9)
+        with self.assertRaises(_m8_service.StockUnavailableError):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=self.part_line(quote),
+                quantity=9, actor=self.staff,
+            )
+        self.assertGreaterEqual(self.stock(), 0)
+
+    def test_a_failed_consumption_does_not_change_the_lifecycle(self):
+        # The order stays exactly where it was. A shop must not discover its own
+        # state by reading error logs — pausing is a separate, explicit act.
+        quote, _ = self.started(quantity=9)
+        with self.assertRaises(_m8_service.StockUnavailableError):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=self.part_line(quote),
+                quantity=9, actor=self.staff,
+            )
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.IN_REPAIR)
+
+    def test_the_other_branch_stock_is_not_reachable(self):
+        # Branch B holds fifty. There is no transfer in this flow, so consuming
+        # them would be units moving on paper that nobody carried.
+        quote, _ = self.started(quantity=9)
+        self.assertEqual(self.stock(branch=self.branch_b), 50)
+        with self.assertRaises(_m8_service.StockUnavailableError):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=self.part_line(quote),
+                quantity=9, actor=self.staff,
+            )
+        self.assertEqual(self.stock(branch=self.branch_b), 50)
+
+    def test_a_labour_line_is_not_a_part(self):
+        quote, _ = self.started()
+        labour = quote.items.get(item_type=_M9Item.TYPE_LABOR)
+        with self.assertRaises(_m8_service.PartUsageError):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=labour, quantity=1,
+                actor=self.staff,
+            )
+
+    def test_a_part_line_with_no_product_cannot_be_consumed(self):
+        quote = self.quote_with_part(product=None)
+        self.approve(quote)
+        _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        with self.assertRaises(_m8_service.PartUsageError):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=self.part_line(quote),
+                quantity=1, actor=self.staff,
+            )
+
+    def test_a_line_from_another_order_is_refused(self):
+        quote, _ = self.started()
+        foreign_order = self.make_order()
+        _m8_service.transition_repair_order(
+            repair_order=foreign_order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        other_quote = _m8_service.create_quote(
+            repair_order=foreign_order,
+            diagnostic=_m8_service.create_diagnostic(
+                repair_order=foreign_order, description='x', recommended_action='y',
+                actor=self.staff,
+            ),
+            actor=self.staff,
+        )
+        _m8_service.add_quote_item(
+            quote=other_quote, description='Batería', quantity=1, unit_price='185.00',
+            item_type=_M9Item.TYPE_PART, product=self.part,
+        )
+        other_quote.refresh_from_db()
+
+        with self.assertRaises(_m8_service.PartUsageError):
+            _m8_service.record_part_usage(
+                repair_order=self.order,
+                quote_item=other_quote.items.get(item_type=_M9Item.TYPE_PART),
+                quantity=1, actor=self.staff,
+            )
+
+    def test_more_than_the_approved_quantity_is_refused(self):
+        # The customer agreed to two. A third is a bill they never saw.
+        quote, _ = self.started(quantity=2)
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=2, actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.PartUsageError):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=self.part_line(quote),
+                quantity=1, actor=self.staff,
+            )
+        self.assertEqual(self.stock(), 3)
+
+    def test_zero_and_negative_quantities_are_refused(self):
+        quote, _ = self.started()
+        for bad in (0, -1):
+            with self.assertRaises(_m8_service.PartUsageError):
+                _m8_service.record_part_usage(
+                    repair_order=self.order, quote_item=self.part_line(quote),
+                    quantity=bad, actor=self.staff,
+                )
+
+    def test_a_fractional_quoted_quantity_cannot_be_consumed(self):
+        # Stock is an integer with a non-negative check constraint. Rounding half
+        # a battery into somebody's inventory silently is how a shelf ends up
+        # disagreeing with a shelf.
+        quote = self.quote_with_part(quantity='1.50')
+        self.approve(quote)
+        _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        with self.assertRaises(_m8_service.PartUsageError):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=self.part_line(quote),
+                quantity=1, actor=self.staff,
+            )
+
+    def test_parts_cannot_be_consumed_before_work_starts(self):
+        quote = self.approved_order()
+        with self.assertRaises(_m8_service.PartUsageError):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=self.part_line(quote),
+                quantity=1, actor=self.staff,
+            )
+
+    def test_parts_can_be_consumed_while_waiting_for_parts(self):
+        # The moment the missing piece arrives is exactly when somebody records
+        # it. Forcing a resume first would make the pause a trap.
+        quote, _ = self.started()
+        _m8_service.pause_for_parts(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        self.assertIsNotNone(usage.pk)
+
+    def test_the_usage_snapshots_the_description(self):
+        # `Product.name` can be edited or the product archived, and the question
+        # "what did you put in my laptop?" still has to have an answer.
+        quote, _ = self.started()
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        Product.objects.filter(pk=self.part.pk).update(name='Otro nombre')
+        usage.refresh_from_db()
+        self.assertEqual(usage.description, 'Batería original')
+
+    def test_a_usage_row_cannot_be_edited_or_deleted(self):
+        quote, _ = self.started()
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        usage.quantity = 99
+        with self.assertRaises(DjangoValidationError):
+            usage.save()
+        with self.assertRaises(DjangoValidationError):
+            usage.delete()
+
+    def test_consuming_writes_an_audit_entry(self):
+        quote, _ = self.started()
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        log = AdminAuditLog.objects.filter(
+            action='service_part_used', target_id=str(usage.pk),
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata['quantity'], 1)
+        self.assertEqual(log.metadata['branch_id'], self.branch_a.pk)
+
+
+class M10PartIdempotencyTest(M10ServiceBase):
+    """A timeout must not book a part twice."""
+
+    def test_the_same_key_and_payload_replays_the_same_row(self):
+        quote, _ = self.started()
+        item = self.part_line(quote)
+        before = self.stock()
+
+        first = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=item, quantity=1,
+            idempotency_key='abc-123', actor=self.staff,
+        )
+        second = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=item, quantity=1,
+            idempotency_key='abc-123', actor=self.staff,
+        )
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(self.stock(), before - 1)
+        self.assertEqual(_M10Usage.objects.count(), 1)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                movement_type=StockMovement.SERVICE_EXIT,
+            ).count(),
+            1,
+        )
+
+    def test_the_same_key_with_a_different_payload_is_a_conflict(self):
+        quote, _ = self.started()
+        item = self.part_line(quote)
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=item, quantity=1,
+            idempotency_key='abc-123', actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.IdempotencyConflict):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=item, quantity=2,
+                idempotency_key='abc-123', actor=self.staff,
+            )
+        self.assertEqual(_M10Usage.objects.count(), 1)
+
+    def test_a_conflict_writes_no_second_movement_and_no_second_audit(self):
+        quote, _ = self.started()
+        item = self.part_line(quote)
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=item, quantity=1,
+            idempotency_key='abc-123', actor=self.staff,
+        )
+        before_stock = self.stock()
+        with self.assertRaises(_m8_service.IdempotencyConflict):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=item, quantity=2,
+                idempotency_key='abc-123', actor=self.staff,
+            )
+        self.assertEqual(self.stock(), before_stock)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                movement_type=StockMovement.SERVICE_EXIT,
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            AdminAuditLog.objects.filter(action='service_part_used').count(), 1,
+        )
+
+    def test_a_replay_writes_no_second_audit_entry(self):
+        quote, _ = self.started()
+        item = self.part_line(quote)
+        for _ in range(3):
+            _m8_service.record_part_usage(
+                repair_order=self.order, quote_item=item, quantity=1,
+                idempotency_key='abc-123', actor=self.staff,
+            )
+        self.assertEqual(
+            AdminAuditLog.objects.filter(action='service_part_used').count(), 1,
+        )
+
+    def test_the_key_is_scoped_to_the_company(self):
+        quote, _ = self.started()
+        item = self.part_line(quote)
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=item, quantity=1,
+            idempotency_key='shared', actor=self.staff,
+        )
+        # The database constraint is (company, key) with a non-empty condition;
+        # another tenant reusing the string is not a collision.
+        self.assertEqual(
+            _M10Usage.objects.filter(idempotency_key='shared').count(), 1,
+        )
+
+    def test_no_key_means_no_idempotency_and_that_is_explicit(self):
+        # Two calls without a key are two consumptions, because that is what
+        # they say. The client mints the key; the server does not invent one.
+        quote, _ = self.started(quantity=2)
+        item = self.part_line(quote)
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=item, quantity=1, actor=self.staff,
+        )
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=item, quantity=1, actor=self.staff,
+        )
+        self.assertEqual(_M10Usage.objects.count(), 2)
+        self.assertEqual(self.stock(), 3)
+
+    def test_the_constraint_exists_in_the_database(self):
+        quote, _ = self.started()
+        item = self.part_line(quote)
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=item, quantity=1,
+            idempotency_key='abc-123', actor=self.staff,
+        )
+        movement = StockMovement.objects.filter(
+            movement_type=StockMovement.SERVICE_EXIT,
+        ).first()
+        with self.assertRaises(IntegrityError):
+            _M10Usage.objects.create(
+                company=self.company, repair_order=self.order,
+                execution=usage.execution, quote_item=item, product=self.part,
+                branch=self.branch_a, quantity=1, stock_movement=movement,
+                description='dup', idempotency_key='abc-123',
+            )
+
+
+class M10PartReversalTest(M10ServiceBase):
+    """Undoing is compensation. Nothing is ever deleted."""
+
+    def _consumed(self, quantity=1):
+        quote, _ = self.started()
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=quantity, actor=self.staff,
+        )
+        return quote, usage
+
+    def test_reversing_returns_the_units(self):
+        _, usage = self._consumed(2)
+        self.assertEqual(self.stock(), 3)
+
+        _m8_service.reverse_part_usage(usage=usage, actor=self.staff)
+
+        self.assertEqual(self.stock(), 5)
+
+    def test_reversing_writes_a_compensating_movement_not_a_deletion(self):
+        _, usage = self._consumed(2)
+        _m8_service.reverse_part_usage(usage=usage, reason='Pieza equivocada.', actor=self.staff)
+        usage.refresh_from_db()
+
+        self.assertIsNotNone(usage.reversed_at)
+        self.assertEqual(usage.reversal_movement.movement_type, 'service_return')
+        self.assertEqual(usage.reversal_movement.quantity, 2)
+        # The ORIGINAL survives, untouched.
+        self.assertEqual(usage.quantity, 2)
+        self.assertEqual(usage.stock_movement.movement_type, 'service_exit')
+        self.assertTrue(_M10Usage.objects.filter(pk=usage.pk).exists())
+        self.assertEqual(StockMovement.objects.filter(product=self.part).count(), 2)
+
+    def test_reversing_twice_does_not_return_the_units_twice(self):
+        _, usage = self._consumed(2)
+        _m8_service.reverse_part_usage(usage=usage, actor=self.staff)
+        first_at = _M10Usage.objects.get(pk=usage.pk).reversed_at
+
+        again = _m8_service.reverse_part_usage(usage=usage, actor=self.staff)
+
+        self.assertEqual(self.stock(), 5)
+        self.assertEqual(again.reversed_at, first_at)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                movement_type=StockMovement.SERVICE_RETURN,
+            ).count(),
+            1,
+        )
+
+    def test_a_reversed_part_frees_its_approved_quota_again(self):
+        # The customer approved two. One was booked and undone, so two remain.
+        quote, usage = self._consumed(2)
+        _m8_service.reverse_part_usage(usage=usage, actor=self.staff)
+        fresh = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=2, actor=self.staff,
+        )
+        self.assertIsNotNone(fresh.pk)
+        self.assertEqual(self.stock(), 3)
+
+    def test_a_completed_repair_freezes_its_parts(self):
+        # A fitted battery does not go back on a shelf because somebody tapped
+        # undo. Returns after completion need a physical inspection step that
+        # does not exist yet.
+        _, usage = self._consumed(1)
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Batería reemplazada.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.PartUsageError):
+            _m8_service.reverse_part_usage(usage=usage, actor=self.staff)
+        self.assertEqual(self.stock(), 4)
+
+    def test_reversing_writes_an_audit_entry(self):
+        _, usage = self._consumed(1)
+        _m8_service.reverse_part_usage(usage=usage, actor=self.staff)
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='service_part_usage_reversed', target_id=str(usage.pk),
+            ).exists()
+        )
+
+    def test_the_reversal_movement_names_the_row_it_compensates(self):
+        _, usage = self._consumed(1)
+        _m8_service.reverse_part_usage(usage=usage, actor=self.staff)
+        usage.refresh_from_db()
+        metadata = usage.reversal_movement.metadata
+        self.assertEqual(metadata['reverses_part_usage_id'], usage.pk)
+        self.assertEqual(
+            metadata['reverses_stock_movement_id'], usage.stock_movement_id,
+        )
+
+
+class M10CompleteRepairTest(M10ServiceBase):
+    """Finishing means the technician put the device down. Nothing more."""
+
+    def test_completing_moves_the_order_and_freezes_the_execution(self):
+        _, execution = self.started()
+        done = _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Puerto reemplazado.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.order.status, _M8Status.REPAIRED)
+        self.assertIsNotNone(done.completed_at)
+        self.assertEqual(done.completed_by, self.staff)
+        self.assertEqual(done.result, _M10Result.SUCCESS)
+
+    def test_a_completed_execution_cannot_be_edited(self):
+        _, execution = self.started()
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Listo.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        execution.refresh_from_db()
+        execution.work_performed = 'Otra cosa.'
+        with self.assertRaises(DjangoValidationError):
+            execution.save()
+
+    def test_completing_requires_a_description_of_the_work(self):
+        _, _ = self.started()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.complete_repair(
+                repair_order=self.order, work_performed='   ',
+                result=_M10Result.SUCCESS, actor=self.staff,
+            )
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.IN_REPAIR)
+
+    def test_completing_requires_a_result(self):
+        _, _ = self.started()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.complete_repair(
+                repair_order=self.order, work_performed='Hecho.',
+                result='', actor=self.staff,
+            )
+
+    def test_an_unresolved_repair_still_completes(self):
+        # "We could not fix it" is an outcome the shop has to be able to record.
+        _, _ = self.started()
+        done = _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Placa sin reparación posible.',
+            result=_M10Result.UNRESOLVED, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        self.assertEqual(done.result, _M10Result.UNRESOLVED)
+        self.assertEqual(self.order.status, _M8Status.REPAIRED)
+
+    def test_completing_twice_is_refused(self):
+        _, _ = self.started()
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Hecho.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.complete_repair(
+                repair_order=self.order, work_performed='Otra vez.',
+                result=_M10Result.SUCCESS, actor=self.staff,
+            )
+
+    def test_an_order_that_never_started_cannot_complete(self):
+        self.approved_order()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.complete_repair(
+                repair_order=self.order, work_performed='Hecho.',
+                result=_M10Result.SUCCESS, actor=self.staff,
+            )
+
+    def test_completing_creates_no_quality_check_and_no_ecommerce_order(self):
+        # M10 stops here. Nothing downstream is invented.
+        _, _ = self.started()
+        orders_before = Order.objects.count()
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Hecho.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        self.assertEqual(Order.objects.count(), orders_before)
+        self.order.refresh_from_db()
+        self.assertIsNone(self.order.closed_at)
+
+    def test_completing_writes_history_and_audit(self):
+        _, execution = self.started()
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Hecho.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        event = _M8History.objects.filter(repair_order=self.order).order_by('-pk').first()
+        self.assertEqual(event.to_status, _M8Status.REPAIRED)
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='service_repair_completed', target_id=str(execution.pk),
+            ).exists()
+        )
+
+    def test_the_diagnosis_is_never_copied_into_the_work_record(self):
+        # A diagnosis is a proposal; this is the record of what happened.
+        # Pre-filling one with the other gives a shop a hundred repairs whose
+        # notes all say what somebody intended.
+        _, execution = self.started()
+        self.assertEqual(execution.work_performed, '')
+
+
+class M10PauseTest(M10ServiceBase):
+    """Waiting for a part is a decision somebody records, not an error's echo."""
+
+    def test_pausing_and_resuming_move_the_order(self):
+        self.started()
+        _m8_service.pause_for_parts(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.WAITING_PARTS)
+
+        _m8_service.resume_repair(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.IN_REPAIR)
+
+    def test_pausing_keeps_the_execution_open(self):
+        _, execution = self.started()
+        _m8_service.pause_for_parts(repair_order=self.order, actor=self.staff)
+        execution.refresh_from_db()
+        self.assertIsNone(execution.completed_at)
+
+    def test_an_order_that_is_not_in_repair_cannot_pause(self):
+        self.approved_order()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.pause_for_parts(repair_order=self.order, actor=self.staff)
+
+    def test_a_paused_order_cannot_be_completed_without_resuming(self):
+        self.started()
+        _m8_service.pause_for_parts(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        with self.assertRaises(_m8_service.RepairExecutionError):
+            _m8_service.complete_repair(
+                repair_order=self.order, work_performed='Hecho.',
+                result=_M10Result.SUCCESS, actor=self.staff,
+            )
+
+    def test_pausing_writes_history_and_audit(self):
+        self.started()
+        _m8_service.pause_for_parts(
+            repair_order=self.order, actor=self.staff, comment='Batería pedida.',
+        )
+        event = _M8History.objects.filter(repair_order=self.order).order_by('-pk').first()
+        self.assertEqual(event.to_status, _M8Status.WAITING_PARTS)
+        self.assertEqual(event.comment, 'Batería pedida.')
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='service_repair_paused_for_parts',
+            ).exists()
+        )
+
+
+class M10CapabilitySeparationTest(M10ServiceBase):
+    """
+    `service.repair.manage` spends stock. `inventory.adjust` moves shelves.
+
+    Neither implies the other, and the whole point of the pair of tests below is
+    that consuming a part inside a repair is NOT a general warehouse permission
+    that happens to be spelled differently.
+    """
+
+    def test_the_capability_is_ACTIVE_now_that_the_module_exists(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+        self.assertEqual(CAPABILITIES['service.repair.manage'].status, STATUS_ACTIVE)
+
+    def test_quality_control_stays_RESERVED(self):
+        from .capabilities import CAPABILITIES, STATUS_RESERVED
+        self.assertEqual(CAPABILITIES['service.quality.manage'].status, STATUS_RESERVED)
+
+    def test_a_technician_without_inventory_adjust_can_still_consume_a_part(self):
+        quote, _ = self.started()
+        client = self.only_capabilities(
+            'service.orders.view', 'service.repair.manage', slug='m10-solo-repair',
+        )
+        response = client.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'),
+            {'quote_item_id': self.part_line(quote).pk, 'quantity': 1},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(self.stock(), 4)
+
+    def test_that_same_technician_cannot_adjust_stock_directly(self):
+        # The separation, stated as a refusal. Consuming an approved part inside
+        # a repair is not authority over a shelf.
+        self.started()
+        client = self.only_capabilities(
+            'service.orders.view', 'service.repair.manage', slug='m10-solo-repair2',
+        )
+        response = client.post(
+            f'/api/v1/internal/m8-taller/inventory/adjustments/',
+            {
+                'branch_id': self.branch_a.pk, 'product_id': self.part.pk,
+                'movement_type': 'manual_exit', 'quantity': 1, 'reason': 'x',
+            },
+            format='json',
+        )
+        self.assertIn(response.status_code, (403, 404))
+        self.assertEqual(self.stock(), 5)
+
+    def test_inventory_adjust_alone_cannot_consume_a_part_on_a_repair(self):
+        quote, _ = self.started()
+        client = self.only_capabilities(
+            'service.orders.view', 'inventory.view', 'inventory.adjust',
+            slug='m10-solo-inv',
+        )
+        response = client.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'),
+            {'quote_item_id': self.part_line(quote).pk, 'quantity': 1},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.stock(), 5)
+
+    def test_reading_the_bench_needs_only_orders_view(self):
+        # A colleague who may open an order may see what has been done to the
+        # device. Requiring a second capability to read what the order already
+        # shows would be authority theatre.
+        self.started()
+        client = self.only_capabilities('service.orders.view', slug='m10-lector')
+        for tail in ('execution/', 'parts/', 'parts/candidates/'):
+            response = client.get(_m10_url('m8-taller', self.order.pk, tail))
+            self.assertEqual(response.status_code, 200, tail)
+
+    def test_reading_does_not_grant_working(self):
+        quote, _ = self.started()
+        client = self.only_capabilities('service.orders.view', slug='m10-lector2')
+        for tail, payload in (
+            ('execution/start/', {}),
+            ('execution/complete/', {'result': 'success', 'work_performed': 'x'}),
+            ('execution/pause/', {}),
+            ('parts/', {'quote_item_id': self.part_line(quote).pk, 'quantity': 1}),
+        ):
+            response = client.post(
+                _m10_url('m8-taller', self.order.pk, tail), payload, format='json',
+            )
+            self.assertEqual(response.status_code, 403, tail)
+
+    def test_a_role_alone_is_never_authorization(self):
+        # The membership says `technician`. That has never been authority and
+        # M10 does not make it one.
+        quote, _ = self.started()
+        self.assertEqual(self.membership.role, 'technician')
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        cache.clear()
+        bare = _m7_login('recepcion')
+        response = bare.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'),
+            {'quote_item_id': self.part_line(quote).pk, 'quantity': 1},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+
+
+class M10InternalApiTest(M10ServiceBase):
+    """The surface, its gates and its status codes."""
+
+    def test_the_full_flow_over_http(self):
+        quote = self.approved_order()
+
+        start = self.client.post(_m10_url('m8-taller', self.order.pk, 'execution/start/'))
+        self.assertEqual(start.status_code, 201)
+        self.assertIsNone(start.data['completed_at'])
+
+        part = self.client.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'),
+            {'quote_item_id': self.part_line(quote).pk, 'quantity': 2},
+            format='json',
+        )
+        self.assertEqual(part.status_code, 201)
+        self.assertEqual(self.stock(), 3)
+
+        done = self.client.post(
+            _m10_url('m8-taller', self.order.pk, 'execution/complete/'),
+            {'work_performed': 'Batería reemplazada.', 'result': 'success'},
+            format='json',
+        )
+        self.assertEqual(done.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.REPAIRED)
+
+    def test_an_order_with_no_execution_answers_null_not_404(self):
+        # Most orders have no bench record for most of their life. Treating that
+        # as missing would put an error on a healthy screen.
+        self.approved_order()
+        response = self.client.get(_m10_url('m8-taller', self.order.pk, 'execution/'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.data['execution'])
+
+    def test_insufficient_stock_answers_409_with_a_machine_readable_code(self):
+        quote, _ = self.started(quantity=9)
+        response = self.client.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'),
+            {'quote_item_id': self.part_line(quote).pk, 'quantity': 9},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data['code'], 'insufficient_stock')
+
+    def test_an_idempotency_conflict_answers_409_with_its_own_code(self):
+        quote, _ = self.started()
+        item = self.part_line(quote)
+        self.client.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'),
+            {'quote_item_id': item.pk, 'quantity': 1, 'idempotency_key': 'k1'},
+            format='json',
+        )
+        response = self.client.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'),
+            {'quote_item_id': item.pk, 'quantity': 2, 'idempotency_key': 'k1'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data['code'], 'idempotency_conflict')
+
+    def test_replaying_the_same_request_over_http_answers_201_once_and_moves_stock_once(self):
+        quote, _ = self.started()
+        item = self.part_line(quote)
+        payload = {'quote_item_id': item.pk, 'quantity': 1, 'idempotency_key': 'k2'}
+        first = self.client.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'), payload, format='json',
+        )
+        second = self.client.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'), payload, format='json',
+        )
+        self.assertEqual(first.data['id'], second.data['id'])
+        self.assertEqual(self.stock(), 4)
+
+    def test_a_wrong_state_answers_400_not_409(self):
+        # 409 is reserved for the two conditions that are nobody's mistake.
+        self.approved_order()
+        response = self.client.post(
+            _m10_url('m8-taller', self.order.pk, 'execution/complete/'),
+            {'work_performed': 'x', 'result': 'success'}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_the_body_cannot_choose_a_branch_a_product_or_a_price(self):
+        quote, _ = self.started()
+        response = self.client.post(
+            _m10_url('m8-taller', self.order.pk, 'parts/'),
+            {
+                'quote_item_id': self.part_line(quote).pk, 'quantity': 1,
+                'branch_id': self.branch_b.pk, 'product_id': self.foreign_part.pk,
+                'unit_price': '0.01', 'stock_after': 999,
+                'movement_type': 'manual_exit', 'company_id': self.other.pk,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        usage = _M10Usage.objects.get(pk=response.data['id'])
+        self.assertEqual(usage.branch, self.branch_a)
+        self.assertEqual(usage.product, self.part)
+        self.assertEqual(usage.company, self.company)
+        self.assertEqual(usage.stock_movement.movement_type, 'service_exit')
+        self.assertEqual(self.stock(branch=self.branch_b), 50)
+
+    def test_the_execution_patch_cannot_stamp_its_own_clock_or_actor(self):
+        self.started()
+        response = self.client.patch(
+            _m10_url('m8-taller', self.order.pk, 'execution/'),
+            {
+                'work_performed': 'Avanzando.',
+                'started_at': '2000-01-01T00:00:00Z',
+                'completed_at': '2000-01-01T00:00:00Z',
+                'started_by': 999, 'company': self.other.pk,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        execution = _M10Execution.objects.get(repair_order=self.order)
+        self.assertEqual(execution.work_performed, 'Avanzando.')
+        self.assertIsNone(execution.completed_at)
+        self.assertEqual(execution.started_by, self.staff)
+        self.assertNotEqual(execution.started_at.year, 2000)
+
+    def test_a_foreign_tenant_gets_404_everywhere(self):
+        self.started()
+        for tail in ('execution/', 'parts/', 'parts/candidates/'):
+            response = self.client.get(_m10_url('m8-otra', self.order.pk, tail))
+            self.assertEqual(response.status_code, 404, tail)
+
+    def test_a_branch_out_of_scope_is_404_and_not_403(self):
+        # A 403 would confirm the order exists, and id-sweeping would map the
+        # company's shops.
+        self.started()
+        order_b = self.make_order(branch=self.branch_b)
+        self.only_capabilities(
+            'service.orders.view', 'service.repair.manage', slug='m10-branch',
+        )
+        client = self.restrict_to_branch_a()
+        response = client.get(_m10_url('m8-taller', order_b.pk, 'execution/'))
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_usage_id_from_another_order_is_not_found(self):
+        quote, _ = self.started()
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        other = self.make_order()
+        response = self.client.post(
+            _m10_url('m8-taller', other.pk, f'parts/{usage.pk}/reverse/'),
+            {}, format='json',
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_candidates_endpoint_exposes_no_inventory_beyond_this_branch(self):
+        quote, _ = self.started()
+        response = self.client.get(
+            _m10_url('m8-taller', self.order.pk, 'parts/candidates/'),
+        )
+        self.assertEqual(response.status_code, 200)
+        row = response.data['results'][0]
+        self.assertEqual(
+            set(row),
+            {
+                'quote_item_id', 'product_id', 'description', 'approved_quantity',
+                'used_quantity', 'outstanding_quantity', 'available_in_branch',
+            },
+        )
+        self.assertEqual(row['available_in_branch'], 5)
+        body = json.dumps(response.data)
+        for forbidden in ('cost', 'kardex', 'movement', 'branch_id', 'minimum_stock'):
+            self.assertNotIn(forbidden, body.lower())
+
+    def test_reversal_is_a_post_and_delete_is_not_offered(self):
+        quote, _ = self.started()
+        usage = _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        response = self.client.delete(
+            _m10_url('m8-taller', self.order.pk, f'parts/{usage.pk}/reverse/'),
+        )
+        self.assertEqual(response.status_code, 405)
+        self.assertTrue(_M10Usage.objects.filter(pk=usage.pk).exists())
+
+
+class M10CustomerPrivacyTest(M10ServiceBase):
+    """A customer learns the state of their device. Not the shop's workings."""
+
+    def _customer_client(self):
+        return _m7_login('cliente_m8')
+
+    def test_the_customer_sees_the_new_status_and_its_tenant_label(self):
+        self.started()
+        response = self._customer_client().get(
+            _m8_customer_url('m8-taller', f'{self.order.pk}/'),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['status'], 'in_repair')
+        self.assertEqual(response.data['status_label'], 'En reparación')
+
+    def test_the_customer_never_sees_the_bench(self):
+        quote, _ = self.started()
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        _m8_service.update_execution(
+            execution=_m8_service.open_execution(self.order),
+            work_performed='Soldadura del puerto.',
+            internal_notes='El cliente insistió mucho.',
+            actor=self.staff,
+        )
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Soldadura del puerto.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+
+        response = self._customer_client().get(
+            _m8_customer_url('m8-taller', f'{self.order.pk}/'),
+        )
+        body = json.dumps(response.data)
+        for forbidden in (
+            'Soldadura', 'insistió', 'work_performed', 'internal_notes',
+            'part_usage', 'parts', 'stock', 'execution', 'movement',
+            'recepcion', 'branch',
+        ):
+            self.assertNotIn(forbidden, body, forbidden)
+
+    def test_the_customer_repair_serializer_gained_no_field(self):
+        # Structural, because the omission is the contract. Adding a field to
+        # show M10 progress would widen a closed allowlist.
+        from .v1_service_serializers import V1CustomerRepairDetailSerializer
+        self.assertEqual(
+            set(V1CustomerRepairDetailSerializer.Meta.fields),
+            {
+                'id', 'number', 'status', 'status_label', 'device_summary',
+                'received_at', 'closed_at', 'updated_at', 'reported_issue',
+                'timeline',
+            },
+        )
+
+    def test_the_timeline_shows_the_new_events_without_their_comments(self):
+        self.started()
+        _m8_service.pause_for_parts(
+            repair_order=self.order, actor=self.staff,
+            comment='Proveedor tardará una semana.',
+        )
+        response = self._customer_client().get(
+            _m8_customer_url('m8-taller', f'{self.order.pk}/'),
+        )
+        codes = [e['status'] for e in response.data['timeline']]
+        self.assertIn('in_repair', codes)
+        self.assertIn('waiting_parts', codes)
+        self.assertNotIn('Proveedor', json.dumps(response.data))
+
+    def test_a_tenant_can_hide_a_state_from_its_customers(self):
+        setting = _M8StatusSetting.objects.get(
+            company=self.company, code='waiting_parts',
+        )
+        setting.is_customer_visible = False
+        setting.save(update_fields=['is_customer_visible'])
+
+        self.started()
+        _m8_service.pause_for_parts(repair_order=self.order, actor=self.staff)
+
+        response = self._customer_client().get(
+            _m8_customer_url('m8-taller', f'{self.order.pk}/'),
+        )
+        codes = [e['status'] for e in response.data['timeline']]
+        self.assertNotIn('waiting_parts', codes)
+
+    def test_no_customer_endpoint_exposes_parts(self):
+        quote, _ = self.started()
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        client = self._customer_client()
+        for tail in ('execution/', 'parts/', 'parts/candidates/'):
+            response = client.get(
+                f'/api/v1/customer/m8-taller/repairs/{self.order.pk}/{tail}'
+            )
+            self.assertEqual(response.status_code, 404, tail)
+
+
+class M10ProvisioningTest(M10ServiceBase):
+    """A company is usable the moment it exists, not the moment a migration ran."""
+
+    def test_provisioning_seeds_every_lifecycle_state(self):
+        codes = set(
+            _M8StatusSetting.objects
+            .filter(company=self.company)
+            .values_list('code', flat=True)
+        )
+        self.assertEqual(codes, {c for c, _ in _M8Status.choices})
+
+    def test_a_brand_new_company_gets_the_execution_states(self):
+        fresh = _saas_company('Nueva M10', 'm10-nueva', tax_id='20900000010')
+        provision_company_access_defaults(fresh)
+        codes = set(
+            _M8StatusSetting.objects.filter(company=fresh)
+            .values_list('code', flat=True)
+        )
+        for code in ('in_repair', 'waiting_parts', 'repaired'):
+            self.assertIn(code, codes, code)
+
+    def test_the_migration_and_the_runtime_status_defaults_agree(self):
+        # The migration keeps a FROZEN copy on purpose. This is the one day it
+        # matters that the two say the same thing.
+        import importlib
+
+        from .company_provisioning import PRESET_REPAIR_STATUSES
+
+        module = importlib.import_module('store.migrations.0044_seed_execution_statuses')
+        runtime = {
+            code: (label, visible, order)
+            for code, label, visible, order in PRESET_REPAIR_STATUSES
+        }
+        for code, label, visible, order in module.NEW_STATUSES:
+            self.assertEqual(runtime[code], (label, visible, order), code)
+
+    def test_the_capability_migration_grants_only_untouched_admin_presets(self):
+        import importlib
+        module = importlib.import_module(
+            'store.migrations.0045_repair_capability_for_untouched_admin_presets',
+        )
+        self.assertEqual(module.NEW_CAPABILITIES, ('service.repair.manage',))
+
+    def test_a_tenant_customised_role_is_left_alone_by_the_grant(self):
+        # Authority arriving because software shipped is not a decision the
+        # company made.
+        custom = _role(
+            self.company, 'Rol propio', capabilities=['service.orders.view'],
+            slug='m10-propio',
+        )
+        import importlib
+        module = importlib.import_module(
+            'store.migrations.0045_repair_capability_for_untouched_admin_presets',
+        )
+        from django.apps import apps as django_apps
+        module.grant(django_apps, None)
+        custom.refresh_from_db()
+        self.assertEqual(custom.capabilities, ['service.orders.view'])
+
+    def test_the_technician_preset_now_carries_the_repair_capability(self):
+        role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
+        self.assertIn('service.repair.manage', role.capabilities)
+
+
+class M10StructuralTest(M10ServiceBase):
+    """Guarantees that must not be able to drift."""
+
+    def _module_source(self, module):
+        import ast, inspect, textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(module)))
+        # Docstrings out first: this module's prose explains what it delegates
+        # and names the very symbols the assertions forbid.
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)):
+                body = getattr(node, 'body', [])
+                if (
+                    body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                ):
+                    body.pop(0)
+                    # An exception class whose whole body was its docstring is
+                    # now empty, and empty bodies do not re-parse. `pass` keeps
+                    # the tree valid without adding a token the scans look for.
+                    if not body and not isinstance(node, ast.Module):
+                        body.append(ast.Pass())
+        ast.fix_missing_locations(tree)
+        return ast.unparse(tree)
+
+    def test_the_service_module_never_writes_stock_itself(self):
+        # `create_stock_movement` is the one writer in this codebase.
+        # `Product.inventory` has no check constraint, so a second
+        # implementation that got it wrong would corrupt it with no DB error.
+        from . import service_services
+        code = self._module_source(service_services)
+        self.assertIn('create_stock_movement', code)
+        # READING `BranchStock` is fine and `part_candidates` does exactly that
+        # — it answers "how many does this shop have?". What is forbidden is
+        # WRITING either the branch row or the product aggregate.
+        for forbidden in (
+            'BranchStock.objects.update', 'BranchStock.objects.filter(pk',
+            'inventory=F(', 'update(inventory', 'quantity=stock_after',
+            'save(update_fields=[\'quantity\'',
+        ):
+            self.assertNotIn(forbidden, code, forbidden)
+
+    def test_the_service_module_never_writes_an_ecommerce_order(self):
+        import re
+        from . import service_services
+        code = self._module_source(service_services)
+        # `RepairOrder.objects` legitimately contains `Order.objects`, so the
+        # check is anchored on a word boundary: what is forbidden is touching
+        # the SALE, not the repair.
+        self.assertIsNone(re.search(r'(?<![A-Za-z])Order\.objects', code))
+
+    def test_the_views_never_write_status_or_history_directly(self):
+        from . import v1_service_views
+        code = self._module_source(v1_service_views)
+        for forbidden in ('RepairStatusHistory', 'PartUsage.objects.create'):
+            self.assertNotIn(forbidden, code, forbidden)
+
+    def test_the_lock_order_is_the_one_the_platform_already_had(self):
+        # RepairOrder → RepairExecution → PartUsage → BranchStock, and
+        # BranchStock only ever through inventory_services. Any new ordering
+        # deadlocks a till against a workbench.
+        import ast
+        from . import service_services
+        # Docstrings out first — the prose in these functions explains the lock
+        # order and names every symbol the assertions look for, so a raw scan
+        # would find the explanation before the code.
+        tree = ast.parse(self._module_source(service_services))
+        for name in ('_record_part_usage', 'reverse_part_usage'):
+            fn = next(
+                n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == name
+            )
+            body = ast.unparse(fn)
+            order_at = body.find('RepairOrder.objects.select_for_update')
+            exec_at = body.find('RepairExecution.objects.select_for_update')
+            stock_at = body.find('create_stock_movement')
+            self.assertGreater(order_at, -1, name)
+            self.assertGreater(stock_at, -1, name)
+            if exec_at > -1:
+                self.assertLess(order_at, exec_at, name)
+            self.assertLess(order_at, stock_at, name)
+            self.assertNotIn('select_for_update().get(pk=self.branch', body)
+
+    def test_no_service_write_path_locks_a_product_row(self):
+        # Locking the article would serialise every branch of a chain against
+        # every other for the same part. `inventory_services` says so at :238.
+        from . import service_services
+        code = self._module_source(service_services)
+        self.assertNotIn('Product.objects.select_for_update', code)
+
+    def test_the_part_write_serializer_declares_no_field_the_server_owns(self):
+        from .v1_service_serializers import V1ServicePartUsageWriteSerializer
+        self.assertEqual(
+            set(V1ServicePartUsageWriteSerializer().get_fields()),
+            {'quote_item_id', 'quantity', 'idempotency_key'},
+        )
+
+    def test_the_execution_write_serializer_declares_only_bench_fields(self):
+        from .v1_service_serializers import V1ServiceExecutionWriteSerializer
+        self.assertEqual(
+            set(V1ServiceExecutionWriteSerializer().get_fields()),
+            {'work_performed', 'result', 'internal_notes'},
+        )
+
+    def test_no_m10_model_uses_a_file_field(self):
+        # DEC-016: no storage provider has been chosen. Photo evidence is a real
+        # need and it is not this phase's to invent.
+        from django.db import models as dj_models
+        for model in (_M10Execution, _M10Usage):
+            for field in model._meta.get_fields():
+                self.assertNotIsInstance(
+                    field, dj_models.FileField, f'{model.__name__}.{field.name}',
+                )
+
+    def test_no_m10_model_stores_a_credential(self):
+        for model in (_M10Execution, _M10Usage):
+            names = {f.name for f in model._meta.get_fields()}
+            for forbidden in ('pin', 'password', 'passcode', 'apple_id', 'icloud'):
+                self.assertNotIn(forbidden, names, f'{model.__name__}.{forbidden}')
+
+    def test_service_movement_types_stay_out_of_the_manual_api(self):
+        # A hand-written service_exit would be a Kardex line claiming a repair
+        # that no repair can be found for.
+        self.assertNotIn(StockMovement.SERVICE_EXIT, StockMovement.MANUAL_TYPES)
+        self.assertNotIn(StockMovement.SERVICE_RETURN, StockMovement.MANUAL_TYPES)
+        self.assertIn(StockMovement.SERVICE_RETURN, StockMovement.ENTRY_TYPES)
+        self.assertIn(StockMovement.SERVICE_EXIT, StockMovement.EXIT_TYPES)
+
+    def test_m10_invented_no_capability(self):
+        from .capabilities import CAPABILITIES
+        from .v1_service_views import CAP_REPAIR_MANAGE
+        self.assertIn(CAP_REPAIR_MANAGE, CAPABILITIES)
+
+    def test_the_graph_still_has_exactly_one_leaf(self):
+        from django.db.migrations.loader import MigrationLoader
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        leaves = [name for app, name in loader.graph.leaf_nodes() if app == 'store']
+        self.assertEqual(len(leaves), 1, leaves)
+
+
+class M10ConcurrencyTest(TransactionTestCase):
+    """
+    Two technicians, one last battery.
+
+    `TransactionTestCase` and not `TestCase`: the latter wraps each test in one
+    transaction that is rolled back, so a second thread would never see the
+    first thread's rows and the race being reproduced would not exist.
+
+    `select_for_update()` is a no-op on SQLite, which is what this suite runs on
+    by default. Running the threaded case anyway would produce a green test that
+    proves nothing about PostgreSQL — worse than no test. So the sequential
+    invariants are asserted unconditionally, the genuinely concurrent case is
+    skipped loudly where row locking does not exist, and a structural test backs
+    the guarantee up so it is never left resting on a skip.
+    """
+
+    reset_sequences = True
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Concurrente', 'm10-conc', tax_id='20900000020')
+        provision_company_access_defaults(self.company)
+        self.branch = self.company.branches.order_by('pk').first()
+
+        self.user = _m7_user('cliente_conc')
+        self.customer = _v1_customer(
+            self.company, self.user, first_name='Ana', last_name='Cliente',
+        )
+        self.device = _M8Device.objects.create(
+            company=self.company, customer=self.customer,
+            device_type=_M8Device.TYPE_PHONE, brand='G', model='X',
+        )
+        self.staff = _m7_user('tecnico_conc')
+        Membership.objects.create(
+            user=self.staff, company=self.company, role='technician',
+        )
+        self.part = _prod(self.company, 'Batería', 'bateria-conc', price='185.00')
+        _m7_stock(self.branch, self.part, 1)
+
+    def _approved_order(self):
+        order = _m8_service.create_repair_order(
+            company=self.company, branch=self.branch, customer=self.customer,
+            device=self.device, reported_issue='No enciende.', actor=self.staff,
+        )
+        _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        order.refresh_from_db()
+        diagnostic = _m8_service.create_diagnostic(
+            repair_order=order, description='Batería agotada.',
+            recommended_action='Reemplazar.', actor=self.staff,
+        )
+        quote = _m8_service.create_quote(
+            repair_order=order, diagnostic=diagnostic, actor=self.staff,
+        )
+        _m8_service.add_quote_item(
+            quote=quote, description='Batería', quantity=1, unit_price='185.00',
+            item_type=_M9Item.TYPE_PART, product=self.part,
+        )
+        quote.refresh_from_db()
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        quote.refresh_from_db()
+        _m8_service.record_quote_decision(
+            quote=quote, customer=self.customer, user=self.user, decision='approve',
+        )
+        order.refresh_from_db()
+        _m8_service.start_repair(repair_order=order, actor=self.staff)
+        order.refresh_from_db()
+        return order, quote.items.get(item_type=_M9Item.TYPE_PART)
+
+    def test_the_second_consumption_of_the_last_unit_is_refused(self):
+        # The sequential invariant, asserted everywhere. One unit, two attempts.
+        order, item = self._approved_order()
+        _m8_service.record_part_usage(
+            repair_order=order, quote_item=item, quantity=1, actor=self.staff,
+        )
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.part).quantity, 0,
+        )
+        with self.assertRaises(_m8_service.PartUsageError):
+            _m8_service.record_part_usage(
+                repair_order=order, quote_item=item, quantity=1, actor=self.staff,
+            )
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.part).quantity, 0,
+        )
+
+    def test_two_simultaneous_technicians_do_not_oversell_the_last_unit(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a green result here would prove nothing about PostgreSQL.'
+            )
+
+        order, item = self._approved_order()
+        results, errors = [], []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def attempt():
+            barrier.wait()
+            try:
+                usage = _m8_service.record_part_usage(
+                    repair_order=order, quote_item=item, quantity=1,
+                    actor=self.staff,
+                )
+                with lock:
+                    results.append(usage.pk)
+            except _m8_service.ServiceError as exc:
+                with lock:
+                    errors.append(str(exc))
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=attempt) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(results), 1, 'exactamente un consumo debe ganar')
+        self.assertEqual(len(errors), 1, 'el otro debe fallar de forma controlada')
+        self.assertEqual(
+            BranchStock.objects.get(branch=self.branch, product=self.part).quantity, 0,
+        )
+
+    def test_two_simultaneous_requests_with_one_key_book_one_part(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a green result here would prove nothing about PostgreSQL.'
+            )
+
+        _m7_stock(self.branch, self.part, 5)
+        order, item = self._approved_order()
+        results, errors = [], []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def attempt():
+            barrier.wait()
+            try:
+                usage = _m8_service.record_part_usage(
+                    repair_order=order, quote_item=item, quantity=1,
+                    idempotency_key='same-key', actor=self.staff,
+                )
+                with lock:
+                    results.append(usage.pk)
+            except _m8_service.ServiceError as exc:
+                with lock:
+                    errors.append(str(exc))
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=attempt) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], 'ningún caller debe ver un error')
+        self.assertEqual(len(set(results)), 1, 'ambos deben recibir la MISMA fila')
+        self.assertEqual(_M10Usage.objects.count(), 1)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                movement_type=StockMovement.SERVICE_EXIT,
+            ).count(),
+            1,
+        )
+
+    def test_the_service_layer_locks_the_order_and_lets_inventory_lock_the_stock(self):
+        # The structural backstop for the two skipped tests above. It is what
+        # keeps the guarantee real on a machine that cannot run them.
+        import ast, inspect, textwrap
+        from . import service_services
+
+        source = textwrap.dedent(inspect.getsource(service_services._record_part_usage))
+        tree = ast.parse(source)
+        fn = tree.body[0]
+        if (
+            fn.body and isinstance(fn.body[0], ast.Expr)
+            and isinstance(fn.body[0].value, ast.Constant)
+        ):
+            fn.body.pop(0)
+        code = ast.unparse(tree)
+
+        self.assertIn('RepairOrder.objects.select_for_update', code)
+        self.assertIn('create_stock_movement', code)
+        # The stock row is NEVER locked here — `_locked_branch_stocks` inside
+        # `inventory_services` owns that ordering, and a second one deadlocks.
+        self.assertNotIn('BranchStock.objects.select_for_update', code)
+        self.assertNotIn('Product.objects.select_for_update', code)
