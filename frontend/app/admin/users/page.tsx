@@ -129,6 +129,21 @@ function MemberCard({
   const activeAssignments = assignments.filter((row) => row.is_active);
   const effective = activeAssignments.flatMap((row) => row.capabilities);
 
+  // THREE STATES, NAMED ONCE, mirroring exactly what the backend resolves.
+  //
+  // The distinction that matters is between "never migrated" and "migrated and
+  // currently holds nothing". They look identical if you only count ACTIVE
+  // assignments — which is what this console used to do, so somebody stripped
+  // of their last role was labelled "Legacy: Administrador", implying they
+  // still had that authority. They do not: `resolve_capabilities()` returns an
+  // empty set for them, and saying otherwise on screen is the UI contradicting
+  // the system it is a window onto.
+  //
+  // `assignments` holds EVERY row including revoked ones, which is the same
+  // signal `has_custom_role_history()` reads server-side.
+  const accessState: "legacy" | "custom" | "custom-empty" =
+    assignments.length === 0 ? "legacy" : activeAssignments.length > 0 ? "custom" : "custom-empty";
+
   async function perform(action: () => Promise<unknown>) {
     setBusy(true);
     setError(null);
@@ -149,12 +164,46 @@ function MemberCard({
     await perform(() => deleteJson(`/admin/membership-role-assignments/${assignmentId}/`));
   }
 
+  async function reactivateRole(assignmentId: number) {
+    // PATCH, never POST. One logical assignment is ONE row that switches state;
+    // posting a second one would be refused by the database anyway, and if it
+    // were not, it would split this person's history across two records.
+    //
+    // The backend revalidates delegation on reactivation, because reactivating
+    // IS granting. A 403 from there is surfaced as-is rather than worked around.
+    await perform(() => patchJson(`/admin/membership-role-assignments/${assignmentId}/`, {
+      is_active: true,
+    }));
+  }
+
+  /**
+   * The row that already represents this (role, area) slot, active or not.
+   *
+   * Identity is role + area because the model allows the same role in two
+   * different areas — `Técnico / Taller` and `Técnico / Laboratorio` coexist.
+   * What cannot coexist is the same pair twice.
+   */
+  function existingAssignment(roleValue: number, areaValue: number | null) {
+    return assignments.find(
+      (row) => row.role === roleValue && (row.area ?? null) === areaValue,
+    );
+  }
+
   async function assignRole() {
     if (!roleId) return;
+    const targetArea = areaId ? Number(areaId) : null;
+    const existing = existingAssignment(Number(roleId), targetArea);
+    if (existing) {
+      // Reuse the historical row instead of creating a second one.
+      if (!existing.is_active) await reactivateRole(existing.id);
+      setRoleId("");
+      setAreaId("");
+      return;
+    }
     await perform(() => postJson("/admin/membership-role-assignments/", {
       membership: membership.id,
       role: Number(roleId),
-      area: areaId ? Number(areaId) : null,
+      area: targetArea,
     }));
     setRoleId("");
     setAreaId("");
@@ -187,12 +236,14 @@ function MemberCard({
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Rol empresarial</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {activeAssignments.length ? activeAssignments.map((assignment) => (
+            {accessState === "custom" ? activeAssignments.map((assignment) => (
               <span key={assignment.id} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-300">
                 {assignment.role_name}{assignment.area_name ? ` · ${assignment.area_name}` : ""}
               </span>
-            )) : (
-              <span className="text-xs text-amber-300/80">Legacy: {membership.role_label}</span>
+            )) : accessState === "legacy" ? (
+              <span className="text-xs text-amber-300/80">Rol heredado: {membership.role_label}</span>
+            ) : (
+              <span className="text-xs text-red-300/80">Sin roles activos</span>
             )}
           </div>
         </div>
@@ -200,7 +251,13 @@ function MemberCard({
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Permisos</p>
           <div className="mt-1.5">
-            {activeAssignments.length ? <PermissionSummary codes={effective} /> : <span className="text-xs text-zinc-500">Compatibilidad heredada pendiente de migrar.</span>}
+            {accessState === "custom" ? (
+              <PermissionSummary codes={effective} />
+            ) : accessState === "legacy" ? (
+              <span className="text-xs text-zinc-500">Pendiente de migrar a roles configurables.</span>
+            ) : (
+              <span className="text-xs text-red-300/70">Sin permisos efectivos.</span>
+            )}
           </div>
         </div>
 
@@ -214,7 +271,7 @@ function MemberCard({
 
       {open ? (
         <div className="border-t border-white/[0.06] px-5 py-5">
-          {activeAssignments.length === 0 && assignments.length > 0 ? (
+          {accessState === "custom-empty" ? (
             <div className="mb-5 rounded-lg border border-amber-500/20 bg-amber-500/[0.05] px-4 py-3 text-xs leading-5 text-amber-200/80">
               <strong>Sin roles activos.</strong> Esta persona no tiene ninguna capacidad en la empresa. No vuelve al rol heredado «{membership.role_label}»: ya usa RBAC configurable, y quitarle el último rol significa exactamente eso.
             </div>
@@ -232,14 +289,18 @@ function MemberCard({
                       <span className={assignment.is_active ? "text-sm text-zinc-200" : "text-sm text-zinc-600 line-through"}>{assignment.role_name}</span>
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] text-zinc-600">{assignment.is_active ? "Activo" : "Histórico"}</span>
-                        {canManage && assignment.is_active ? (
+                        {canManage ? (
                           <button
                             type="button"
-                            onClick={() => void revokeRole(assignment.id)}
+                            onClick={() => void (assignment.is_active
+                              ? revokeRole(assignment.id)
+                              : reactivateRole(assignment.id))}
                             disabled={busy}
-                            className="rounded-md border border-white/10 px-2 py-1 text-[10px] text-zinc-400 hover:border-red-500/40 hover:text-red-300 disabled:opacity-40"
+                            className={`rounded-md border px-2 py-1 text-[10px] disabled:opacity-40 ${assignment.is_active
+                              ? "border-white/10 text-zinc-400 hover:border-red-500/40 hover:text-red-300"
+                              : "border-emerald-500/25 text-emerald-300/80 hover:border-emerald-400/60 hover:text-emerald-200"}`}
                           >
-                            Quitar
+                            {assignment.is_active ? "Quitar" : "Reactivar"}
                           </button>
                         ) : null}
                       </div>
@@ -247,8 +308,8 @@ function MemberCard({
                     <p className="mt-1 text-[11px] text-zinc-600">{assignment.area_name || "Sin área"} · {assignment.capabilities.length} permisos</p>
                   </div>
                 )) : (
-                  <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.03] px-3 py-3 text-xs text-amber-200/70">
-                    Aún usa «{membership.role_label}» del modelo heredado. Asigna un rol empresarial para migrarlo al RBAC configurable.
+                  <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.03] px-3 py-3 text-xs leading-5 text-amber-200/70">
+                    Nunca se le asignó un rol empresarial, así que sigue rigiéndose por «{membership.role_label}» del modelo heredado. Asignarle uno lo migra al RBAC configurable — y a partir de ahí el rol heredado deja de contar para siempre.
                   </div>
                 )}
               </div>
@@ -259,18 +320,30 @@ function MemberCard({
                     <option value="">Elegir rol…</option>
                     {roles
                       .filter((role) => role.is_active)
-                      // Un rol ya activo sin área no puede volver a asignarse:
-                      // la base de datos lo rechaza desde M11, así que no se
-                      // ofrece una acción que va a fallar.
-                      .filter((role) => !activeAssignments.some((row) => row.role === role.id && !row.area))
-                      .map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                      // Se ocultan los que YA están activos en este hueco: no
+                      // hay nada que hacer con ellos. Los que tienen una
+                      // asignación histórica SÍ se ofrecen — elegirlos la
+                      // reactiva en vez de intentar un POST que la base de
+                      // datos rechazaría.
+                      .filter((role) => {
+                        const existing = existingAssignment(role.id, areaId ? Number(areaId) : null);
+                        return !existing || !existing.is_active;
+                      })
+                      .map((role) => {
+                        const existing = existingAssignment(role.id, areaId ? Number(areaId) : null);
+                        return (
+                          <option key={role.id} value={role.id}>
+                            {role.name}{existing ? " · reactivar" : ""}
+                          </option>
+                        );
+                      })}
                   </select>
                   <select value={areaId} onChange={(event) => setAreaId(event.target.value)} disabled={busy} className="rounded-lg border border-white/[0.08] bg-black/50 px-3 py-2 text-sm text-zinc-300">
                     <option value="">Sin área</option>
                     {areas.filter((area) => area.is_active).map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
                   </select>
                   <button type="button" onClick={() => void assignRole()} disabled={busy || !roleId} className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40">
-                    Asignar
+                    {roleId && existingAssignment(Number(roleId), areaId ? Number(areaId) : null) ? "Reactivar" : "Asignar"}
                   </button>
                 </div>
               ) : null}
