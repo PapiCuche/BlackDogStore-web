@@ -379,9 +379,10 @@ export const INTERNAL_MODULES: InternalModule[] = [
     id: "admin.roles",
     group: "administration",
     label: "Roles y permisos",
-    description: "Roles configurables. API lista, pantalla pendiente.",
+    description: "Roles y capacidades configurables por empresa.",
+    href: "/admin/roles",
     requiredCapabilities: ["roles.manage"],
-    status: "partial",
+    status: "implemented",
   },
   {
     id: "admin.settings",

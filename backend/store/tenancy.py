@@ -246,12 +246,36 @@ def can_grant_company_role(user, company, role: str) -> bool:
     GRANTABLE_BY_COMPANY_ADMIN. Assigning `superadmin` as a Membership role
     NEVER touches `User.is_superuser`, so it is not a platform escalation either
     way; the restriction exists because the value's semantics are still legacy.
+
+    AND — G3 — ONLY WHAT THEY COULD HAVE DELEGATED THEMSELVES.
+
+    This used to end at the line above, and that left the legacy path as the one
+    door anti-escalation was not watching. `can_delegate_capabilities()` guards
+    authoring a role, editing one, assigning one and reactivating one; it did
+    not guard MINTING A MEMBERSHIP, and `LEGACY_ROLE_CAPABILITIES['admin']` is
+    `ASSIGNABLE_CAPABILITY_CODES` — every capability in the tenant.
+
+    So a caller holding only `memberships.manage` could create a colleague with
+    `role='admin'`. That membership has no RBAC history, the legacy matrix
+    answers for it, and the colleague resolves to everything — including the
+    capabilities the caller had just been refused for a role of their own.
+    Escalation by proxy, and the fix is to ask the same question of the same
+    authority: a legacy role may be granted only by somebody who could have put
+    what it confers into a role.
+
+    A company admin who genuinely holds everything is unaffected, because
+    `ASSIGNABLE_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES`. A platform
+    master is exempt, as everywhere else.
     """
     if is_platform_admin(user):
         return True
     if not can_manage_company_memberships(user, company):
         return False
-    return role in GRANTABLE_BY_COMPANY_ADMIN
+    if role not in GRANTABLE_BY_COMPANY_ADMIN:
+        return False
+    return can_delegate_capabilities(
+        user, company, LEGACY_ROLE_CAPABILITIES.get(role, frozenset()),
+    )
 
 
 def holds_any_capability(user, capability: str) -> bool:
@@ -349,6 +373,50 @@ def active_role_assignments(membership):
     )
 
 
+def has_custom_role_history(membership) -> bool:
+    """
+    Has this membership EVER been given a custom role?
+
+    ANY row, active or not, and with an active role or not. That is the whole
+    point: the question is not "does it have authority now" — that is
+    `active_role_assignments()` — but "has this company ever expressed this
+    person's authority through RBAC". Once it has, the legacy matrix stops
+    being an answer about them.
+
+    Reliable because REVOKING is soft: `is_active=False`, and the row stays for
+    the audit trail. A row's existence is therefore a fact about the past, which
+    is exactly the kind of fact this question needs.
+
+    WHAT ACTUALLY DELETES ONE, said precisely rather than claimed away. This
+    used to read "nothing in this project deletes a MembershipRoleAssignment",
+    and that sentence was already false when it was written — it is more so now,
+    because migration 0048 removes duplicate rows outright. An invariant
+    documented on a false premise is one nobody can check, so:
+
+      · Migration 0048 deletes redundant DUPLICATES of a single fact. The
+        survivor keeps that fact, so the marker survives by construction.
+      · `seed_demo_users` purges rows, but it is DEBUG-only and deletes the
+        `User` too — nobody is left to revive.
+      · `membership` is `on_delete=CASCADE`, so deleting a `Membership` takes
+        its assignments. That revives nobody either: with no membership,
+        `resolve_capabilities` returns nothing at all.
+
+    THE ONE RESIDUAL RISK is a membership DELETED and then RECREATED carrying a
+    legacy `role`. The recreated row has no assignment history, so the legacy
+    matrix answers for it again. It is not an escalation path — recreating a
+    membership with `role='admin'` takes somebody who could grant that authority
+    anyway — but it is the seam where this design is discipline rather than
+    structure.
+
+    A `Membership.adopted_rbac_at` stamp would make it structural and survive
+    the cascade. Recorded as debt rather than smuggled into a phase that did not
+    plan for it.
+    """
+    if membership is None:
+        return False
+    return membership.role_assignments.exists()
+
+
 def resolve_capabilities(user, company) -> frozenset[str]:
     """
     Every capability the caller holds inside `company`.
@@ -363,9 +431,32 @@ def resolve_capabilities(user, company) -> frozenset[str]:
                             them actually restricts them. Falling back to the
                             legacy matrix as well would silently re-grant what
                             the custom role withheld.
-      3. Legacy fallback  → the capabilities of Membership.role, so a company
+      3. Migrated, but with nothing active → NOTHING. See below.
+      4. Legacy fallback  → the capabilities of Membership.role, but ONLY for a
+                            membership that never adopted RBAC, so a company
                             that has not configured any custom role keeps
                             working exactly as in Phase 2A.
+
+    WHY STEP 3 EXISTS — THE BUG IT CLOSES
+    -------------------------------------
+    This used to read "if there are active assignments use them, otherwise fall
+    back to the legacy role". That is safe only while somebody HAS an active
+    assignment, and assignments are revoked by setting `is_active=False`.
+
+    So: take a membership whose legacy `role` is `admin`, give it one narrow
+    custom role, then revoke that role. Active assignments drop to zero, the old
+    code reached the last line, and the person was handed
+    `ASSIGNABLE_CAPABILITY_CODES` again — every capability in the tenant. The
+    act of TAKING AWAY their only role made them an administrator. The same
+    happens if the role itself is merely deactivated.
+
+    The distinction that fixes it is not "how many roles are active" but "has
+    this company ever expressed this person's authority through RBAC". Once it
+    has, the legacy matrix is no longer an answer about them, and zero active
+    roles honestly means zero capabilities. That is a valid state — a person
+    between jobs, or suspended — and it must stay reachable, because a system
+    where revoking the last role is impossible is a system where nobody is ever
+    really revoked.
 
     A membership that is inactive, or whose company is inactive, holds nothing.
     """
@@ -382,6 +473,11 @@ def resolve_capabilities(user, company) -> frozenset[str]:
         for assignment in assignments:
             granted |= set(assignment.role.capability_set)
         return frozenset(granted)
+
+    if has_custom_role_history(membership):
+        # Migrated to RBAC and currently holds no active role. NOT a legacy
+        # user, so the legacy matrix says nothing about them.
+        return frozenset()
 
     return LEGACY_ROLE_CAPABILITIES.get(membership.role, frozenset())
 

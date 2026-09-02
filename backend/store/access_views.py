@@ -18,6 +18,7 @@ Nothing here can write `User.is_superuser`, `User.is_staff` or `UserProfile.role
 
 import logging
 
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -63,6 +64,114 @@ _CANNOT_DELEGATE = (
 CAP_AREAS_MANAGE = 'areas.manage'
 CAP_ROLES_MANAGE = 'roles.manage'
 CAP_MEMBERSHIPS_MANAGE = 'memberships.manage'
+
+
+CAP_MEMBERSHIPS_VIEW = 'memberships.view'
+
+# What it takes to READ each administrative surface — M11.
+#
+# WHY READS ARE GATED AT ALL. Until this phase every GET here asked only "are
+# you a member of this company". That let any technician with an active
+# membership enumerate the whole payroll: who works here, what each person may
+# do, which roles exist and what they grant. Belonging to a company is not a
+# reason to be handed its personnel file.
+#
+# Each surface accepts MORE THAN ONE capability on purpose. Reading the role
+# catalogue is a legitimate part of assigning roles, so `memberships.manage`
+# opens it too; otherwise the personnel console would need a capability whose
+# name has nothing to do with the job it is doing.
+#
+# `memberships.view` already existed in the catalogue and is reused rather than
+# invented — see the capability list, not this file, for what a tenant may
+# grant.
+READ_MEMBERSHIPS = (CAP_MEMBERSHIPS_VIEW, CAP_MEMBERSHIPS_MANAGE)
+READ_ROLES = (CAP_ROLES_MANAGE, CAP_MEMBERSHIPS_VIEW, CAP_MEMBERSHIPS_MANAGE)
+READ_AREAS = (CAP_AREAS_MANAGE, CAP_MEMBERSHIPS_VIEW, CAP_MEMBERSHIPS_MANAGE)
+
+
+_ASSIGNMENT_EXISTS = 'Esa asignación ya existe.'
+
+# What "this assignment is already recorded" looks like, PER BACKEND.
+#
+# THE TWO DATABASES DO NOT SAY THE SAME THING, and assuming they did is a bug
+# that hides where it cannot be seen. PostgreSQL names the constraint:
+#
+#   duplicate key value violates unique constraint
+#   "unique_role_assignment_without_area"
+#
+# SQLite names the COLUMNS and never the constraint:
+#
+#   UNIQUE constraint failed:
+#   store_membershiproleassignment.membership_id,
+#   store_membershiproleassignment.role_id
+#
+# Matching only on the constraint name works in production and silently fails
+# in the test suite — which is the wrong way round, because it means the
+# 500 nobody wants is the one nobody tests. Both shapes are recognised.
+_DUPLICATE_ASSIGNMENT_CONSTRAINTS = (
+    'unique_role_assignment_per_area',
+    'unique_role_assignment_without_area',
+)
+_ASSIGNMENT_TABLE = 'store_membershiproleassignment'
+
+
+def _is_duplicate_assignment(exc) -> bool:
+    """
+    Whether this IntegrityError is the duplicate one, and not some other.
+
+    Kept NARROW on purpose. A broad "any IntegrityError means duplicate" would
+    report a genuine data fault to the operator as "esa asignación ya existe",
+    which is a lie that hides the real problem.
+    """
+    message = str(exc)
+    if any(name in message for name in _DUPLICATE_ASSIGNMENT_CONSTRAINTS):
+        return True
+    # SQLite: it must be a uniqueness failure, on THIS table, mentioning the
+    # columns these constraints are built from.
+    lowered = message.lower()
+    return (
+        'unique constraint failed' in lowered
+        and _ASSIGNMENT_TABLE in lowered
+        and f'{_ASSIGNMENT_TABLE}.membership_id' in lowered
+        and f'{_ASSIGNMENT_TABLE}.role_id' in lowered
+    )
+
+
+def _readable_company_ids(user, codes):
+    """
+    Companies where the caller may READ the surface guarded by `codes`.
+
+    Returns a list of ids, or None meaning "no restriction" for a platform
+    master. A LIST rather than a boolean because one person may hold a
+    membership in several companies and be an administrator in only one of
+    them: the answer is per company, so filtering the queryset is the honest
+    shape. A flat 403 would hide the companies they are entitled to see.
+    """
+    if is_platform_admin(user):
+        return None
+    allowed = []
+    for membership in active_memberships(user):
+        caps = resolve_capabilities(user, membership.company)
+        if any(code in caps for code in codes):
+            allowed.append(membership.company_id)
+    return allowed
+
+
+def _scope_readable(queryset, user, codes, *, company_field='company'):
+    """`scope_queryset` narrowed further to where the caller may read."""
+    ids = _readable_company_ids(user, codes)
+    if ids is None:
+        return queryset
+    if not ids:
+        return queryset.none()
+    return queryset.filter(**{f'{company_field}__in': ids})
+
+
+def _may_read(user, company, codes) -> bool:
+    if is_platform_admin(user):
+        return True
+    caps = resolve_capabilities(user, company)
+    return any(code in caps for code in codes)
 
 
 def _company_or_none(request, company_id):
@@ -120,8 +229,8 @@ class AdminAreaListView(APIView):
     throttle_classes = [AdminUsersThrottle]
 
     def get(self, request):
-        qs = scope_queryset(
-            CompanyArea.objects.select_related('company'), request.user,
+        qs = _scope_readable(
+            CompanyArea.objects.select_related('company'), request.user, READ_AREAS,
         ).annotate(
             member_count=Count(
                 'role_assignments', filter=Q(role_assignments__is_active=True), distinct=True,
@@ -176,6 +285,10 @@ class AdminAreaDetailView(APIView):
         area = self._scoped(request, pk)
         if not area:
             return _deny_not_found()
+        if not _may_read(request.user, area.company, READ_AREAS):
+            # 404, not 403: a caller who may not read this surface should not
+            # learn which ids exist on it.
+            return _deny_not_found()
         return Response(CompanyAreaSerializer(area).data)
 
     def patch(self, request, pk):
@@ -214,8 +327,10 @@ class AdminRoleListView(APIView):
     throttle_classes = [AdminUsersThrottle]
 
     def get(self, request):
-        qs = scope_queryset(
-            CompanyRole.objects.select_related('company'), request.user,
+        # M11 — reading the role catalogue is administrative, not a membership
+        # perk: it says what every role in the company is allowed to do.
+        qs = _scope_readable(
+            CompanyRole.objects.select_related('company'), request.user, READ_ROLES,
         ).annotate(
             assignment_count=Count(
                 'assignments', filter=Q(assignments__is_active=True), distinct=True,
@@ -274,6 +389,8 @@ class AdminRoleDetailView(APIView):
         role = self._scoped(request, pk)
         if not role:
             return _deny_not_found()
+        if not _may_read(request.user, role.company, READ_ROLES):
+            return _deny_not_found()
         return Response(CompanyRoleSerializer(role).data)
 
     def patch(self, request, pk):
@@ -296,6 +413,21 @@ class AdminRoleDetailView(APIView):
             if not can_delegate_capabilities(
                 request.user, role.company, set(requested) | set(before),
             ):
+                return Response({'detail': _CANNOT_DELEGATE}, status=status.HTTP_403_FORBIDDEN)
+
+        # G3 — SWITCHING A ROLE BACK ON IS A GRANT, AND IT WAS NOT CHECKED.
+        #
+        # The block above runs only when the body carries a `capabilities` key,
+        # so `{"is_active": true}` skipped it entirely. Combined with the empty
+        # `capability_set` of an inactive role, that gave a limited admin a
+        # complete escalation: turn the role off, assign it to themselves
+        # against a vacuous check, turn it back on. Every step authorised; the
+        # composition was the hole.
+        #
+        # Turning a role ON hands its capabilities to everybody already holding
+        # it, so it is exactly as much a delegation as raising them.
+        if ser.validated_data.get('is_active') and not role.is_active:
+            if not can_delegate_capabilities(request.user, role.company, set(before)):
                 return Response({'detail': _CANNOT_DELEGATE}, status=status.HTTP_403_FORBIDDEN)
 
         updated = ser.save()
@@ -332,11 +464,14 @@ class AdminRoleAssignmentListView(APIView):
     throttle_classes = [AdminUsersThrottle]
 
     def _scoped_qs(self, request):
-        return scope_queryset(
+        # M11 — "who holds which role" is personnel data. Membership alone is
+        # not a reason to be handed the company's authority map.
+        return _scope_readable(
             MembershipRoleAssignment.objects.select_related(
                 'membership__user', 'membership__company', 'role', 'area',
             ),
             request.user,
+            READ_MEMBERSHIPS,
             company_field='membership__company',
         )
 
@@ -381,7 +516,16 @@ class AdminRoleAssignmentListView(APIView):
 
         # Assigning a role hands over its capabilities, so the same delegation
         # limit applies as when authoring one.
-        if not can_delegate_capabilities(request.user, company, role.capability_set):
+        #
+        # G3 — `role.capabilities`, NOT `role.capability_set`. The latter is
+        # empty while the role is inactive, which is the right answer for
+        # RESOLUTION and the wrong input for DELEGATION: this is a question
+        # about what the role would grant, and an inactive role is one PATCH
+        # away from granting it. Checking the live view made the whole guard
+        # vacuous against any role somebody had just switched off.
+        if not can_delegate_capabilities(
+            request.user, company, set(role.capabilities or []),
+        ):
             return Response({'detail': _CANNOT_DELEGATE}, status=status.HTTP_403_FORBIDDEN)
 
         area = None
@@ -394,13 +538,32 @@ class AdminRoleAssignmentListView(APIView):
             membership=membership, role=role, area=area,
         ).exists():
             return Response(
-                {'detail': 'Esa asignación ya existe.'}, status=status.HTTP_400_BAD_REQUEST
+                {'detail': _ASSIGNMENT_EXISTS}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        assignment = MembershipRoleAssignment.objects.create(
-            membership=membership, role=role, area=area,
-            is_active=data.get('is_active', True), assigned_by=request.user,
-        )
+        # THE CHECK ABOVE IS THE FRIENDLY ANSWER; THE CONSTRAINT IS THE REAL ONE.
+        #
+        # `.exists()` then `.create()` is a read before a write, so two requests
+        # arriving together both pass it and both insert. Since M11 the database
+        # refuses the second — which is the point of putting it there — and an
+        # uncaught IntegrityError would surface to the loser as a 500: an
+        # alarming answer to a request whose only fault was arriving twice.
+        #
+        # So the known violation becomes the same 400 the pre-check gives, and
+        # EVERY OTHER IntegrityError is re-raised untouched. Swallowing all of
+        # them would hide a genuine data problem behind a validation message.
+        try:
+            with transaction.atomic():
+                assignment = MembershipRoleAssignment.objects.create(
+                    membership=membership, role=role, area=area,
+                    is_active=data.get('is_active', True), assigned_by=request.user,
+                )
+        except IntegrityError as exc:
+            if not _is_duplicate_assignment(exc):
+                raise
+            return Response(
+                {'detail': _ASSIGNMENT_EXISTS}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         AdminAuditLog.log(
             actor=request.user, action='role_assignment_created',
@@ -443,6 +606,10 @@ class AdminRoleAssignmentDetailView(APIView):
         assignment = self._scoped(request, pk)
         if not assignment:
             return _deny_not_found()
+        if not _may_read(
+            request.user, assignment.membership.company, READ_MEMBERSHIPS,
+        ):
+            return _deny_not_found()
         return Response(MembershipRoleAssignmentSerializer(assignment).data)
 
     def patch(self, request, pk):
@@ -469,8 +636,11 @@ class AdminRoleAssignmentDetailView(APIView):
 
         if 'is_active' in data:
             # Re-activating hands the capabilities back, so re-check delegation.
+            # G3: against the role's OWN capabilities, for the reason given on
+            # the assignment POST above — `capability_set` is empty while the
+            # role is off, and checking it there let an inactive role through.
             if data['is_active'] and not can_delegate_capabilities(
-                request.user, company, assignment.role.capability_set,
+                request.user, company, set(assignment.role.capabilities or []),
             ):
                 return Response({'detail': _CANNOT_DELEGATE}, status=status.HTTP_403_FORBIDDEN)
             assignment.is_active = data['is_active']
