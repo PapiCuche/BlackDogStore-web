@@ -58,7 +58,15 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
   const [search, setSearch] = useState("");
   // "Mis reparaciones" — a flag the server resolves, not an id this page
   // holds. See fetchServiceOrders.
-  const [mine, setMine] = useState(false);
+  //
+  // TRUE, because that is what this feature says it does. The comment below,
+  // the CHANGELOG entry and the PR all said the console opens on the
+  // technician's own queue; the code opened on the whole workshop. Three
+  // statements and one behaviour, and they disagreed. The behaviour now
+  // matches — a technician lands on their work, and "Todo el taller" is one
+  // click away for whoever needs it, including a supervisor who has no
+  // assigned repairs of their own.
+  const [mine, setMine] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -217,7 +225,9 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
             <p className="text-sm text-white/50">Cargando…</p>
           ) : rows.length === 0 ? (
             <p className="text-sm text-white/50">
-              No hay órdenes que coincidan con ese filtro.
+              {mine
+                ? "No tienes órdenes asignadas con ese filtro. Prueba «Todo el taller»."
+                : "No hay órdenes que coincidan con ese filtro."}
             </p>
           ) : (
             <div className="overflow-x-auto">
