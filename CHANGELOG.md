@@ -9,6 +9,93 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M11 RBAC · M11.1 — Roles múltiples, revocación segura y lectura protegida
+
+**Estado: IMPLEMENTADO.** Migraciones **0047**, **0048**, **0049** y **0051**.
+
+> Nota de nombres: el ciclo de control de calidad, más abajo, también se publicó
+> como «M11». Son trabajos distintos que coincidieron en numeración; esta entrada
+> cubre RBAC.
+
+### Quitar autoridad devolvía autoridad
+
+`resolve_capabilities()` preguntaba «¿tiene asignaciones activas?» y, si no,
+caía a la matriz heredada. Pero revocar es `is_active=False`, no borrar. Así que
+a alguien con rol heredado `admin` y un único rol personalizado le bastaba con
+que se lo quitaran para **recuperar todas las capacidades de la empresa**:
+retirarle su único permiso lo ascendía a administrador.
+
+La pregunta correcta no es «cuántos roles activos tiene» sino «¿esta empresa ha
+expresado alguna vez su autoridad mediante RBAC?». Una vez que lo ha hecho, la
+matriz heredada ya no habla de esa persona y cero roles significa cero
+capacidades — un estado válido, porque un sistema donde no se puede revocar el
+último rol es un sistema donde nadie está revocado de verdad.
+
+### Pertenecer a la empresa no era autorización de lectura
+
+Dieciséis endpoints GET sólo exigían membresía activa: un técnico podía enumerar
+la plantilla completa y el mapa de autoridad de la empresa. Ahora piden
+`memberships.view` o `memberships.manage` —capacidad que ya existía— y responden
+**404, no 403**: quien no puede leer esa superficie tampoco debería averiguar qué
+ids hay en ella.
+
+### Ventas es el mostrador
+
+Vender, cobrar y **recibir**. Ningún endpoint de recepción exige
+`service.manage`, así que no hizo falta conceder el módulo entero. Ventas sigue
+sin diagnóstico, sin reparación, sin `service.orders.manage`, sin inventario,
+sin descuentos y sin analítica. **La matriz legacy no crece**: responde por
+operadores pre-SaaS y darles acceso al taller porque el software se publicó es
+autoridad que nadie decidió.
+
+### Duplicados: dos correcciones, no una
+
+`UniqueConstraint(membership, role, area)` no cubría el caso normal — `area` es
+nullable y dos NULL nunca son iguales, así que la base aceptaba dos asignaciones
+idénticas. Índice único parcial `WHERE area IS NULL`.
+
+**M11.1 corrigió la preparación de datos.** La migración de consolidación sólo
+desactivaba las filas sobrantes, y la constraint no menciona `is_active`: dos
+filas colisionan estén activas o no. Aplicada contra una base con duplicados,
+`AddConstraint` fallaba. Ahora consolida de verdad —una fila por asignación
+lógica, la más antigua, activa si alguna lo estaba— y hay un test de migración
+que ejecuta la secuencia con datos duplicados reales.
+
+### Una asignación lógica es una fila
+
+Quitar y reactivar reutilizan **la misma fila**, no crean una nueva. La consola
+ofrece «Reactivar» sobre las históricas y el selector propone reactivar en vez
+de intentar un alta que la base rechazaría. Reactivar es conceder, así que
+revalida delegación.
+
+La carrera del alta (`.exists()` antes de `create()`) ya no puede dar 500: la
+violación conocida se traduce a un 400 explicado, y cualquier otro
+`IntegrityError` se re-lanza intacto. Se reconocen las dos formas del mensaje —
+PostgreSQL nombra la constraint, SQLite nombra las columnas.
+
+### Tres estados en la consola, no dos
+
+`Legacy` (nunca migrado) · `Custom` (roles activos) · **`Custom sin roles
+activos`**. La tarjeta colapsada mostraba «Legacy: Administrador» a quien ya
+había migrado y se había quedado sin roles, insinuando una autoridad que el
+backend no le da.
+
+### Supervisor Técnico sí; Jefe de sucursal no
+
+Supervisor Técnico se modela entero con capacidades existentes. Jefe de sucursal
+queda en **PROPUESTA**: el alcance por sucursal vive en la membresía, no en el
+rol, así que un `CompanyRole` no puede exigir que sea obligatorio y el preset
+daría una garantía que el modelo no sostiene.
+
+### Fuente única de autorización
+
+`CompanyContext.can()` responde desde la matriz heredada y sería un riesgo de
+doble autoridad si algo la usara. No la usa nada — cero llamadores en runtime.
+No se reescribe código dormido; un test falla si alguien lo conecta.
+Clasificada **OBSOLETO**.
+
+---
+
 ## M11 / BR-005D — Control de calidad y avance visible para el cliente
 
 **Estado: IMPLEMENTADO.** Migraciones **0048** (esquema), **0049** (estados y

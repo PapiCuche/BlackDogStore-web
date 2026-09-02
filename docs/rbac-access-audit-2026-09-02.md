@@ -171,3 +171,59 @@ Consecuencias que sí corresponden anotar:
 - `Supervisor Técnico` la hereda, porque se define como `_TECHNICIAN_CAPS + (…)`. Es coherente con lo que la propia matriz de esta auditoría proponía para el rol («diagnóstico, reparación y futura calidad»).
 - **No se crea** ningún preset de Control de Calidad, ni navegación, ni pantalla, ni asignación estándar, como pedía el encargo.
 - Un test de M11 asumía que existía al menos una capacidad reservada y se volvió engañoso al vaciarse el conjunto. Reescrito: la invariante «reservada ⇒ no asignable» se comprueba siempre, y el caso concreto se omite con motivo explícito mientras no haya ninguna.
+
+---
+
+## M11.1 — estabilización antes de merge
+
+Revisión independiente del PR #10. Tres bloqueos, los tres reales.
+
+### 1. La migración de consolidación no preparaba nada (crítico)
+
+`0048` desactivaba las filas duplicadas y las conservaba. `0049` añade
+`UNIQUE (membership, role) WHERE area IS NULL`, que **no menciona `is_active`**:
+dos filas del mismo par colisionan estén activas o no. Contra una base con
+duplicados reales, `AddConstraint` fallaba con `IntegrityError` — comprobado
+ejecutando la secuencia, no deducido.
+
+El error vale nombrarlo porque es fácil de repetir: el soft-delete es el
+instinto correcto para revocar **autoridad** y el incorrecto para eliminar una
+**fila** que el esquema prohíbe. Se parecen y no son lo mismo.
+
+**Corregido eliminando de verdad las filas redundantes**, tras comprobar que es
+seguro: `MembershipRoleAssignment` no tiene FKs entrantes, y `AdminAuditLog`
+registra cada alta, cambio y baja con el id de la asignación, el rol, la empresa
+y el actor. La traza no vive en esas filas. Sobrevive la más antigua —conserva
+`created_at` y `assigned_by` del otorgamiento original— y queda activa si
+**alguna** de las duplicadas lo estaba: consolidar almacenamiento no puede
+devolver autoridad revocada ni retirar la vigente.
+
+Cubierto por un test de migración que inserta duplicados por SQL crudo con la
+constraint retirada, ejecuta la consolidación y **vuelve a añadir la
+constraint** — que es la aserción que faltaba. Prueba negativa: con la versión
+anterior de `0048`, 7 de 9 casos fallan.
+
+### 2. La consola llamaba «Legacy» a quien ya había migrado
+
+La tarjeta colapsada decidía por `activeAssignments.length`, así que alguien con
+historial custom y cero roles activos aparecía como *Legacy: Administrador* —
+insinuando una autoridad que el backend no le concede. Ahora hay tres estados
+explícitos, derivados del mismo dato que lee el servidor.
+
+### 3. La reactivación no existía en la UI
+
+El backend ya la soportaba (`PATCH is_active=true`, revalidando delegación) pero
+la consola sólo sabía quitar. Además, el selector podía ofrecer un rol con
+asignación histórica y terminar en un alta que la base rechaza.
+
+Ahora quitar y reactivar reutilizan **la misma fila**, y el selector propone
+reactivar cuando ya existe el hueco lógico `(rol, área)`.
+
+### Hallazgo adicional: la carrera del alta daba 500
+
+`.exists()` antes de `create()` es una lectura antes de una escritura. Con la
+constraint puesta, el perdedor de la carrera recibía un `IntegrityError` sin
+capturar. Traducido a 400 explicado, re-lanzando cualquier otro. Reconoce las
+dos formas del mensaje: **PostgreSQL nombra la constraint, SQLite nombra las
+columnas** — buscar sólo el nombre funcionaba en producción y fallaba en la
+suite, el sentido contrario al útil.
