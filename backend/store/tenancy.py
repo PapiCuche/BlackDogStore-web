@@ -359,13 +359,34 @@ def has_custom_role_history(membership) -> bool:
     person's authority through RBAC". Once it has, the legacy matrix stops
     being an answer about them.
 
-    Reliable because assignments are SOFT-disabled. Nothing in this project
-    deletes a `MembershipRoleAssignment`; revoking sets `is_active=False` and
-    keeps the row for the audit trail. So a row's existence is a permanent fact
-    about the past, which is exactly the kind of fact this question needs. If
-    some future code ever hard-deletes one, it would erase the evidence that
-    this membership migrated and quietly re-arm the legacy fallback — hence the
-    regression test that asserts revocation keeps the row.
+    Reliable because REVOKING is soft: `is_active=False`, and the row stays for
+    the audit trail. A row's existence is therefore a fact about the past, which
+    is exactly the kind of fact this question needs.
+
+    WHAT ACTUALLY DELETES ONE, said precisely rather than claimed away. This
+    used to read "nothing in this project deletes a MembershipRoleAssignment",
+    and that sentence was already false when it was written — it is more so now,
+    because migration 0048 removes duplicate rows outright. An invariant
+    documented on a false premise is one nobody can check, so:
+
+      · Migration 0048 deletes redundant DUPLICATES of a single fact. The
+        survivor keeps that fact, so the marker survives by construction.
+      · `seed_demo_users` purges rows, but it is DEBUG-only and deletes the
+        `User` too — nobody is left to revive.
+      · `membership` is `on_delete=CASCADE`, so deleting a `Membership` takes
+        its assignments. That revives nobody either: with no membership,
+        `resolve_capabilities` returns nothing at all.
+
+    THE ONE RESIDUAL RISK is a membership DELETED and then RECREATED carrying a
+    legacy `role`. The recreated row has no assignment history, so the legacy
+    matrix answers for it again. It is not an escalation path — recreating a
+    membership with `role='admin'` takes somebody who could grant that authority
+    anyway — but it is the seam where this design is discipline rather than
+    structure.
+
+    A `Membership.adopted_rbac_at` stamp would make it structural and survive
+    the cascade. Recorded as debt rather than smuggled into a phase that did not
+    plan for it.
     """
     if membership is None:
         return False
