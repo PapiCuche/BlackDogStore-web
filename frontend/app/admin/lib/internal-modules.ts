@@ -305,11 +305,11 @@ export const INTERNAL_MODULES: InternalModule[] = [
   { id: "inventory.serial", group: "inventory", label: "Serial / IMEI", description: "Trazabilidad por unidad.", status: "pending" },
 
   // ── Servicio Técnico ─────────────────────────────────────────────────────
-  { id: "service.intake", group: "service", label: "Recepción", description: "Ingreso de equipos a taller.", status: "pending" },
-  { id: "service.orders", group: "service", label: "Órdenes", description: "Órdenes de servicio.", status: "pending" },
-  { id: "service.diagnostic", group: "service", label: "Diagnóstico", description: "Diagnóstico técnico.", status: "pending" },
-  { id: "service.repair", group: "service", label: "Reparación", description: "Ejecución y repuestos.", status: "pending" },
-  { id: "service.quality", group: "service", label: "Control de calidad", description: "Verificación previa a entrega.", status: "pending" },
+  { id: "service.intake", group: "service", label: "Recepción", description: "Ingreso de equipos a taller.", href: "/admin/service", requiredCapabilities: ["service.orders.create"], status: "implemented" },
+  { id: "service.orders", group: "service", label: "Órdenes", description: "Órdenes de servicio.", href: "/admin/service", requiredCapabilities: ["service.orders.view"], status: "implemented" },
+  { id: "service.diagnostic", group: "service", label: "Diagnóstico", description: "Diagnóstico y cotización.", href: "/admin/service", requiredCapabilities: ["service.diagnostic.manage"], status: "implemented" },
+  { id: "service.repair", group: "service", label: "Reparación", description: "Ejecución y repuestos.", href: "/admin/service", requiredCapabilities: ["service.repair.manage"], status: "implemented" },
+  { id: "service.quality", group: "service", label: "Control de calidad", description: "Verificación previa a entrega.", href: "/admin/service", requiredCapabilities: ["service.quality.manage"], status: "implemented" },
   { id: "service.delivery", group: "service", label: "Entrega", description: "Entrega al cliente.", status: "pending" },
   { id: "service.warranty", group: "service", label: "Garantías", description: "Reingresos y garantías.", status: "pending" },
 
