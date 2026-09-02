@@ -279,6 +279,22 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('service.delivery.manage', 'service', 'Entrega',
          'Registrar la entrega de un equipo reparado a quien lo recoge.',
          STATUS_ACTIVE),
+    # M12B. ITS OWN CAPABILITY, and the reasoning is the same one that gave
+    # delivery its own — only sharper, because this is money.
+    #
+    # NOT `service.orders.manage`: that moves an order through its lifecycle and
+    # can cancel it outright, and a shop should be able to let the till take
+    # money without handing it the technical machine. NOT `inventory.adjust`
+    # either, which is a different kind of value entirely.
+    #
+    # And NOT bundled into the technician preset. The owner's decision is that
+    # authorised technicians manage the STATES of a repair; it does not follow
+    # that every technician handles cash. A shop that wants theirs to can grant
+    # this to a role of their own — which is exactly what a capability
+    # catalogue is for.
+    _cap('service.payments.manage', 'service', 'Cobro del servicio',
+         'Registrar y reversar pagos recibidos por una reparación.',
+         STATUS_ACTIVE),
 )
 
 CAPABILITIES: dict[str, Capability] = {c.code: c for c in CAPABILITY_LIST}

@@ -225,6 +225,61 @@ export type ServiceQualityItem = {
   sort_order: number;
 };
 
+export type ServicePayment = {
+  id: number;
+  /** A decimal STRING. Never parsed into a float — see the panel. */
+  amount: string;
+  currency: string;
+  method: string;
+  reference: string;
+  notes: string;
+  received_by_name: string;
+  received_at: string;
+  created_at: string;
+  is_reversed: boolean;
+  reversed_at: string | null;
+  reversed_by_name: string;
+  reversal_reason: string;
+};
+
+/**
+ * The balance, COMPUTED BY THE SERVER.
+ *
+ * `quoted_total` and `outstanding` are nullable, and null is not zero: it means
+ * the shop has not agreed a price yet. Rendering it as 0.00 would tell somebody
+ * the repair is free.
+ */
+export type ServicePaymentSummary = {
+  currency: string;
+  quoted_total: string | null;
+  confirmed_paid: string;
+  outstanding: string | null;
+  credit: string;
+  payment_status: "no_quote" | "unpaid" | "partial" | "paid" | "overpaid";
+  /**
+   * The tenant's policy, so a screen can explain a refusal before it hits one.
+   * A PREVIEW: the server re-checks inside the delivery transaction, and if the
+   * two ever disagree the server wins.
+   */
+  requires_payment_before_delivery: boolean;
+};
+
+export const PAYMENT_METHODS = [
+  { value: "cash", label: "Efectivo" },
+  { value: "card", label: "Tarjeta" },
+  { value: "transfer", label: "Transferencia" },
+  { value: "other", label: "Otro" },
+] as const;
+
+/**
+ * `online` is DELIBERATELY ABSENT.
+ *
+ * It names a gateway flow nobody has built. Offering it would let a counter
+ * assert that a provider authorised something it never saw — and the server
+ * refuses it in the service layer AND in a database constraint, so a screen
+ * that showed it would only be promising a 400.
+ */
+
 /**
  * A handover. Append-only on the server, so this app never edits one.
  *
@@ -450,6 +505,42 @@ export const fetchDelivery = (slug: string, id: number) =>
  * repair: `PaymentTransaction` is bound to an e-commerce order by a non-null
  * FK. A button here implying otherwise would be a lie the shop believes.
  */
+export const fetchServicePayments = (slug: string, id: number) =>
+  get<{ count: number; results: ServicePayment[]; summary: ServicePaymentSummary }>(
+    `${order(slug, id)}/payments/`,
+  );
+
+export const fetchPaymentSummary = (slug: string, id: number) =>
+  get<ServicePaymentSummary>(`${order(slug, id)}/payment-summary/`);
+
+/**
+ * Record money received at the counter.
+ *
+ * No currency: it comes from the approved quote, and a client that could choose
+ * one could record a payment against a debt in another. No clock and no
+ * cashier — the server owns both. The idempotency key IS sent, because only the
+ * caller can mint one that survives its own double-click, and a payment taken
+ * twice is money the shop has to give back.
+ */
+export const recordServicePayment = (
+  slug: string, id: number,
+  body: {
+    amount: string; method: string; reference?: string; notes?: string;
+    idempotency_key: string;
+  },
+) => post<ServicePayment>(`${order(slug, id)}/payments/`, body);
+
+/**
+ * Undo a payment that should not have been recorded. NOT A REFUND.
+ *
+ * It says the row was written in error. Whether cash went back over the counter
+ * is between the shop and the customer; this platform cannot return money.
+ */
+export const reverseServicePayment = (
+  slug: string, id: number, paymentId: number, reason: string,
+) => post<ServicePayment>(`${order(slug, id)}/payments/${paymentId}/reverse/`,
+  reason.trim() ? { reason: reason.trim() } : {});
+
 export const recordDelivery = (
   slug: string, id: number,
   body: { recipient_name: string; notes?: string; idempotency_key: string },
@@ -470,6 +561,7 @@ export const CAP_DIAGNOSTIC_MANAGE = "service.diagnostic.manage";
 export const CAP_REPAIR_MANAGE = "service.repair.manage";
 export const CAP_QUALITY_MANAGE = "service.quality.manage";
 export const CAP_DELIVERY_MANAGE = "service.delivery.manage";
+export const CAP_PAYMENTS_MANAGE = "service.payments.manage";
 
 /** A key that is stable for one intention and different for the next. */
 export function makeIdempotencyKey(shape: string): string {

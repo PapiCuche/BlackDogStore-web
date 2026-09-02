@@ -2429,6 +2429,19 @@ class CompanySettings(models.Model):
     # is recoverable, a leak is not.
     order_notification_email = models.EmailField(blank=True)
 
+    # M12B — may a device leave the shop with a balance outstanding?
+    #
+    # FALSE BY DEFAULT, and that is a compatibility decision rather than a
+    # product opinion. M12 shipped delivery with no payment concept at all, so
+    # every existing tenant has been handing devices back without one; flipping
+    # this on for them would break a flow they use today, retroactively, for a
+    # rule nobody asked them about. A shop that wants the gate turns it on.
+    #
+    # The gate is enforced SERVER-SIDE inside `deliver_repair`, not by hiding a
+    # button. A client that never learned about the policy still cannot deliver
+    # an unpaid device in a tenant that switched it on.
+    require_service_payment_before_delivery = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -5592,3 +5605,177 @@ class RepairDelivery(models.Model):
         from django.core.exceptions import ValidationError
 
         raise ValidationError('Una entrega no se puede borrar.')
+
+
+class RepairPayment(models.Model):
+    """
+    Money received against a repair. M12B / BR-005F.
+
+    A LEDGER, NOT A FLAG. `RepairOrder` has no `paid` boolean and will not get
+    one: a repair can be settled with a deposit and a balance, and a boolean
+    cannot describe "two hundred of five hundred". Every payment is a row, the
+    balance is arithmetic over the rows, and nothing anywhere stores a total
+    that could drift from the rows that produced it.
+
+    WHY THIS IS NOT `PaymentTransaction`
+    ------------------------------------
+    Verified against the model rather than assumed. `PaymentTransaction.order`
+    is a non-null `ForeignKey(Order, PROTECT)` and the class has NO company
+    column at all — its tenancy is `order.company`, which its own docstring
+    states. Making that FK nullable would leave every tenant read with nothing
+    to read from, and `order_number` is globally unique, so repair payments
+    would share one number space with the storefront. The notification handler
+    reaches through `attempt.order` to compare against `Order.total`, write
+    `order.paid`, move sale stock, empty a cart and send order e-mails; there is
+    no seam in it for a payee that is not an Order.
+
+    That is DEC-012 in one paragraph: technical service is its own domain and
+    does not get represented as an e-commerce purchase. What IS shared, when an
+    online flow arrives, is `store/payments/` — the provider adapter knows
+    nothing about orders and never will.
+
+    APPEND-ONLY, LIKE EVERY OTHER PIECE OF EVIDENCE HERE
+    ----------------------------------------------------
+    `save()` refuses to change what was received; `delete()` always raises. A
+    mistake is corrected by REVERSING — the row is stamped, both facts stay
+    visible in the order they happened, and the summary counts the net. That is
+    the shape `PartUsage` already uses for a part that went into a device by
+    mistake, and money deserves at least as much care as a battery.
+
+    A REVERSAL IS NOT A REFUND. It says "this row should not have been written".
+    Whether cash went back over the counter is between the shop and the
+    customer; whether a gateway returned money needs a provider call that does
+    not exist yet. Nothing here claims either.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='repair_payments',
+    )
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.PROTECT, related_name='payments',
+    )
+
+    # Decimal, never float. This is the one table where a rounding artefact
+    # would be somebody's money.
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    #: Frozen from the APPROVED QUOTE at the moment of payment, never from the
+    #: client. A payment in a currency other than the debt is not a payment.
+    currency = models.CharField(max_length=3)
+
+    method = models.CharField(max_length=16, choices=PaymentMethod.choices)
+    #: A voucher number, an operation code, the digits a terminal printed. Free
+    #: text on purpose, and NEVER card data — see `clean()`.
+    reference = models.CharField(max_length=120, blank=True)
+    notes = models.TextField(max_length=1000, blank=True)
+
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='repair_payments_received',
+    )
+    received_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    idempotency_key = models.CharField(max_length=64, blank=True, default='')
+    request_fingerprint = models.CharField(max_length=64, blank=True, default='')
+
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='repair_payments_reversed',
+    )
+    reversal_reason = models.CharField(max_length=300, blank=True)
+
+    class Meta:
+        ordering = ['-received_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'idempotency_key'],
+                condition=~models.Q(idempotency_key=''),
+                name='unique_repair_payment_idempotency_key_per_company',
+            ),
+            # Zero is not a payment and a negative one is a refund this platform
+            # cannot perform. A reversal is a STAMP on the original row, not a
+            # negative twin, so the sign never needs to vary.
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name='repair_payment_amount_positive',
+            ),
+            # `online` belongs to a gateway flow that does not exist. Recording
+            # it by hand would assert that a provider authorised something
+            # nobody asked it to. The constraint is deliberate friction: the
+            # phase that builds the online flow drops it in the same migration
+            # that adds the attempt table, and until then the value cannot be
+            # written by any path at all.
+            models.CheckConstraint(
+                condition=~models.Q(method=PaymentMethod.ONLINE),
+                name='repair_payment_method_is_not_online_yet',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'received_at']),
+            models.Index(fields=['repair_order', 'received_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.amount} {self.currency} — orden {self.repair_order_id}'
+
+    @property
+    def is_reversed(self) -> bool:
+        return self.reversed_at is not None
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.repair_order_id and self.company_id:
+            if self.repair_order.company_id != self.company_id:
+                raise ValidationError(
+                    'La orden no pertenece a la empresa de este pago.'
+                )
+        if self.amount is not None and self.amount <= 0:
+            raise ValidationError('Un pago debe ser mayor que cero.')
+        if self.method == PaymentMethod.ONLINE:
+            raise ValidationError(
+                'El pago en línea del servicio todavía no existe. Registra el '
+                'medio con el que realmente se recibió el dinero.'
+            )
+        # A reference is a voucher number, not a card. Somebody typing sixteen
+        # digits into a free-text field is a data-protection incident waiting
+        # for a report to print it, and refusing here costs nothing.
+        digits = ''.join(ch for ch in (self.reference or '') if ch.isdigit())
+        if len(digits) >= 13:
+            raise ValidationError(
+                'La referencia no puede contener un número de tarjeta.'
+            )
+
+    def save(self, *args, **kwargs):
+        """
+        WHAT WAS RECEIVED IS NOT EDITABLE. Only the reversal marks it.
+
+        A row that can be revised is a row that cannot settle an argument about
+        money. Correcting a mistake means stamping this row as reversed, which
+        leaves both facts visible — what was recorded and that it was undone —
+        in the order they happened.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            allowed = set(kwargs.get('update_fields') or [])
+            frozen = {
+                'company', 'company_id', 'repair_order', 'repair_order_id',
+                'amount', 'currency', 'method', 'reference', 'received_by',
+                'received_by_id', 'received_at', 'idempotency_key',
+                'request_fingerprint',
+            }
+            if not allowed or (allowed & frozen):
+                raise ValidationError(
+                    'Un pago no se puede modificar. Regístralo como reverso.'
+                )
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError(
+            'Un pago no se puede borrar. Regístralo como reverso.'
+        )
