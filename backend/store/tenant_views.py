@@ -40,11 +40,13 @@ from .serializers import (
 )
 from .tenancy import (
     CrossTenantError,
+    active_memberships,
     assert_branch_in_company,
     can_grant_company_role,
     can_manage_company,
     can_manage_company_memberships,
     is_platform_admin,
+    resolve_capabilities,
     scope_queryset,
     visible_companies,
 )
@@ -457,6 +459,38 @@ class AdminBranchDetailView(APIView):
         return Response(BranchSerializer(updated).data)
 
 
+# M11 — reading the payroll is administrative.
+#
+# `/admin/memberships/` answers "who works here, in what capacity, in which
+# branch". Until this phase any active member could ask it. Belonging to a
+# company is not a reason to be handed its personnel list, so the read is now
+# scoped to the companies where the caller actually administers people.
+#
+# Reuses `memberships.view`, which already existed in the catalogue.
+MEMBERSHIP_READ_CAPABILITIES = ('memberships.view', 'memberships.manage')
+
+
+def _membership_readable_company_ids(user):
+    """Companies where the caller may read personnel data, or None for master."""
+    if is_platform_admin(user):
+        return None
+    allowed = []
+    for membership in active_memberships(user):
+        caps = resolve_capabilities(user, membership.company)
+        if any(code in caps for code in MEMBERSHIP_READ_CAPABILITIES):
+            allowed.append(membership.company_id)
+    return allowed
+
+
+def _scope_membership_reads(queryset, user, *, company_field='company'):
+    ids = _membership_readable_company_ids(user)
+    if ids is None:
+        return queryset
+    if not ids:
+        return queryset.none()
+    return queryset.filter(**{f'{company_field}__in': ids})
+
+
 class AdminMembershipListView(APIView):
     """
     GET  /api/admin/memberships/  — memberships inside the caller's companies.
@@ -468,7 +502,7 @@ class AdminMembershipListView(APIView):
     throttle_classes = [AdminUsersThrottle]
 
     def get(self, request):
-        qs = scope_queryset(
+        qs = _scope_membership_reads(
             Membership.objects.select_related('user', 'company', 'branch'), request.user,
         )
 
@@ -594,6 +628,14 @@ class AdminMembershipDetailView(APIView):
     def get(self, request, pk):
         membership = self._scoped(request, pk)
         if not membership:
+            return Response(
+                {'detail': _MEMBERSHIP_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND
+            )
+        if not _scope_membership_reads(
+            Membership.objects.filter(pk=membership.pk), request.user,
+        ).exists():
+            # 404, not 403 — a caller who may not read personnel should not
+            # learn which membership ids exist.
             return Response(
                 {'detail': _MEMBERSHIP_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND
             )

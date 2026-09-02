@@ -65,6 +65,66 @@ CAP_ROLES_MANAGE = 'roles.manage'
 CAP_MEMBERSHIPS_MANAGE = 'memberships.manage'
 
 
+CAP_MEMBERSHIPS_VIEW = 'memberships.view'
+
+# What it takes to READ each administrative surface — M11.
+#
+# WHY READS ARE GATED AT ALL. Until this phase every GET here asked only "are
+# you a member of this company". That let any technician with an active
+# membership enumerate the whole payroll: who works here, what each person may
+# do, which roles exist and what they grant. Belonging to a company is not a
+# reason to be handed its personnel file.
+#
+# Each surface accepts MORE THAN ONE capability on purpose. Reading the role
+# catalogue is a legitimate part of assigning roles, so `memberships.manage`
+# opens it too; otherwise the personnel console would need a capability whose
+# name has nothing to do with the job it is doing.
+#
+# `memberships.view` already existed in the catalogue and is reused rather than
+# invented — see the capability list, not this file, for what a tenant may
+# grant.
+READ_MEMBERSHIPS = (CAP_MEMBERSHIPS_VIEW, CAP_MEMBERSHIPS_MANAGE)
+READ_ROLES = (CAP_ROLES_MANAGE, CAP_MEMBERSHIPS_VIEW, CAP_MEMBERSHIPS_MANAGE)
+READ_AREAS = (CAP_AREAS_MANAGE, CAP_MEMBERSHIPS_VIEW, CAP_MEMBERSHIPS_MANAGE)
+
+
+def _readable_company_ids(user, codes):
+    """
+    Companies where the caller may READ the surface guarded by `codes`.
+
+    Returns a list of ids, or None meaning "no restriction" for a platform
+    master. A LIST rather than a boolean because one person may hold a
+    membership in several companies and be an administrator in only one of
+    them: the answer is per company, so filtering the queryset is the honest
+    shape. A flat 403 would hide the companies they are entitled to see.
+    """
+    if is_platform_admin(user):
+        return None
+    allowed = []
+    for membership in active_memberships(user):
+        caps = resolve_capabilities(user, membership.company)
+        if any(code in caps for code in codes):
+            allowed.append(membership.company_id)
+    return allowed
+
+
+def _scope_readable(queryset, user, codes, *, company_field='company'):
+    """`scope_queryset` narrowed further to where the caller may read."""
+    ids = _readable_company_ids(user, codes)
+    if ids is None:
+        return queryset
+    if not ids:
+        return queryset.none()
+    return queryset.filter(**{f'{company_field}__in': ids})
+
+
+def _may_read(user, company, codes) -> bool:
+    if is_platform_admin(user):
+        return True
+    caps = resolve_capabilities(user, company)
+    return any(code in caps for code in codes)
+
+
 def _company_or_none(request, company_id):
     """Resolve an untrusted company id against what the caller can actually see."""
     if company_id is None:
@@ -120,8 +180,8 @@ class AdminAreaListView(APIView):
     throttle_classes = [AdminUsersThrottle]
 
     def get(self, request):
-        qs = scope_queryset(
-            CompanyArea.objects.select_related('company'), request.user,
+        qs = _scope_readable(
+            CompanyArea.objects.select_related('company'), request.user, READ_AREAS,
         ).annotate(
             member_count=Count(
                 'role_assignments', filter=Q(role_assignments__is_active=True), distinct=True,
@@ -176,6 +236,10 @@ class AdminAreaDetailView(APIView):
         area = self._scoped(request, pk)
         if not area:
             return _deny_not_found()
+        if not _may_read(request.user, area.company, READ_AREAS):
+            # 404, not 403: a caller who may not read this surface should not
+            # learn which ids exist on it.
+            return _deny_not_found()
         return Response(CompanyAreaSerializer(area).data)
 
     def patch(self, request, pk):
@@ -214,8 +278,10 @@ class AdminRoleListView(APIView):
     throttle_classes = [AdminUsersThrottle]
 
     def get(self, request):
-        qs = scope_queryset(
-            CompanyRole.objects.select_related('company'), request.user,
+        # M11 — reading the role catalogue is administrative, not a membership
+        # perk: it says what every role in the company is allowed to do.
+        qs = _scope_readable(
+            CompanyRole.objects.select_related('company'), request.user, READ_ROLES,
         ).annotate(
             assignment_count=Count(
                 'assignments', filter=Q(assignments__is_active=True), distinct=True,
@@ -273,6 +339,8 @@ class AdminRoleDetailView(APIView):
     def get(self, request, pk):
         role = self._scoped(request, pk)
         if not role:
+            return _deny_not_found()
+        if not _may_read(request.user, role.company, READ_ROLES):
             return _deny_not_found()
         return Response(CompanyRoleSerializer(role).data)
 
@@ -332,11 +400,14 @@ class AdminRoleAssignmentListView(APIView):
     throttle_classes = [AdminUsersThrottle]
 
     def _scoped_qs(self, request):
-        return scope_queryset(
+        # M11 — "who holds which role" is personnel data. Membership alone is
+        # not a reason to be handed the company's authority map.
+        return _scope_readable(
             MembershipRoleAssignment.objects.select_related(
                 'membership__user', 'membership__company', 'role', 'area',
             ),
             request.user,
+            READ_MEMBERSHIPS,
             company_field='membership__company',
         )
 
@@ -442,6 +513,10 @@ class AdminRoleAssignmentDetailView(APIView):
     def get(self, request, pk):
         assignment = self._scoped(request, pk)
         if not assignment:
+            return _deny_not_found()
+        if not _may_read(
+            request.user, assignment.membership.company, READ_MEMBERSHIPS,
+        ):
             return _deny_not_found()
         return Response(MembershipRoleAssignmentSerializer(assignment).data)
 
