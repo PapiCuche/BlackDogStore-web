@@ -8891,11 +8891,37 @@ class Phase2a1SeedAndRegressionTest(TestCase):
         for role in self.pilot.roles.all():
             self.assertEqual(role.company_id, self.pilot.pk)
 
-    def test_preset_roles_mirror_the_legacy_capability_sets(self):
+    def test_preset_roles_relate_to_the_legacy_capability_sets(self):
+        """
+        The presets and the legacy matrix no longer say the same thing — on purpose.
+
+        They used to, and this test asserted equality so the two descriptions of
+        one authority could not drift apart unnoticed. M11 made them diverge
+        deliberately, and the test now pins the SHAPE of that divergence, which
+        is the property that actually matters:
+
+          · `Ventas` grew reception. A company that adopts the preset chooses it.
+          · The legacy matrix did NOT grow. It answers for memberships that never
+            adopted RBAC, and adding reception there would let pre-SaaS operators
+            take devices into a workshop because software shipped.
+          · `Inventario` still matches exactly. Nothing about it changed, so a
+            difference appearing here would be the accidental drift the original
+            test was written to catch.
+        """
         ventas = self.pilot.roles.get(slug='ventas')
-        self.assertEqual(
-            set(ventas.capabilities), set(LEGACY_ROLE_CAPABILITIES['sales']),
+        legacy_sales = set(LEGACY_ROLE_CAPABILITIES['sales'])
+        self.assertTrue(
+            legacy_sales < set(ventas.capabilities),
+            'el preset de Ventas debe contener estrictamente la matriz legacy',
         )
+        self.assertEqual(
+            set(ventas.capabilities) - legacy_sales,
+            {'service.customers.view', 'service.customers.manage',
+             'service.devices.view', 'service.devices.manage',
+             'service.orders.create', 'service.orders.view'},
+            'la única diferencia debe ser recepción técnica',
+        )
+
         inventario = self.pilot.roles.get(slug='inventario')
         self.assertEqual(
             set(inventario.capabilities), set(LEGACY_ROLE_CAPABILITIES['inventory']),
@@ -33244,3 +33270,842 @@ class M10ConcurrencyTest(TransactionTestCase):
         # `inventory_services` owns that ordering, and a second one deadlocks.
         self.assertNotIn('BranchStock.objects.select_for_update', code)
         self.assertNotIn('Product.objects.select_for_update', code)
+
+
+
+# ===========================================================================
+# M11 — RBAC multirol: fallback legacy, lectura protegida y unión de roles
+# ===========================================================================
+#
+# THE PROPERTY THIS SECTION DEFENDS:
+#
+#     Taking authority away must never give authority back.
+#
+# The bug it was written for: a membership whose legacy role was `admin`, given
+# one narrow custom role and then stripped of it, used to fall through to the
+# legacy matrix and become an administrator again. Revocation promoted people.
+# ===========================================================================
+
+from .tenancy import has_custom_role_history  # noqa: E402
+from .company_provisioning import provision_company_access_defaults  # noqa: E402
+
+
+def _m11_company(name='M11 SA', slug='m11-sa', **extra):
+    return _saas_company(name, slug, **extra)
+
+
+def _m11_member(company, username, legacy_role='staff'):
+    """A membership with a legacy role and no custom assignment yet."""
+    user = _saas_user(username)
+    membership = Membership.objects.create(
+        user=user, company=company, role=legacy_role, is_active=True,
+    )
+    return user, membership
+
+
+def _m11_assign(membership, role, area=None, is_active=True):
+    return MembershipRoleAssignment.objects.create(
+        membership=membership, role=role, area=area, is_active=is_active,
+    )
+
+
+class M11LegacyFallbackTest(TestCase):
+    """
+    §22 tests 1, 6, 7, 8 — when the legacy matrix may speak, and when it may not.
+
+    The discriminator is NOT "how many roles are active" but "has this company
+    ever expressed this person's authority through RBAC".
+    """
+
+    def setUp(self):
+        self.company = _m11_company('Fallback SA', 'm11-fallback')
+        self.narrow = _role(self.company, 'Estrecho', ['company.view'], slug='m11-estrecho')
+
+    # -- Case A: never migrated -------------------------------------------
+
+    def test_1_membership_that_never_had_custom_roles_keeps_legacy(self):
+        user, membership = _m11_member(self.company, 'm11_legacy_inv', 'inventory')
+        self.assertFalse(has_custom_role_history(membership))
+        self.assertEqual(
+            resolve_capabilities(user, self.company),
+            LEGACY_ROLE_CAPABILITIES['inventory'],
+        )
+
+    # -- Case B: migrated and active --------------------------------------
+
+    def test_2_active_custom_role_ignores_the_legacy_role(self):
+        """A legacy admin restricted by a custom role is ACTUALLY restricted."""
+        user, membership = _m11_member(self.company, 'm11_restricted', 'admin')
+        _m11_assign(membership, self.narrow)
+        caps = resolve_capabilities(user, self.company)
+        self.assertEqual(caps, frozenset({'company.view'}))
+        self.assertNotIn('memberships.manage', caps)
+        self.assertNotIn('inventory.adjust', caps)
+
+    # -- Case C / test 6: THE CRITICAL ONE --------------------------------
+
+    def test_6_revoking_the_last_role_of_a_legacy_admin_yields_NOTHING(self):
+        """
+        CRITICAL. Revocation must not promote.
+
+        Legacy role `admin`, one custom role, then the custom role is revoked.
+        Before this phase the answer was every capability in the tenant —
+        removing someone's only role made them an administrator.
+        """
+        user, membership = _m11_member(self.company, 'm11_ex_admin', 'admin')
+        assignment = _m11_assign(membership, self.narrow)
+        self.assertEqual(resolve_capabilities(user, self.company), frozenset({'company.view'}))
+
+        assignment.is_active = False
+        assignment.save(update_fields=['is_active'])
+
+        self.assertEqual(resolve_capabilities(user, self.company), frozenset())
+        self.assertFalse(has_capability(user, self.company, 'memberships.manage'))
+        self.assertFalse(has_capability(user, self.company, 'inventory.adjust'))
+        self.assertFalse(has_capability(user, self.company, 'company.view'))
+
+    def test_6b_revocation_keeps_the_row_that_proves_migration(self):
+        """
+        The evidence must survive, or the fallback silently re-arms.
+
+        `has_custom_role_history` is only reliable while revocation is a soft
+        disable. A hard delete would erase the fact that this membership ever
+        migrated and hand it back to the legacy matrix.
+        """
+        user, membership = _m11_member(self.company, 'm11_soft', 'admin')
+        assignment = _m11_assign(membership, self.narrow)
+        assignment.is_active = False
+        assignment.save(update_fields=['is_active'])
+
+        self.assertEqual(membership.role_assignments.count(), 1)
+        self.assertTrue(has_custom_role_history(membership))
+        self.assertEqual(resolve_capabilities(user, self.company), frozenset())
+
+    # -- Case E / test 7: the ROLE went inactive --------------------------
+
+    def test_7_deactivating_the_role_itself_does_not_restore_legacy(self):
+        user, membership = _m11_member(self.company, 'm11_role_off', 'superadmin')
+        _m11_assign(membership, self.narrow)
+        self.narrow.is_active = False
+        self.narrow.save(update_fields=['is_active'])
+
+        self.assertEqual(resolve_capabilities(user, self.company), frozenset())
+        self.assertFalse(has_capability(user, self.company, 'memberships.manage'))
+
+    # -- Case D / test 8: history exists, nothing active ------------------
+
+    def test_8_history_with_zero_active_assignments_never_returns_to_legacy(self):
+        user, membership = _m11_member(self.company, 'm11_history', 'admin')
+        other = _role(self.company, 'Otro', ['products.view'], slug='m11-otro')
+        for role in (self.narrow, other):
+            _m11_assign(membership, role, is_active=False)
+
+        self.assertTrue(has_custom_role_history(membership))
+        self.assertEqual(resolve_capabilities(user, self.company), frozenset())
+
+    def test_zero_active_roles_is_a_valid_state_not_an_error(self):
+        """
+        §16 — a person may legitimately hold nothing.
+
+        A system where revoking the last role is impossible is a system where
+        nobody is ever really revoked.
+        """
+        user, membership = _m11_member(self.company, 'm11_zero', 'admin')
+        assignment = _m11_assign(membership, self.narrow)
+        assignment.is_active = False
+        assignment.save(update_fields=['is_active'])
+
+        self.assertTrue(membership.is_active)
+        self.assertEqual(resolve_capabilities(user, self.company), frozenset())
+
+    # -- Case F / test 9: master is untouched by all of this --------------
+
+    def test_9_platform_master_keeps_every_assignable_capability(self):
+        master = _saas_user('m11_master', is_superuser=True)
+        self.assertEqual(
+            resolve_capabilities(master, self.company), ASSIGNABLE_CAPABILITY_CODES,
+        )
+
+    def test_9b_master_authority_survives_a_revoked_membership(self):
+        """Platform authority is not a company role and does not depend on one."""
+        master = _saas_user('m11_master_member', is_superuser=True)
+        membership = Membership.objects.create(
+            user=master, company=self.company, role='staff', is_active=True,
+        )
+        assignment = _m11_assign(membership, self.narrow)
+        assignment.is_active = False
+        assignment.save(update_fields=['is_active'])
+        self.assertEqual(
+            resolve_capabilities(master, self.company), ASSIGNABLE_CAPABILITY_CODES,
+        )
+
+    def test_a_legacy_admin_of_ANOTHER_company_gains_nothing_here(self):
+        """The fallback is per membership, not per person."""
+        other_company = _m11_company('Ajena SA', 'm11-ajena', tax_id='20780001111')
+        user, _ = _m11_member(self.company, 'm11_two_cos', 'admin')
+        Membership.objects.create(
+            user=user, company=other_company, role='staff', is_active=True,
+        )
+        self.assertEqual(
+            resolve_capabilities(user, other_company),
+            LEGACY_ROLE_CAPABILITIES['staff'] if 'staff' in LEGACY_ROLE_CAPABILITIES
+            else frozenset(),
+        )
+
+
+class M11MultiRoleUnionTest(TestCase):
+    """§22 tests 3, 4, 5, 14, 15 — several roles at once, and taking one away."""
+
+    def setUp(self):
+        self.company = _m11_company('Unión SA', 'm11-union', tax_id='20780002222')
+        self.ventas = _role(
+            self.company, 'Ventas',
+            ['company.view', 'sales.orders.view', 'sales.orders.manage', 'sales.pos.use'],
+            slug='m11-ventas',
+        )
+        self.inventario = _role(
+            self.company, 'Inventario',
+            ['company.view', 'inventory.view', 'inventory.adjust', 'inventory.reports'],
+            slug='m11-inventario',
+        )
+        self.tecnico = _role(
+            self.company, 'Técnico',
+            ['company.view', 'service.orders.view', 'service.diagnostic.manage',
+             'service.repair.manage'],
+            slug='m11-tecnico',
+        )
+        self.user, self.membership = _m11_member(self.company, 'm11_multi', 'staff')
+
+    def test_3_sales_plus_inventory_is_the_union(self):
+        _m11_assign(self.membership, self.ventas)
+        _m11_assign(self.membership, self.inventario)
+        caps = resolve_capabilities(self.user, self.company)
+        self.assertEqual(
+            caps, frozenset(self.ventas.capabilities) | frozenset(self.inventario.capabilities),
+        )
+        self.assertIn('sales.pos.use', caps)
+        self.assertIn('inventory.adjust', caps)
+
+    def test_4_technician_plus_sales_is_the_union(self):
+        _m11_assign(self.membership, self.tecnico)
+        _m11_assign(self.membership, self.ventas)
+        caps = resolve_capabilities(self.user, self.company)
+        self.assertIn('service.repair.manage', caps)
+        self.assertIn('sales.orders.manage', caps)
+
+    def test_three_roles_accumulate(self):
+        for role in (self.ventas, self.inventario, self.tecnico):
+            _m11_assign(self.membership, role)
+        caps = resolve_capabilities(self.user, self.company)
+        expected = (frozenset(self.ventas.capabilities)
+                    | frozenset(self.inventario.capabilities)
+                    | frozenset(self.tecnico.capabilities))
+        self.assertEqual(caps, expected)
+
+    def test_adding_a_second_role_never_removes_the_first(self):
+        """§4 — no priority, no substitution. Roles accumulate, full stop."""
+        _m11_assign(self.membership, self.ventas)
+        before = resolve_capabilities(self.user, self.company)
+        _m11_assign(self.membership, self.inventario)
+        after = resolve_capabilities(self.user, self.company)
+        self.assertTrue(before <= after)
+        self.assertIn('sales.pos.use', after)
+
+    def test_5_removing_one_of_two_roles_keeps_the_other(self):
+        a = _m11_assign(self.membership, self.ventas)
+        _m11_assign(self.membership, self.inventario)
+        a.is_active = False
+        a.save(update_fields=['is_active'])
+
+        caps = resolve_capabilities(self.user, self.company)
+        self.assertEqual(caps, frozenset(self.inventario.capabilities))
+        self.assertNotIn('sales.pos.use', caps)
+        self.assertIn('inventory.adjust', caps)
+
+    def test_14_a_plain_technician_has_no_inventory_adjust(self):
+        """§6 — fitting an approved part is not correcting a shelf."""
+        _m11_assign(self.membership, self.tecnico)
+        self.assertFalse(has_capability(self.user, self.company, 'inventory.adjust'))
+
+    def test_15_technician_plus_inventory_does_have_it(self):
+        _m11_assign(self.membership, self.tecnico)
+        _m11_assign(self.membership, self.inventario)
+        self.assertTrue(has_capability(self.user, self.company, 'inventory.adjust'))
+        self.assertTrue(has_capability(self.user, self.company, 'service.repair.manage'))
+
+    def test_an_inactive_assignment_contributes_nothing_to_the_union(self):
+        _m11_assign(self.membership, self.ventas)
+        _m11_assign(self.membership, self.inventario, is_active=False)
+        caps = resolve_capabilities(self.user, self.company)
+        self.assertEqual(caps, frozenset(self.ventas.capabilities))
+
+    def test_roles_and_branches_stay_separate_dimensions(self):
+        """
+        §5 — WHAT you may do and WHERE you may do it are different questions.
+
+        Adding a role must not touch branch scope, and the branch mode must not
+        change what capabilities resolve to.
+        """
+        _m11_assign(self.membership, self.ventas)
+        mode_before = self.membership.branch_access_mode
+        _m11_assign(self.membership, self.inventario)
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.branch_access_mode, mode_before)
+        self.assertIn('inventory.adjust', resolve_capabilities(self.user, self.company))
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M11ReadAuthorizationTest(TestCase):
+    """
+    §22 tests 19 y 20 — pertenecer a la empresa no es autorización de lectura.
+
+    Before M11 any active member could enumerate the payroll, every role and
+    what each role grants. A technician could read the company's entire
+    authority map. These endpoints now ask for a capability, and answer 404
+    rather than 403 so a caller who may not read them does not learn which ids
+    exist.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.company = _m11_company('Lectura SA', 'm11-lectura', tax_id='20780003333')
+        self.role = _role(self.company, 'Operativo', ['company.view'], slug='m11-op')
+
+        # Alguien sin autoridad sobre personal: un técnico normal.
+        self.tech_user, self.tech_m = _m11_member(self.company, 'm11_tech_read', 'staff')
+        tech_role = _role(
+            self.company, 'Técnico lectura',
+            ['company.view', 'service.orders.view'], slug='m11-tec-lec',
+        )
+        _m11_assign(self.tech_m, tech_role)
+
+        # Alguien con memberships.view y nada más.
+        self.hr_user, self.hr_m = _m11_member(self.company, 'm11_hr_read', 'staff')
+        hr_role = _role(
+            self.company, 'Personal', ['company.view', 'memberships.view'],
+            slug='m11-personal',
+        )
+        _m11_assign(self.hr_m, hr_role)
+
+    def _as(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    # -- test 19: sin autoridad, no enumera --------------------------------
+
+    def test_19_technician_cannot_enumerate_the_payroll(self):
+        res = self._as(self.tech_user).get('/api/admin/memberships/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['results'], [])
+
+    def test_19b_technician_cannot_enumerate_role_assignments(self):
+        _m11_assign(self.hr_m, self.role)
+        res = self._as(self.tech_user).get('/api/admin/membership-role-assignments/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['results'], [])
+
+    def test_19c_technician_cannot_enumerate_roles(self):
+        res = self._as(self.tech_user).get('/api/admin/roles/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['results'], [])
+
+    def test_19d_technician_cannot_read_a_membership_by_id(self):
+        res = self._as(self.tech_user).get(f'/api/admin/memberships/{self.hr_m.pk}/')
+        self.assertEqual(res.status_code, 404)
+
+    def test_19e_technician_cannot_read_a_role_by_id(self):
+        res = self._as(self.tech_user).get(f'/api/admin/roles/{self.role.pk}/')
+        self.assertEqual(res.status_code, 404)
+
+    def test_19f_the_refusal_is_404_so_ids_stay_secret(self):
+        """A 403 would confirm the id exists. 404 says nothing either way."""
+        real = self._as(self.tech_user).get(f'/api/admin/roles/{self.role.pk}/')
+        fake = self._as(self.tech_user).get('/api/admin/roles/99999999/')
+        self.assertEqual(real.status_code, fake.status_code)
+
+    # -- test 20: con autoridad, sí ----------------------------------------
+
+    def test_20_memberships_view_can_enumerate(self):
+        res = self._as(self.hr_user).get('/api/admin/memberships/')
+        self.assertEqual(res.status_code, 200)
+        self.assertGreaterEqual(len(res.json()['results']), 2)
+
+    def test_20b_memberships_view_can_read_roles(self):
+        res = self._as(self.hr_user).get('/api/admin/roles/')
+        self.assertEqual(res.status_code, 200)
+        self.assertGreaterEqual(len(res.json()['results']), 1)
+
+    def test_20c_platform_master_reads_everything(self):
+        master = _saas_user('m11_master_read', is_superuser=True)
+        res = self._as(master).get('/api/admin/memberships/')
+        self.assertEqual(res.status_code, 200)
+        self.assertGreaterEqual(len(res.json()['results']), 2)
+
+    def test_losing_the_last_role_also_closes_the_read(self):
+        """The two fixes compose: no roles → no capabilities → no payroll."""
+        assignment = self.hr_m.role_assignments.first()
+        assignment.is_active = False
+        assignment.save(update_fields=['is_active'])
+        res = self._as(self.hr_user).get('/api/admin/memberships/')
+        self.assertEqual(res.json()['results'], [])
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M11CrossTenantTest(TestCase):
+    """§22 tests 11, 12, 13 — a valid id from another tenant is still refused."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _m11_company('Empresa A M11', 'm11-a', tax_id='20780004444')
+        self.b = _m11_company('Empresa B M11', 'm11-b', tax_id='20780005555')
+
+        self.admin_a, self.m_a = _m11_member(self.a, 'm11_admin_a', 'staff')
+        admin_role = _role(
+            self.a, 'Admin A', sorted(ASSIGNABLE_CAPABILITY_CODES), slug='m11-admin-a',
+        )
+        _m11_assign(self.m_a, admin_role)
+
+        self.user_b, self.m_b = _m11_member(self.b, 'm11_user_b', 'staff')
+        self.role_b = _role(self.b, 'Rol B', ['company.view'], slug='m11-rol-b')
+        self.area_b = _area(self.b, 'Área B', slug='m11-area-b')
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin_a)
+
+    def test_11_cannot_assign_a_role_of_another_company(self):
+        res = self.client.post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_a.pk, 'role': self.role_b.pk,
+        }, format='json')
+        self.assertIn(res.status_code, (400, 403, 404))
+        self.assertEqual(
+            MembershipRoleAssignment.objects.filter(role=self.role_b).count(), 0,
+        )
+
+    def test_12_cannot_assign_to_a_membership_of_another_company(self):
+        role_a = _role(self.a, 'Otro A', ['company.view'], slug='m11-otro-a')
+        res = self.client.post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_b.pk, 'role': role_a.pk,
+        }, format='json')
+        self.assertIn(res.status_code, (400, 403, 404))
+        self.assertEqual(self.m_b.role_assignments.count(), 0)
+
+    def test_13_cannot_use_an_area_of_another_company(self):
+        role_a = _role(self.a, 'Área test', ['company.view'], slug='m11-area-test')
+        res = self.client.post('/api/admin/membership-role-assignments/', {
+            'membership': self.m_a.pk, 'role': role_a.pk, 'area': self.area_b.pk,
+        }, format='json')
+        self.assertIn(res.status_code, (400, 403, 404))
+
+    def test_cannot_read_another_companys_payroll(self):
+        res = self.client.get(f'/api/admin/memberships/?company={self.b.pk}')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['results'], [])
+
+    def test_cannot_read_another_companys_role_by_id(self):
+        res = self.client.get(f'/api/admin/roles/{self.role_b.pk}/')
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_model_itself_refuses_the_cross_tenant_link(self):
+        """
+        Structural, not just view-level.
+
+        The view is one caller. A constraint in `clean()` is what protects the
+        ORM, the shell and every future caller that has not been written yet.
+        """
+        from django.core.exceptions import ValidationError
+        assignment = MembershipRoleAssignment(membership=self.m_a, role=self.role_b)
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M11AntiEscalationTest(TestCase):
+    """§22 test 10 — nobody delegates what they do not hold."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _m11_company('Escalada SA', 'm11-esc', tax_id='20780006666')
+        self.user, self.membership = _m11_member(self.company, 'm11_limited', 'staff')
+        # Puede administrar roles, pero NO tiene inventory.adjust.
+        limited = _role(
+            self.company, 'Admin limitado',
+            ['company.view', 'roles.manage', 'memberships.manage'],
+            slug='m11-limitado',
+        )
+        _m11_assign(self.membership, limited)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_10_cannot_create_a_role_with_a_capability_it_lacks(self):
+        self.assertFalse(has_capability(self.user, self.company, 'inventory.adjust'))
+        res = self.client.post('/api/admin/roles/', {
+            'company': self.company.pk, 'name': 'Escalado', 'slug': 'm11-escalado',
+            'capabilities': ['inventory.adjust'],
+        }, format='json')
+        self.assertEqual(res.status_code, 403)
+        self.assertFalse(CompanyRole.objects.filter(slug='m11-escalado').exists())
+
+    def test_10b_can_create_a_role_within_its_own_authority(self):
+        res = self.client.post('/api/admin/roles/', {
+            'company': self.company.pk, 'name': 'Permitido', 'slug': 'm11-permitido',
+            'capabilities': ['company.view'],
+        }, format='json')
+        self.assertEqual(res.status_code, 201)
+
+    def test_10c_cannot_widen_an_existing_role_beyond_its_authority(self):
+        role = _role(self.company, 'Editable', ['company.view'], slug='m11-editable')
+        res = self.client.patch(f'/api/admin/roles/{role.pk}/', {
+            'capabilities': ['company.view', 'inventory.adjust'],
+        }, format='json')
+        self.assertEqual(res.status_code, 403)
+        role.refresh_from_db()
+        self.assertNotIn('inventory.adjust', role.capabilities)
+
+    def test_10d_a_reserved_capability_is_refused_even_to_a_master(self):
+        master = _saas_user('m11_master_reserved', is_superuser=True)
+        c = APIClient()
+        c.force_authenticate(user=master)
+        res = c.post('/api/admin/roles/', {
+            'company': self.company.pk, 'name': 'Reservado', 'slug': 'm11-reservado',
+            'capabilities': sorted(RESERVED_CAPABILITY_CODES)[:1],
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+
+
+class M11SalesReceptionCashierTest(TestCase):
+    """
+    §22 tests 16, 17, 18 — Ventas = Ventas + Recepción + Caja, y nada más.
+
+    The point of these is not that Ventas can do a lot; it is the exact line
+    between receiving a device and working on it.
+    """
+
+    def setUp(self):
+        self.company = _m11_company('Mostrador SA', 'm11-mostrador', tax_id='20780007777')
+        provision_company_access_defaults(self.company)
+        self.ventas = self.company.roles.get(slug='ventas')
+        self.user, self.membership = _m11_member(self.company, 'm11_mostrador', 'staff')
+        _m11_assign(self.membership, self.ventas)
+
+    def _caps(self):
+        return resolve_capabilities(self.user, self.company)
+
+    def test_16_sales_gets_the_commercial_and_cashier_capabilities(self):
+        caps = self._caps()
+        for code in ('sales.orders.view', 'sales.orders.manage',
+                     'sales.notes.manage', 'sales.pos.use'):
+            self.assertIn(code, caps, code)
+
+    def test_16b_sales_gets_the_reception_capabilities(self):
+        caps = self._caps()
+        for code in ('service.customers.view', 'service.customers.manage',
+                     'service.devices.view', 'service.devices.manage',
+                     'service.orders.create', 'service.orders.view'):
+            self.assertIn(code, caps, code)
+
+    def test_17_sales_does_NOT_get_diagnosis_or_repair(self):
+        """The line this whole preset was written around."""
+        caps = self._caps()
+        self.assertNotIn('service.diagnostic.manage', caps)
+        self.assertNotIn('service.repair.manage', caps)
+
+    def test_17b_sales_does_NOT_get_the_blanket_service_permission(self):
+        """
+        Reception did not need `service.manage`, so it was not granted.
+
+        This is the assertion that keeps a future edit honest: the cheap way to
+        make reception work is to hand over the whole module, and that is
+        exactly what must not happen.
+        """
+        self.assertNotIn('service.manage', self._caps())
+
+    def test_17c_sales_does_NOT_manage_workshop_orders(self):
+        """Opening an intake order is not moving it through the bench."""
+        self.assertNotIn('service.orders.manage', self._caps())
+
+    def test_17d_sales_does_NOT_touch_inventory_or_administration(self):
+        caps = self._caps()
+        for code in ('inventory.adjust', 'inventory.view', 'roles.manage',
+                     'memberships.manage', 'settings.manage', 'company.manage',
+                     'sales.discounts.apply', 'sales.analytics.view'):
+            self.assertNotIn(code, caps, code)
+
+    def test_18_sales_plus_technician_gets_both_families(self):
+        tecnico = self.company.roles.get(slug='servicio-tecnico')
+        _m11_assign(self.membership, tecnico)
+        caps = self._caps()
+        self.assertIn('sales.pos.use', caps)
+        self.assertIn('service.orders.create', caps)
+        self.assertIn('service.diagnostic.manage', caps)
+        self.assertIn('service.repair.manage', caps)
+        # Y sigue sin poder ajustar stock: ningún rol se lo da.
+        self.assertNotIn('inventory.adjust', caps)
+
+    def test_the_legacy_sales_matrix_did_NOT_grow(self):
+        """
+        DELIBERATE DIVERGENCE, and the reason is the whole point of the fallback.
+
+        The legacy matrix answers for memberships that never adopted RBAC —
+        pre-SaaS operators. Adding reception to it would hand people the ability
+        to take devices into a workshop because software shipped, which is
+        precisely the "authority nobody decided" this project keeps refusing.
+
+        The preset grows because a company chooses it. The bridge stays frozen.
+        """
+        legacy = LEGACY_ROLE_CAPABILITIES['sales']
+        self.assertNotIn('service.orders.create', legacy)
+        self.assertNotIn('service.customers.manage', legacy)
+        self.assertTrue(legacy < frozenset(self.ventas.capabilities))
+
+
+class M11ServiceSupervisorTest(TestCase):
+    """Supervisor Técnico — implemented because it needed nothing new."""
+
+    def setUp(self):
+        self.company = _m11_company('Taller SA', 'm11-taller', tax_id='20780008888')
+        provision_company_access_defaults(self.company)
+        self.role = self.company.roles.get(slug='supervisor-tecnico')
+        self.user, self.membership = _m11_member(self.company, 'm11_supervisor', 'staff')
+        _m11_assign(self.membership, self.role)
+
+    def test_it_supervises_the_workshop(self):
+        caps = resolve_capabilities(self.user, self.company)
+        for code in ('service.orders.view', 'service.orders.create',
+                     'service.orders.manage', 'service.diagnostic.manage',
+                     'service.repair.manage', 'service.customers.manage'):
+            self.assertIn(code, caps, code)
+
+    def test_it_is_NOT_a_company_administrator(self):
+        caps = resolve_capabilities(self.user, self.company)
+        for code in ('roles.manage', 'memberships.manage', 'settings.manage',
+                     'company.manage'):
+            self.assertNotIn(code, caps, code)
+
+    def test_it_does_NOT_adjust_inventory(self):
+        self.assertNotIn('inventory.adjust', resolve_capabilities(self.user, self.company))
+
+    def test_it_is_built_only_from_existing_capabilities(self):
+        """No new capability was invented to make this role possible."""
+        self.assertTrue(set(self.role.capabilities) <= ASSIGNABLE_CAPABILITY_CODES)
+
+    def test_it_strictly_contains_the_technician_preset(self):
+        tecnico = self.company.roles.get(slug='servicio-tecnico')
+        self.assertTrue(set(tecnico.capabilities) < set(self.role.capabilities))
+
+
+class M11DuplicateAssignmentTest(TestCase):
+    """
+    The gap found while auditing: `area` is nullable, so the old constraint
+    never covered the common case.
+    """
+
+    def setUp(self):
+        self.company = _m11_company('Duplicados SA', 'm11-dup', tax_id='20780009999')
+        self.role = _role(self.company, 'Rol', ['company.view'], slug='m11-dup-rol')
+        self.user, self.membership = _m11_member(self.company, 'm11_dup', 'staff')
+
+    def test_the_database_refuses_a_duplicate_assignment_without_area(self):
+        from django.db import IntegrityError as _IE
+        _m11_assign(self.membership, self.role)
+        with self.assertRaises(_IE):
+            _m11_assign(self.membership, self.role)
+
+    def test_the_same_role_is_still_allowed_in_two_different_areas(self):
+        """The new constraint must not break what the old one deliberately allowed."""
+        a1 = _area(self.company, 'Taller', slug='m11-dup-taller')
+        a2 = _area(self.company, 'Mostrador', slug='m11-dup-mostrador')
+        _m11_assign(self.membership, self.role, area=a1)
+        _m11_assign(self.membership, self.role, area=a2)
+        self.assertEqual(self.membership.role_assignments.count(), 2)
+
+    def test_a_revoked_assignment_still_blocks_a_duplicate_row(self):
+        """
+        Re-granting reactivates the existing row rather than inserting a second.
+
+        The constraint covers the ROW, not the active state, on purpose: two
+        rows for one (membership, role) would make "when was this granted"
+        ambiguous, and the audit trail is the reason the rows are kept at all.
+        """
+        from django.db import IntegrityError as _IE
+        assignment = _m11_assign(self.membership, self.role)
+        assignment.is_active = False
+        assignment.save(update_fields=['is_active'])
+        with self.assertRaises(_IE):
+            _m11_assign(self.membership, self.role)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M11RevocationThroughTheApiTest(TestCase):
+    """
+    §29 escenarios F y G, ejercidos por HTTP y no sólo por el resolvedor.
+
+    The console now exposes revocation because the backend made it safe. These
+    tests drive the same endpoints the console does, so "safe" means safe for
+    the caller that actually exists.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _m11_company('Revocación SA', 'm11-revoc', tax_id='20780010101')
+        provision_company_access_defaults(self.company)
+        self.ventas = self.company.roles.get(slug='ventas')
+        self.inventario = self.company.roles.get(slug='inventario')
+
+        # Administrador que opera la consola.
+        self.admin, self.admin_m = _m11_member(self.company, 'm11_rev_admin', 'staff')
+        admin_role = self.company.roles.get(slug='administrador')
+        _m11_assign(self.admin_m, admin_role)
+
+        # Empleado con dos roles y un rol heredado peligroso.
+        self.staff, self.staff_m = _m11_member(self.company, 'm11_rev_staff', 'admin')
+        self.a_ventas = _m11_assign(self.staff_m, self.ventas)
+        self.a_inv = _m11_assign(self.staff_m, self.inventario)
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _caps(self):
+        return resolve_capabilities(self.staff, self.company)
+
+    def test_F_removing_one_role_keeps_the_other(self):
+        res = self.client.delete(
+            f'/api/admin/membership-role-assignments/{self.a_inv.pk}/'
+        )
+        self.assertEqual(res.status_code, 204)
+        caps = self._caps()
+        self.assertIn('sales.pos.use', caps)
+        self.assertNotIn('inventory.adjust', caps)
+
+    def test_F_removing_a_role_does_not_touch_branch_scope(self):
+        mode = self.staff_m.branch_access_mode
+        self.client.delete(f'/api/admin/membership-role-assignments/{self.a_inv.pk}/')
+        self.staff_m.refresh_from_db()
+        self.assertEqual(self.staff_m.branch_access_mode, mode)
+
+    def test_G_removing_the_LAST_role_of_a_legacy_admin_yields_nothing(self):
+        """The scenario the console refused to expose until now."""
+        for assignment in (self.a_ventas, self.a_inv):
+            res = self.client.delete(
+                f'/api/admin/membership-role-assignments/{assignment.pk}/'
+            )
+            self.assertEqual(res.status_code, 204)
+
+        self.assertEqual(self._caps(), frozenset())
+        self.assertFalse(has_capability(self.staff, self.company, 'memberships.manage'))
+
+    def test_revocation_keeps_the_history(self):
+        self.client.delete(f'/api/admin/membership-role-assignments/{self.a_inv.pk}/')
+        self.a_inv.refresh_from_db()
+        self.assertFalse(self.a_inv.is_active)
+        self.assertEqual(self.staff_m.role_assignments.count(), 2)
+
+    def test_revocation_is_audited(self):
+        before = AdminAuditLog.objects.count()
+        self.client.delete(f'/api/admin/membership-role-assignments/{self.a_inv.pk}/')
+        self.assertGreater(AdminAuditLog.objects.count(), before)
+
+    def test_deactivating_a_ROLE_removes_it_from_everyone_holding_it(self):
+        res = self.client.patch(
+            f'/api/admin/roles/{self.inventario.pk}/', {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        caps = self._caps()
+        self.assertNotIn('inventory.adjust', caps)
+        self.assertIn('sales.pos.use', caps)
+
+    def test_deactivating_the_only_role_leaves_nothing_not_legacy(self):
+        self.client.delete(f'/api/admin/membership-role-assignments/{self.a_inv.pk}/')
+        self.client.patch(
+            f'/api/admin/roles/{self.ventas.pk}/', {'is_active': False}, format='json',
+        )
+        self.assertEqual(self._caps(), frozenset())
+
+    def test_a_duplicate_assignment_is_refused_by_the_api(self):
+        res = self.client.post('/api/admin/membership-role-assignments/', {
+            'membership': self.staff_m.pk, 'role': self.ventas.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_reactivating_an_assignment_revalidates_delegation(self):
+        """
+        §11 — reactivation is a grant, so it is checked like one.
+
+        A limited administrator must not be able to restore a powerful role
+        somebody else revoked.
+        """
+        self.client.delete(f'/api/admin/membership-role-assignments/{self.a_inv.pk}/')
+
+        limited, limited_m = _m11_member(self.company, 'm11_rev_limited', 'staff')
+        limited_role = _role(
+            self.company, 'Limitado rev',
+            ['company.view', 'memberships.manage'], slug='m11-rev-lim',
+        )
+        _m11_assign(limited_m, limited_role)
+        self.assertFalse(has_capability(limited, self.company, 'inventory.adjust'))
+
+        c = APIClient()
+        c.force_authenticate(user=limited)
+        res = c.patch(
+            f'/api/admin/membership-role-assignments/{self.a_inv.pk}/',
+            {'is_active': True}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        self.a_inv.refresh_from_db()
+        self.assertFalse(self.a_inv.is_active)
+
+
+class M11SingleAuthorizationSourceTest(TestCase):
+    """
+    §28 — there must be exactly ONE thing that decides what somebody may do.
+
+    `CompanyContext.can()` answers from `COMPANY_CAPABILITIES`, the Phase 2A
+    matrix keyed on the legacy `Membership.role`. `resolve_capabilities()`
+    answers from custom roles. Two different questions with two different
+    answers would be a genuine hazard — the same person permitted by one path
+    and refused by the other.
+
+    IT IS NOT A HAZARD TODAY, and that is a measurement rather than an opinion:
+    nothing in the runtime calls it. It is reachable only from its own tests.
+    So this phase does NOT rewrite it — changing dormant code to fix a problem
+    it is not causing is how a security phase turns into a refactor.
+
+    What this test does instead is make the dormancy load-bearing. If somebody
+    wires `CompanyContext.can()` into a view, this fails and they have to
+    confront the choice deliberately, which is the whole point.
+    """
+
+    RUNTIME_MODULES = (
+        'views', 'access_views', 'tenant_views', 'admin_views', 'customer_views',
+        'inventory_views', 'pos_views', 'auth_views', 'import_views',
+        'v1_service_views', 'v1_internal_views', 'v1_customer_views',
+        'v1_checkout_views', 'permissions', 'service_services',
+    )
+
+    def _runtime_sources(self):
+        import pathlib as _pl
+        base = _pl.Path(__file__).resolve().parent
+        for name in self.RUNTIME_MODULES:
+            path = base / f'{name}.py'
+            if path.exists():
+                yield name, path.read_text()
+
+    def test_no_runtime_module_authorises_through_the_legacy_context(self):
+        offenders = [
+            name for name, src in self._runtime_sources()
+            if 'build_company_context' in src or '.can(' in src
+        ]
+        self.assertEqual(
+            offenders, [],
+            'CompanyContext.can() volvió al camino de autorización: '
+            f'{offenders}. Antes de usarlo hay que unificarlo con '
+            'resolve_capabilities(), o habrá dos fuentes de autoridad.',
+        )
+
+    def test_resolve_capabilities_is_the_one_that_is_actually_used(self):
+        users = [
+            name for name, src in self._runtime_sources()
+            if 'has_capability' in src or 'resolve_capabilities' in src
+        ]
+        self.assertGreater(len(users), 4, 'la autorización real pasa por capacidades')
