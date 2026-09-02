@@ -33244,3 +33244,226 @@ class M10ConcurrencyTest(TransactionTestCase):
         # `inventory_services` owns that ordering, and a second one deadlocks.
         self.assertNotIn('BranchStock.objects.select_for_update', code)
         self.assertNotIn('Product.objects.select_for_update', code)
+
+
+# ===========================================================================
+# H1B — parity for the historical Servicio Técnico preset
+# ===========================================================================
+
+from .tenancy import has_capability as _h1b_has_capability  # noqa: E402
+
+
+class H1BTechnicianPresetParityTest(TestCase):
+    """
+    The migration that closes the technician asymmetry, and everything it must
+    refuse to touch.
+
+    Seven grant migrations came before this one and every one targeted
+    `Administrador`, whose capability set is ~35 codes — a set no tenant
+    reproduces by accident. This preset holds TWO or THREE, which a tenant
+    plausibly does build by hand, so capability equality alone is not evidence.
+    The discriminator is four platform-authored fields at once, and each test
+    below breaks exactly one of them.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('H1B', 'h1b-taller', tax_id='20990000201')
+        self.other = _saas_company('H1B otra', 'h1b-otra', tax_id='20990000202')
+        # Provisioned so the OTHER presets exist and can be asserted untouched.
+        # The technician preset each test cares about is built by hand, in the
+        # historical shape provisioning no longer produces.
+        provision_company_access_defaults(self.company)
+        provision_company_access_defaults(self.other)
+        CompanyRole.objects.filter(slug='servicio-tecnico').delete()
+        import importlib
+        self.module = importlib.import_module(
+            'store.migrations.0047_service_capabilities_for_untouched_technician_presets',
+        )
+
+    def _run(self):
+        from django.apps import apps as django_apps
+        self.module.grant(django_apps, None)
+
+    def _role(self, *, company=None, name='Servicio Técnico', slug='servicio-tecnico',
+              description='Equivalente al rol legacy "technician".',
+              capabilities=('company.view', 'service.manage')):
+        return CompanyRole.objects.create(
+            company=company or self.company, name=name, slug=slug,
+            description=description, capabilities=sorted(capabilities),
+        )
+
+    # -- what it DOES -------------------------------------------------------
+
+    def test_the_0017_era_preset_receives_the_service_capabilities(self):
+        role = self._role()
+        self._run()
+        role.refresh_from_db()
+
+        for code in self.module.NEW_CAPABILITIES:
+            self.assertIn(code, role.capabilities, code)
+        # And keeps what it had.
+        self.assertIn('company.view', role.capabilities)
+        self.assertIn('service.manage', role.capabilities)
+
+    def test_the_pre_M8_provisioned_preset_receives_them_too(self):
+        role = self._role(
+            description='Servicio técnico. El módulo aún no existe; el rol reserva la autoridad.',
+            capabilities=('company.view', 'service.manage', 'service.customers.view'),
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertIn('service.repair.manage', role.capabilities)
+
+    def test_it_matches_the_shape_provisioning_produces_today(self):
+        # The whole point: after the migration, a historical preset holds what a
+        # newly provisioned one holds. Anything else and the asymmetry survives
+        # in a new form.
+        from .company_provisioning import _TECHNICIAN_CAPS
+
+        role = self._role()
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(set(role.capabilities), set(_TECHNICIAN_CAPS))
+
+    def test_every_tenant_with_the_untouched_preset_is_reached(self):
+        mine = self._role()
+        theirs = self._role(company=self.other)
+        self._run()
+        mine.refresh_from_db(); theirs.refresh_from_db()
+        self.assertIn('service.repair.manage', mine.capabilities)
+        self.assertIn('service.repair.manage', theirs.capabilities)
+
+    # -- what it REFUSES to touch ------------------------------------------
+
+    def test_one_capability_removed_and_the_role_is_the_tenants(self):
+        role = self._role(capabilities=('company.view',))
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(role.capabilities, ['company.view'])
+
+    def test_one_capability_added_and_the_role_is_the_tenants(self):
+        role = self._role(
+            capabilities=('company.view', 'service.manage', 'inventory.view'),
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_renamed_role_is_left_alone(self):
+        role = self._role(name='Taller')
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_re_described_role_is_left_alone(self):
+        # This is the field that makes the discriminator sound. A tenant who
+        # edited the description told us the row is theirs.
+        role = self._role(description='Nuestro equipo de reparaciones.')
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_different_slug_is_left_alone(self):
+        role = self._role(slug='tecnicos')
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_custom_role_that_merely_shares_the_capability_set_is_left_alone(self):
+        # THE CASE THAT RULES OUT CAPABILITY EQUALITY ON ITS OWN. A limited role
+        # holding exactly {company.view, service.manage} is an entirely ordinary
+        # thing for a shop to build, and it must not silently gain the authority
+        # to spend stock.
+        role = CompanyRole.objects.create(
+            company=self.company, name='Consulta técnica', slug='consulta-tecnica',
+            description='Solo mirar.',
+            capabilities=sorted(['company.view', 'service.manage']),
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(role.capabilities, ['company.view', 'service.manage'])
+
+    def test_a_role_with_the_right_name_but_a_tenant_description_is_left_alone(self):
+        role = self._role(description='Servicio Técnico de la sucursal norte.')
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.repair.manage', role.capabilities)
+
+    def test_a_current_era_preset_is_not_double_granted(self):
+        # Provisioned from M8 onward: it already holds the capabilities and its
+        # description is the current one. The migration must not match it.
+        from .company_provisioning import _TECHNICIAN_CAPS
+        role = self._role(
+            description='Recepción de equipos, órdenes de servicio y su seguimiento.',
+            capabilities=_TECHNICIAN_CAPS,
+        )
+        before = list(role.capabilities)
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(role.capabilities, before)
+
+    def test_no_other_preset_is_touched(self):
+        admin = CompanyRole.objects.get(company=self.company, slug='administrador')
+        sales = CompanyRole.objects.get(company=self.company, slug='ventas')
+        before = (list(admin.capabilities), list(sales.capabilities))
+        self._run()
+        admin.refresh_from_db(); sales.refresh_from_db()
+        self.assertEqual((admin.capabilities, sales.capabilities), before)
+
+    def test_quality_is_not_granted_here(self):
+        # It is still RESERVED at this commit. M11 promotes it and M11 grants it.
+        role = self._role()
+        self._run()
+        role.refresh_from_db()
+        self.assertNotIn('service.quality.manage', role.capabilities)
+
+    # -- reverse ------------------------------------------------------------
+
+    def test_the_reverse_restores_exactly_what_was_there(self):
+        role = self._role()
+        self._run()
+        from django.apps import apps as django_apps
+        self.module.revoke(django_apps, None)
+        role.refresh_from_db()
+        self.assertEqual(role.capabilities, ['company.view', 'service.manage'])
+
+    def test_the_reverse_leaves_a_tenant_edited_row_alone(self):
+        # Granted by the migration, then edited by the tenant. Rolling back must
+        # not undo the tenant's decision as well as ours.
+        role = self._role()
+        self._run()
+        role.refresh_from_db()
+        role.capabilities = sorted(set(role.capabilities) | {'inventory.view'})
+        role.save(update_fields=['capabilities'])
+
+        from django.apps import apps as django_apps
+        self.module.revoke(django_apps, None)
+        role.refresh_from_db()
+        self.assertIn('inventory.view', role.capabilities)
+        self.assertIn('service.repair.manage', role.capabilities)
+
+    # -- the resolver actually changes ---------------------------------------
+
+    def test_a_technician_on_the_migrated_preset_can_now_work_the_lifecycle(self):
+        # The migration is only worth anything if `has_capability` changes.
+        role = self._role()
+        user = _m7_user('h1b_tecnico')
+        membership = Membership.objects.create(
+            user=user, company=self.company, role='technician',
+        )
+        _assign(membership, role)
+        cache.clear()
+
+        for code in ('service.orders.view', 'service.diagnostic.manage',
+                     'service.repair.manage'):
+            self.assertFalse(_h1b_has_capability(user, self.company, code), code)
+
+        self._run()
+        cache.clear()
+
+        for code in ('service.orders.view', 'service.diagnostic.manage',
+                     'service.repair.manage'):
+            self.assertTrue(_h1b_has_capability(user, self.company, code), code)
+        # And still not a warehouse permission.
+        self.assertFalse(_h1b_has_capability(user, self.company, 'inventory.adjust'))
