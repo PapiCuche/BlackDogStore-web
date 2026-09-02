@@ -359,13 +359,28 @@ def has_custom_role_history(membership) -> bool:
     person's authority through RBAC". Once it has, the legacy matrix stops
     being an answer about them.
 
-    Reliable because assignments are SOFT-disabled. Nothing in this project
-    deletes a `MembershipRoleAssignment`; revoking sets `is_active=False` and
-    keeps the row for the audit trail. So a row's existence is a permanent fact
-    about the past, which is exactly the kind of fact this question needs. If
-    some future code ever hard-deletes one, it would erase the evidence that
-    this membership migrated and quietly re-arm the legacy fallback — hence the
-    regression test that asserts revocation keeps the row.
+    Reliable because REVOKING is soft: `is_active=False`, and the row stays for
+    the audit trail. A row's existence is therefore a fact about the past, which
+    is exactly the kind of fact this question needs.
+
+    WHAT ACTUALLY DELETES ONE, stated precisely rather than claimed away — an
+    earlier version of this docstring asserted "nothing in this project deletes
+    a MembershipRoleAssignment", and that was false:
+
+      · `seed_demo_users` purges rows outright, but it is DEBUG-only and deletes
+        the `User` too, so nobody survives to be revived.
+      · Migration 0048 removes redundant DUPLICATES of one fact; the survivor
+        keeps the history, so the marker is preserved by construction.
+      · `membership` is `on_delete=CASCADE`, so deleting a `Membership` takes its
+        assignments with it. That does not revive anybody either — with no
+        membership, `resolve_capabilities` returns nothing at all. The residual
+        risk is a membership DELETED and then RECREATED with a legacy `role`,
+        which is an act only somebody who could already grant that authority can
+        perform.
+
+    So the invariant holds, but it rests on discipline rather than on a column.
+    A `Membership.adopted_rbac_at` stamp would make it structural and survive
+    the cascade; it is recorded as debt rather than smuggled into this phase.
     """
     if membership is None:
         return False

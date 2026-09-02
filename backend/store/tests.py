@@ -35443,3 +35443,162 @@ class M11StructuralTest(M11QualityBase):
             'get_user_role',
         ):
             self.assertIsNone(re.search(forbidden, code), forbidden)
+
+
+class G2MigrationRepairTest(TransactionTestCase):
+    """
+    Migration 0048 must leave a database that 0049 can actually constrain.
+
+    `TransactionTestCase` because this is about what happens to REAL rows: a
+    plain `TestCase` proves nothing here, and neither does the rest of the
+    suite — Django builds the test database from empty, so the repair path in
+    0048 never meets a duplicate and 0049 always applies cleanly. A green suite
+    was not evidence that this chain applies to a database that has been
+    running.
+
+    The bug this pins: 0048 used to only set `is_active=False` on duplicates,
+    while 0049's index is `UNIQUE(membership, role) WHERE area IS NULL` with no
+    `is_active` term. A deactivated duplicate still has a NULL area and still
+    collides, so `migrate` failed at 0049 on exactly the databases 0048 exists
+    to repair — after 0048 had already rewritten flags.
+    """
+
+    reset_sequences = True
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('G2', 'g2-repair', tax_id='20990000501')
+        provision_company_access_defaults(self.company)
+        self.user = _m7_user('g2_dup')
+        self.membership = Membership.objects.create(
+            user=self.user, company=self.company, role='admin',
+        )
+        self.role = CompanyRole.objects.get(company=self.company, slug='administrador')
+
+    #: The constraint 0049 adds, so a test can stand the database back up the
+    #: way it looked before it existed.
+    _CONSTRAINT = 'unique_role_assignment_without_area'
+
+    def _drop_constraint(self):
+        """
+        Reproduce the PRE-0049 database.
+
+        The test database is migrated to HEAD, so the index already exists and
+        even raw SQL cannot insert the duplicates this repair is written for.
+        Dropping it is the only way to exercise the thing under test: what 0048
+        does to a database that has been running since before the constraint.
+        """
+        from django.db import connection
+
+        constraint = next(
+            c for c in MembershipRoleAssignment._meta.constraints
+            if c.name == self._CONSTRAINT
+        )
+        with connection.schema_editor(atomic=False) as editor:
+            editor.remove_constraint(MembershipRoleAssignment, constraint)
+        return constraint
+
+    def _restore_constraint(self, constraint):
+        from django.db import connection
+
+        with connection.schema_editor(atomic=False) as editor:
+            editor.add_constraint(MembershipRoleAssignment, constraint)
+
+    def _duplicate_rows(self, count=3, active=True):
+        """Identical rows with a NULL area — the shape 0049 forbids."""
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            for _ in range(count):
+                cursor.execute(
+                    'INSERT INTO store_membershiproleassignment '
+                    '(membership_id, role_id, area_id, is_active, assigned_by_id, '
+                    ' created_at, updated_at) '
+                    'VALUES (%s, %s, NULL, %s, NULL, %s, %s)',
+                    [self.membership.pk, self.role.pk, active,
+                     timezone.now(), timezone.now()],
+                )
+
+    def test_the_repair_removes_the_redundant_rows_not_just_their_flag(self):
+        # If they are only deactivated they still occupy (membership, role,
+        # NULL) and the index cannot be built.
+        import importlib
+        from django.apps import apps as django_apps
+
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        constraint = self._drop_constraint()
+        self._duplicate_rows(3)
+        self.assertEqual(
+            MembershipRoleAssignment.objects.filter(membership=self.membership).count(), 3,
+        )
+
+        module = importlib.import_module(
+            'store.migrations.0048_consolidate_duplicate_role_assignments',
+        )
+        module.consolidate(django_apps, None)
+
+        rows = MembershipRoleAssignment.objects.filter(membership=self.membership)
+        self.assertEqual(rows.count(), 1, 'debe quedar exactamente una fila')
+        self.assertTrue(rows.first().is_active)
+        # And the index the repair exists for can now be built.
+        self._restore_constraint(constraint)
+
+    def test_the_survivor_keeps_the_history_marker(self):
+        # `has_custom_role_history` reads row EXISTENCE. If the repair removed
+        # every row, the membership would look like it never adopted RBAC and
+        # the legacy fallback would re-arm — an admin, in this fixture.
+        import importlib
+        from django.apps import apps as django_apps
+        from .tenancy import has_custom_role_history, resolve_capabilities
+
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        constraint = self._drop_constraint()
+        self._duplicate_rows(2, active=False)
+
+        importlib.import_module(
+            'store.migrations.0048_consolidate_duplicate_role_assignments',
+        ).consolidate(django_apps, None)
+
+        self.membership.refresh_from_db()
+        self.assertTrue(has_custom_role_history(self.membership))
+        cache.clear()
+        # Still fail-closed: one inactive row survives, so no legacy revival.
+        self.assertEqual(resolve_capabilities(self.user, self.company), frozenset())
+        self._restore_constraint(constraint)
+
+    def test_an_all_inactive_group_does_not_hand_authority_back(self):
+        import importlib
+        from django.apps import apps as django_apps
+
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        constraint = self._drop_constraint()
+        self._duplicate_rows(3, active=False)
+
+        importlib.import_module(
+            'store.migrations.0048_consolidate_duplicate_role_assignments',
+        ).consolidate(django_apps, None)
+
+        rows = MembershipRoleAssignment.objects.filter(membership=self.membership)
+        self.assertEqual(rows.count(), 1)
+        self.assertFalse(rows.first().is_active, 'consolidar no reactiva nada')
+        self._restore_constraint(constraint)
+
+    def test_the_constraint_holds_after_the_repair(self):
+        import importlib
+        from django.apps import apps as django_apps
+
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        constraint = self._drop_constraint()
+        self._duplicate_rows(2)
+        importlib.import_module(
+            'store.migrations.0048_consolidate_duplicate_role_assignments',
+        ).consolidate(django_apps, None)
+        # THE POINT: after the repair the index applies. Before the fix this
+        # raised IntegrityError right here, which is what `migrate` did on a
+        # real database.
+        self._restore_constraint(constraint)
+
+        with self.assertRaises(IntegrityError):
+            MembershipRoleAssignment.objects.create(
+                membership=self.membership, role=self.role, area=None,
+            )

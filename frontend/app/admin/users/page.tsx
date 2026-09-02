@@ -127,6 +127,7 @@ function MemberCard({
   }, [membership.branch_access, membership.branch_access_mode]);
 
   const activeAssignments = assignments.filter((row) => row.is_active);
+  const revokedAssignments = assignments.filter((row) => !row.is_active);
   const effective = activeAssignments.flatMap((row) => row.capabilities);
 
   async function perform(action: () => Promise<unknown>) {
@@ -149,13 +150,36 @@ function MemberCard({
     await perform(() => deleteJson(`/admin/membership-role-assignments/${assignmentId}/`));
   }
 
+  async function restoreRole(assignmentId: number) {
+    // PATCH, not POST. The row already exists — revoking soft-disables it and
+    // the unique index covers the ROW, not its active state — so re-granting is
+    // a reactivation. The server re-checks delegation on the way back in.
+    await perform(() => patchJson(
+      `/admin/membership-role-assignments/${assignmentId}/`, { is_active: true },
+    ));
+  }
+
   async function assignRole() {
     if (!roleId) return;
-    await perform(() => postJson("/admin/membership-role-assignments/", {
-      membership: membership.id,
-      role: Number(roleId),
-      area: areaId ? Number(areaId) : null,
-    }));
+    const wanted = Number(roleId);
+    const wantedArea = areaId ? Number(areaId) : null;
+
+    // A REVOKED assignment for the same role and area is not a free slot: the
+    // database still holds that row, so POSTing would be refused with "esa
+    // asignación ya existe" and the administrator would be stuck — the role
+    // could be taken away once and never given back. Reactivate it instead.
+    const revoked = revokedAssignments.find(
+      (row) => row.role === wanted && row.area === wantedArea,
+    );
+    if (revoked) {
+      await restoreRole(revoked.id);
+    } else {
+      await perform(() => postJson("/admin/membership-role-assignments/", {
+        membership: membership.id,
+        role: wanted,
+        area: wantedArea,
+      }));
+    }
     setRoleId("");
     setAreaId("");
   }
