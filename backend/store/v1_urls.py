@@ -29,6 +29,7 @@ from .v1_service_views import (
     V1ServicePartCandidateView,
     V1ServicePartUsageReverseView,
     V1ServicePartUsageView,
+    V1ServiceDeliveryView,
     V1ServiceQualityFailView,
     V1ServiceQualityHistoryView,
     V1ServiceQualityItemView,
@@ -297,6 +298,11 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/quality/fail/',
         V1ServiceQualityFailView.as_view(), name='v1-internal-service-quality-fail',
+    ),
+    # --- M12 / BR-005E — entrega ---
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/delivery/',
+        V1ServiceDeliveryView.as_view(), name='v1-internal-service-delivery',
     ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),

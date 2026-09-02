@@ -27549,9 +27549,10 @@ class M8TransitionTest(M8ServiceBase):
         # module lets an order enter a state no code can act on.
         codes = {code for code, _label in _M8Status.choices}
         # M11 claimed `quality_control` and `ready_for_pickup` by building the
-        # inspection and the pass. Two remain, and each still waits for the
-        # module that would give it meaning.
-        for absent in ('delivered', 'warranty'):
+        # inspection and the pass; M12 claimed `delivered` by building the
+        # handover. One remains, and it still waits for the module that would
+        # give it meaning.
+        for absent in ('warranty',):
             self.assertNotIn(absent, codes, absent)
 
     def test_the_generic_path_to_waiting_approval_closed_in_M9(self):
@@ -29101,10 +29102,11 @@ class M9LifecycleTest(M9ServiceBase):
 
     def test_states_M9_still_cannot_support_do_not_exist(self):
         # M10 claimed `in_repair`, `waiting_parts` and `repaired`; M11 claimed
-        # `quality_control` and `ready_for_pickup`. Two remain, and each still
-        # waits for the module that would give it meaning.
+        # `quality_control` and `ready_for_pickup`; M12 claimed `delivered`.
+        # One remains, and it still waits for the module that would give it
+        # meaning.
         codes = {code for code, _label in _M8Status.choices}
-        for absent in ('delivered', 'warranty'):
+        for absent in ('warranty',):
             self.assertNotIn(absent, codes, absent)
 
     def test_the_generic_endpoint_no_longer_offers_waiting_approval(self):
@@ -31729,10 +31731,11 @@ class M10LifecycleTest(M10ServiceBase):
             self.assertIn(code, codes, code)
 
     def test_states_M10_still_cannot_support_do_not_exist(self):
-        # M11 built quality control, so two more left this list. `delivered` and
-        # `warranty` remain: handover and warranty have no module.
+        # M11 built quality control and M12 built the handover, so three more
+        # left this list. `warranty` remains, and when it arrives it will be a
+        # re-entry citing the old order — not a status bolted onto a closed one.
         codes = {code for code, _label in _M8Status.choices}
-        for absent in ('delivered', 'warranty'):
+        for absent in ('warranty',):
             self.assertNotIn(absent, codes, absent)
 
     def test_the_generic_endpoint_refuses_every_new_state(self):
@@ -33382,20 +33385,28 @@ class H1BTechnicianPresetParityTest(TestCase):
         # a newly provisioned one holds. Anything else and the asymmetry
         # survives in a new form.
         #
-        # BOTH grants run, because each phase pays its own debt: H1B's frozen
-        # list is what H1B knew about, and M11 promoted `service.quality.manage`
-        # afterwards and grants it in its own migration. Asserting H1B alone
-        # against today's preset would be asserting that H1B could see the
-        # future.
+        # EVERY grant runs, because each phase pays its own debt: H1B's frozen
+        # list is what H1B knew about, M11 promoted `service.quality.manage`
+        # afterwards, M12 promoted `service.delivery.manage` after that, and
+        # each grants its own in its own migration. Asserting H1B alone against
+        # today's preset would be asserting that H1B could see the future.
+        #
+        # This list grows with every phase that adds a technician capability,
+        # and that is the point: the day someone adds one WITHOUT a grant, this
+        # test says so.
         import importlib
         from django.apps import apps as django_apps
         from .company_provisioning import _TECHNICIAN_CAPS
 
         role = self._role()
         self._run()
-        importlib.import_module(
-            'store.migrations.0050_quality_capability_for_untouched_presets',
-        ).grant(django_apps, None)
+        for migration in (
+            '0050_quality_capability_for_untouched_presets',
+            '0053_delivery_capability_for_untouched_presets',
+        ):
+            importlib.import_module(
+                f'store.migrations.{migration}',
+            ).grant(django_apps, None)
         role.refresh_from_db()
         self.assertEqual(set(role.capabilities), set(_TECHNICIAN_CAPS))
 
@@ -33599,8 +33610,9 @@ class M11QualityLifecycleTest(M11QualityBase):
         self.assertIn('ready_for_pickup', codes)
 
     def test_states_M11_still_cannot_support_do_not_exist(self):
+        # M12 built the handover and earned `delivered`. `warranty` remains.
         codes = {code for code, _l in _M8Status.choices}
-        for absent in ('delivered', 'warranty'):
+        for absent in ('warranty',):
             self.assertNotIn(absent, codes, absent)
 
     def test_the_generic_endpoint_refuses_both_new_states(self):
@@ -34559,3 +34571,1144 @@ class M11StructuralTest(M11QualityBase):
             'get_user_role',
         ):
             self.assertIsNone(re.search(forbidden, code), forbidden)
+
+
+# ===========================================================================
+# M12 / BR-005E — delivery and handover
+# ===========================================================================
+
+from .models import RepairDelivery as _M12Delivery  # noqa: E402
+
+
+class M12DeliveryBase(M11QualityBase):
+    """M11's fixture, carried all the way to a device that passed its tests."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.only_capabilities(
+            'service.orders.view', 'service.orders.create', 'service.orders.manage',
+            'service.devices.view', 'service.devices.manage', 'service.customers.view',
+            'service.diagnostic.manage', 'service.repair.manage',
+            'service.quality.manage', 'service.delivery.manage',
+            slug='m12-rol',
+        )
+
+    def ready_for_pickup(self):
+        self.repaired_order()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.answer_all(check)
+        _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+        return check
+
+
+class M12LifecycleTest(M12DeliveryBase):
+    """`delivered` is the end, and it is not a dropdown."""
+
+    def test_the_new_code_exists(self):
+        codes = {code for code, _l in _M8Status.choices}
+        self.assertIn('delivered', codes)
+
+    def test_warranty_still_does_not_exist(self):
+        # It needs something to warrant against, and it will be a RE-ENTRY —
+        # a new order citing this one — not a status on a closed one.
+        codes = {code for code, _l in _M8Status.choices}
+        self.assertNotIn('warranty', codes)
+
+    def test_the_generic_endpoint_refuses_delivered(self):
+        self.ready_for_pickup()
+        response = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+            {'status': 'delivered'}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.READY_FOR_PICKUP)
+
+    def test_available_transitions_never_offers_it(self):
+        self.ready_for_pickup()
+        self.assertEqual(
+            _m8_service.available_transitions(self.order), [_M8Status.CANCELLED],
+        )
+
+    def test_delivering_closes_the_order(self):
+        self.ready_for_pickup()
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana Cliente', actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.DELIVERED)
+        self.assertIsNotNone(self.order.closed_at)
+
+    def test_delivered_is_terminal(self):
+        self.ready_for_pickup()
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        self.assertEqual(_m8_service.available_transitions(self.order), [])
+
+    def test_the_default_label_says_nothing_about_payment(self):
+        setting = _M8StatusSetting.objects.get(company=self.company, code='delivered')
+        self.assertEqual(setting.label, 'Entregado')
+        for forbidden in ('pagad', 'cobrad', 'facturad', 'saldo'):
+            self.assertNotIn(forbidden, setting.label.lower())
+
+
+class M12DeliveryTest(M12DeliveryBase):
+    """Recording who took the device."""
+
+    def test_a_ready_device_can_be_handed_over(self):
+        self.ready_for_pickup()
+        delivery = _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='  Ana Cliente  ',
+            notes='Se llevó la caja.', actor=self.staff,
+        )
+        self.assertEqual(delivery.recipient_name, 'Ana Cliente')
+        self.assertEqual(delivery.delivered_by, self.staff)
+        self.assertIsNotNone(delivery.delivered_at)
+
+    def refuse_delivery(self):
+        with self.assertRaises(_m8_service.DeliveryError):
+            _m8_service.deliver_repair(
+                repair_order=self.order, recipient_name='Ana', actor=self.staff,
+            )
+        self.assertFalse(_M12Delivery.objects.filter(repair_order=self.order).exists())
+        self.order.refresh_from_db()
+        self.assertNotEqual(self.order.status, _M8Status.DELIVERED)
+
+    def test_a_device_that_did_not_pass_cannot_be_handed_over(self):
+        # Walk one order up the lifecycle and try to hand the device over at
+        # every rung below `ready_for_pickup`. A shop that can deliver a device
+        # still on the bench has no quality control at all — the gate would be
+        # advisory, and advisory gates get skipped on a busy Saturday.
+        self.refuse_delivery()
+        quote = self.approved_order()
+        self.refuse_delivery()
+        _m8_service.start_repair(repair_order=self.order, actor=self.staff)
+        self.refuse_delivery()
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Hecho.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        self.refuse_delivery()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.refuse_delivery()
+        # And a device that FAILED its inspection is the case that matters most.
+        self.answer_all(check, result=_M11Result.FAIL)
+        _m8_service.fail_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.refuse_delivery()
+
+    def test_a_nameless_handover_is_refused(self):
+        # "Somebody took it" without a name is not a record.
+        self.ready_for_pickup()
+        for blank in ('', '   '):
+            with self.assertRaises(_m8_service.DeliveryError):
+                _m8_service.deliver_repair(
+                    repair_order=self.order, recipient_name=blank, actor=self.staff,
+                )
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.READY_FOR_PICKUP)
+
+    def test_delivering_twice_is_refused(self):
+        self.ready_for_pickup()
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.DeliveryError):
+            _m8_service.deliver_repair(
+                repair_order=self.order, recipient_name='Otro', actor=self.staff,
+            )
+        self.assertEqual(_M12Delivery.objects.filter(repair_order=self.order).count(), 1)
+
+    def test_the_database_forbids_a_second_delivery(self):
+        self.ready_for_pickup()
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        with self.assertRaises(IntegrityError):
+            _M12Delivery.objects.create(
+                company=self.company, repair_order=self.order, recipient_name='Otro',
+            )
+
+    def test_a_handover_cannot_be_edited_or_deleted(self):
+        self.ready_for_pickup()
+        delivery = _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        delivery.recipient_name = 'Otra persona'
+        with self.assertRaises(DjangoValidationError):
+            delivery.save()
+        with self.assertRaises(DjangoValidationError):
+            delivery.delete()
+
+    def test_delivering_writes_history_and_audit(self):
+        self.ready_for_pickup()
+        delivery = _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        event = _M8History.objects.filter(repair_order=self.order).order_by('-pk').first()
+        self.assertEqual(event.to_status, _M8Status.DELIVERED)
+        log = AdminAuditLog.objects.filter(
+            action='service_repair_delivered', target_id=str(delivery.pk),
+        ).first()
+        self.assertIsNotNone(log)
+
+    def test_the_audit_does_not_copy_the_recipient_name(self):
+        # Personal data in two tables is two places to honour a deletion request
+        # from. The delivery row holds it; the audit points at the row.
+        self.ready_for_pickup()
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana Particular', actor=self.staff,
+        )
+        log = AdminAuditLog.objects.filter(action='service_repair_delivered').first()
+        self.assertNotIn('Ana Particular', json.dumps(log.metadata))
+
+    def test_delivering_moves_no_stock_and_touches_no_quality(self):
+        quote, _execution = self.started()
+        _m8_service.record_part_usage(
+            repair_order=self.order, quote_item=self.part_line(quote),
+            quantity=1, actor=self.staff,
+        )
+        _m8_service.complete_repair(
+            repair_order=self.order, work_performed='Hecho.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        check = _m8_service.start_quality_check(
+            repair_order=self.order, actor=self.staff,
+        )
+        self.answer_all(check)
+        _m8_service.pass_quality_check(repair_order=self.order, actor=self.staff)
+        self.order.refresh_from_db()
+
+        stock_before = self.stock()
+        movements = StockMovement.objects.count()
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        check.refresh_from_db()
+
+        self.assertEqual(self.stock(), stock_before)
+        self.assertEqual(StockMovement.objects.count(), movements)
+        self.assertEqual(check.status, _M11Status.PASSED)
+
+    def test_delivering_creates_no_ecommerce_order_and_no_payment(self):
+        # THE FINDING THIS PINS: `PaymentTransaction.order` is a non-null FK to
+        # the e-commerce Order, so a repair cannot be paid through it. M12 does
+        # not pretend otherwise, and nothing here writes a payment.
+        self.ready_for_pickup()
+        orders = Order.objects.count()
+        payments = PaymentTransaction.objects.count()
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        self.assertEqual(Order.objects.count(), orders)
+        self.assertEqual(PaymentTransaction.objects.count(), payments)
+
+    def test_the_delivery_model_holds_no_payment_and_no_evidence_field(self):
+        names = {f.name for f in _M12Delivery._meta.get_fields()}
+        for forbidden in (
+            'paid', 'amount', 'total', 'payment', 'balance',
+            'signature', 'photo', 'evidence', 'conformity', 'document_number',
+        ):
+            self.assertNotIn(forbidden, names, forbidden)
+
+    def test_no_m12_model_uses_a_file_field(self):
+        from django.db import models as dj_models
+        for field in _M12Delivery._meta.get_fields():
+            self.assertNotIsInstance(field, dj_models.FileField, field.name)
+
+
+class M12IdempotencyTest(M12DeliveryBase):
+    """Two counters must not hand one device over twice."""
+
+    def test_the_same_key_and_payload_replays_the_same_record(self):
+        self.ready_for_pickup()
+        first = _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana',
+            idempotency_key='k1', actor=self.staff,
+        )
+        second = _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana',
+            idempotency_key='k1', actor=self.staff,
+        )
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(_M12Delivery.objects.count(), 1)
+
+    def test_a_replay_writes_no_second_history_row_or_audit(self):
+        self.ready_for_pickup()
+        for _ in range(3):
+            _m8_service.deliver_repair(
+                repair_order=self.order, recipient_name='Ana',
+                idempotency_key='k1', actor=self.staff,
+            )
+        self.assertEqual(
+            _M8History.objects.filter(
+                repair_order=self.order, to_status=_M8Status.DELIVERED,
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            AdminAuditLog.objects.filter(action='service_repair_delivered').count(), 1,
+        )
+
+    def test_the_same_key_with_a_different_recipient_is_a_conflict(self):
+        # Answering with the original record would silently ignore the fact that
+        # the second request named somebody else.
+        self.ready_for_pickup()
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana',
+            idempotency_key='k1', actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.DeliveryConflict):
+            _m8_service.deliver_repair(
+                repair_order=self.order, recipient_name='Otro nombre',
+                idempotency_key='k1', actor=self.staff,
+            )
+        self.assertEqual(_M12Delivery.objects.count(), 1)
+
+    def test_the_constraint_exists_in_the_database(self):
+        self.ready_for_pickup()
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana',
+            idempotency_key='k1', actor=self.staff,
+        )
+        other = self.make_order()
+        with self.assertRaises(IntegrityError):
+            _M12Delivery.objects.create(
+                company=self.company, repair_order=other, recipient_name='X',
+                idempotency_key='k1',
+            )
+
+
+class M12RbacMatrixTest(M12DeliveryBase):
+    """
+    Who may release a device, resolved by the resolver rather than asserted.
+
+    `service.delivery.manage` is its OWN capability. A shop where reception
+    hands devices back should not have to give the front desk the machine that
+    cancels orders, and a shop that wants the technician who did the work NOT to
+    be the one who releases it must be able to say so.
+    """
+
+    def _may(self, user, code='service.delivery.manage'):
+        cache.clear()
+        return has_capability(user, self.company, code)
+
+    def test_the_capability_is_ACTIVE_because_the_module_exists(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+        self.assertEqual(
+            CAPABILITIES['service.delivery.manage'].status, STATUS_ACTIVE,
+        )
+
+    def test_the_catalogue_still_reserves_nothing(self):
+        from .capabilities import RESERVED_CAPABILITY_CODES
+        self.assertEqual(RESERVED_CAPABILITY_CODES, frozenset())
+
+    def test_the_standard_technician_preset_can_deliver(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='servicio-tecnico'),
+        )
+        cache.clear()
+        self.assertTrue(self._may(self.staff))
+        self.assertFalse(self._may(self.staff, 'inventory.adjust'))
+
+    def test_a_company_admin_can_deliver(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='administrador'),
+        )
+        self.assertTrue(self._may(self.staff))
+
+    def test_a_platform_master_can_deliver_in_an_EXPLICIT_tenant(self):
+        master = _m7_user('m12_master')
+        master.is_superuser = True
+        master.is_staff = True
+        master.save(update_fields=['is_superuser', 'is_staff'])
+
+        self.assertTrue(self._may(master))
+        self.assertFalse(
+            Membership.objects.filter(user=master, company=self.company).exists()
+        )
+
+    def test_a_tenant_can_build_a_technician_who_repairs_but_does_not_release(self):
+        self.only_capabilities(
+            'service.orders.view', 'service.repair.manage',
+            'service.quality.manage', slug='m12-solo-taller',
+        )
+        self.assertTrue(self._may(self.staff, 'service.repair.manage'))
+        self.assertFalse(self._may(self.staff))
+
+    def test_a_tenant_can_build_a_counter_that_releases_and_nothing_else(self):
+        # Reception. It can hand a device back and read the order; it cannot
+        # move the lifecycle, cancel, quote, repair or inspect.
+        self.only_capabilities(
+            'service.orders.view', 'service.delivery.manage', slug='m12-mostrador',
+        )
+        self.assertTrue(self._may(self.staff))
+        for denied in (
+            'service.orders.manage', 'service.repair.manage',
+            'service.quality.manage', 'service.diagnostic.manage',
+        ):
+            self.assertFalse(self._may(self.staff, denied), denied)
+
+    def test_orders_manage_alone_does_not_grant_delivery(self):
+        # The point of a separate capability. If the wide one implied the narrow
+        # one, no shop could separate the two duties.
+        self.only_capabilities(
+            'service.orders.view', 'service.orders.manage', slug='m12-lifecycle',
+        )
+        self.assertTrue(self._may(self.staff, 'service.orders.manage'))
+        self.assertFalse(self._may(self.staff))
+
+    def test_the_sales_preset_cannot_deliver(self):
+        # The owner's decision, pinned: releasing a repaired device is a service
+        # act, and the sales preset is a shop counter for the catalogue.
+        for slug in ('ventas', 'inventario'):
+            MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+            _assign(
+                self.membership,
+                CompanyRole.objects.get(company=self.company, slug=slug),
+            )
+            self.assertFalse(self._may(self.staff), slug)
+
+    def test_the_legacy_technician_fallback_was_NOT_widened(self):
+        from .tenancy import LEGACY_ROLE_CAPABILITIES
+        from .models import UserProfile
+
+        legacy = LEGACY_ROLE_CAPABILITIES[UserProfile.ROLE_TECHNICIAN]
+        self.assertEqual(legacy, frozenset({'company.view', 'service.manage'}))
+        self.assertNotIn('service.delivery.manage', legacy)
+
+    def test_a_role_name_is_never_authority(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        cache.clear()
+        self.assertEqual(self.membership.role, 'technician')
+        self.assertFalse(self._may(self.staff))
+
+    def test_an_admin_of_another_company_cannot_deliver_here(self):
+        outsider = _m7_user('m12_ajeno')
+        membership = Membership.objects.create(
+            user=outsider, company=self.other, role='admin',
+        )
+        _assign(
+            membership,
+            CompanyRole.objects.get(company=self.other, slug='administrador'),
+        )
+        self.assertFalse(self._may(outsider))
+
+    def test_a_customer_holds_nothing_internal(self):
+        self.assertFalse(self._may(self.client_user))
+        self.assertFalse(self._may(self.client_user, 'service.orders.view'))
+
+
+class M12InternalApiTest(M12DeliveryBase):
+    """The surface, its gates and its refusals."""
+
+    def _url(self, order=None, slug='m8-taller'):
+        return _m10_url(slug, (order or self.order).pk, 'delivery/')
+
+    def test_the_handover_over_http(self):
+        self.ready_for_pickup()
+        res = self.client.post(
+            self._url(),
+            {'recipient_name': 'Ana Cliente', 'notes': 'Con su caja.'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['recipient_name'], 'Ana Cliente')
+        self.assertEqual(res.data['delivered_by_name'], 'recepcion')
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.DELIVERED)
+
+    def test_an_order_with_no_handover_answers_null_not_404(self):
+        self.ready_for_pickup()
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.data['delivery'])
+
+    def test_the_body_cannot_set_the_clock_or_the_deliverer(self):
+        # A handover whose timestamp and author the client chooses is not a
+        # record of anything.
+        self.ready_for_pickup()
+        other = _m7_user('m12_otro_staff')
+        res = self.client.post(
+            self._url(),
+            {
+                'recipient_name': 'Ana',
+                'delivered_at': '2000-01-01T00:00:00Z',
+                'delivered_by': other.pk,
+                'created_at': '2000-01-01T00:00:00Z',
+                'company': self.other.pk,
+                'repair_order': 999,
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201)
+        delivery = _M12Delivery.objects.get(pk=res.data['id'])
+        self.assertEqual(delivery.delivered_by, self.staff)
+        self.assertEqual(delivery.company_id, self.company.pk)
+        self.assertEqual(delivery.repair_order_id, self.order.pk)
+        self.assertGreater(delivery.delivered_at.year, 2020)
+
+    def test_a_missing_recipient_is_a_400(self):
+        self.ready_for_pickup()
+        for payload in ({}, {'recipient_name': ''}, {'recipient_name': '   '}):
+            res = self.client.post(self._url(), payload, format='json')
+            self.assertEqual(res.status_code, 400, payload)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.READY_FOR_PICKUP)
+
+    def test_an_order_still_on_the_bench_is_a_400(self):
+        self.repaired_order()
+        res = self.client.post(
+            self._url(), {'recipient_name': 'Ana'}, format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_reading_needs_only_orders_view(self):
+        self.ready_for_pickup()
+        client = self.only_capabilities('service.orders.view', slug='m12-lector')
+        self.assertEqual(client.get(self._url()).status_code, 200)
+
+    def test_reading_does_not_grant_releasing(self):
+        self.ready_for_pickup()
+        client = self.only_capabilities('service.orders.view', slug='m12-lector2')
+        res = client.post(self._url(), {'recipient_name': 'Ana'}, format='json')
+        self.assertEqual(res.status_code, 403)
+
+    def test_the_wide_lifecycle_capability_alone_cannot_release(self):
+        self.ready_for_pickup()
+        client = self.only_capabilities(
+            'service.orders.view', 'service.orders.manage', slug='m12-lifecycle-http',
+        )
+        res = client.post(self._url(), {'recipient_name': 'Ana'}, format='json')
+        self.assertEqual(res.status_code, 403)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.READY_FOR_PICKUP)
+
+    def test_a_counter_role_can_release_without_touching_the_lifecycle(self):
+        self.ready_for_pickup()
+        client = self.only_capabilities(
+            'service.orders.view', 'service.delivery.manage', slug='m12-mostrador-http',
+        )
+        res = client.post(self._url(), {'recipient_name': 'Ana'}, format='json')
+        self.assertEqual(res.status_code, 201)
+        # And it still cannot cancel anything.
+        other = self.make_order()
+        cancel = client.post(
+            _m8_url('m8-taller', f'orders/{other.pk}/transition/'),
+            {'status': 'cancelled'}, format='json',
+        )
+        self.assertEqual(cancel.status_code, 403)
+
+    def test_a_foreign_tenant_gets_404_not_403(self):
+        # 403 would confirm the order exists in a tenant the caller has no
+        # membership in, which is enough to sweep ids.
+        self.ready_for_pickup()
+        res = self.client.get(self._url(slug='m8-otra'))
+        self.assertEqual(res.status_code, 404)
+        res = self.client.post(
+            self._url(slug='m8-otra'), {'recipient_name': 'Ana'}, format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_an_order_outside_the_caller_branch_is_404(self):
+        self.ready_for_pickup()
+        self.order.branch = self.branch_b
+        self.order.save(update_fields=['branch'])
+        self.only_capabilities(
+            'service.orders.view', 'service.delivery.manage', slug='m12-sucursal',
+        )
+        client = self.restrict_to_branch_a()
+
+        self.assertEqual(client.get(self._url()).status_code, 404)
+        res = client.post(self._url(), {'recipient_name': 'Ana'}, format='json')
+        self.assertEqual(res.status_code, 404)
+        self.assertFalse(_M12Delivery.objects.exists())
+
+    def test_an_anonymous_caller_gets_nothing(self):
+        self.ready_for_pickup()
+        anon = APIClient()
+        self.assertIn(anon.get(self._url()).status_code, (401, 403))
+        self.assertIn(
+            anon.post(self._url(), {'recipient_name': 'Ana'}, format='json').status_code,
+            (401, 403),
+        )
+
+    def test_a_replayed_key_returns_201_and_the_same_row(self):
+        self.ready_for_pickup()
+        body = {'recipient_name': 'Ana', 'idempotency_key': 'http-1'}
+        first = self.client.post(self._url(), body, format='json')
+        second = self.client.post(self._url(), body, format='json')
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first.data['id'], second.data['id'])
+        self.assertEqual(_M12Delivery.objects.count(), 1)
+
+    def test_a_reused_key_with_a_different_recipient_is_409(self):
+        self.ready_for_pickup()
+        self.client.post(
+            self._url(),
+            {'recipient_name': 'Ana', 'idempotency_key': 'http-2'}, format='json',
+        )
+        res = self.client.post(
+            self._url(),
+            {'recipient_name': 'Otro', 'idempotency_key': 'http-2'}, format='json',
+        )
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.data['code'], 'idempotency_conflict')
+
+    def test_the_second_handover_of_one_device_is_400(self):
+        self.ready_for_pickup()
+        self.client.post(self._url(), {'recipient_name': 'Ana'}, format='json')
+        res = self.client.post(self._url(), {'recipient_name': 'Otro'}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(_M12Delivery.objects.count(), 1)
+
+    def test_the_serializer_never_echoes_the_key_or_the_fingerprint(self):
+        self.ready_for_pickup()
+        res = self.client.post(
+            self._url(),
+            {'recipient_name': 'Ana', 'idempotency_key': 'http-3'}, format='json',
+        )
+        self.assertNotIn('idempotency_key', res.data)
+        self.assertNotIn('request_fingerprint', res.data)
+
+    def test_the_order_detail_reports_no_available_transition_afterwards(self):
+        self.ready_for_pickup()
+        self.client.post(self._url(), {'recipient_name': 'Ana'}, format='json')
+        res = self.client.get(_m8_url('m8-taller', f'orders/{self.order.pk}/'))
+        self.assertEqual(res.data['status'], 'delivered')
+        self.assertEqual(res.data['available_transitions'], [])
+
+
+class M12CustomerPrivacyTest(M12DeliveryBase):
+    """A customer sees that the device left. Never the counter's notes."""
+
+    def _customer(self):
+        return _m7_login('cliente_m8')
+
+    def _delivered(self, **kwargs):
+        self.ready_for_pickup()
+        return _m8_service.deliver_repair(
+            repair_order=self.order, actor=self.staff, **kwargs,
+        )
+
+    def test_the_customer_sees_the_new_status_and_the_tenant_label(self):
+        self._delivered(recipient_name='Ana Cliente')
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        self.assertEqual(res.data['status'], 'delivered')
+        self.assertEqual(res.data['status_label'], 'Entregado')
+        self.assertIsNotNone(res.data['closed_at'])
+
+    def test_the_customer_never_sees_the_handover_record(self):
+        self._delivered(
+            recipient_name='Sobrino del cliente',
+            notes='Vino sin DNI, lo conoce el técnico.',
+        )
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        body = json.dumps(res.data, ensure_ascii=False)
+
+        for forbidden in (
+            'Sobrino', 'sin DNI', 'recipient_name', 'delivery', 'delivered_by',
+            'recepcion', 'Batería reemplazada', 'internal_notes', 'idempotency',
+        ):
+            self.assertNotIn(forbidden, body, forbidden)
+
+    def test_the_customer_payload_is_still_the_ten_allowlisted_fields(self):
+        self._delivered(recipient_name='Ana')
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        self.assertEqual(
+            sorted(res.data),
+            ['closed_at', 'device_summary', 'id', 'number', 'received_at',
+             'reported_issue', 'status', 'status_label', 'timeline', 'updated_at'],
+        )
+
+    def test_a_tenant_can_hide_the_delivered_stage(self):
+        setting = _M8StatusSetting.objects.get(company=self.company, code='delivered')
+        setting.is_customer_visible = False
+        setting.save(update_fields=['is_customer_visible'])
+
+        self._delivered(recipient_name='Ana')
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        codes = [e['status'] for e in res.data['timeline']]
+        self.assertNotIn('delivered', codes)
+        self.assertIn('ready_for_pickup', codes)
+
+    def test_no_customer_route_exposes_the_handover(self):
+        self._delivered(recipient_name='Ana')
+        res = self._customer().get(
+            f'/api/v1/customer/m8-taller/repairs/{self.order.pk}/delivery/'
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_a_customer_cannot_invoke_the_internal_endpoint(self):
+        self.ready_for_pickup()
+        res = self._customer().post(
+            _m10_url('m8-taller', self.order.pk, 'delivery/'),
+            {'recipient_name': 'Yo mismo'}, format='json',
+        )
+        self.assertIn(res.status_code, (403, 404))
+        self.assertFalse(_M12Delivery.objects.exists())
+
+    def test_a_delivered_repair_still_appears_in_the_customer_list(self):
+        # It closed; it did not vanish. A customer must be able to look up what
+        # happened to a device they collected last month.
+        self._delivered(recipient_name='Ana')
+        res = self._customer().get(_m8_customer_url('m8-taller'))
+        self.assertEqual(res.status_code, 200)
+        rows = res.data['results'] if isinstance(res.data, dict) else res.data
+        self.assertIn(self.order.pk, [r['id'] for r in rows])
+
+
+class M12ProvisioningTest(M12DeliveryBase):
+    """A company can hand devices back the moment it exists."""
+
+    def test_provisioning_seeds_every_lifecycle_state(self):
+        codes = set(
+            _M8StatusSetting.objects.filter(company=self.company)
+            .values_list('code', flat=True)
+        )
+        self.assertEqual(codes, {c for c, _l in _M8Status.choices})
+
+    def test_a_brand_new_company_can_deliver_with_its_technician_preset(self):
+        fresh = _saas_company('Nueva M12', 'm12-nueva', tax_id='20990000401')
+        provision_company_access_defaults(fresh)
+
+        role = CompanyRole.objects.get(company=fresh, slug='servicio-tecnico')
+        self.assertIn('service.delivery.manage', role.capabilities)
+        self.assertTrue(
+            _M8StatusSetting.objects.filter(company=fresh, code='delivered').exists()
+        )
+
+    def test_the_status_migration_and_the_runtime_defaults_agree(self):
+        import importlib
+        from .company_provisioning import PRESET_REPAIR_STATUSES
+
+        module = importlib.import_module(
+            'store.migrations.0052_seed_delivered_status',
+        )
+        runtime = {
+            code: (label, visible, order)
+            for code, label, visible, order in PRESET_REPAIR_STATUSES
+        }
+        for code, label, visible, order in module.NEW_STATUSES:
+            self.assertEqual(runtime[code], (label, visible, order), code)
+
+    def test_the_capability_migration_names_the_new_code_only(self):
+        import importlib
+        module = importlib.import_module(
+            'store.migrations.0053_delivery_capability_for_untouched_presets',
+        )
+        self.assertEqual(module.NEW_CAPABILITIES, ('service.delivery.manage',))
+        self.assertNotIn('service.delivery.manage', module.TECHNICIAN_PREVIOUS)
+
+    def test_the_grant_reaches_a_preset_the_earlier_migrations_repaired(self):
+        # Same bug M11 had to fix: H1B and 0050 grant capabilities WITHOUT
+        # rewriting descriptions, so a role they repaired still carries its
+        # original wording. Matching only today's sentence would skip exactly
+        # those roles.
+        import importlib
+        from django.apps import apps as django_apps
+
+        module = importlib.import_module(
+            'store.migrations.0053_delivery_capability_for_untouched_presets',
+        )
+        self.assertGreater(len(module.TECHNICIAN_DESCRIPTIONS), 1)
+
+        for description in module.TECHNICIAN_DESCRIPTIONS:
+            historical = CompanyRole.objects.get(
+                company=self.other, slug='servicio-tecnico',
+            )
+            historical.description = description
+            historical.capabilities = sorted(module.TECHNICIAN_PREVIOUS)
+            historical.save(update_fields=['description', 'capabilities'])
+
+            module.grant(django_apps, None)
+            historical.refresh_from_db()
+            self.assertIn(
+                'service.delivery.manage', historical.capabilities, description,
+            )
+
+    def test_a_tenant_narrowed_technician_role_is_left_alone(self):
+        import importlib
+        from django.apps import apps as django_apps
+
+        narrowed = CompanyRole.objects.get(company=self.other, slug='servicio-tecnico')
+        narrowed.capabilities = sorted(['company.view', 'service.repair.manage'])
+        narrowed.save(update_fields=['capabilities'])
+
+        module = importlib.import_module(
+            'store.migrations.0053_delivery_capability_for_untouched_presets',
+        )
+        module.grant(django_apps, None)
+        narrowed.refresh_from_db()
+        self.assertNotIn('service.delivery.manage', narrowed.capabilities)
+
+    def test_the_migration_is_idempotent(self):
+        import importlib
+        from django.apps import apps as django_apps
+
+        module = importlib.import_module(
+            'store.migrations.0053_delivery_capability_for_untouched_presets',
+        )
+        role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
+        before = sorted(role.capabilities)
+        module.grant(django_apps, None)
+        role.refresh_from_db()
+        self.assertEqual(sorted(role.capabilities), before)
+
+    def test_the_technician_preset_now_carries_delivery(self):
+        role = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
+        self.assertIn('service.delivery.manage', role.capabilities)
+
+
+class M12StructuralTest(M12DeliveryBase):
+    """Guarantees that must not be able to drift."""
+
+    def _module_source(self, module):
+        import ast, inspect, textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(module)))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)):
+                body = getattr(node, 'body', [])
+                if (
+                    body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                ):
+                    body.pop(0)
+                    if not body and not isinstance(node, ast.Module):
+                        body.append(ast.Pass())
+        ast.fix_missing_locations(tree)
+        return ast.unparse(tree)
+
+    def _fn(self, module, name):
+        import ast
+        tree = ast.parse(self._module_source(module))
+        return ast.unparse(next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == name
+        ))
+
+    def test_delivery_never_writes_stock(self):
+        # Handing a device over is not a stock movement. The parts left
+        # inventory when the technician fitted them.
+        from . import service_services
+        body = self._fn(service_services, '_deliver_repair')
+        for forbidden in ('create_stock_movement', 'BranchStock', 'StockMovement',
+                          'PartUsage', 'Product'):
+            self.assertNotIn(forbidden, body, forbidden)
+
+    def test_delivery_never_writes_quality_or_an_execution(self):
+        from . import service_services
+        body = self._fn(service_services, '_deliver_repair')
+        for forbidden in ('QualityCheck', 'RepairExecution', 'RepairQuote'):
+            self.assertNotIn(forbidden, body, forbidden)
+
+    def test_delivery_writes_no_payment_and_no_ecommerce_order(self):
+        # THE RULE THIS PINS, verbatim from the phase: a status is not a
+        # receipt. `PaymentTransaction.order` is a non-null FK to the
+        # e-commerce `Order`, so no repair can be paid through it — and M12
+        # does not fake it with a boolean.
+        import re
+        from . import service_services, v1_service_views
+        for module in (service_services, v1_service_views):
+            code = self._module_source(module)
+            self.assertIsNone(re.search(r'(?<![A-Za-z])Order\.objects', code))
+            for forbidden in ('PaymentTransaction', 'paid = True', 'paid=True',
+                              'stripe', 'izipay', 'OrderItem', 'CartItem'):
+                self.assertNotIn(forbidden, code, forbidden)
+
+    def test_the_delivered_state_is_event_only(self):
+        from .service_services import EVENT_ONLY_STATES, TRANSITIONS
+        self.assertIn(_M8Status.DELIVERED, EVENT_ONLY_STATES)
+        # And nothing leaves it.
+        self.assertEqual(TRANSITIONS[_M8Status.DELIVERED], ())
+
+    def test_delivered_is_a_terminal_state(self):
+        from .service_services import TERMINAL_STATES
+        self.assertIn(_M8Status.DELIVERED, TERMINAL_STATES)
+        self.assertIn(_M8Status.CANCELLED, TERMINAL_STATES)
+
+    def test_the_only_road_in_is_ready_for_pickup(self):
+        from .service_services import DELIVERABLE_STATES
+        self.assertEqual(
+            DELIVERABLE_STATES, frozenset({_M8Status.READY_FOR_PICKUP}),
+        )
+
+    def test_the_view_never_writes_status_or_history_directly(self):
+        from . import v1_service_views
+        code = self._module_source(v1_service_views)
+        for forbidden in ('RepairStatusHistory', 'RepairDelivery.objects.create',
+                          '_apply_transition'):
+            self.assertNotIn(forbidden, code, forbidden)
+
+    def test_the_write_serializer_accepts_three_fields_and_no_clock(self):
+        from .v1_service_serializers import V1ServiceDeliveryWriteSerializer
+        self.assertEqual(
+            set(V1ServiceDeliveryWriteSerializer().get_fields()),
+            {'recipient_name', 'notes', 'idempotency_key'},
+        )
+
+    def test_the_read_serializer_exposes_no_key_and_no_fingerprint(self):
+        from .v1_service_serializers import V1ServiceDeliverySerializer
+        fields = set(V1ServiceDeliverySerializer.Meta.fields)
+        self.assertNotIn('idempotency_key', fields)
+        self.assertNotIn('request_fingerprint', fields)
+        self.assertEqual(fields, set(V1ServiceDeliverySerializer.Meta.read_only_fields))
+
+    def test_the_customer_serializer_gained_no_field(self):
+        from .v1_service_serializers import V1CustomerRepairDetailSerializer
+        self.assertEqual(
+            set(V1CustomerRepairDetailSerializer.Meta.fields),
+            {
+                'id', 'number', 'status', 'status_label', 'device_summary',
+                'received_at', 'closed_at', 'updated_at', 'reported_issue',
+                'timeline',
+            },
+        )
+
+    def test_the_service_layer_locks_the_order_before_it_writes(self):
+        # The structural backstop for the concurrency test that skips on SQLite.
+        from . import service_services
+        body = self._fn(service_services, '_deliver_repair')
+        self.assertIn('select_for_update()', body)
+        self.assertLess(
+            body.index('select_for_update()'), body.index('RepairDelivery('),
+        )
+
+    def test_the_idempotency_key_is_checked_before_any_business_rule(self):
+        # M10's real bug, pinned here so M12 cannot repeat it: judging the rules
+        # first means a legitimate REPLAY is refused, because the order is
+        # already `delivered` — precisely BECAUSE the first call worked.
+        from . import service_services
+        body = self._fn(service_services, '_deliver_repair')
+        self.assertLess(
+            body.index('idempotency_key=key'),
+            body.index('DELIVERABLE_STATES'),
+        )
+
+    def test_the_row_is_append_only_in_the_model_itself(self):
+        # Not a convention in the service layer — a refusal in `save`, so an
+        # admin action, a shell one-liner or a future view cannot rewrite who
+        # collected a device.
+        import inspect
+        from .models import RepairDelivery
+        source = inspect.getsource(RepairDelivery)
+        self.assertIn('def save', source)
+        self.assertIn('def delete', source)
+
+    def test_no_capability_in_the_catalogue_names_absent_code(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE, STATUS_AVAILABLE
+        for code, cap in CAPABILITIES.items():
+            self.assertIn(cap.status, (STATUS_ACTIVE, STATUS_AVAILABLE), code)
+
+
+class M12ConcurrencyTest(TransactionTestCase):
+    """
+    Two counters, one device, one customer standing there.
+
+    `TransactionTestCase` and not `TestCase`, for the reason M10 documented: a
+    plain `TestCase` wraps each test in a transaction that is rolled back, so a
+    second thread would never see the first thread's rows and the race being
+    reproduced would not exist.
+
+    `select_for_update()` is a no-op on SQLite, so the genuinely concurrent case
+    is skipped loudly rather than passing for the wrong reason, the sequential
+    invariants run everywhere, and `M12StructuralTest` backs the guarantee up so
+    it never rests on a skip alone.
+    """
+
+    reset_sequences = True
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Entrega', 'm12-conc', tax_id='20900000030')
+        provision_company_access_defaults(self.company)
+        self.branch = self.company.branches.order_by('pk').first()
+
+        self.user = _m7_user('cliente_entrega')
+        self.customer = _v1_customer(
+            self.company, self.user, first_name='Ana', last_name='Cliente',
+        )
+        self.device = _M8Device.objects.create(
+            company=self.company, customer=self.customer,
+            device_type=_M8Device.TYPE_PHONE, brand='G', model='X',
+        )
+        self.staff = _m7_user('mostrador_conc')
+        Membership.objects.create(
+            user=self.staff, company=self.company, role='technician',
+        )
+        self.part = _prod(self.company, 'Batería', 'bateria-entrega', price='185.00')
+        _m7_stock(self.branch, self.part, 5)
+
+    def _ready_for_pickup(self):
+        order = _m8_service.create_repair_order(
+            company=self.company, branch=self.branch, customer=self.customer,
+            device=self.device, reported_issue='No enciende.', actor=self.staff,
+        )
+        _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        order.refresh_from_db()
+        diagnostic = _m8_service.create_diagnostic(
+            repair_order=order, description='Batería agotada.',
+            recommended_action='Reemplazar.', actor=self.staff,
+        )
+        quote = _m8_service.create_quote(
+            repair_order=order, diagnostic=diagnostic, actor=self.staff,
+        )
+        _m8_service.add_quote_item(
+            quote=quote, description='Batería', quantity=1, unit_price='185.00',
+            item_type=_M9Item.TYPE_PART, product=self.part,
+        )
+        quote.refresh_from_db()
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        quote.refresh_from_db()
+        _m8_service.record_quote_decision(
+            quote=quote, customer=self.customer, user=self.user, decision='approve',
+        )
+        order.refresh_from_db()
+        _m8_service.start_repair(repair_order=order, actor=self.staff)
+        order.refresh_from_db()
+        _m8_service.record_part_usage(
+            repair_order=order, quote_item=quote.items.get(item_type=_M9Item.TYPE_PART),
+            quantity=1, actor=self.staff,
+        )
+        _m8_service.complete_repair(
+            repair_order=order, work_performed='Batería reemplazada.',
+            result=_M10Result.SUCCESS, actor=self.staff,
+        )
+        order.refresh_from_db()
+        check = _m8_service.start_quality_check(repair_order=order, actor=self.staff)
+        for item in check.items.all():
+            _m8_service.record_quality_result(
+                item=item, result=_M11Result.PASS, actor=self.staff,
+            )
+        _m8_service.pass_quality_check(repair_order=order, actor=self.staff)
+        order.refresh_from_db()
+        return order
+
+    def test_the_second_handover_of_one_device_is_refused(self):
+        # The sequential invariant, asserted everywhere.
+        order = self._ready_for_pickup()
+        _m8_service.deliver_repair(
+            repair_order=order, recipient_name='Ana', actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.DeliveryError):
+            _m8_service.deliver_repair(
+                repair_order=order, recipient_name='Otro', actor=self.staff,
+            )
+        self.assertEqual(_M12Delivery.objects.count(), 1)
+        order.refresh_from_db()
+        self.assertEqual(order.status, _M8Status.DELIVERED)
+
+    def test_two_simultaneous_counters_hand_one_device_over_once(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a green result here would prove nothing about PostgreSQL.'
+            )
+
+        order = self._ready_for_pickup()
+        results, errors = [], []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def attempt(name):
+            barrier.wait()
+            try:
+                delivery = _m8_service.deliver_repair(
+                    repair_order=order, recipient_name=name, actor=self.staff,
+                )
+                with lock:
+                    results.append(delivery.pk)
+            except _m8_service.ServiceError as exc:
+                with lock:
+                    errors.append(str(exc))
+            finally:
+                connections.close_all()
+
+        threads = [
+            threading.Thread(target=attempt, args=(n,)) for n in ('Ana', 'Bruno')
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(results), 1, 'exactamente una entrega debe ganar')
+        self.assertEqual(len(errors), 1, 'la otra debe fallar de forma controlada')
+        self.assertEqual(_M12Delivery.objects.count(), 1)
+        self.assertEqual(
+            _M8History.objects.filter(
+                repair_order=order, to_status=_M8Status.DELIVERED,
+            ).count(),
+            1,
+        )
+
+    def test_two_simultaneous_requests_with_one_key_record_one_handover(self):
+        # The double-tap: one counter, one button, two POSTs in flight. Neither
+        # caller may see an error, and both must receive the same row.
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a green result here would prove nothing about PostgreSQL.'
+            )
+
+        order = self._ready_for_pickup()
+        results, errors = [], []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def attempt():
+            barrier.wait()
+            try:
+                delivery = _m8_service.deliver_repair(
+                    repair_order=order, recipient_name='Ana',
+                    idempotency_key='same-key', actor=self.staff,
+                )
+                with lock:
+                    results.append(delivery.pk)
+            except _m8_service.ServiceError as exc:
+                with lock:
+                    errors.append(str(exc))
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=attempt) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], 'ningún caller debe ver un error')
+        self.assertEqual(len(set(results)), 1, 'ambos deben recibir la MISMA fila')
+        self.assertEqual(_M12Delivery.objects.count(), 1)
+        self.assertEqual(
+            AdminAuditLog.objects.filter(action='service_repair_delivered').count(), 1,
+        )
