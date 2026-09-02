@@ -35443,3 +35443,495 @@ class M11StructuralTest(M11QualityBase):
             'get_user_role',
         ):
             self.assertIsNone(re.search(forbidden, code), forbidden)
+
+
+class M11MigrationConsolidationTest(TransactionTestCase):
+    """
+    M11.1 — the migration path itself, with the data it was written for.
+
+    THE GAP THIS CLOSES. M11 tested the CONSTRAINT (on a database migrated from
+    empty, where duplicates cannot exist) and never tested the MIGRATION (on a
+    database that already had them). The two are different claims, and only the
+    second one is what runs against a real deployment. 0048 turned out not to
+    prepare the data at all and 0049 raised IntegrityError — a defect that a
+    passing constraint test happily reported nothing about.
+
+    `TransactionTestCase` because these assertions are about DDL and real
+    integrity errors, which need to escape a transaction to be observable.
+
+    The migration functions are invoked directly with the live app registry
+    rather than by rewinding the whole graph: the subject is what `consolidate`
+    does to rows, and rewinding 40 migrations to assert it would be slower and
+    would test Django rather than this code.
+    """
+
+    #: The constraint 0049 adds — the one the whole exercise is about.
+    CONSTRAINT = models.UniqueConstraint(
+        fields=['membership', 'role'],
+        condition=models.Q(area__isnull=True),
+        name='unique_role_assignment_without_area',
+    )
+
+    def setUp(self):
+        import importlib
+        self.mod_0048 = importlib.import_module(
+            'store.migrations.0048_consolidate_duplicate_role_assignments',
+        )
+        # THE TEST DATABASE ALREADY HAS THE CONSTRAINT, because it was built by
+        # running every migration. Legacy duplicates cannot be inserted while it
+        # is there — which is the point of it, and also why simply inserting
+        # rows here proves nothing about the migration.
+        #
+        # So the constraint comes off for the duration of the test. What that
+        # reproduces is the real situation: a database that predates 0049 and
+        # has rows 0049 will refuse.
+        from django.db import connection
+        with connection.schema_editor(atomic=False) as editor:
+            editor.remove_constraint(MembershipRoleAssignment, self.CONSTRAINT)
+        self.company = _saas_company('Mig SA', 'm111-mig', tax_id='20780020001')
+        self.role = _role(self.company, 'Rol Mig', ['company.view'], slug='m111-rol')
+        self.other_role = _role(self.company, 'Otro Mig', ['products.view'], slug='m111-otro')
+        self.user = _saas_user('m111_mig_user')
+        self.membership = Membership.objects.create(
+            user=self.user, company=self.company, role='admin', is_active=True,
+        )
+
+    def tearDown(self):
+        MembershipRoleAssignment.objects.all().delete()
+        Membership.objects.all().delete()
+        CompanyRole.objects.all().delete()
+        CompanyArea.objects.all().delete()
+        from django.db import connection
+        with connection.schema_editor(atomic=False) as editor:
+            editor.add_constraint(MembershipRoleAssignment, self.CONSTRAINT)
+
+    def _apply_0049(self):
+        """
+        Add the constraint exactly as 0049 does.
+
+        This is the assertion that actually matters: if consolidation left the
+        data in a shape the constraint refuses, THIS raises — which is precisely
+        what happened before M11.1 and what no test was watching.
+        """
+        from django.db import connection
+        with connection.schema_editor(atomic=False) as editor:
+            editor.add_constraint(MembershipRoleAssignment, self.CONSTRAINT)
+        with connection.schema_editor(atomic=False) as editor:
+            editor.remove_constraint(MembershipRoleAssignment, self.CONSTRAINT)
+
+    def _raw_duplicate(self, role, area=None, is_active=True):
+        """
+        Insert a duplicate the way legacy data has them: straight past the ORM.
+
+        `objects.create()` would be refused by the constraint this test exists
+        to prepare for, so the row goes in with raw SQL — which is exactly the
+        shape of the rows that got in before the constraint existed.
+        """
+        from django.db import connection
+        from django.utils import timezone as _tz
+        now = _tz.now()
+        with connection.cursor() as cur:
+            cur.execute(
+                'INSERT INTO store_membershiproleassignment '
+                '(membership_id, role_id, area_id, is_active, created_at, updated_at) '
+                'VALUES (%s, %s, %s, %s, %s, %s)',
+                [self.membership.pk, role.pk, area.pk if area else None,
+                 is_active, now, now],
+            )
+
+    def _run_0048(self):
+        from django.apps import apps as django_apps
+        self.mod_0048.consolidate(django_apps, None)
+
+    def _rows(self, role=None, area=None):
+        qs = MembershipRoleAssignment.objects.filter(membership=self.membership)
+        if role is not None:
+            qs = qs.filter(role=role)
+        if area is None:
+            qs = qs.filter(area__isnull=True)
+        else:
+            qs = qs.filter(area=area)
+        return list(qs.order_by('id'))
+
+    # -- §7 caso 1 ---------------------------------------------------------
+
+    def test_case_1_two_active_duplicates_collapse_to_one_active_row(self):
+        self._raw_duplicate(self.role, is_active=True)
+        self._raw_duplicate(self.role, is_active=True)
+        self.assertEqual(len(self._rows(self.role)), 2)
+
+        self._run_0048()
+
+        rows = self._rows(self.role)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].is_active)
+        self.assertTrue(has_capability(self.user, self.company, 'company.view'))
+        self._apply_0049()
+
+    # -- §7 caso 2 ---------------------------------------------------------
+
+    def test_case_2_active_plus_inactive_keeps_ONE_active_row(self):
+        self._raw_duplicate(self.role, is_active=True)
+        self._raw_duplicate(self.role, is_active=False)
+
+        self._run_0048()
+
+        rows = self._rows(self.role)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].is_active, 'la autoridad vigente no debe perderse')
+        self._apply_0049()
+
+    def test_case_2b_the_oldest_row_survives_even_if_it_was_the_inactive_one(self):
+        """
+        The survivor is chosen by AGE, its state by whether any duplicate was active.
+
+        Keeping the newest row instead would move `created_at` forward and lose
+        when this person was first given the role.
+        """
+        self._raw_duplicate(self.role, is_active=False)   # la más antigua
+        self._raw_duplicate(self.role, is_active=True)
+        oldest_id = self._rows(self.role)[0].pk
+
+        self._run_0048()
+
+        rows = self._rows(self.role)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].pk, oldest_id)
+        self.assertTrue(rows[0].is_active)
+
+    # -- §7 caso 3 ---------------------------------------------------------
+
+    def test_case_3_all_inactive_stays_inactive(self):
+        """Consolidating storage must never hand back revoked authority."""
+        self._raw_duplicate(self.role, is_active=False)
+        self._raw_duplicate(self.role, is_active=False)
+
+        self._run_0048()
+
+        rows = self._rows(self.role)
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0].is_active)
+        self.assertFalse(has_capability(self.user, self.company, 'company.view'))
+        self._apply_0049()
+
+    # -- §7 caso 4 ---------------------------------------------------------
+
+    def test_case_4_five_duplicates_collapse_to_one(self):
+        for state in (False, False, True, False, False):
+            self._raw_duplicate(self.role, is_active=state)
+        self.assertEqual(len(self._rows(self.role)), 5)
+
+        self._run_0048()
+
+        rows = self._rows(self.role)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].is_active)
+        self._apply_0049()
+
+    # -- §7 caso 5 ---------------------------------------------------------
+
+    def test_case_5_the_same_role_in_different_areas_is_left_alone(self):
+        taller = _area(self.company, 'Taller', slug='m111-taller')
+        lab = _area(self.company, 'Laboratorio', slug='m111-lab')
+        MembershipRoleAssignment.objects.create(
+            membership=self.membership, role=self.role, area=taller,
+        )
+        MembershipRoleAssignment.objects.create(
+            membership=self.membership, role=self.role, area=lab,
+        )
+
+        self._run_0048()
+
+        self.assertEqual(len(self._rows(self.role, area=taller)), 1)
+        self.assertEqual(len(self._rows(self.role, area=lab)), 1)
+        self._apply_0049()
+
+    def test_different_roles_are_never_merged_with_each_other(self):
+        """§14 — the fix must not turn this into one-role-per-membership."""
+        self._raw_duplicate(self.role, is_active=True)
+        self._raw_duplicate(self.role, is_active=True)
+        MembershipRoleAssignment.objects.create(
+            membership=self.membership, role=self.other_role,
+        )
+
+        self._run_0048()
+
+        self.assertEqual(len(self._rows(self.role)), 1)
+        self.assertEqual(len(self._rows(self.other_role)), 1)
+        caps = resolve_capabilities(self.user, self.company)
+        self.assertIn('company.view', caps)
+        self.assertIn('products.view', caps)
+
+    # -- §7 caso 6 ---------------------------------------------------------
+
+    def test_case_6_the_non_null_area_constraint_already_works(self):
+        """
+        No equivalent hole for areas that are set.
+
+        `UniqueConstraint(membership, role, area)` compares non-null values
+        normally, so it always covered this case — which is why M11.1 changes
+        nothing about it. Asserted rather than assumed.
+        """
+        from django.db import IntegrityError as _IE
+        taller = _area(self.company, 'Taller 6', slug='m111-taller6')
+        MembershipRoleAssignment.objects.create(
+            membership=self.membership, role=self.role, area=taller,
+        )
+        with self.assertRaises(_IE):
+            MembershipRoleAssignment.objects.create(
+                membership=self.membership, role=self.role, area=taller,
+            )
+
+    # -- la propiedad que 0049 necesita ------------------------------------
+
+    def test_after_0048_no_group_violates_the_0049_constraint(self):
+        """
+        The actual precondition, stated as the constraint states it.
+
+        NOT "at most one ACTIVE row" — that is what the first version of this
+        migration achieved, and it is not what `UNIQUE(membership, role) WHERE
+        area IS NULL` requires. It requires at most one ROW.
+        """
+        from django.db.models import Count as _Count
+        for state in (True, False, True):
+            self._raw_duplicate(self.role, is_active=state)
+        self._raw_duplicate(self.other_role, is_active=False)
+        self._raw_duplicate(self.other_role, is_active=False)
+
+        self._run_0048()
+
+        offenders = (
+            MembershipRoleAssignment.objects
+            .filter(area__isnull=True)
+            .values('membership_id', 'role_id')
+            .annotate(n=_Count('id'))
+            .filter(n__gt=1)
+        )
+        self.assertEqual(list(offenders), [], 'quedan grupos que 0049 rechazaría')
+        self._apply_0049()
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M11ReactivationLifecycleTest(TestCase):
+    """
+    M11.1 §16 — quitar → histórico → reactivar, siempre la MISMA fila.
+
+    The integrity property this pins down: one logical assignment is one
+    historical row that toggles. Representing a revoke-then-regrant as two rows
+    would split a person's history across records and make "when was this
+    granted" unanswerable — and the database now refuses it anyway.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _m11_company('Ciclo SA', 'm111-ciclo', tax_id='20780021001')
+        provision_company_access_defaults(self.company)
+        self.ventas = self.company.roles.get(slug='ventas')
+        self.inventario = self.company.roles.get(slug='inventario')
+
+        self.admin, self.admin_m = _m11_member(self.company, 'm111_admin', 'staff')
+        _m11_assign(self.admin_m, self.company.roles.get(slug='administrador'))
+
+        # Rol heredado peligroso, para comprobar que nunca vuelve.
+        self.staff, self.staff_m = _m11_member(self.company, 'm111_staff', 'admin')
+        self.assignment = _m11_assign(self.staff_m, self.ventas)
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _caps(self):
+        return resolve_capabilities(self.staff, self.company)
+
+    def test_revoke_then_reactivate_reuses_the_same_row(self):
+        pk = self.assignment.pk
+
+        res = self.client.delete(f'/api/admin/membership-role-assignments/{pk}/')
+        self.assertEqual(res.status_code, 204)
+        self.assertEqual(self._caps(), frozenset())
+
+        res = self.client.patch(
+            f'/api/admin/membership-role-assignments/{pk}/',
+            {'is_active': True}, format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+
+        self.assertEqual(self.staff_m.role_assignments.count(), 1, 'no debe crearse otra fila')
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.pk, pk)
+        self.assertTrue(self.assignment.is_active)
+        self.assertIn('sales.pos.use', self._caps())
+
+    def test_reactivation_never_restores_the_legacy_role(self):
+        """After the cycle the person holds Ventas — not the legacy admin set."""
+        pk = self.assignment.pk
+        self.client.delete(f'/api/admin/membership-role-assignments/{pk}/')
+        self.client.patch(
+            f'/api/admin/membership-role-assignments/{pk}/',
+            {'is_active': True}, format='json',
+        )
+        caps = self._caps()
+        self.assertEqual(caps, frozenset(self.ventas.capabilities))
+        self.assertNotIn('memberships.manage', caps)
+
+    def test_reactivation_revalidates_delegation(self):
+        """§16 — reactivating IS granting, so a limited admin cannot do it."""
+        _m11_assign(self.staff_m, self.inventario)
+        inv_assignment = self.staff_m.role_assignments.get(role=self.inventario)
+        self.client.delete(f'/api/admin/membership-role-assignments/{inv_assignment.pk}/')
+
+        limited, limited_m = _m11_member(self.company, 'm111_limited', 'staff')
+        _m11_assign(limited_m, _role(
+            self.company, 'Limitado ciclo', ['company.view', 'memberships.manage'],
+            slug='m111-lim',
+        ))
+        self.assertFalse(has_capability(limited, self.company, 'inventory.adjust'))
+
+        c = APIClient()
+        c.force_authenticate(user=limited)
+        res = c.patch(
+            f'/api/admin/membership-role-assignments/{inv_assignment.pk}/',
+            {'is_active': True}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        inv_assignment.refresh_from_db()
+        self.assertFalse(inv_assignment.is_active)
+
+    def test_reactivation_does_not_touch_branch_scope(self):
+        mode = self.staff_m.branch_access_mode
+        pk = self.assignment.pk
+        self.client.delete(f'/api/admin/membership-role-assignments/{pk}/')
+        self.client.patch(
+            f'/api/admin/membership-role-assignments/{pk}/',
+            {'is_active': True}, format='json',
+        )
+        self.staff_m.refresh_from_db()
+        self.assertEqual(self.staff_m.branch_access_mode, mode)
+
+    def test_posting_a_second_row_for_a_historical_assignment_is_refused(self):
+        """Not a 500 — a controlled 400 saying the assignment already exists."""
+        pk = self.assignment.pk
+        self.client.delete(f'/api/admin/membership-role-assignments/{pk}/')
+
+        res = self.client.post('/api/admin/membership-role-assignments/', {
+            'membership': self.staff_m.pk, 'role': self.ventas.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.staff_m.role_assignments.count(), 1)
+
+    def test_multirole_survives_a_revoke_reactivate_cycle(self):
+        """§14 — the anti-duplicate work must not collapse this to one role."""
+        _m11_assign(self.staff_m, self.inventario)
+        inv = self.staff_m.role_assignments.get(role=self.inventario)
+
+        self.client.delete(f'/api/admin/membership-role-assignments/{inv.pk}/')
+        self.assertEqual(self._caps(), frozenset(self.ventas.capabilities))
+
+        self.client.patch(
+            f'/api/admin/membership-role-assignments/{inv.pk}/',
+            {'is_active': True}, format='json',
+        )
+        caps = self._caps()
+        self.assertIn('sales.pos.use', caps)
+        self.assertIn('inventory.adjust', caps)
+        self.assertEqual(self.staff_m.role_assignments.count(), 2)
+
+    def test_the_full_cycle_is_audited_at_every_step(self):
+        pk = self.assignment.pk
+        before = AdminAuditLog.objects.filter(target_id=pk).count()
+        self.client.delete(f'/api/admin/membership-role-assignments/{pk}/')
+        self.client.patch(
+            f'/api/admin/membership-role-assignments/{pk}/',
+            {'is_active': True}, format='json',
+        )
+        after = AdminAuditLog.objects.filter(target_id=pk).count()
+        self.assertGreaterEqual(after - before, 2, 'quitar y reactivar deben registrarse')
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M11DuplicatePostIsNotA500Test(TestCase):
+    """
+    §15 — the database is the authority; the API stays polite about it.
+
+    The pre-check is a read before a write, so two simultaneous requests both
+    pass it. The constraint then refuses the second, and the caller must get a
+    400 that explains itself rather than a 500 that does not.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _m11_company('Carrera SA', 'm111-carrera', tax_id='20780022001')
+        provision_company_access_defaults(self.company)
+        self.role = self.company.roles.get(slug='ventas')
+        self.admin, self.admin_m = _m11_member(self.company, 'm111_race_admin', 'staff')
+        _m11_assign(self.admin_m, self.company.roles.get(slug='administrador'))
+        self.target, self.target_m = _m11_member(self.company, 'm111_race_target', 'staff')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _post(self):
+        return self.client.post('/api/admin/membership-role-assignments/', {
+            'membership': self.target_m.pk, 'role': self.role.pk,
+        }, format='json')
+
+    def test_the_constraint_violation_becomes_a_400_not_a_500(self):
+        """
+        Simulates the loser of the race: the pre-check passes, the insert fails.
+
+        Patching the pre-check to report "nothing there" is what a concurrent
+        request effectively does — it read before the winner committed.
+        """
+        self.assertEqual(self._post().status_code, 201)
+
+        # THE LOSER OF THE RACE, reproduced honestly: it read before the winner
+        # committed, so its pre-check found nothing. Blinding the pre-check is
+        # exactly that situation, and it drives the request into the insert the
+        # database is going to refuse.
+        class _Blind:
+            def exists(self):
+                return False
+
+        with patch.object(
+            MembershipRoleAssignment.objects, 'filter', return_value=_Blind(),
+        ):
+            raced = self._post()
+
+        self.assertEqual(raced.status_code, 400, 'una carrera perdida no puede dar 500')
+        self.assertIn('ya existe', raced.json()['detail'])
+        self.assertEqual(
+            MembershipRoleAssignment.objects.filter(membership=self.target_m).count(), 1,
+        )
+
+        # Y por el camino normal, con el pre-check viendo la fila, la respuesta
+        # es la misma.
+        second = self._post()
+        self.assertEqual(second.status_code, 400)
+
+    def test_an_unrelated_integrity_error_is_not_swallowed(self):
+        """
+        The narrow catch must stay narrow.
+
+        If any IntegrityError became a 400, a genuine data problem would be
+        reported to the operator as "esa asignación ya existe", which is a lie
+        that hides a real fault.
+        """
+        from django.db import IntegrityError as _IE
+        from store.access_views import _is_duplicate_assignment
+        self.assertTrue(_is_duplicate_assignment(
+            _IE('UNIQUE constraint failed: unique_role_assignment_without_area')))
+        self.assertTrue(_is_duplicate_assignment(
+            _IE('duplicate key value violates unique constraint '
+                '"unique_role_assignment_per_area"')))
+        self.assertFalse(_is_duplicate_assignment(
+            _IE('NOT NULL constraint failed: store_membership.company_id')))
+        self.assertFalse(_is_duplicate_assignment(
+            _IE('FOREIGN KEY constraint failed')))
+        # SQLite no nombra la constraint: reporta las columnas. Si sólo se
+        # buscara el nombre, en la suite de tests el 500 seguiría ocurriendo
+        # mientras en producción no — el sentido contrario al útil.
+        self.assertTrue(_is_duplicate_assignment(_IE(
+            'UNIQUE constraint failed: '
+            'store_membershiproleassignment.membership_id, '
+            'store_membershiproleassignment.role_id')))
+        self.assertFalse(_is_duplicate_assignment(_IE(
+            'UNIQUE constraint failed: store_cartitem.session_key, '
+            'store_cartitem.product_id')))
