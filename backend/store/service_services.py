@@ -48,6 +48,7 @@ from .models import (
     PartUsage,
     Product,
     QualityCheck,
+    RepairDelivery,
     QualityCheckItem,
     QualityChecklistTemplate,
     QualityCheckStatus,
@@ -145,12 +146,16 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
         RepairStatusCode.IN_REPAIR,
         RepairStatusCode.CANCELLED,
     ),
-    # NOT TERMINAL, and not "collected". The device passed its tests and may go
-    # to handover — which is M12 and does not exist. Nobody has been told, and
-    # this platform has no channel to tell them with.
+    # M12 built the handover. A device that passed its tests leaves with
+    # somebody, and that is an event with a name attached — not a dropdown.
     RepairStatusCode.READY_FOR_PICKUP: (
+        RepairStatusCode.DELIVERED,
         RepairStatusCode.CANCELLED,
     ),
+    # Terminal. The device is gone. A warranty claim is a NEW order citing this
+    # one, never an edit to it — the same shape M11 used for a rework, and the
+    # reason nothing here is ever reopened.
+    RepairStatusCode.DELIVERED: (),
     # A rejection is not the end of the conversation. The usual next move is a
     # second opinion and a cheaper quote, so the order goes BACK to diagnosis
     # and the rejected revision stays exactly where it is. Closing it outright
@@ -196,6 +201,10 @@ EVENT_ONLY_STATES: frozenset[str] = frozenset({
     RepairStatusCode.REPAIRED,
     RepairStatusCode.QUALITY_CONTROL,
     RepairStatusCode.READY_FOR_PICKUP,
+    # M12. Handing a device over is a fact about a counter, recorded with the
+    # name of whoever took it. A dropdown could assert it with nobody's name on
+    # it at all.
+    RepairStatusCode.DELIVERED,
 })
 
 #: Edges that exist for one operation only, even though their TARGET is an
@@ -211,7 +220,13 @@ EVENT_ONLY_EDGES: frozenset[tuple[str, str]] = frozenset({
 })
 
 #: States that end an order's life. Reaching one stamps `closed_at`.
-TERMINAL_STATES: frozenset[str] = frozenset({RepairStatusCode.CANCELLED})
+#: M12 adds `DELIVERED`: the device left, and the order is finished. Warranty
+#: will be a re-entry — a new order that cites this one — so closing this one
+#: takes nothing away from it.
+TERMINAL_STATES: frozenset[str] = frozenset({
+    RepairStatusCode.CANCELLED,
+    RepairStatusCode.DELIVERED,
+})
 
 #: The initial state. Not a parameter anywhere: an order is born when a device
 #: is received, and there is no other way for one to begin.
@@ -2491,3 +2506,194 @@ def fail_quality_check(*, repair_order, notes: str = '', actor=None, request=Non
         company=locked.company,
     )
     return locked_check
+
+
+# ===========================================================================
+# M12 / BR-005E — the handover
+# ===========================================================================
+#
+# LOCK ORDER, unchanged and extended the same way: RepairOrder, then the row
+# that belongs to it. Nothing here touches stock, quality or a quote.
+#
+# THERE IS NO PAYMENT CHECK, AND THAT IS A FINDING RATHER THAN AN OMISSION.
+# `PaymentTransaction.order` is a non-null FK to the e-commerce `Order`, with no
+# tenant column and no generic relation, so a `RepairOrder` cannot be paid
+# through it as the schema stands. Delivery therefore does not verify a balance
+# and does not pretend one was settled. Writing `paid = True` here to make the
+# flow look finished would be the worst kind of lie: the kind a shop believes.
+# Service payment is its own phase.
+
+
+class DeliveryError(ServiceError):
+    """The handover is not legal in this state. Views render this as HTTP 400."""
+
+
+class DeliveryConflict(ServiceError):
+    """
+    The idempotency key has been used, for a different handover.
+
+    Its own class and its own status, because it is not bad input: it is a
+    client reusing a key it minted for something else. Replaying the SAME
+    request returns the original record and raises nothing.
+    """
+
+
+#: The only state a repair may be handed over from. It passed its tests.
+DELIVERABLE_STATES: frozenset[str] = frozenset({RepairStatusCode.READY_FOR_PICKUP})
+
+
+def _delivery_fingerprint(*, recipient_name: str) -> str:
+    """
+    A stable SHA-256 of what was asked for.
+
+    Same shape as `_usage_fingerprint`: the key says "this is the same
+    attempt", the fingerprint says "and it is handing the device to the same
+    person". A replay under a reused key naming somebody ELSE is a client bug,
+    and answering it with the original record would silently ignore what the
+    second request actually said.
+    """
+    canonical = json.dumps(
+        {'recipient': (recipient_name or '').strip()},
+        sort_keys=True, separators=(',', ':'),
+    )
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+def delivery_for(repair_order):
+    """The handover on this order, or None."""
+    return RepairDelivery.objects.filter(repair_order=repair_order).first()
+
+
+def deliver_repair(
+    *, repair_order, recipient_name: str, notes: str = '',
+    idempotency_key: str = '', actor=None, request=None,
+):
+    """
+    The device leaves with somebody. READY_FOR_PICKUP → DELIVERED.
+
+    This wrapper is NOT the transaction — `_deliver_repair` is. It exists for
+    one case: two counters racing the same idempotency key. The loser's INSERT
+    fails, its whole transaction rolls back, and only then is it safe to hand
+    back the record the winner wrote. Same shape M10 used for a part.
+    """
+    key = (idempotency_key or '').strip()
+    try:
+        return _deliver_repair(
+            repair_order=repair_order, recipient_name=recipient_name, notes=notes,
+            idempotency_key=key, actor=actor, request=request,
+        )
+    except _DeliveryRaceLost:
+        winner = (
+            RepairDelivery.objects
+            .filter(company_id=repair_order.company_id, idempotency_key=key)
+            .first()
+        )
+        if winner is None:
+            raise DeliveryError('No se pudo registrar la entrega.') from None
+        expected = _delivery_fingerprint(recipient_name=recipient_name)
+        if winner.request_fingerprint != expected:
+            raise DeliveryConflict(
+                'Esa clave ya se usó para una entrega diferente.'
+            ) from None
+        return winner
+
+
+class _DeliveryRaceLost(Exception):
+    """Internal. Another counter committed this key while we worked."""
+
+
+@transaction.atomic
+def _deliver_repair(
+    *, repair_order, recipient_name: str, notes: str = '',
+    idempotency_key: str = '', actor=None, request=None,
+):
+    """
+    The transactional body. See `deliver_repair` for the wrapper's job.
+
+    ONE OPERATION, NOT A STATUS WRITE. `transition_repair_order` refuses
+    `delivered` outright — it is in `EVENT_ONLY_STATES` — because moving the
+    order without recording WHO took the device would be a handover with nobody
+    on the other side of it.
+    """
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+
+    key = (idempotency_key or '').strip()
+    name = (recipient_name or '').strip()
+    if not name:
+        raise DeliveryError('Registra quién recibió el equipo.')
+
+    # Idempotency FIRST, before any rule that could have moved. A replayed
+    # request is answered from the key, not re-judged: the order is `delivered`
+    # now BECAUSE of it, and re-validating would refuse the retry of something
+    # that already worked.
+    fingerprint = _delivery_fingerprint(recipient_name=name)
+    if key:
+        existing = (
+            RepairDelivery.objects
+            .filter(company_id=locked.company_id, idempotency_key=key)
+            .first()
+        )
+        if existing is not None:
+            if existing.request_fingerprint != fingerprint:
+                raise DeliveryConflict(
+                    'Esa clave ya se usó para una entrega diferente.'
+                )
+            return existing
+
+    already = delivery_for(locked)
+    if already is not None:
+        raise DeliveryError('Este equipo ya fue entregado.')
+
+    if locked.status not in DELIVERABLE_STATES:
+        raise DeliveryError(
+            'Solo se puede entregar un equipo que aprobó el control de calidad.'
+        )
+
+    delivery = RepairDelivery(
+        company_id=locked.company_id,
+        repair_order=locked,
+        delivered_by=actor,
+        recipient_name=name,
+        notes=notes or '',
+        delivered_at=timezone.now(),
+        idempotency_key=key,
+        request_fingerprint=fingerprint if key else '',
+    )
+    try:
+        # Its own savepoint: an IntegrityError marks the enclosing transaction
+        # for rollback, and querying inside it afterwards raises rather than
+        # answering.
+        with transaction.atomic():
+            delivery.save()
+    except IntegrityError:
+        if not key:
+            raise
+        raise _DeliveryRaceLost() from None
+
+    # Terminal, so `_apply_transition` stamps `closed_at`.
+    _apply_transition(
+        locked,
+        to_status=RepairStatusCode.DELIVERED,
+        actor=actor,
+        origin=RepairStatusHistory.ORIGIN_INTERNAL,
+        comment='',
+        request=request,
+    )
+
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_repair_delivered',
+        target_type='repair_delivery',
+        target_id=delivery.pk,
+        metadata={
+            'repair_order_id': locked.pk,
+            'number': locked.number,
+            # The recipient's NAME is not in the audit metadata. The delivery row
+            # holds it, and copying personal data into a second table means two
+            # places to honour a deletion request from.
+            'branch_id': locked.branch_id,
+        },
+        request=request,
+        company=locked.company,
+    )
+    return delivery

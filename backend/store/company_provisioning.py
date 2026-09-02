@@ -149,6 +149,11 @@ _TECHNICIAN_CAPS = (
     # narrower role and withholds this — the preset is a default, never a
     # hardcoded authorization.
     'service.quality.manage',
+    # M12. In most shops the technician who finished the job is also the person
+    # who hands it back. A shop that wants reception to release devices instead
+    # grants this to its own role and narrows the technical one — the preset is
+    # a default, never a hardcoded authorization.
+    'service.delivery.manage',
 )
 
 # (name, slug, description, capabilities)
@@ -213,6 +218,11 @@ PRESET_REPAIR_STATUSES: tuple[tuple[str, str, bool, int], ...] = (
     # product does not keep.
     ('quality_control', 'En control de calidad', True, 85),
     ('ready_for_pickup', 'Listo para recoger', True, 88),
+    # M12. Visible: the customer collected their device, and seeing that recorded
+    # is the natural close of the story they have been following. The label says
+    # what happened and nothing about payment, because this platform cannot
+    # charge for a repair.
+    ('delivered', 'Entregado', True, 89),
     ('cancelled', 'Cancelado', True, 90),
 )
 

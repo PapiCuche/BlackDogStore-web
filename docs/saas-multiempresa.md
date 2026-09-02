@@ -3822,6 +3822,151 @@ para que la pregunta se pueda responder el día que alguien la haga.
 
 ---
 
+## 8-quinvicies. Entrega del equipo (M12 / BR-005E)
+
+`POST /api/v1/internal/<slug>/service/orders/<id>/delivery/`
+
+### El alcance, y por qué termina donde termina
+
+M12 registra **quién se llevó el equipo y cuándo**. Nada más. No cobra, no
+firma, no fotografía y no abre garantía. Cada una de esas cosas necesita una
+decisión que no está tomada, y ninguna se disimula con un booleano.
+
+`RepairStatusCode` gana un código, `DELIVERED`, por la misma regla que ha
+gobernado las cinco fases anteriores: **un estado llega con su módulo**. Ahora
+son doce, y `WARRANTY` sigue sin existir porque sigue sin tener contra qué
+garantizar — y cuando llegue será una **reentrada**, una orden nueva que cita a
+la anterior, nunca una edición de una orden cerrada.
+
+### Un modelo
+
+`RepairDelivery` — OneToOne con `RepairOrder`, `recipient_name` en texto libre,
+`delivered_by` (`SET_NULL`), `notes`, `delivered_at`, y el par
+`idempotency_key` / `request_fingerprint`.
+
+**Texto libre, y es deliberado.** Quien recoge un equipo no siempre es el
+cliente: es un familiar, un mensajero, el dueño de la tienda de al lado. Exigir
+un `Customer` habría obligado al mostrador a inventar clientes para poder
+entregar, y un CRM lleno de personas que nunca compraron nada es peor registro
+que una cadena de texto honesta.
+
+### La fila es de solo escritura
+
+`save()` levanta en cualquier actualización y `delete()` levanta siempre, **en el
+modelo y no en la capa de servicio**, para que ni el admin de Django, ni un
+`shell` de una línea, ni una vista futura puedan reescribir quién recogió un
+equipo. Una entrega es un hecho con fecha; corregirla sería negarlo.
+
+### Solo desde `READY_FOR_PICKUP`
+
+`DELIVERABLE_STATES` tiene un único miembro. Un equipo que no aprobó el control
+de calidad no sale del taller por esta puerta, y la puerta es la única: la
+transición genérica **rechaza** `delivered` porque está en `EVENT_ONLY_STATES`.
+Mover la orden sin registrar a quién se le dio el equipo sería una entrega sin
+nadie del otro lado.
+
+`DELIVERED` es terminal: `TRANSITIONS[DELIVERED]` está vacío y `closed_at` queda
+sellado. `TERMINAL_STATES` pasa a tener dos miembros, `CANCELLED` y `DELIVERED`.
+
+### Idempotencia — la cuarta vez, la misma forma
+
+Clave acuñada por el cliente + huella SHA-256 del contenido, como columnas de la
+propia fila, con `UniqueConstraint` parcial. Un reintento con la misma clave y el
+mismo destinatario **devuelve la fila original** sin escribir un segundo evento
+de historial ni una segunda entrada de auditoría. La misma clave con OTRO
+destinatario es **409 `idempotency_conflict`**: no es entrada inválida, es un
+cliente reutilizando una clave que acuñó para otra cosa, y responderle con el
+registro original ignoraría en silencio lo que su segunda petición decía.
+
+La clave se consulta **antes** de cualquier regla de negocio. Es el error real
+que M10 cometió y que aquí no se repite: juzgar primero las reglas rechaza un
+reintento legítimo, porque la orden ya está `delivered` — precisamente porque la
+primera llamada funcionó.
+
+La carrera de dos mostradores se resuelve como la de dos técnicos: el perdedor
+recibe `IntegrityError`, su transacción entera revierte, y solo entonces es
+seguro devolverle la fila del ganador.
+
+### Capabilities
+
+`service.delivery.manage` entra al catálogo directamente como **ACTIVE**, y es
+**propia**, no un añadido de `service.orders.manage`.
+
+Entregar es un acto de mostrador, y quien lo hace suele ser recepción.
+`service.orders.manage` es mucho más ancha —mueve el ciclo de vida y **puede
+cancelar la orden**— así que un taller que quiere que el mostrador libere
+equipos no debería tener que entregarle también la máquina técnica. Y al revés:
+un taller que quiere que el técnico que reparó **no** sea quien entrega tiene que
+poder decirlo.
+
+**Leer** la entrega usa `service.orders.view`, igual que la cotización, el banco
+de trabajo y el control de calidad.
+
+El preset `Servicio Técnico` la recibe —en empresas nuevas por
+`company_provisioning`, en empresas existentes por `0053`, con el mismo
+discriminador de cuatro campos de H1B, ampliado para aceptar **las tres
+descripciones históricas** que el preset ha tenido. El preset de `Ventas` no la
+recibe: liberar un equipo reparado es un acto de servicio.
+
+### Cobro: PENDIENTE, y es un hallazgo, no un olvido
+
+**No existe integración financiera para servicio técnico, y M12 no la finge.**
+
+`PaymentTransaction.order` es un `ForeignKey(Order, on_delete=PROTECT)` **sin
+`null=True`** y sin columna de empresa. Una `RepairOrder` no puede pagarse por
+ahí tal como está el esquema: no hay relación genérica, no hay campo nullable, no
+hay puente. Se verificó leyendo el modelo, no el changelog.
+
+Por eso `DELIVERED` significa **«el equipo salió con alguien»** y nada más. No
+significa que se pagó. Escribir `paid = True` aquí para que el flujo pareciera
+terminado sería la peor clase de mentira: la que un taller se cree. Y conectar
+una `RepairOrder` a una `Order` de e-commerce para reutilizar el cobro rompería
+la separación que sostiene todo el módulo desde M8.
+
+El cobro de servicio es su propia fase (M12B). Necesita decidir si es un
+documento nuevo, si `PaymentTransaction` se generaliza, y qué pasa con el IGV que
+`tax_amount` todavía deja en cero.
+
+### Lo que el cliente ve, y lo que no
+
+Ve el estado y la etiqueta del tenant. No ve el registro de entrega: ni el
+nombre de quien recogió, ni las notas del mostrador, ni quién se lo dio. El
+payload de cliente sigue siendo **los mismos diez campos** de M8, sin uno más.
+
+Un tenant puede ocultar la etapa `delivered` del timeline con
+`is_customer_visible`, como cualquier otra.
+
+Una reparación entregada **sigue apareciendo** en la lista del cliente. Se
+cerró; no se desvaneció.
+
+### El nombre no viaja a la auditoría
+
+`AdminAuditLog` registra el id de la entrega, el id y el número de la orden y la
+sucursal. **No copia `recipient_name`.** Un dato personal en dos tablas son dos
+sitios desde los que honrar una solicitud de borrado; la fila de entrega lo
+guarda y la auditoría la señala.
+
+### Lo que NO se tocó
+
+Stock (ninguna entrega mueve una unidad: las piezas salieron del inventario
+cuando el técnico las montó), control de calidad, ejecución, cotización,
+`Order` de e-commerce, `PaymentTransaction`, y la autenticación Web.
+
+### Deuda registrada
+
+- **Cobro de servicio — PENDIENTE**, por lo dicho arriba. Es la deuda que M12
+  deja explícita y firmada.
+- **Sin evidencias** (DEC-016): ni firma ni fotografía. `RepairDelivery` no
+  tiene ni un `FileField`, y un test estructural lo vigila.
+- **Sin documento de identidad del receptor.** Pedirlo sin decidir qué se hace
+  con él sería recolectar dato personal por si acaso.
+- **Sin garantía.** Ver arriba: será una reentrada.
+- **Sin notificación de «equipo listo»**: sigue sin existir canal.
+- **Sin devolución tras la entrega.** Un equipo entregado no vuelve por esta
+  puerta.
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

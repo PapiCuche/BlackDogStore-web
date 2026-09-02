@@ -24,6 +24,7 @@ from .models import (
     QualityCheck,
     QualityCheckItem,
     QualityResultCode,
+    RepairDelivery,
     RepairDiagnostic,
     RepairExecution,
     RepairOrder,
@@ -952,3 +953,62 @@ class V1ServiceQualityDecisionSerializer(serializers.Serializer):
     """Closing an inspection. One optional internal note, and nothing else."""
 
     notes = serializers.CharField(max_length=2000, required=False, allow_blank=True)
+
+
+# ---------------------------------------------------------------------------
+# M12 / BR-005E — the handover. INTERNAL ONLY.
+# ---------------------------------------------------------------------------
+#
+# The customer sees that their device was `delivered`, through the ordinary
+# status and their tenant's label. They do not see who released it, what the
+# counter wrote in the internal note, or the name the counter recorded — which
+# is often their own, and just as often a relative's or a courier's. None of
+# that is theirs to read back off a screen.
+
+
+class V1ServiceDeliverySerializer(serializers.ModelSerializer):
+    """A handover, as the internal surface reads it."""
+
+    delivered_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RepairDelivery
+        fields = (
+            'id', 'recipient_name', 'notes', 'delivered_by_name',
+            'delivered_at', 'created_at',
+        )
+        read_only_fields = fields
+
+    # `idempotency_key` and `request_fingerprint` are absent: they are the
+    # caller's own bookkeeping and echoing them back serves nothing.
+
+    def get_delivered_by_name(self, obj):
+        user = obj.delivered_by
+        return user.get_full_name() or user.username if user else ''
+
+
+class V1ServiceDeliveryWriteSerializer(serializers.Serializer):
+    """
+    Recording a handover: WHO TOOK IT, and optionally a note.
+
+    Absent on purpose, each for its own reason:
+
+    · `delivered_by`, `delivered_at`, `company`, `repair_order`, `status` — the
+      server knows who is calling, what time it is, and what the order is. A
+      counter clock somebody can set is not a record.
+    · Any identity document. The platform cannot verify one, and storing
+      personal data to support a claim this software cannot make is not a
+      trade worth taking. See DEC-MOBILE-027 and the model docstring.
+    · `conformity` / signature / photo. DEC-016 has no storage provider, and a
+      flag with nothing behind it asserts consent nobody captured.
+    · Anything about payment. This platform cannot charge for a repair.
+
+    `idempotency_key` IS accepted, because only the client can mint one that
+    survives the client's own retry.
+    """
+
+    recipient_name = serializers.CharField(max_length=160)
+    notes = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+    idempotency_key = serializers.CharField(
+        max_length=64, required=False, allow_blank=True,
+    )
