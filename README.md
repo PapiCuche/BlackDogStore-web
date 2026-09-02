@@ -622,6 +622,34 @@ ni hacer recuentos.
 recoger, no avisado, no pagado, no entregado. La etiqueta por defecto dice
 «Reparado» y nada más.
 
+### Control de calidad (M11)
+
+**La lista de control es del taller.** Cada empresa tiene la suya, opcionalmente
+por tipo de dispositivo. La que viene por defecto es neutra a propósito: pregunta
+cosas que se le pueden preguntar a un teléfono, una laptop, una tablet o una
+consola, y no nombra ningún fabricante.
+
+**Los puntos se copian al abrir el control, no se referencian.** Editar la
+plantilla mañana no reescribe lo que se probó hoy.
+
+**El veredicto lo calcula el servidor.** No existe campo para afirmar que un
+control pasó: se leen las respuestas, y falta un obligatorio o falla uno y se
+niega. «No aplica» es una respuesta —una lista que pregunta por la cámara le
+está preguntando a una laptop algo que no tiene— y no bloquea.
+
+**Un fallo abre una segunda ejecución en el mismo acto.** La primera queda
+finalizada con sus repuestos intactos, y **no se mueve stock**: una pieza que
+falló una prueba sigue instalada.
+
+**Inspeccionar es una capability aparte de reparar.** Un taller que quiere un
+segundo par de ojos concede una a un rol y otra a otro. La plataforma no lo
+exige —un taller de una persona quedaría fuera— pero guarda quién revisó aparte
+de quién reparó, para que esa regla se pueda añadir después.
+
+**«Listo para recoger» no significa avisado.** El equipo pasó sus pruebas y puede
+ir a entrega. No hay canal de notificaciones en esta plataforma, no se cobró y no
+se entregó.
+
 ### Reglas de contraseña (registro)
 
 - Mínimo 8 caracteres (Django `MinimumLengthValidator`)

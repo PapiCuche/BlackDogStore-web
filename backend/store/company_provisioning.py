@@ -143,6 +143,12 @@ _TECHNICIAN_CAPS = (
     # this role still does not have and must not acquire by implication: a
     # technician may fit an approved part, not correct a shelf.
     'service.repair.manage',
+    # M11. Testing the work is part of the trade, and the owner's product
+    # decision is that the STANDARD technical preset works the lifecycle the
+    # platform implemented. A tenant that wants a second pair of eyes builds a
+    # narrower role and withholds this — the preset is a default, never a
+    # hardcoded authorization.
+    'service.quality.manage',
 )
 
 # (name, slug, description, capabilities)
@@ -196,7 +202,38 @@ PRESET_REPAIR_STATUSES: tuple[tuple[str, str, bool, int], ...] = (
     ('in_repair', 'En reparación', True, 60),
     ('waiting_parts', 'Esperando repuestos', True, 70),
     ('repaired', 'Reparado', True, 80),
+    # M11. `quality_control` is visible: "we are testing it" is exactly what a
+    # customer wants to hear at that point, and it explains the delay honestly.
+    # What they do NOT see is the checklist, which is internal — that separation
+    # lives in the serializers, not here.
+    #
+    # `ready_for_pickup` says the device passed its tests and may go to handover.
+    # It does NOT say anybody was told: this platform has no notification
+    # channel, and a default label claiming otherwise would ship a promise the
+    # product does not keep.
+    ('quality_control', 'En control de calidad', True, 85),
+    ('ready_for_pickup', 'Listo para recoger', True, 88),
     ('cancelled', 'Cancelado', True, 90),
+)
+
+#: The checklist a company starts with. DEVICE-NEUTRAL ON PURPOSE.
+#:
+#: Every code here is a question you can ask a phone, a laptop, a tablet, a
+#: console or a thing nobody has a word for yet. Nothing names a vendor, a
+#: connector or a feature that belongs to one manufacturer — a platform whose
+#: default checklist asked about Face ID would be a platform that fits one shop.
+#:
+#: A tenant edits these labels, adds items, or creates a template for a specific
+#: device type. This is the floor, not the ceiling.
+PRESET_QUALITY_TEMPLATE_NAME = 'Control general'
+PRESET_QUALITY_ITEMS: tuple[tuple[str, str, bool, int], ...] = (
+    # (code, label, is_required, sort_order)
+    ('power', 'Enciende y arranca correctamente', True, 10),
+    ('repaired_function', 'La falla reportada quedó resuelta', True, 20),
+    ('charging', 'Carga y alimentación', True, 30),
+    ('audio', 'Audio (altavoz y micrófono)', False, 40),
+    ('connectivity', 'Conectividad (red inalámbrica y puertos)', False, 50),
+    ('physical', 'Estado físico y cierre del equipo', True, 60),
 )
 
 
@@ -223,6 +260,7 @@ def provision_company_access_defaults(company, *, actor=None) -> dict:
     from .company_settings import NEUTRAL_THEME
     from .models import (
         Branch, CompanyArea, CompanyRole, CompanySettings, InternalSequence,
+        QualityChecklistTemplate, QualityChecklistTemplateItem,
         RepairStatusSetting,
     )
     from .sequences import (
@@ -314,6 +352,19 @@ def provision_company_access_defaults(company, *, actor=None) -> dict:
         )
         if created:
             repair_statuses_created.append(code)
+
+    template, template_created = QualityChecklistTemplate.objects.get_or_create(
+        company=company, device_type='',
+        defaults={'name': PRESET_QUALITY_TEMPLATE_NAME, 'is_active': True},
+    )
+    if template_created:
+        QualityChecklistTemplateItem.objects.bulk_create([
+            QualityChecklistTemplateItem(
+                template=template, code=code, label=label,
+                is_required=required, sort_order=order,
+            )
+            for code, label, required, order in PRESET_QUALITY_ITEMS
+        ])
 
     for name, slug, description, capabilities in PRESET_ROLES:
         _, created = CompanyRole.objects.get_or_create(

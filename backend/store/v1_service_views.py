@@ -67,6 +67,9 @@ from .v1_service_serializers import (
     V1ServicePartUsageSerializer,
     V1ServicePartUsageWriteSerializer,
     V1ServicePausePartsSerializer,
+    V1ServiceQualityCheckSerializer,
+    V1ServiceQualityDecisionSerializer,
+    V1ServiceQualityResultSerializer,
     V1ServiceTransitionSerializer,
     _user_display,
 )
@@ -1191,3 +1194,201 @@ class V1ServicePartUsageReverseView(V1ServiceExecutionMixin, APIView):
             return self._render_service_error(exc)
 
         return Response(V1ServicePartUsageSerializer(reversed_usage).data)
+
+
+# ---------------------------------------------------------------------------
+# M11 / BR-005D — quality control
+# ---------------------------------------------------------------------------
+
+CAP_QUALITY_MANAGE = 'service.quality.manage'
+
+
+class V1ServiceQualityMixin(V1ServiceSurfaceMixin):
+    """
+    Lookups for the inspection surface.
+
+    READING uses `service.orders.view`, INSPECTING uses
+    `service.quality.manage` — the same split the quoting and bench surfaces
+    draw. A colleague who may open an order may see what was tested on it.
+
+    `service.quality.manage` IS SEPARATE FROM `service.repair.manage` ON
+    PURPOSE. A shop that wants a second pair of eyes on finished work grants one
+    role the repair and another the inspection, and folding the two capabilities
+    together would make that arrangement impossible to express. M11 does not
+    REQUIRE the separation — no rule in this business says a technician may not
+    test their own repair, and a one-person shop would be locked out — but the
+    platform must not be the reason a shop that wants it cannot have it.
+    """
+
+    def get_open_check(self, order):
+        check = service.open_quality_check(order)
+        if check is None:
+            raise NotFound('No encontrado.')
+        return check
+
+    def get_check_item(self, check, item_id):
+        item = check.items.filter(pk=item_id).first()
+        if item is None:
+            raise NotFound('No encontrado.')
+        return item
+
+
+class V1ServiceQualityView(V1ServiceQualityMixin, APIView):
+    """
+    GET — the current inspection and its snapshot. POST — open one.
+
+    GET answers the LATEST check, open or settled, because an order can have
+    more than one once a failure has sent it back, and the screen is asking what
+    is happening now. `null` is the ordinary answer for an order nobody has
+    inspected.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        check = service.latest_quality_check(order)
+        return Response({
+            'quality_check': (
+                V1ServiceQualityCheckSerializer(check).data
+                if check is not None else None
+            ),
+        })
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_QUALITY_MANAGE)
+        order = self.get_order(company, pk)
+
+        try:
+            check = service.start_quality_check(
+                repair_order=order, actor=request.user, request=request,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            V1ServiceQualityCheckSerializer(check).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class V1ServiceQualityHistoryView(V1ServiceQualityMixin, APIView):
+    """
+    GET — every inspection this order has had.
+
+    More than one is normal after a rework, and reading them together is how
+    somebody answers "what failed the first time, and did the second attempt fix
+    it?" — which is the whole reason the first check is never overwritten.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        rows = service.quality_checks_for(order).prefetch_related('items')
+        return Response({
+            'count': rows.count(),
+            'results': V1ServiceQualityCheckSerializer(rows, many=True).data,
+        })
+
+
+class V1ServiceQualityItemView(V1ServiceQualityMixin, APIView):
+    """
+    PATCH — answer ONE point of the open checklist.
+
+    The item is resolved WITHIN the order's open check, so an id belonging to
+    another inspection, another order or another tenant is not found rather than
+    found-then-refused.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def patch(self, request, company_slug=None, pk=None, item_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_QUALITY_MANAGE)
+        order = self.get_order(company, pk)
+        check = self.get_open_check(order)
+        item = self.get_check_item(check, item_id)
+
+        serializer = V1ServiceQualityResultSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            service.record_quality_result(
+                item=item, actor=request.user, **serializer.validated_data,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        check.refresh_from_db()
+        return Response(V1ServiceQualityCheckSerializer(check).data)
+
+
+class V1ServiceQualityPassView(V1ServiceQualityMixin, APIView):
+    """
+    POST — the device passed.
+
+    THE SERVER DECIDES. There is no field here that asserts a verdict: the
+    service reads the answers and refuses if a required point is unanswered or
+    any point failed. Moves the order to `ready_for_pickup`, which means the
+    device passed its tests and may go to handover — NOT that anybody was told,
+    because this platform has no channel to tell them with.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_QUALITY_MANAGE)
+        order = self.get_order(company, pk)
+
+        serializer = V1ServiceQualityDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            check = service.pass_quality_check(
+                repair_order=order, actor=request.user, request=request,
+                notes=serializer.validated_data.get('notes', ''),
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(V1ServiceQualityCheckSerializer(check).data)
+
+
+class V1ServiceQualityFailView(V1ServiceQualityMixin, APIView):
+    """
+    POST — send it back to the bench.
+
+    Requires at least one failed point: a rework order with nothing marked wrong
+    tells the next technician nothing. Opens a NEW `RepairExecution`; the
+    previous one stays finished, with its part usages exactly where they are.
+    No stock moves — a part that failed a test is still fitted.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_QUALITY_MANAGE)
+        order = self.get_order(company, pk)
+
+        serializer = V1ServiceQualityDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            check = service.fail_quality_check(
+                repair_order=order, actor=request.user, request=request,
+                notes=serializer.validated_data.get('notes', ''),
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(V1ServiceQualityCheckSerializer(check).data)

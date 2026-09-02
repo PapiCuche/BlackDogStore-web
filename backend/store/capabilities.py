@@ -253,8 +253,17 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('service.repair.manage', 'service', 'Reparación',
          'Ejecutar la reparación y consumir los repuestos aprobados.',
          STATUS_ACTIVE),
+    # M11 — BR-005D. The module exists: a tenant-configurable checklist, a
+    # snapshot of it per inspection, and a pass that is computed from the
+    # answers rather than asserted by the caller. ACTIVE on the same terms as
+    # the rest — every write calls `has_capability`, no legacy role path.
+    #
+    # SEPARATE FROM `service.repair.manage` ON PURPOSE. A shop that wants a
+    # second pair of eyes on finished work grants one and withholds the other,
+    # and the platform must not make that impossible by folding them together.
     _cap('service.quality.manage', 'service', 'Control de calidad',
-         'RESERVADO — control de calidad no implementado.', STATUS_RESERVED),
+         'Ejecutar el control de calidad de una reparación terminada.',
+         STATUS_ACTIVE),
 )
 
 CAPABILITIES: dict[str, Capability] = {c.code: c for c in CAPABILITY_LIST}

@@ -1970,3 +1970,74 @@ sólo cambia de dónde sale ese valor, no quién lo usa. **No se guardan secreto
 | `IZIPAY_TOKEN_URL` | Configuración **sin valor por defecto**: la referencia REST se renderiza en el navegador y la autoridad es el panel del comercio. Una URL adivinada habría sido un endpoint inventado |
 | `dateTimeTransaction` | Se envía en milisegundos de época — la forma de todos los ejemplos oficiales; el formato exacto no está publicado en ninguna página servida estáticamente |
 | Código `P66` | Figura como «Operación exitosa» en la tabla oficial y **no** se acepta como autorización hasta confirmarlo con Izipay. Un código aceptado de más regala mercadería; uno rechazado de más deja un pedido pendiente y visible |
+
+## H1 + M11 / BR-005D — Paridad de permisos y control de calidad
+
+### H1A — no fue necesario
+
+La colisión de migraciones que M10 dejó señalada (pagos `0043-0045` contra
+servicio `0043-0045`, ambas colgando de `0042_enforce_line_uniqueness`) **ya
+estaba resuelta en master** por `0046_merge_payments_and_service_execution`, un
+nodo vacío que depende de las dos hojas. El grafo tiene una sola hoja y
+`makemigrations --check` está limpio. No se creó ningún merge artificial.
+
+### H1B — la matriz real, resuelta por el resolver
+
+No leída: ejecutada contra `resolve_capabilities()` en una base de pruebas.
+
+```
+                                VIEW   MANAGE  DIAGNOSE   REPAIR  QUALITY
+platform master                  sí       sí        sí       sí       no
+company admin                    sí       sí        sí       sí       no
+technician preset NUEVO          sí       sí        sí       sí       no
+technician preset PRE-M8         no       no        no       no       no
+ventas / inventario              no       no        no       no       no
+técnico custom restringido       sí       no        no       sí       no
+cliente / otra empresa           no       no        no       no       no
+```
+
+(QUALITY en `no` para todos porque en ese momento seguía RESERVED.)
+
+El hallazgo: **el preset técnico de una empresa registrada antes de M8 no podía
+hacer nada**. Siete migraciones de capacidades y ninguna tocó `servicio-tecnico`.
+`0047` lo cierra con un discriminador de cuatro campos, más estricto que el de
+`Administrador` porque tiene que serlo: el conjunto histórico son dos o tres
+códigos y colisiona con un rol limitado ordinario.
+
+### El fallback legacy no se amplió
+
+`LEGACY_ROLE_CAPABILITIES['technician']` sigue valiendo `{company.view,
+service.manage}`. Ensancharlo habría concedido el ciclo de vida completo a todos
+los técnicos legacy de todos los tenants sin roles configurados, sin que nadie lo
+decidiera. La dirección declarada es migrar hacia RBAC por empresa.
+
+### Paridad Web / Mobile — la brecha, dicha en voz alta
+
+| Acción | Backend | Web UI | Mobile |
+|---|---|---|---|
+| Listar órdenes | IMPLEMENTADO | **PENDIENTE** | INTEGRADO |
+| Abrir orden | IMPLEMENTADO | **PENDIENTE** | INTEGRADO |
+| Cambiar estado | IMPLEMENTADO | **PENDIENTE** | INTEGRADO |
+| Diagnosticar / cotizar | IMPLEMENTADO | **PENDIENTE** | INTEGRADO |
+| Iniciar / completar reparación | IMPLEMENTADO | **PENDIENTE** | INTEGRADO |
+| Registrar repuesto | IMPLEMENTADO | **PENDIENTE** | INTEGRADO |
+| Control de calidad | IMPLEMENTADO | **PENDIENTE** | INTEGRADO (M11 mobile) |
+| Editar capacidades de un rol | IMPLEMENTADO (API) | **PENDIENTE** | fuera de alcance |
+
+El frontend Next tiene 40 rutas y **ninguna** toca órdenes de reparación. Su
+propio registro de módulos declara todo el grupo «Servicio Técnico» como
+`pending` sin `href`, lo cual contradice a un backend cuyas capacidades están
+ACTIVE. Y `admin.roles` es `partial` sin pantalla: hoy el único sitio donde se
+pueden tocar las capacidades de un `CompanyRole` es el admin de Django, que
+edita el JSON crudo y se salta la anti-escalación de la API.
+
+**La paridad que sí se cumple es la que importa**: misma capability, mismo
+endpoint, misma regla de tenant y de sucursal, misma transición. Backend es la
+fuente única. Lo que no existe es la interfaz Web, y eso se declara PENDIENTE en
+lugar de disimularlo.
+
+### Deuda
+
+Entrega, cobro, garantía, evidencias, BR-008. Interfaz Web de servicio técnico.
+Editor de roles en la Web — mientras no exista, «que lo conceda el
+administrador» no es una salida real para un tenant.

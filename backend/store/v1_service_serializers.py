@@ -21,6 +21,9 @@ from rest_framework import serializers
 from .models import (
     Device,
     PartUsage,
+    QualityCheck,
+    QualityCheckItem,
+    QualityResultCode,
     RepairDiagnostic,
     RepairExecution,
     RepairOrder,
@@ -870,3 +873,82 @@ class V1ServicePartCandidateSerializer(serializers.Serializer):
     used_quantity = serializers.IntegerField(read_only=True)
     outstanding_quantity = serializers.IntegerField(read_only=True)
     available_in_branch = serializers.IntegerField(read_only=True)
+
+
+# ---------------------------------------------------------------------------
+# M11 / BR-005D — quality control. INTERNAL ONLY.
+# ---------------------------------------------------------------------------
+#
+# There is no customer counterpart to any of this, and the omission is
+# structural. A customer sees that their device is in control de calidad and,
+# later, that it is listo para recoger — both through the ordinary status and
+# the tenant's own label. They do not see which points were tested, which one
+# failed, what the technician wrote about it, or who ran the inspection.
+#
+# "Falló la cámara frontal" is a note between a shop and itself. Publishing it
+# would turn every rework into an argument.
+
+
+class V1ServiceQualityItemSerializer(serializers.ModelSerializer):
+    """One point of the snapshot, and how it came out."""
+
+    class Meta:
+        model = QualityCheckItem
+        fields = (
+            'id', 'code', 'label', 'is_required', 'result', 'notes', 'sort_order',
+        )
+        read_only_fields = fields
+
+
+class V1ServiceQualityCheckSerializer(serializers.ModelSerializer):
+    """An inspection, with the list exactly as it was when it opened."""
+
+    items = V1ServiceQualityItemSerializer(many=True, read_only=True)
+    status_label = serializers.SerializerMethodField()
+    checked_by_name = serializers.SerializerMethodField()
+    completed_by_name = serializers.SerializerMethodField()
+    execution_id = serializers.IntegerField(read_only=True)
+    is_open = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = QualityCheck
+        fields = (
+            'id', 'status', 'status_label', 'is_open', 'template_name',
+            'notes', 'checked_by_name', 'completed_by_name', 'execution_id',
+            'started_at', 'completed_at', 'items',
+        )
+        read_only_fields = fields
+
+    # `template` (the FK) is absent: the snapshot IS the record, and handing a
+    # client the template id invites it to render an old inspection through
+    # today's list.
+
+    def get_status_label(self, obj):
+        return obj.get_status_display()
+
+    def get_checked_by_name(self, obj):
+        user = obj.checked_by
+        return user.get_full_name() or user.username if user else ''
+
+    def get_completed_by_name(self, obj):
+        user = obj.completed_by
+        return user.get_full_name() or user.username if user else ''
+
+
+class V1ServiceQualityResultSerializer(serializers.Serializer):
+    """
+    Answering ONE point. A result and, optionally, why.
+
+    Absent on purpose: the check's `status`. The server computes whether an
+    inspection can pass by reading its items — a checklist whose verdict could
+    be sent by whoever filled it in is a checklist that proves nothing.
+    """
+
+    result = serializers.ChoiceField(choices=QualityResultCode.choices)
+    notes = serializers.CharField(max_length=300, required=False, allow_blank=True)
+
+
+class V1ServiceQualityDecisionSerializer(serializers.Serializer):
+    """Closing an inspection. One optional internal note, and nothing else."""
+
+    notes = serializers.CharField(max_length=2000, required=False, allow_blank=True)

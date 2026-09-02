@@ -9,6 +9,102 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M11 / BR-005D — Control de calidad y avance visible para el cliente
+
+**Estado: IMPLEMENTADO.** Migraciones **0048** (esquema), **0049** (estados y
+listas) y **0050** (capability). Precedida por **H1B** (`0047`), que pagó la
+asimetría del preset técnico.
+
+### Lo que cierra
+
+`REPAIRED → QUALITY_CONTROL → READY_FOR_PICKUP`, y `→ IN_REPAIR` con una
+**segunda** `RepairExecution` cuando falla. La ejecución anterior no se reabre ni
+se sobrescribe.
+
+### La lista es del taller, no de la plataforma
+
+`QualityChecklistTemplate` y sus items son de cada empresa, opcionalmente por
+tipo de dispositivo. La lista por defecto es deliberadamente **neutra**: cada
+código pregunta algo que se le puede preguntar a un teléfono, una laptop, una
+tablet, una consola o algo que todavía no tiene nombre. Nada nombra un
+fabricante, un conector ni una función de una marca. Una plataforma cuya lista
+por defecto preguntara por Face ID sería una plataforma que le queda bien a un
+solo taller.
+
+Y no más que eso: sin tipos de campo, sin lógica condicional, sin puntuación.
+Una lista de control es una lista de cosas que alguien mira y marca; construir un
+motor de formularios para expresar eso sería construir un producto que nadie
+pidió.
+
+### El snapshot es el punto
+
+Los items se **copian** al abrir el control, no se referencian. Un administrador
+que edita la plantilla mañana no reescribe lo que se probó hoy, y un informe que
+volviera a dibujar controles antiguos con la lista actual estaría cambiando el
+pasado en silencio.
+
+### El servidor calcula el veredicto
+
+No existe ningún campo que permita afirmar `status='passed'`. `pass_quality_check`
+lee las respuestas y se niega si falta un punto obligatorio o si alguno falló.
+Una lista cuyo resultado pudiera enviarlo quien la rellenó es una lista que no
+prueba nada.
+
+`not_applicable` es una respuesta, no un hueco. Una lista que pregunta por la
+cámara le está preguntando a una laptop algo que no tiene, y sin ese valor el
+técnico o miente o deja el punto en blanco — y un blanco no se distingue de un
+punto al que nadie llegó.
+
+### El fallo abre una segunda ejecución
+
+Y lo hace en el mismo acto. El equipo ya está en el banco y quien acaba de
+rechazarlo sabe qué está mal; dejar la orden en `in_repair` sin ejecución abierta
+sería una trampa, porque registrar un repuesto se niega sin una. La primera
+ejecución queda finalizada, con sus `PartUsage` exactamente donde estaban.
+
+**Ningún movimiento de stock.** Una pieza que falló una prueba sigue físicamente
+instalada. Una inspección fallida no es una devolución de inventario. Si el
+retrabajo necesita una pieza que nadie aprobó, vuelve por el flujo comercial de
+M10 — esta fase no abre ningún atajo.
+
+### Separación de funciones: preparada, no impuesta
+
+`checked_by` se guarda aparte de quién hizo el trabajo. M11 **no** exige que
+difieran: ninguna regla de este negocio lo dice, e inventarla dejaría fuera a un
+taller de una sola persona. Pero las dos columnas están separadas, así que el día
+que una empresa lo exija el dato ya existe. Esa pregunta es imposible de
+responder después si las columnas nunca estuvieron aparte.
+
+Y `service.quality.manage` es capability propia, no un añadido de
+`service.repair.manage`: un taller que quiere un segundo par de ojos concede una
+a un rol y otra a otro.
+
+### `READY_FOR_PICKUP` no significa avisado
+
+Significa que el equipo pasó sus pruebas y puede ir a la etapa de entrega. No
+significa que se llamó a nadie —esta plataforma no tiene canal de
+notificaciones—, ni que se cobró, ni que se entregó. La etiqueta por defecto dice
+«Listo para recoger» y nada más, y un test comprueba que no dice «avisado» ni
+«pagado» ni «entregado».
+
+### El catálogo ya no reserva nada
+
+`service.quality.manage` era la última capability RESERVED. Con su módulo
+construido, la frase «ninguna autorización de esta plataforma nombra código que
+nadie escribió» es literalmente cierta. Los tests que usaban una reservada como
+ejemplo pasaron a afirmar la **regla** sobre lo que haya reservado, así que
+vuelven a funcionar solos en cuanto una fase futura reserve algo.
+
+### Deuda declarada
+
+Entrega, cobro del servicio, garantía, evidencias fotográficas (DEC-016),
+BR-008. `READY_FOR_PICKUP` no es terminal. Y **la Web sigue sin interfaz de
+servicio técnico**: el backend tiene las 22 rutas y Mobile las consume, pero el
+frontend Next no tiene una sola pantalla de órdenes de reparación, ni editor de
+roles.
+
+---
+
 ## M10 / BR-005C — Ejecución de la reparación y consumo de repuestos
 
 **Estado: IMPLEMENTADO.** Migraciones **0043** (esquema), **0044** (estados) y
