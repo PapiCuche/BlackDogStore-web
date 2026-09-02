@@ -415,6 +415,21 @@ class AdminRoleDetailView(APIView):
             ):
                 return Response({'detail': _CANNOT_DELEGATE}, status=status.HTTP_403_FORBIDDEN)
 
+        # G3 — SWITCHING A ROLE BACK ON IS A GRANT, AND IT WAS NOT CHECKED.
+        #
+        # The block above runs only when the body carries a `capabilities` key,
+        # so `{"is_active": true}` skipped it entirely. Combined with the empty
+        # `capability_set` of an inactive role, that gave a limited admin a
+        # complete escalation: turn the role off, assign it to themselves
+        # against a vacuous check, turn it back on. Every step authorised; the
+        # composition was the hole.
+        #
+        # Turning a role ON hands its capabilities to everybody already holding
+        # it, so it is exactly as much a delegation as raising them.
+        if ser.validated_data.get('is_active') and not role.is_active:
+            if not can_delegate_capabilities(request.user, role.company, set(before)):
+                return Response({'detail': _CANNOT_DELEGATE}, status=status.HTTP_403_FORBIDDEN)
+
         updated = ser.save()
         action = 'role_permissions_updated' if capabilities_changed else 'company_role_updated'
         AdminAuditLog.log(
@@ -501,7 +516,16 @@ class AdminRoleAssignmentListView(APIView):
 
         # Assigning a role hands over its capabilities, so the same delegation
         # limit applies as when authoring one.
-        if not can_delegate_capabilities(request.user, company, role.capability_set):
+        #
+        # G3 — `role.capabilities`, NOT `role.capability_set`. The latter is
+        # empty while the role is inactive, which is the right answer for
+        # RESOLUTION and the wrong input for DELEGATION: this is a question
+        # about what the role would grant, and an inactive role is one PATCH
+        # away from granting it. Checking the live view made the whole guard
+        # vacuous against any role somebody had just switched off.
+        if not can_delegate_capabilities(
+            request.user, company, set(role.capabilities or []),
+        ):
             return Response({'detail': _CANNOT_DELEGATE}, status=status.HTTP_403_FORBIDDEN)
 
         area = None
@@ -612,8 +636,11 @@ class AdminRoleAssignmentDetailView(APIView):
 
         if 'is_active' in data:
             # Re-activating hands the capabilities back, so re-check delegation.
+            # G3: against the role's OWN capabilities, for the reason given on
+            # the assignment POST above — `capability_set` is empty while the
+            # role is off, and checking it there let an inactive role through.
             if data['is_active'] and not can_delegate_capabilities(
-                request.user, company, assignment.role.capability_set,
+                request.user, company, set(assignment.role.capabilities or []),
             ):
                 return Response({'detail': _CANNOT_DELEGATE}, status=status.HTTP_403_FORBIDDEN)
             assignment.is_active = data['is_active']

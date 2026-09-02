@@ -246,12 +246,36 @@ def can_grant_company_role(user, company, role: str) -> bool:
     GRANTABLE_BY_COMPANY_ADMIN. Assigning `superadmin` as a Membership role
     NEVER touches `User.is_superuser`, so it is not a platform escalation either
     way; the restriction exists because the value's semantics are still legacy.
+
+    AND — G3 — ONLY WHAT THEY COULD HAVE DELEGATED THEMSELVES.
+
+    This used to end at the line above, and that left the legacy path as the one
+    door anti-escalation was not watching. `can_delegate_capabilities()` guards
+    authoring a role, editing one, assigning one and reactivating one; it did
+    not guard MINTING A MEMBERSHIP, and `LEGACY_ROLE_CAPABILITIES['admin']` is
+    `ASSIGNABLE_CAPABILITY_CODES` — every capability in the tenant.
+
+    So a caller holding only `memberships.manage` could create a colleague with
+    `role='admin'`. That membership has no RBAC history, the legacy matrix
+    answers for it, and the colleague resolves to everything — including the
+    capabilities the caller had just been refused for a role of their own.
+    Escalation by proxy, and the fix is to ask the same question of the same
+    authority: a legacy role may be granted only by somebody who could have put
+    what it confers into a role.
+
+    A company admin who genuinely holds everything is unaffected, because
+    `ASSIGNABLE_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES`. A platform
+    master is exempt, as everywhere else.
     """
     if is_platform_admin(user):
         return True
     if not can_manage_company_memberships(user, company):
         return False
-    return role in GRANTABLE_BY_COMPANY_ADMIN
+    if role not in GRANTABLE_BY_COMPANY_ADMIN:
+        return False
+    return can_delegate_capabilities(
+        user, company, LEGACY_ROLE_CAPABILITIES.get(role, frozenset()),
+    )
 
 
 def holds_any_capability(user, capability: str) -> bool:

@@ -11,9 +11,17 @@ TWO OPERATIONS, TWO DIFFERENT RISKS, AND THEY ARE NOT THE SAME.
    the role belongs to the tenant, who edited it on purpose and does not need
    the platform overruling them.
 
-   Companies that renamed the role keep their name: the discriminator is the
-   CAPABILITY SET, not the label. A shop that called it "Mostrador" but never
-   touched what it grants is still running the untouched preset.
+   Companies that renamed the role keep their name: the NAME is presentation
+   and says nothing about authority, so a shop that calls it "Mostrador" but
+   never touched what it grants is still running the untouched preset.
+
+   The SLUG is a different matter, and G3 added it to the test. A capability
+   set on its own is not a fingerprint — those seven codes are the most natural
+   set a tenant would assemble by hand for a shop counter, and matching them
+   alone handed six technical-service capabilities to roles somebody built to
+   sell cables. `CompanyRole` is unique on (company, slug), so in a provisioned
+   company the preset already owns `ventas`: nothing a tenant creates can claim
+   it, and nothing they rename loses it.
 
 2. CREATING A NEW ROLE grants nobody anything. A `CompanyRole` with no
    assignments is an offer, not authority — somebody still has to give it to a
@@ -36,6 +44,11 @@ PREVIOUS_SALES_PRESET = frozenset({
     'sales.pos.use',
 })
 
+#: The platform's own slug for this preset. Half of the discriminator: a set of
+#: capabilities describes what a role DOES, and plenty of tenant-built roles do
+#: the same thing; the slug is what says the platform put it there.
+SALES_SLUG = 'ventas'
+
 RECEPTION_CAPABILITIES = (
     'service.customers.view', 'service.customers.manage',
     'service.devices.view', 'service.devices.manage',
@@ -47,7 +60,7 @@ def extend_untouched_sales_presets(apps, schema_editor):
     CompanyRole = apps.get_model('store', 'CompanyRole')
 
     updated = 0
-    for role in CompanyRole.objects.all().iterator():
+    for role in CompanyRole.objects.filter(slug=SALES_SLUG).iterator():
         if frozenset(role.capabilities or []) != PREVIOUS_SALES_PRESET:
             continue
         role.capabilities = sorted(PREVIOUS_SALES_PRESET | set(RECEPTION_CAPABILITIES))
