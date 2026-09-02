@@ -3756,13 +3756,50 @@ Sigue **RESERVED** `service.quality.manage`.
   «correo enviado»: no existe ningún canal, y afirmar una entrega que el
   producto no realiza sería peor que no decir nada.
 - **Sin evidencias** (DEC-016).
-- **Asimetría de presets**: una empresa registrada antes de M9 no recibe
-  `service.diagnostic.manage` en su rol `Servicio Técnico`, solo en
-  `Administrador` y solo si no lo editó. Misma decisión que 0033 y que M8, y M10
-  la repite con `service.repair.manage`: la migración 0045 solo toca roles cuyo
-  conjunto de capacidades es EXACTAMENTE el preset de administrador anterior a la
-  fase. Autoridad que llega porque se desplegó software no es una decisión que la
-  empresa tomó.
+- ~~**Asimetría de presets**~~ **— PAGADA EN H1B.** Durante siete fases, cada
+  migración de capacidades tocó solo `Administrador`; ninguna tocó
+  `servicio-tecnico`. Una empresa registrada el año pasado tenía un rol técnico
+  que no podía recibir un equipo, mientras una registrada hoy podía repararlo.
+  `provision_company_access_defaults()` tampoco lo arreglaba: es `get_or_create`,
+  así que reejecutarlo no rellena nada.
+
+  La migración `0047_service_capabilities_for_untouched_technician_presets` lo
+  cierra, y el discriminador es más estricto que el de `Administrador` **porque
+  tiene que serlo**. `CompanyRole` no tiene marcador `is_preset` — se verificó
+  contra el modelo y contra todo el historial de migraciones — así que un preset
+  solo se reconoce por lo que contiene. Para `Administrador` eso basta: son ~35
+  códigos y nadie los reproduce a mano. El preset técnico histórico tiene DOS o
+  TRES, y `{company.view, service.manage}` es un rol limitado que cualquier
+  taller construye por su cuenta.
+
+  Por eso se exigen CUATRO campos a la vez —`slug`, `name`, `description` y el
+  conjunto exacto de capacidades— contra las dos formas que el preset ha tenido
+  jamás. La descripción es lo que lo hace sólido: es una frase concreta que
+  escribió la plataforma, y un tenant que la reprodujo palabra por palabra junto
+  al slug, el nombre y el conjunto exactos no creó otro rol, tiene el preset.
+  Un solo campo distinto y la fila es del tenant.
+
+  **Riesgo residual, dicho en voz alta**: si un taller creó a mano un rol
+  llamado `Servicio Técnico`, con slug `servicio-tecnico`, con la descripción
+  literal de la plataforma y exactamente esas dos o tres capacidades, la
+  migración lo tratará como preset. Se consideró aceptable: en ese punto el rol
+  es indistinguible del preset por cualquier criterio disponible.
+
+- **El fallback legacy NO se amplió.** `LEGACY_ROLE_CAPABILITIES['technician']`
+  sigue valiendo `{company.view, service.manage}`. Ese camino existe para que una
+  empresa sin roles configurados siga comportándose como en la Fase 2A, y
+  ensancharlo habría concedido el ciclo de vida completo a todos los técnicos
+  legacy de todos esos tenants sin que nadie lo decidiera. La dirección declarada
+  de la plataforma es migrar hacia RBAC por empresa, no seguir engordando el
+  sistema que sustituye.
+
+- **No existe editor de roles en la Web.** El backend sí tiene la API
+  (`AdminRoleListView` con anti-escalación y el catálogo de capacidades), pero
+  el frontend Next declara `admin.roles` como `status: "partial"` sin `href`, y
+  el único sitio donde hoy se puede tocar `CompanyRole.capabilities` es el admin
+  de Django, que edita el JSON crudo y se salta la anti-escalación. Mientras eso
+  siga así, "que lo conceda el administrador" no es una salida real para un
+  tenant, y por eso esta migración importa más de lo que parece.
 - **Sin reserva de stock**: cotizar una pieza no la aparta. El stock cambia
   cuando la pieza se usa (M10) y nunca antes. Dos técnicos pueden cotizar la
   misma última unidad y solo uno la consumirá; la carrera se resuelve en la base
