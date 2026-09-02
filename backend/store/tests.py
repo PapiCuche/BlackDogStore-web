@@ -37416,3 +37416,156 @@ class M12AMyRepairsFilterTest(TestCase):
         provision_company_access_defaults(other_co)
         url = f'/api/v1/internal/{other_co.slug}/service/orders/?mine=true'
         self.assertIn(self.client.get(url).status_code, (403, 404))
+
+
+class G3TechnicianMigrationFreezeTest(TestCase):
+    """
+    The migration must compare against a MOMENT, not against today's code.
+
+    Renumbering fixed the ORDERING — 0053 grants `service.delivery.manage`
+    before 0057 runs, so a current database migrates correctly. It did not fix
+    the comparison. Reading `_TECHNICIAN_CAPS` live means the migration asks
+    "does this row match what the preset means NOW", in a process whose code is
+    always newer than its data.
+
+    THE FAILURE THAT SURVIVES RENUMBERING. A future phase adds a thirteenth
+    technician capability in 0058. A tenant on an old deploy upgrades across
+    both nodes in one `migrate`: 0057 runs first, compares its twelve-code rows
+    against a thirteen-code live tuple, skips every technician, and prints that
+    their company customised the role. Nobody notices, because the message
+    blames the tenant for a decision they never made.
+
+    A frozen literal plus this tripwire makes that impossible to introduce
+    quietly: the day the preset grows, the test below fails and points at the
+    migration that has to decide what to do about it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Congelado SA', 'g3-freeze', tax_id='20780031000')
+        provision_company_access_defaults(self.company)
+
+    def _module(self):
+        import importlib
+        return importlib.import_module(
+            'store.migrations.0057_migrate_legacy_technicians_to_rbac',
+        )
+
+    def _run(self):
+        from django.apps import apps as django_apps
+        self._module().migrate_legacy_technicians(django_apps, None)
+
+    def _legacy(self, username='g3_freeze_tech'):
+        user = _saas_user(username)
+        return user, Membership.objects.create(
+            user=user, company=self.company, role='technician', is_active=True,
+        )
+
+    def test_the_expected_set_is_frozen_and_not_imported(self):
+        import inspect
+        source = inspect.getsource(self._module())
+        self.assertIn('UNTOUCHED_TECHNICIAN_PRESET', source)
+        self.assertNotIn('from store.company_provisioning import', source)
+
+    def test_the_frozen_set_matches_the_preset_this_release_provisions(self):
+        # THE TRIPWIRE. The day somebody adds a thirteenth technician
+        # capability, this fails and points at the migration that has to decide
+        # what to do about it — instead of the migration quietly skipping every
+        # tenant and blaming them for it.
+        from .company_provisioning import _TECHNICIAN_CAPS
+        self.assertEqual(
+            self._module().UNTOUCHED_TECHNICIAN_PRESET, frozenset(_TECHNICIAN_CAPS),
+        )
+
+    def test_it_includes_the_capability_delivery_added(self):
+        self.assertIn(
+            'service.delivery.manage', self._module().UNTOUCHED_TECHNICIAN_PRESET,
+        )
+
+    def test_the_delivery_grant_runs_first(self):
+        # Ordering, asserted on the GRAPH rather than assumed from the numbers.
+        from django.db.migrations.loader import MigrationLoader
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        plan = [
+            name for app, name in loader.graph.forwards_plan(
+                ('store', '0057_migrate_legacy_technicians_to_rbac'),
+            )
+            if app == 'store'
+        ]
+        self.assertLess(
+            plan.index('0053_delivery_capability_for_untouched_presets'),
+            plan.index('0057_migrate_legacy_technicians_to_rbac'),
+        )
+
+    def test_the_graph_has_exactly_one_leaf(self):
+        from django.db.migrations.loader import MigrationLoader
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        leaves = [n for a, n in loader.graph.leaf_nodes() if a == 'store']
+        self.assertEqual(len(leaves), 1, leaves)
+
+    def test_a_technician_is_reached_on_the_preset_this_release_ships(self):
+        user, membership = self._legacy()
+        preset = self.company.roles.get(slug='servicio-tecnico')
+        self.assertIn('service.delivery.manage', preset.capabilities)
+
+        self._run()
+
+        self.assertTrue(
+            MembershipRoleAssignment.objects
+            .filter(membership=membership, role=preset, is_active=True).exists()
+        )
+        cache.clear()
+        self.assertTrue(has_capability(user, self.company, 'service.orders.view'))
+        self.assertTrue(has_capability(user, self.company, 'service.delivery.manage'))
+
+    def test_a_row_missing_the_newest_capability_is_treated_as_customised(self):
+        # The mirror image, and the reason ordering matters: a row that has NOT
+        # received the delivery grant does not look like the preset.
+        user, membership = self._legacy('g3_freeze_stale')
+        preset = self.company.roles.get(slug='servicio-tecnico')
+        preset.capabilities = sorted(
+            set(preset.capabilities) - {'service.delivery.manage'}
+        )
+        preset.save(update_fields=['capabilities'])
+
+        self._run()
+
+        self.assertFalse(
+            MembershipRoleAssignment.objects.filter(membership=membership).exists()
+        )
+
+    def test_the_three_reasons_for_skipping_are_counted_apart(self):
+        # A single total cannot distinguish "the tenant chose this" from "the
+        # platform compared against the wrong set", and only one of those is
+        # anybody's decision.
+        import inspect
+        source = inspect.getsource(self._module().migrate_legacy_technicians)
+        for counter in (
+            'skipped_no_role', 'skipped_already_modelled', 'skipped_customised',
+        ):
+            self.assertIn(counter, source, counter)
+
+    def test_it_names_the_companies_it_skipped_as_customised(self):
+        import inspect
+        source = inspect.getsource(self._module().migrate_legacy_technicians)
+        self.assertIn('company.slug', source)
+
+    def test_it_still_leaves_a_genuinely_customised_role_alone(self):
+        user, membership = self._legacy('g3_freeze_custom')
+        preset = self.company.roles.get(slug='servicio-tecnico')
+        preset.capabilities = sorted(['company.view', 'service.repair.manage'])
+        preset.save(update_fields=['capabilities'])
+
+        self._run()
+
+        self.assertFalse(
+            MembershipRoleAssignment.objects.filter(membership=membership).exists()
+        )
+
+    def test_it_is_idempotent(self):
+        _user, membership = self._legacy('g3_freeze_idem')
+        self._run()
+        self._run()
+        self.assertEqual(
+            MembershipRoleAssignment.objects.filter(membership=membership).count(), 1,
+        )

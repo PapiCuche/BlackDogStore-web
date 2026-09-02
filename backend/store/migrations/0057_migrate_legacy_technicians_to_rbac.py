@@ -57,20 +57,52 @@ WHAT IT REFUSES TO TOUCH
 
 from django.db import migrations
 
+#: The `Servicio Técnico` preset EXACTLY as it stands when this migration runs.
+#:
+#: FROZEN, and the first version of this migration was not. It read
+#: `_TECHNICIAN_CAPS` live from `store.company_provisioning` on the argument
+#: that the preset keeps growing and a copy would go stale. That reasoning is
+#: backwards, and this branch's own sales migration says so in as many words: a
+#: live import compares the database against what the preset means TODAY, in a
+#: process whose code is always newer than its data.
+#:
+#: The failure is concrete rather than theoretical, and renumbering did not fix
+#: it — it only postponed it. Ordering is now guaranteed (0053 grants
+#: `service.delivery.manage` before this node runs), so a database that is
+#: CURRENT migrates correctly. A database that is BEHIND does not: let a future
+#: phase add a thirteenth capability in 0058, and a tenant upgrading across both
+#: in one `migrate` reaches this node with twelve-code rows and a thirteen-code
+#: live tuple. Every technician is skipped, silently, and the printed reason
+#: blames the tenant for a customisation they never made.
+#:
+#: A migration is a statement about a moment. This is that moment.
+UNTOUCHED_TECHNICIAN_PRESET = frozenset({
+    'company.view',
+    'service.manage',
+    'service.customers.view',
+    'service.devices.view',
+    'service.devices.manage',
+    'service.orders.view',
+    'service.orders.create',
+    'service.orders.manage',
+    'service.diagnostic.manage',
+    'service.repair.manage',
+    'service.quality.manage',
+    'service.delivery.manage',
+})
+
 
 def migrate_legacy_technicians(apps, schema_editor):
     Membership = apps.get_model('store', 'Membership')
     CompanyRole = apps.get_model('store', 'CompanyRole')
     MembershipRoleAssignment = apps.get_model('store', 'MembershipRoleAssignment')
 
-    # Read from the live preset: this migration must compare against what an
-    # untouched `Servicio Técnico` means TODAY, after every phase that extended
-    # it. A frozen copy here would stop matching the first time it grows again.
-    from store.company_provisioning import _TECHNICIAN_CAPS
-    expected = frozenset(_TECHNICIAN_CAPS)
+    expected = UNTOUCHED_TECHNICIAN_PRESET
 
     migrated = 0
-    skipped_customised = 0
+    skipped_no_role = 0
+    skipped_already_modelled = 0
+    skipped_customised = []
     for membership in (
         Membership.objects
         .filter(role='technician', is_active=True, company__is_active=True)
@@ -79,16 +111,18 @@ def migrate_legacy_technicians(apps, schema_editor):
     ):
         # Already modelled by their company — leave them alone.
         if MembershipRoleAssignment.objects.filter(membership=membership).exists():
+            skipped_already_modelled += 1
             continue
 
         role = CompanyRole.objects.filter(
             company=membership.company, slug='servicio-tecnico', is_active=True,
         ).first()
         if role is None:
+            skipped_no_role += 1
             continue
         if frozenset(role.capabilities or []) != expected:
             # The tenant edited it. Their definition wins over the platform's.
-            skipped_customised += 1
+            skipped_customised.append(membership.company.slug)
             continue
 
         MembershipRoleAssignment.objects.create(
@@ -101,10 +135,27 @@ def migrate_legacy_technicians(apps, schema_editor):
             f'\n  M12A — {migrated} técnico(s) heredado(s) migrado(s) al rol '
             f'"Servicio Técnico" de su empresa.'
         )
-    if skipped_customised:
+    if skipped_already_modelled:
         print(
-            f'  M12A — {skipped_customised} técnico(s) sin migrar: su empresa '
-            f'personalizó el rol y esa definición manda.'
+            f'  M12A — {skipped_already_modelled} técnico(s) ya tenían rol asignado; '
+            f'su empresa ya decidió sobre ellos.'
+        )
+    if skipped_no_role:
+        print(
+            f'  M12A — {skipped_no_role} técnico(s) sin migrar: su empresa no tiene '
+            f'un rol "Servicio Técnico" activo.'
+        )
+    if skipped_customised:
+        # THE SLUGS, not just a count. The three reasons for skipping look
+        # identical in a total, and only one of them is a tenant decision. An
+        # operator who sees a number cannot tell "they chose this" from "the
+        # platform compared against the wrong set", which is exactly the failure
+        # the frozen list above exists to prevent — so name the companies and
+        # let somebody check.
+        names = ', '.join(sorted(set(skipped_customised)))
+        print(
+            f'  M12A — {len(skipped_customised)} técnico(s) sin migrar: su empresa '
+            f'personalizó el rol y esa definición manda ({names}).'
         )
 
 
