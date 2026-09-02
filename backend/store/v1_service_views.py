@@ -59,6 +59,14 @@ from .v1_service_serializers import (
     V1ServiceOrderCreateSerializer,
     V1ServiceOrderDetailSerializer,
     V1ServiceOrderListSerializer,
+    V1ServiceExecutionCompleteSerializer,
+    V1ServiceExecutionSerializer,
+    V1ServiceExecutionWriteSerializer,
+    V1ServicePartCandidateSerializer,
+    V1ServicePartReversalSerializer,
+    V1ServicePartUsageSerializer,
+    V1ServicePartUsageWriteSerializer,
+    V1ServicePausePartsSerializer,
     V1ServiceTransitionSerializer,
     _user_display,
 )
@@ -861,3 +869,325 @@ class V1ServiceQuoteCancelView(V1ServiceQuotingMixin, APIView):
         return Response(
             V1ServiceQuoteSerializer(self.get_quote(company, order, quote_id)).data,
         )
+
+
+# ---------------------------------------------------------------------------
+# M10 / BR-005C — the bench and its parts
+# ---------------------------------------------------------------------------
+
+CAP_REPAIR_MANAGE = 'service.repair.manage'
+
+
+class V1ServiceExecutionMixin(V1ServiceSurfaceMixin):
+    """
+    Lookups and error rendering for the execution surface.
+
+    READING uses `service.orders.view`, WORKING uses `service.repair.manage` —
+    the same split the quoting surface draws, for the same reason: a colleague
+    who may open an order may see what has been done to the device.
+
+    `service.repair.manage` IS NOT `inventory.adjust`, AND MUST NEVER IMPLY IT.
+    Consuming a part here is a step of a repair whose quote a customer approved,
+    taken from that repair's own branch, against a line somebody was quoted.
+    None of that is authority to adjust a shelf, move stock between shops or run
+    a count — those stay behind the inventory capabilities, and a technician
+    holding this one has no route to them.
+    """
+
+    def _render_service_error(self, exc):
+        """
+        409 for the two conditions that are not the caller's mistake.
+
+        Stock the shop does not have, and an idempotency key already spent on a
+        different request, are both states of the world rather than bad input.
+        A client has to tell them apart from "you asked for something illegal"
+        without parsing Spanish, so they carry a machine-readable `code` —
+        the shape the POS already uses for the identical stock condition.
+        """
+        if isinstance(exc, service.StockUnavailableError):
+            return Response(
+                {'detail': str(exc), 'code': 'insufficient_stock'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if isinstance(exc, service.IdempotencyConflict):
+            return Response(
+                {'detail': str(exc), 'code': 'idempotency_conflict'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def get_open_execution(self, order):
+        execution = service.open_execution(order)
+        if execution is None:
+            raise NotFound('No encontrado.')
+        return execution
+
+    def get_usage(self, order, usage_id):
+        usage = order.part_usages.filter(pk=usage_id).first()
+        if usage is None:
+            raise NotFound('No encontrado.')
+        return usage
+
+
+class V1ServiceExecutionView(V1ServiceExecutionMixin, APIView):
+    """
+    GET — the current bench record. PATCH — amend it while it is open.
+
+    GET answers the LATEST execution, open or finished, because after M11 sends
+    a repair back an order can have more than one and the screen is asking
+    "what is happening now". `null` is a normal answer for an order nobody has
+    started.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        execution = service.latest_execution(order)
+        return Response({
+            'execution': (
+                V1ServiceExecutionSerializer(execution).data
+                if execution is not None else None
+            ),
+        })
+
+    def patch(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_REPAIR_MANAGE)
+        order = self.get_order(company, pk)
+        execution = self.get_open_execution(order)
+
+        serializer = V1ServiceExecutionWriteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            updated = service.update_execution(
+                execution=execution, actor=request.user, request=request,
+                **serializer.validated_data,
+            )
+        except service.ServiceError as exc:
+            return self._render_service_error(exc)
+
+        return Response(V1ServiceExecutionSerializer(updated).data)
+
+
+class V1ServiceExecutionStartView(V1ServiceExecutionMixin, APIView):
+    """
+    POST — begin the work.
+
+    THE ONLY WAY AN ORDER REACHES `in_repair`. The generic transition endpoint
+    refuses that state outright, because moving an order onto a bench without
+    opening an execution would be a claim with no record behind it.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_REPAIR_MANAGE)
+        order = self.get_order(company, pk)
+
+        try:
+            execution = service.start_repair(
+                repair_order=order, actor=request.user, request=request,
+            )
+        except service.ServiceError as exc:
+            return self._render_service_error(exc)
+
+        return Response(
+            V1ServiceExecutionSerializer(execution).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class V1ServiceExecutionCompleteView(V1ServiceExecutionMixin, APIView):
+    """
+    POST — the technician finished.
+
+    Moves the order to `repaired`, which means EXACTLY that and nothing about
+    quality control, collection or payment.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_REPAIR_MANAGE)
+        order = self.get_order(company, pk)
+
+        serializer = V1ServiceExecutionCompleteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            execution = service.complete_repair(
+                repair_order=order, actor=request.user, request=request,
+                **serializer.validated_data,
+            )
+        except service.ServiceError as exc:
+            return self._render_service_error(exc)
+
+        return Response(V1ServiceExecutionSerializer(execution).data)
+
+
+class V1ServiceExecutionPauseView(V1ServiceExecutionMixin, APIView):
+    """
+    POST — pause for a part that has not arrived.
+
+    An explicit act. A consumption that fails for want of stock answers 409 and
+    changes nothing: a shop must not discover its own lifecycle by reading
+    error logs.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_REPAIR_MANAGE)
+        order = self.get_order(company, pk)
+
+        serializer = V1ServicePausePartsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            service.pause_for_parts(
+                repair_order=order, actor=request.user, request=request,
+                comment=serializer.validated_data.get('comment', ''),
+            )
+        except service.ServiceError as exc:
+            return self._render_service_error(exc)
+
+        return Response(
+            V1ServiceOrderDetailSerializer(self.get_order(company, pk)).data,
+        )
+
+
+class V1ServiceExecutionResumeView(V1ServiceExecutionMixin, APIView):
+    """POST — the part arrived; back to the bench."""
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_REPAIR_MANAGE)
+        order = self.get_order(company, pk)
+
+        try:
+            service.resume_repair(
+                repair_order=order, actor=request.user, request=request,
+            )
+        except service.ServiceError as exc:
+            return self._render_service_error(exc)
+
+        return Response(
+            V1ServiceOrderDetailSerializer(self.get_order(company, pk)).data,
+        )
+
+
+class V1ServicePartCandidateView(V1ServiceExecutionMixin, APIView):
+    """
+    GET — the approved parts this repair may still consume.
+
+    Reading, so `service.orders.view`. It exposes no inventory beyond a count
+    of what the order's own branch holds for lines the customer already saw
+    priced.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        rows = service.part_candidates(order)
+        return Response({
+            'count': len(rows),
+            'results': V1ServicePartCandidateSerializer(rows, many=True).data,
+        })
+
+
+class V1ServicePartUsageView(V1ServiceExecutionMixin, APIView):
+    """GET — what this repair consumed. POST — consume one approved part."""
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        rows = service.part_usages_for(order)
+        return Response({
+            'count': rows.count(),
+            'results': V1ServicePartUsageSerializer(rows, many=True).data,
+        })
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_REPAIR_MANAGE)
+        order = self.get_order(company, pk)
+
+        serializer = V1ServicePartUsageWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        quote = service.approved_quote(order)
+        if quote is None:
+            return Response(
+                {'detail': 'No hay una cotización aprobada para esta orden.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Resolved WITHIN the approved quote of this order, so a line id from
+        # another order, another tenant or an older revision is not found
+        # rather than found-then-refused.
+        item = quote.items.filter(pk=data['quote_item_id']).first()
+        if item is None:
+            raise NotFound('No encontrado.')
+
+        try:
+            usage = service.record_part_usage(
+                repair_order=order, quote_item=item, quantity=data['quantity'],
+                idempotency_key=data.get('idempotency_key', ''),
+                actor=request.user, request=request,
+            )
+        except service.ServiceError as exc:
+            return self._render_service_error(exc)
+
+        return Response(
+            V1ServicePartUsageSerializer(usage).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class V1ServicePartUsageReverseView(V1ServiceExecutionMixin, APIView):
+    """
+    POST — put a wrongly-recorded part back.
+
+    Deliberately not DELETE. Nothing is removed: a compensating movement
+    returns the units and this row is stamped with when and by whom, so both
+    facts stay readable in the order they happened.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def post(self, request, company_slug=None, pk=None, usage_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_REPAIR_MANAGE)
+        order = self.get_order(company, pk)
+        usage = self.get_usage(order, usage_id)
+
+        serializer = V1ServicePartReversalSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            reversed_usage = service.reverse_part_usage(
+                usage=usage, reason=serializer.validated_data.get('reason', ''),
+                actor=request.user, request=request,
+            )
+        except service.ServiceError as exc:
+            return self._render_service_error(exc)
+
+        return Response(V1ServicePartUsageSerializer(reversed_usage).data)

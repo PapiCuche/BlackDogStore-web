@@ -991,6 +991,13 @@ class StockMovement(models.Model):
     MANUAL_ENTRY = 'manual_entry'
     RETURN_ENTRY = 'return_entry'
     CORRECTION_POSITIVE = 'correction_positive'
+    # M10 / BR-005C — the mirror of SERVICE_EXIT. A part that was booked out of
+    # stock for a repair and then found not to be needed goes back the way it
+    # came, as its own kind of entry. `return_entry` would have worked
+    # mechanically and lost the origin: a Kardex line that says only
+    # "devolución" cannot tell a customer return from a technician correcting a
+    # mis-scanned part, and those are different conversations.
+    SERVICE_RETURN = 'service_return'
     # --- Exits (remove stock) ---
     MANUAL_EXIT = 'manual_exit'
     SALE_EXIT = 'sale_exit'
@@ -1007,6 +1014,7 @@ class StockMovement(models.Model):
         (MANUAL_ENTRY, 'Entrada manual'),
         (RETURN_ENTRY, 'Entrada por devolución'),
         (CORRECTION_POSITIVE, 'Corrección positiva'),
+        (SERVICE_RETURN, 'Entrada por reverso de servicio técnico'),
         (TRANSFER_IN, 'Entrada por transferencia'),
         (MANUAL_EXIT, 'Salida manual'),
         (SALE_EXIT, 'Salida por venta'),
@@ -1018,7 +1026,7 @@ class StockMovement(models.Model):
 
     ENTRY_TYPES = frozenset([
         INITIAL_STOCK, PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY,
-        CORRECTION_POSITIVE, TRANSFER_IN,
+        CORRECTION_POSITIVE, SERVICE_RETURN, TRANSFER_IN,
     ])
     EXIT_TYPES = frozenset([
         MANUAL_EXIT, SALE_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT, SERVICE_EXIT,
@@ -1028,6 +1036,13 @@ class StockMovement(models.Model):
     # on purpose: it is only ever produced by the payment pipeline, and the two
     # transfer types likewise only by the transfer pipeline — a hand-written
     # transfer_out with no matching transfer_in would be stock that vanished.
+    #
+    # M10 keeps `service_exit` and `service_return` out for the same reason. A
+    # part leaves stock because a technician fitted it to a device somebody
+    # approved, and it comes back because that record was corrected; both are
+    # produced by `service_services`, which writes the PartUsage row in the same
+    # transaction. A hand-written service_exit would be a Kardex line claiming a
+    # repair that no repair can be found for.
     MANUAL_TYPES = frozenset([
         PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY, CORRECTION_POSITIVE,
         MANUAL_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT,
@@ -3922,20 +3937,26 @@ class RepairStatusCode(models.TextChoices):
     thing that gives them meaning: a quote a customer can decide on. That is the
     rule, and it has not changed — a state arrives with its module.
 
-    `IN_REPAIR`, `WAITING_PARTS`, `REPAIRED`, `QUALITY_CONTROL`,
-    `READY_FOR_PICKUP`, `DELIVERED` and `WARRANTY` are all real states of a real
-    repair shop and none of them means anything yet: repair needs parts and
-    execution, quality control needs a checklist, warranty needs a completed
-    repair to warrant. Shipping the words without the modules would let an order
-    be moved into a state no code can act on — a status that lies.
+    M10 added `IN_REPAIR`, `WAITING_PARTS` and `REPAIRED`, because it built the
+    execution that gives them meaning: a technician starts work, consumes
+    approved parts out of the shop's own stock, and finishes.
 
-    `APPROVED` is now the deliberate edge: it is where M9 stops.
+    `QUALITY_CONTROL`, `READY_FOR_PICKUP`, `DELIVERED` and `WARRANTY` are still
+    real states of a real repair shop that mean nothing here yet: quality
+    control needs a checklist, pickup needs a delivery flow, warranty needs a
+    completed repair to warrant. Shipping the words without the modules would
+    let an order be moved into a state no code can act on — a status that lies.
 
-    NEITHER `APPROVED` NOR `REJECTED` IS REACHABLE BY MOVING AN ORDER. They are
-    the recorded outcome of a customer deciding on a published quote, and
-    `service_services` refuses to set them any other way. `WAITING_APPROVAL` is
-    the same: from M9 it means "a frozen, published quote is waiting", and only
-    publishing one can produce it.
+    `REPAIRED` is now the deliberate edge: it is where M10 stops, and it means
+    ONLY that the technician finished. Not checked, not ready, not collected,
+    not paid.
+
+    FIVE OF THE NINE ARE NOT REACHABLE BY MOVING AN ORDER. `WAITING_APPROVAL`
+    is produced by publishing a quote; `APPROVED` and `REJECTED` by a customer
+    deciding on one; `IN_REPAIR`, `WAITING_PARTS` and `REPAIRED` by starting,
+    pausing and finishing the work. `service_services` refuses to set any of
+    them any other way. Beginning a repair is a fact about a workbench, not an
+    option in a dropdown.
     """
 
     RECEIVED = 'received', 'Recibido'
@@ -3943,6 +3964,10 @@ class RepairStatusCode(models.TextChoices):
     WAITING_APPROVAL = 'waiting_approval', 'Esperando aprobación'
     APPROVED = 'approved', 'Aprobado'
     REJECTED = 'rejected', 'Rechazado'
+    # M10 / BR-005C.
+    IN_REPAIR = 'in_repair', 'En reparación'
+    WAITING_PARTS = 'waiting_parts', 'Esperando repuestos'
+    REPAIRED = 'repaired', 'Reparado'
     CANCELLED = 'cancelled', 'Cancelado'
 
 
@@ -4808,3 +4833,340 @@ class RepairQuoteDecision(models.Model):
         from django.core.exceptions import ValidationError
 
         raise ValidationError('Una decisión del cliente no se puede borrar.')
+
+
+class RepairResultCode(models.TextChoices):
+    """
+    How a piece of work ENDED. Platform-owned, three members, no more.
+
+    A repair that was authorised can end three ways a shop actually
+    distinguishes: it worked, it partly worked, or it did not. Anything finer —
+    "replaced screen", "cleaned board" — is `work_performed`, which is prose,
+    because a taxonomy of repairs is a taxonomy of every device ever made.
+
+    NOT A LIFECYCLE STATE. `RepairStatusCode.REPAIRED` says the technician
+    finished; this says what finishing amounted to. An unresolved repair is
+    still `repaired` in the lifecycle sense — the bench work is over — and the
+    device still has to pass quality control and be collected.
+    """
+
+    SUCCESS = 'success', 'Resuelto'
+    PARTIAL = 'partial', 'Resuelto parcialmente'
+    UNRESOLVED = 'unresolved', 'No resuelto'
+
+
+class RepairExecution(models.Model):
+    """
+    THE WORK, not the order. M10 / BR-005C.
+
+    `RepairOrder` is the ticket: who brought what in, where it is in its life,
+    what the customer was told. `RepairExecution` is the bench record: when
+    somebody started, what they actually did, which parts came off the shelf,
+    when they stopped. Folding these together would have been half a day's less
+    work and would have made "how long does a screen replacement take?"
+    unanswerable — the ticket's clock starts at the counter, hours or days
+    before a technician touches anything.
+
+    IT IS NOT AN E-COMMERCE ORDER, AND IT NEVER BECOMES ONE. Nothing here is
+    charged, nothing here reserves anything for sale, and no `Order` row is
+    written by any code path that touches this model. The money conversation
+    already happened, once, on the quote the customer approved.
+
+    ONE OPEN EXECUTION PER ORDER, enforced in the database by a partial unique
+    constraint rather than by a query-then-insert. Two technicians opening the
+    same order on two tablets is not a hypothetical, and the second INSERT has
+    to lose in the row, not in a race the application thinks it won.
+
+    WHY NOT `OneToOneField`: M11's quality control can FAIL a repair and send it
+    back to the bench. That second attempt is a second execution — the first one
+    is finished, immutable evidence of what was done and what it cost in parts,
+    and overwriting it to save a row would destroy the only record of the work
+    that did not hold. The constraint below allows the history and forbids the
+    ambiguity.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='repair_executions',
+    )
+    # PROTECT, like every other service row: a repair order that has been worked
+    # on carries stock movements, and deleting it would orphan the Kardex.
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.PROTECT, related_name='executions',
+    )
+
+    # Server-stamped, both of them. There is no field on any serializer that
+    # lets a caller say when work began or ended — see DEC-020, and the same
+    # reason: having a field is being able to fill it in, and a bench clock
+    # somebody can set is not evidence.
+    started_at = models.DateTimeField(default=timezone.now)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    # What the technician actually did. Deliberately NOT seeded from
+    # `RepairDiagnostic.recommended_action`: the diagnosis is a proposal and this
+    # is the record of what happened, and pre-filling one with the other is how
+    # a shop ends up with a hundred repairs whose notes all say what somebody
+    # intended rather than what they found.
+    work_performed = models.TextField(max_length=4000, blank=True)
+    result = models.CharField(
+        max_length=16, choices=RepairResultCode.choices, blank=True,
+    )
+    internal_notes = models.TextField(max_length=2000, blank=True)
+
+    started_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='repair_executions_started',
+    )
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='repair_executions_completed',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-started_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['repair_order'],
+                condition=models.Q(completed_at__isnull=True),
+                name='one_open_execution_per_repair_order',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'started_at']),
+            models.Index(fields=['repair_order', 'started_at']),
+        ]
+
+    def __str__(self):
+        return f'Trabajo · orden {self.repair_order_id}'
+
+    @property
+    def is_completed(self) -> bool:
+        return self.completed_at is not None
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.repair_order_id and self.company_id:
+            if self.repair_order.company_id != self.company_id:
+                raise ValidationError(
+                    'La orden no pertenece a la empresa de este trabajo.'
+                )
+
+    def save(self, *args, **kwargs):
+        """
+        A COMPLETED EXECUTION IS EVIDENCE. It does not get edited.
+
+        The same guarantee M9 gave a published quote, for the same reason: a
+        record somebody can revise after the fact is a record nobody can rely
+        on. `completed_at`, `result` and `work_performed` are what a warranty
+        claim, a quality check and a dispute will all be read against.
+
+        Stamping the completion itself is allowed through — that is the write
+        that closes the row — and so is anything that touches no work field, so
+        M11 can link a quality check without reopening the bench notes.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            stored = (
+                RepairExecution.objects.filter(pk=self.pk)
+                .values_list('completed_at', flat=True)
+                .first()
+            )
+            if stored is not None:
+                allowed = set(kwargs.get('update_fields') or [])
+                content = {
+                    'work_performed', 'result', 'internal_notes', 'started_at',
+                    'started_by', 'started_by_id', 'completed_at', 'completed_by',
+                    'completed_by_id', 'company', 'company_id', 'repair_order',
+                    'repair_order_id',
+                }
+                if not allowed or (allowed & content):
+                    raise ValidationError(
+                        'Un trabajo finalizado no se puede modificar.'
+                    )
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class PartUsage(models.Model):
+    """
+    ONE part, out of ONE branch's stock, for ONE repair. M10 / BR-005C.
+
+    THIS ROW IS NOT THE INVENTORY RECORD. `StockMovement` is what happened to
+    the shop's stock; this is what the repair consumed, and the two answer
+    different questions — "why is this shelf one battery lighter?" versus "what
+    went into this customer's phone?". They are linked one-to-one and neither
+    substitutes for the other. A usage row without a movement would be a part
+    that left no hole; a movement without a usage row would be a hole nobody can
+    explain.
+
+    THE BRANCH IS THE ORDER'S, NEVER THE CALLER'S. There is no branch field on
+    any request that reaches here. A technician cannot say "take it from the
+    other shop": there is no inter-branch transfer in this flow, so consuming
+    another branch's stock would move units on paper that nobody physically
+    moved. It is copied onto this row anyway, because an order's branch is a
+    living field and this is history.
+
+    EVERY PART TRACES TO AN APPROVED LINE. `quote_item` is required and must be
+    a `part` line of the quote the customer approved. Not "a product in the
+    catalogue" — a part somebody was told the price of and said yes to. A
+    technician who needs something extra goes back through diagnosis and a new
+    quote; that is slower, and it is the difference between a shop and a shop
+    that surprises people with the bill.
+
+    IDEMPOTENCY IS A COLUMN PAIR, NOT A CONVENTION. Same shape the POS sale and
+    the native checkout already use: a client-minted key plus a fingerprint of
+    the request, and a partial unique constraint that makes the database decide
+    who won. Booking out a part is a physical fact; a network timeout must not
+    be able to produce two of them.
+
+    REVERSAL IS COMPENSATION, NEVER DELETION. `reversed_at` and
+    `reversal_movement` mark this row; the original row and its original
+    movement stay exactly as written. Nothing here is ever edited to a smaller
+    number.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='part_usages',
+    )
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.PROTECT, related_name='part_usages',
+    )
+    execution = models.ForeignKey(
+        RepairExecution, on_delete=models.PROTECT, related_name='part_usages',
+    )
+    # Required. The traceability rule above, expressed as a NOT NULL.
+    quote_item = models.ForeignKey(
+        RepairQuoteItem, on_delete=models.PROTECT, related_name='part_usages',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name='part_usages',
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name='part_usages',
+    )
+
+    # Integer, because stock is. `BranchStock.quantity` is a
+    # PositiveIntegerField with a non-negative check constraint, and half a
+    # battery is not a thing this platform can represent. A quoted part line
+    # carrying a fractional quantity is refused at the service layer rather
+    # than silently rounded into somebody's inventory.
+    quantity = models.PositiveIntegerField()
+
+    # The evidence link. OneToOne because a usage consumes exactly once; PROTECT
+    # because the Kardex line must outlive any attempt to tidy up.
+    stock_movement = models.OneToOneField(
+        StockMovement, on_delete=models.PROTECT, related_name='part_usage',
+    )
+
+    # A snapshot, not a join. `Product.name` can be edited or the product
+    # archived, and six months from now the question "what did you put in my
+    # laptop?" still has to have an answer.
+    description = models.CharField(max_length=200)
+
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='part_usages_recorded',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # --- Idempotency (mirrors Order.pos_idempotency_key / .idempotency_key) ---
+    idempotency_key = models.CharField(max_length=64, blank=True, default='')
+    request_fingerprint = models.CharField(max_length=64, blank=True, default='')
+
+    # --- Compensation ---
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='part_usages_reversed',
+    )
+    reversal_movement = models.OneToOneField(
+        StockMovement, null=True, blank=True, on_delete=models.PROTECT,
+        related_name='reversed_part_usage',
+    )
+    reversal_reason = models.CharField(max_length=300, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'idempotency_key'],
+                condition=~models.Q(idempotency_key=''),
+                name='unique_part_usage_idempotency_key_per_company',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0),
+                name='part_usage_quantity_positive',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'created_at']),
+            models.Index(fields=['repair_order', 'created_at']),
+            models.Index(fields=['execution']),
+            models.Index(fields=['quote_item']),
+        ]
+
+    def __str__(self):
+        return f'{self.quantity} × {self.description} · orden {self.repair_order_id}'
+
+    @property
+    def is_reversed(self) -> bool:
+        return self.reversed_at is not None
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.repair_order_id and self.company_id:
+            if self.repair_order.company_id != self.company_id:
+                raise ValidationError(
+                    'La orden no pertenece a la empresa de este consumo.'
+                )
+        if self.product_id and self.company_id:
+            if self.product.company_id != self.company_id:
+                raise ValidationError(
+                    'El producto no pertenece a la empresa de este consumo.'
+                )
+        if self.branch_id and self.company_id:
+            if self.branch.company_id != self.company_id:
+                raise ValidationError(
+                    'La sucursal no pertenece a la empresa de este consumo.'
+                )
+
+    def save(self, *args, **kwargs):
+        """
+        WHAT WAS CONSUMED IS NOT EDITABLE. Only the reversal marks it.
+
+        A row that can be revised is a row that cannot settle an argument about
+        what went into somebody's device. Correcting a mistake means writing a
+        compensating movement and stamping this row as reversed — which leaves
+        both facts visible, the original consumption and the correction, in the
+        order they happened.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            allowed = set(kwargs.get('update_fields') or [])
+            frozen = {
+                'company', 'company_id', 'repair_order', 'repair_order_id',
+                'execution', 'execution_id', 'quote_item', 'quote_item_id',
+                'product', 'product_id', 'branch', 'branch_id', 'quantity',
+                'stock_movement', 'stock_movement_id', 'description', 'actor',
+                'actor_id', 'idempotency_key', 'request_fingerprint',
+            }
+            if not allowed or (allowed & frozen):
+                raise ValidationError(
+                    'Un consumo de repuesto no se puede modificar. '
+                    'Regístralo como reverso.'
+                )
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError(
+            'Un consumo de repuesto no se puede borrar. Regístralo como reverso.'
+        )

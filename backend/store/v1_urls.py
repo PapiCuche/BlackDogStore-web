@@ -21,6 +21,14 @@ from .v1_service_views import (
     V1ServiceDiagnosticDetailView,
     V1ServiceQuoteItemDetailView,
     V1ServiceDiagnosticListView,
+    V1ServiceExecutionCompleteView,
+    V1ServiceExecutionPauseView,
+    V1ServiceExecutionResumeView,
+    V1ServiceExecutionStartView,
+    V1ServiceExecutionView,
+    V1ServicePartCandidateView,
+    V1ServicePartUsageReverseView,
+    V1ServicePartUsageView,
     V1ServiceQuoteCancelView,
     V1ServiceQuoteDetailView,
     V1ServiceQuoteItemView,
@@ -213,6 +221,51 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/cancel/',
         V1ServiceQuoteCancelView.as_view(), name='v1-internal-service-quote-cancel',
+    ),
+    # --- M10 / BR-005C — the bench ---
+    #
+    # `parts/candidates/` is declared BEFORE `parts/<int:usage_id>/...` would
+    # ever be considered, and it is a literal segment rather than an id, so the
+    # two cannot shadow each other. Every path hangs off `orders/<pk>/`, which
+    # is what folds the branch gate in: the order lookup is scoped, so nothing
+    # underneath it can be reached out of scope.
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/execution/',
+        V1ServiceExecutionView.as_view(), name='v1-internal-service-execution',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/execution/start/',
+        V1ServiceExecutionStartView.as_view(),
+        name='v1-internal-service-execution-start',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/execution/complete/',
+        V1ServiceExecutionCompleteView.as_view(),
+        name='v1-internal-service-execution-complete',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/execution/pause/',
+        V1ServiceExecutionPauseView.as_view(),
+        name='v1-internal-service-execution-pause',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/execution/resume/',
+        V1ServiceExecutionResumeView.as_view(),
+        name='v1-internal-service-execution-resume',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/parts/candidates/',
+        V1ServicePartCandidateView.as_view(),
+        name='v1-internal-service-part-candidates',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/parts/',
+        V1ServicePartUsageView.as_view(), name='v1-internal-service-parts',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/parts/<int:usage_id>/reverse/',
+        V1ServicePartUsageReverseView.as_view(),
+        name='v1-internal-service-part-reverse',
     ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),

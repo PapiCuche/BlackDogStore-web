@@ -218,6 +218,12 @@ class V1CustomerRepairQuoteDecisionView(V1CustomerRepairQuoteView):
     """
     POST — approve or reject the quote on MY repair.
 
+    POST ONLY, DECLARED. It subclasses the quote view for its lookups and would
+    otherwise inherit that view's `get(self, request, company_slug, pk)` — while
+    this URL supplies a third kwarg, `quote_id`. A GET therefore raised
+    TypeError inside the handler, which DRF does not convert, so the endpoint
+    answered 500 instead of 405. Naming the verbs fixes it at the router.
+
     THE ONLY WAY AN ORDER REACHES `approved` OR `rejected`. Staff cannot assert
     a customer's decision through the internal transition endpoint; that is the
     invariant M9 exists to establish.
@@ -231,6 +237,8 @@ class V1CustomerRepairQuoteDecisionView(V1CustomerRepairQuoteView):
     The quote is re-checked under a lock inside the service: expired, cancelled
     or already-decided quotes are refused there, whatever the app drew.
     """
+
+    http_method_names = ['post']
 
     throttle_classes = [AdminOrderStatusChangeThrottle]
 

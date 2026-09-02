@@ -1780,6 +1780,77 @@ SQLite con esa razón. Correrán sin cambios el día que la suite apunte a
 PostgreSQL. Lo que garantiza la invariante —constraint más incremento atómico— no
 depende de cómo el motor planifique los escritores.
 
+## M10 / BR-005C — Ejecución de reparación y consumo transaccional de inventario
+
+### Hallazgos revalidados contra HEAD `2116b17`
+
+`StockMovement.SERVICE_EXIT` («Salida por servicio técnico») estaba **declarado
+desde la migración 0013 y sin un solo uso**: ningún camino de código lo creaba y
+`MANUAL_TYPES` lo excluye, así que la API de ajuste manual lo rechazaba. No era
+un tipo que faltase; era un tipo esperando su módulo.
+
+`BranchStock.quantity` es `PositiveIntegerField` con check constraint
+`quantity >= 0`. `RepairQuoteItem.quantity` es `DecimalField(10,2)`. Las dos
+escalas no coinciden, y no había regla escrita para convertir una en otra. M10
+la escribe: un repuesto se consume en unidades enteras y una línea con cantidad
+fraccionaria se rechaza en el servicio, en vez de redondearse en silencio hacia
+el inventario de alguien.
+
+`Product.inventory` **no tiene check constraint** — solo `BranchStock.quantity`
+lo tiene. Una segunda implementación del descuento corrompería el agregado que
+lee el escaparate sin que ningún error saltara. Es la razón concreta por la que
+`create_stock_movement` es el único escritor y M10 no lo esquiva.
+
+No existía **ninguna** función de compensación en todo el backend.
+`cancel_transfer` documenta la ausencia: se niega a cancelar una transferencia en
+tránsito porque «revertirla exige movimientos compensatorios que todavía no están
+implementados». M10 escribe la primera, y solo para su propio dominio.
+
+### El orden de bloqueo canónico
+
+Los seis consumidores de stock que ya existían coinciden en uno: agregado
+propietario primero, después `BranchStock` en orden `(branch_id, product_id)`,
+`Product` nunca. `service_services` coincide: `RepairOrder`, después
+`RepairQuote`. M10 es la concatenación y no inventa nada:
+
+    RepairOrder → RepairExecution → PartUsage → BranchStock
+
+### Idempotencia: había precedente, y se copió
+
+Dos veces en el repositorio (`Order.pos_idempotency_key` y
+`Order.idempotency_key`), con la misma forma: clave del cliente + huella SHA-256
+como columnas, `UniqueConstraint` parcial, `IntegrityError` capturado y relectura.
+No hay modelo genérico de idempotencia y M10 no creó uno: cuatro columnas en
+`PartUsage` y una constraint parcial.
+
+El detalle que importa: el reintento que **pierde** la carrera deja que su
+transacción entera se deshaga —llevándose su movimiento de stock— y solo después
+el envoltorio devuelve la fila ganadora. Devolverla desde dentro de la transacción
+habría confirmado un descuento huérfano, que es exactamente el doble consumo que
+todo el mecanismo existe para impedir.
+
+### Decisiones que conviene poder defender
+
+**`WAITING_PARTS` se implementó.** El objetivo de la fase incluye «pausar por
+falta de repuestos», y sin el estado una reparación bloqueada se queda en
+`in_repair` indefinidamente — un estado que miente. Pero **no** se activa como
+efecto secundario de un consumo fallido: el stock insuficiente responde 409 y no
+mueve nada. Un taller no debe descubrir su propio estado leyendo logs de error.
+
+**`REPAIRED` no es terminal y su etiqueta por defecto no promete recogida.** El
+técnico terminó; nadie ha revisado el trabajo y nadie ha avisado al cliente. M11
+y M12 son fases distintas.
+
+**Una pieza extra no aprobada no se consume.** Vuelve por diagnóstico, cotización
+nueva y aprobación nueva. Es más lento, y es la diferencia entre una factura y
+una sorpresa.
+
+### Deuda
+
+Reserva de stock al cotizar (no existe, deliberadamente). Devolución de piezas
+después de finalizar. Transferencia entre sucursales dentro del flujo de
+reparación. Control de calidad, entrega, pago, garantía, evidencias, BR-008.
+
 ---
 
 ## Fase 0.3 / P0-F — Pasarela de pago Izipay e integridad monetaria

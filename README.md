@@ -577,6 +577,51 @@ de un país en el esquema de un SaaS.
 **Aprobar no es pagar** y **cotizar una pieza no la reserva**: sin `Order`, sin
 la pasarela, sin `StockMovement`.
 
+### Ejecución y repuestos (M10 · BR-005C)
+
+**El banco de trabajo es un modelo aparte del ticket.** `RepairOrder` dice quién
+trajo qué y en qué punto está; `RepairExecution` dice cuándo empezó alguien, qué
+hizo y cuándo paró. Juntarlos dejaría sin respuesta «¿cuánto tarda un cambio de
+pantalla?»: el reloj del ticket arranca en el mostrador, horas antes de que un
+técnico toque nada.
+
+**Empezar, pausar y terminar son hechos, no opciones de un desplegable.**
+`in_repair`, `waiting_parts` y `repaired` son event-only: el endpoint genérico de
+transición los rechaza, y cada uno tiene su operación, que escribe la fila que le
+da sentido al estado.
+
+**Una pieza sale de la sucursal de SU reparación.** No hay campo de sucursal en
+ninguna petición. No existe transferencia en este flujo, así que consumir stock
+de otra tienda serían unidades moviéndose en papel que nadie cargó.
+
+**Toda pieza traza a una línea aprobada.** No un id de producto: una línea que
+alguien cotizó y que el cliente aceptó. Una pieza extra vuelve por diagnóstico,
+cotización nueva y aprobación nueva.
+
+**El inventario lo mueve inventario.** Todo pasa por
+`inventory_services.create_stock_movement`, el único escritor de stock del
+repositorio, y siempre al final del orden de bloqueo
+`RepairOrder → RepairExecution → PartUsage → BranchStock`. `Product` nunca se
+bloquea.
+
+**Un timeout no descuenta dos veces.** Clave de idempotencia acuñada por el
+cliente más huella de la petición, en columnas con `UniqueConstraint` parcial —
+la misma forma que ya usan la venta POS y el checkout nativo.
+
+**Deshacer es compensar, nunca borrar.** Un movimiento contrario devuelve las
+unidades y la fila queda marcada; el registro original y su movimiento siguen
+exactamente donde estaban. Después de finalizar el trabajo la pieza queda
+congelada: una batería instalada no vuelve a la estantería porque alguien pulse
+deshacer.
+
+**`service.repair.manage` no es `inventory.adjust`.** Permite gastar una pieza
+aprobada dentro de una reparación. No permite ajustar una estantería, transferir
+ni hacer recuentos.
+
+**`repaired` significa que el técnico terminó.** No revisado, no listo para
+recoger, no avisado, no pagado, no entregado. La etiqueta por defecto dice
+«Reparado» y nada más.
+
 ### Reglas de contraseña (registro)
 
 - Mínimo 8 caracteres (Django `MinimumLengthValidator`)
