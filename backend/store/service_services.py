@@ -48,7 +48,9 @@ from .models import (
     PartUsage,
     Product,
     QualityCheck,
+    PaymentMethod,
     RepairDelivery,
+    RepairPayment,
     QualityCheckItem,
     QualityChecklistTemplate,
     QualityCheckStatus,
@@ -2649,6 +2651,38 @@ def _deliver_repair(
             'Solo se puede entregar un equipo que aprobó el control de calidad.'
         )
 
+    # M12B — THE PAYMENT GATE, AND IT LIVES HERE FOR THREE REASONS.
+    #
+    # INSIDE the lock, so two tills cannot both read "paid" while one of them is
+    # reversing the payment that made it true.
+    #
+    # AFTER the idempotency block, deliberately. A replay must be answered from
+    # the key, never re-judged: a counter POSTs, the delivery commits, the
+    # network drops the response, somebody reverses a payment, and the counter
+    # retries. Judging the retry would refuse a handover that already happened
+    # and leave the client believing the device is still in the shop.
+    #
+    # SERVER-SIDE, not a hidden button. A client that never learned about the
+    # policy still cannot release an unpaid device in a tenant that turned it
+    # on — which is the only version of this rule worth having.
+    #
+    # And it is OFF by default. M12 shipped delivery with no payment concept, so
+    # every existing tenant has been handing devices back without one; switching
+    # this on for them would break a flow they use today for a rule nobody asked
+    # them about.
+    if requires_payment_before_delivery(locked.company):
+        summary = service_payment_summary(locked)
+        outstanding = summary['outstanding']
+        if outstanding is None:
+            raise PaymentRequired(
+                'Esta empresa exige el pago antes de entregar, y esta orden no '
+                'tiene una cotización aprobada.'
+            )
+        if outstanding > 0:
+            raise PaymentRequired(
+                f'Saldo pendiente: {outstanding} {summary["currency"]}.'
+            )
+
     delivery = RepairDelivery(
         company_id=locked.company_id,
         repair_order=locked,
@@ -2697,3 +2731,394 @@ def _deliver_repair(
         company=locked.company,
     )
     return delivery
+
+
+# ===========================================================================
+# M12B / BR-005F — the service payment ledger
+# ===========================================================================
+#
+# WHAT M12 LEFT PENDING, AND WHY IT WAS PENDING RATHER THAN FORGOTTEN.
+# `PaymentTransaction` is bound to an e-commerce `Order` by a non-null FK with
+# no tenant column of its own, so a repair could not be paid through it. M12
+# said so and wrote nothing. This layer is the thing it was waiting for.
+#
+# MONEY AND LIFECYCLE ARE ORTHOGONAL. Nothing here writes `RepairOrder.status`,
+# and there is no `PAID` status: a device can be repaired and unpaid, delivered
+# and unpaid, or paid while still on the bench. The ONE place they meet is the
+# delivery gate, and only for a tenant that switched it on.
+
+
+class PaymentError(ServiceError):
+    """The payment is not legal as asked. Views render this as HTTP 400."""
+
+
+class PaymentConflict(ServiceError):
+    """The idempotency key was spent on a different payment. HTTP 409."""
+
+
+class PaymentRequired(ServiceError):
+    """
+    The tenant requires a settled balance before a device leaves.
+
+    Its own class because it is not bad input and not a missing permission: the
+    request was correct and the shop's own policy says not yet. A counter has to
+    be able to tell that from "the handover failed".
+    """
+
+
+class _PaymentRaceLost(Exception):
+    """Internal. Another till committed this key while we worked."""
+
+
+#: What a manual payment may be recorded as.
+#:
+#: `ONLINE` is excluded and a database constraint agrees. It names a gateway
+#: flow nobody has built, and writing it by hand would assert that a provider
+#: authorised something it never saw. The other four are what a person at a
+#: counter reports having received — this records the fact, it does not process
+#: a payment, and `PaymentMethod`'s own docstring already said so.
+MANUAL_PAYMENT_METHODS: frozenset[str] = frozenset({
+    PaymentMethod.CASH,
+    PaymentMethod.CARD,
+    PaymentMethod.TRANSFER,
+    PaymentMethod.OTHER,
+})
+
+PAYMENT_STATUS_NO_QUOTE = 'no_quote'
+PAYMENT_STATUS_UNPAID = 'unpaid'
+PAYMENT_STATUS_PARTIAL = 'partial'
+PAYMENT_STATUS_PAID = 'paid'
+PAYMENT_STATUS_OVERPAID = 'overpaid'
+
+
+def financial_quote(repair_order):
+    """
+    THE ONE ANSWER TO "how much does this repair cost".
+
+    It is `approved_quote()` — the LATEST approved revision — and it is wrapped
+    here so that every financial question in the platform asks the same
+    function. That matters more than it looks:
+
+    A repair can carry several quote revisions. Summing the approved ones would
+    DOUBLE-CHARGE, because a re-quote in this codebase is a full restatement and
+    not a delta: revision 1 approved at 300 for a screen, revision 2 approved at
+    450 for the screen AND a battery, and the customer owes 450, not 750. A
+    rejected revision is not a debt. A draft nobody published is not a debt.
+
+    None means the shop has not agreed a price yet. That is not zero — it is
+    "no answer", and the summary reports it as such rather than pretending the
+    repair is free.
+    """
+    return approved_quote(repair_order)
+
+
+def _net_paid(repair_order) -> Decimal:
+    """
+    What the shop actually holds: every payment that has not been reversed.
+
+    Summed over ROWS. There is no cached total anywhere, deliberately: a stored
+    balance is a second description of the same fact, and the day the two
+    disagree nobody can tell which one is the money.
+    """
+    total = (
+        RepairPayment.objects
+        .filter(repair_order=repair_order, reversed_at__isnull=True)
+        .aggregate(total=Sum('amount'))['total']
+    )
+    return _money(total or Decimal('0.00'))
+
+
+def service_payment_summary(repair_order) -> dict:
+    """
+    Everything anybody needs to know about the money on this repair.
+
+    THE SERVER COMPUTES IT. No client sends a status, a balance or a total —
+    they ask, and the arithmetic happens here once so that Web, Mobile and the
+    delivery gate cannot arrive at three different answers.
+
+    `outstanding` is floored at zero: a customer who paid more than the current
+    quote does not owe a negative amount. The overpayment is not lost — it is
+    reported as `credit`, and `payment_status` says `overpaid` so somebody has
+    to decide what to do about it. There is no automatic refund, because a
+    refund is money leaving a till and this platform cannot perform one.
+    """
+    quote = financial_quote(repair_order)
+    paid = _net_paid(repair_order)
+    # The POLICY travels with the money, not with the order. A screen that draws
+    # a balance is the screen that needs to know whether the balance blocks a
+    # handover, and putting it here means one request answers both questions.
+    gated = requires_payment_before_delivery(repair_order.company)
+
+    if quote is None:
+        # No agreed price. Payments may still exist — a shop can take a deposit
+        # before quoting — so they are reported, and the debt is not guessed.
+        return {
+            'currency': company_currency(repair_order.company),
+            'quoted_total': None,
+            'confirmed_paid': paid,
+            'outstanding': None,
+            'credit': Decimal('0.00'),
+            'payment_status': PAYMENT_STATUS_NO_QUOTE,
+            'requires_payment_before_delivery': gated,
+        }
+
+    total = _money(quote.total)
+    outstanding = _money(max(total - paid, Decimal('0.00')))
+    credit = _money(max(paid - total, Decimal('0.00')))
+
+    if paid <= 0:
+        status_code = PAYMENT_STATUS_PAID if total <= 0 else PAYMENT_STATUS_UNPAID
+    elif credit > 0:
+        status_code = PAYMENT_STATUS_OVERPAID
+    elif outstanding > 0:
+        status_code = PAYMENT_STATUS_PARTIAL
+    else:
+        status_code = PAYMENT_STATUS_PAID
+
+    return {
+        'currency': quote.currency or company_currency(repair_order.company),
+        'quoted_total': total,
+        'confirmed_paid': paid,
+        'outstanding': outstanding,
+        'credit': credit,
+        'payment_status': status_code,
+        'requires_payment_before_delivery': gated,
+    }
+
+
+def _payment_fingerprint(*, amount, method: str, reference: str) -> str:
+    """
+    A stable SHA-256 of what was asked for.
+
+    Same shape M10 and M12 use. The key says "this is the same attempt"; the
+    fingerprint says "and it is the same money, by the same means". A replay
+    under a reused key for a DIFFERENT amount is a client bug, and answering it
+    with the original row would silently swallow the second request.
+    """
+    canonical = json.dumps(
+        {
+            'amount': str(_money(amount)),
+            'method': method,
+            'reference': (reference or '').strip(),
+        },
+        sort_keys=True, separators=(',', ':'),
+    )
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+def record_service_payment(
+    *, repair_order, amount, method: str, reference: str = '', notes: str = '',
+    idempotency_key: str = '', actor=None, request=None,
+):
+    """
+    Record money received at the counter. `ready_for_pickup` is NOT required.
+
+    A shop can take a deposit the moment a quote is approved, and refusing that
+    would make the platform worse than a notebook.
+
+    This wrapper is NOT the transaction — `_record_service_payment` is. It
+    exists for one case: two tills racing the same idempotency key. The loser's
+    INSERT fails, its whole transaction rolls back, and only then is it safe to
+    hand back the row the winner wrote.
+    """
+    key = (idempotency_key or '').strip()
+    try:
+        return _record_service_payment(
+            repair_order=repair_order, amount=amount, method=method,
+            reference=reference, notes=notes, idempotency_key=key,
+            actor=actor, request=request,
+        )
+    except _PaymentRaceLost:
+        winner = (
+            RepairPayment.objects
+            .filter(company_id=repair_order.company_id, idempotency_key=key)
+            .first()
+        )
+        if winner is None:
+            raise PaymentError('No se pudo registrar el pago.') from None
+        expected = _payment_fingerprint(
+            amount=amount, method=method, reference=reference,
+        )
+        if winner.request_fingerprint != expected:
+            raise PaymentConflict(
+                'Esa clave ya se usó para un pago diferente.'
+            ) from None
+        return winner
+
+
+@transaction.atomic
+def _record_service_payment(
+    *, repair_order, amount, method: str, reference: str = '', notes: str = '',
+    idempotency_key: str = '', actor=None, request=None,
+):
+    """
+    The transactional body. See `record_service_payment` for the wrapper's job.
+
+    LOCK ORDER: `RepairOrder`, then its payments. The order is the thing two
+    tills contend for — the balance is computed from rows that hang off it — so
+    locking it first serialises them without ever touching a `Product` or a
+    `BranchStock`. Nothing here moves inventory: money and parts are different
+    facts about the same repair.
+    """
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+
+    key = (idempotency_key or '').strip()
+    method = (method or '').strip()
+    reference = (reference or '').strip()
+
+    # Idempotency FIRST, before any rule that could have moved. A replayed
+    # request is answered from the key, not re-judged: the balance is smaller
+    # now BECAUSE of it, and re-validating would refuse the retry of something
+    # that already worked. This is the M10 bug, not repeated.
+    fingerprint = _payment_fingerprint(
+        amount=amount, method=method, reference=reference,
+    )
+    if key:
+        existing = (
+            RepairPayment.objects
+            .filter(company_id=locked.company_id, idempotency_key=key)
+            .first()
+        )
+        if existing is not None:
+            if existing.request_fingerprint != fingerprint:
+                raise PaymentConflict('Esa clave ya se usó para un pago diferente.')
+            return existing
+
+    if method not in MANUAL_PAYMENT_METHODS:
+        raise PaymentError('Ese medio de pago no se puede registrar a mano.')
+
+    try:
+        value = _money(amount)
+    except (ArithmeticError, ValueError, TypeError):
+        raise PaymentError('Importe inválido.') from None
+    if value <= 0:
+        raise PaymentError('Un pago debe ser mayor que cero.')
+
+    summary = service_payment_summary(locked)
+    if summary['payment_status'] == PAYMENT_STATUS_NO_QUOTE:
+        raise PaymentError(
+            'No hay una cotización aprobada: todavía no se sabe cuánto se debe.'
+        )
+
+    # NO OVERPAYMENT. A till that can take more than is owed turns every typo
+    # into a refund the platform cannot perform. Partial payments ARE allowed —
+    # that is the whole point of a ledger — but the sum may not exceed the debt.
+    if value > summary['outstanding']:
+        raise PaymentError(
+            f'El saldo pendiente es {summary["outstanding"]} '
+            f'{summary["currency"]}.'
+        )
+
+    payment = RepairPayment(
+        company_id=locked.company_id,
+        repair_order=locked,
+        amount=value,
+        # From the QUOTE, never from the client. A payment in a currency other
+        # than the debt is not a payment.
+        currency=summary['currency'],
+        method=method,
+        reference=reference,
+        notes=notes or '',
+        received_by=actor,
+        received_at=timezone.now(),
+        idempotency_key=key,
+        request_fingerprint=fingerprint if key else '',
+    )
+    try:
+        # Its own savepoint: an IntegrityError marks the enclosing transaction
+        # for rollback, and querying inside it afterwards raises rather than
+        # answering.
+        with transaction.atomic():
+            payment.save()
+    except IntegrityError:
+        if not key:
+            raise
+        raise _PaymentRaceLost() from None
+
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_payment_recorded',
+        target_type='repair_payment',
+        target_id=payment.pk,
+        metadata={
+            'repair_order_id': locked.pk,
+            'number': locked.number,
+            'amount': str(value),
+            'currency': payment.currency,
+            'method': method,
+            # The REFERENCE is not copied. It is whatever a counter typed off a
+            # voucher, it is the field most likely to carry something personal,
+            # and the payment row already holds it.
+        },
+        request=request,
+        company=locked.company,
+    )
+    return payment
+
+
+def reverse_service_payment(
+    *, payment, reason: str = '', actor=None, request=None,
+):
+    """
+    Undo a payment that should not have been recorded. NOTHING IS DELETED.
+
+    A REVERSAL IS NOT A REFUND, and the difference matters at a counter. This
+    says "this row was written in error" — a till operator keyed 500 instead of
+    50, or recorded the payment against the wrong repair. Whether cash went back
+    over the counter is between the shop and the customer; whether a gateway
+    returned money needs a provider call that does not exist. Neither is
+    claimed here, and the audit action is named `reversed` rather than
+    `refunded` for exactly that reason.
+
+    IDEMPOTENT. Reversing twice is not an error and does not stamp twice: the
+    second call returns the row as it already stands. A counter that pressed the
+    button again because the page had not refreshed has not done anything wrong.
+    """
+    with transaction.atomic():
+        locked = RepairPayment.objects.select_for_update().get(pk=payment.pk)
+        if locked.is_reversed:
+            return locked
+
+        locked.reversed_at = timezone.now()
+        locked.reversed_by = actor
+        locked.reversal_reason = (reason or '').strip()[:300]
+        locked.save(update_fields=[
+            'reversed_at', 'reversed_by', 'reversal_reason',
+        ])
+
+        AdminAuditLog.log(
+            actor=actor,
+            action='service_payment_reversed',
+            target_type='repair_payment',
+            target_id=locked.pk,
+            metadata={
+                'repair_order_id': locked.repair_order_id,
+                'amount': str(locked.amount),
+                'currency': locked.currency,
+            },
+            request=request,
+            company=locked.company,
+        )
+        return locked
+
+
+def service_payments_for(repair_order):
+    """Every payment on this repair, reversed ones included. History, not state."""
+    return RepairPayment.objects.filter(repair_order=repair_order)
+
+
+def requires_payment_before_delivery(company) -> bool:
+    """
+    Does this tenant refuse to release an unpaid device?
+
+    FALSE unless a settings row says otherwise — including when there is no
+    settings row at all, which is a state a company can genuinely be in
+    (`CompanySettings` is `get_or_create`d during provisioning, backfilled by a
+    migration, and created lazily on the settings screen; nothing guarantees it
+    exists). Reading it must never create one, and the pattern is
+    `company_currency`'s.
+    """
+    settings_row = getattr(company, 'settings', None)
+    return bool(
+        getattr(settings_row, 'require_service_payment_before_delivery', False)
+    )

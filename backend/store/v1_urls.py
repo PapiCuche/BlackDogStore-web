@@ -13,6 +13,7 @@ from .v1_checkout_views import V1CustomerCheckoutView
 from .v1_customer_views import (
     V1CustomerOrderViewSet,
     V1CustomerRepairQuoteDecisionView,
+    V1CustomerRepairPaymentSummaryView,
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
 )
@@ -30,6 +31,9 @@ from .v1_service_views import (
     V1ServicePartUsageReverseView,
     V1ServicePartUsageView,
     V1ServiceDeliveryView,
+    V1ServicePaymentView,
+    V1ServicePaymentSummaryView,
+    V1ServicePaymentReverseView,
     V1ServiceQualityFailView,
     V1ServiceQualityHistoryView,
     V1ServiceQualityItemView,
@@ -101,6 +105,11 @@ urlpatterns = [
     # CUSTOMER — the quote on my own repair, and my answer to it. Literal
     # sub-paths on the `customer/` prefix, registered BEFORE the router
     # include() on that same prefix, following the file's existing ordering.
+    path(
+        'customer/<slug:company_slug>/repairs/<int:pk>/payment-summary/',
+        V1CustomerRepairPaymentSummaryView.as_view(),
+        name='v1-customer-repair-payment-summary',
+    ),
     path(
         'customer/<slug:company_slug>/repairs/<int:pk>/quote/',
         V1CustomerRepairQuoteView.as_view(), name='v1-customer-repair-quote',
@@ -303,6 +312,25 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/delivery/',
         V1ServiceDeliveryView.as_view(), name='v1-internal-service-delivery',
+    ),
+    # M12B — the payment ledger. `payment-summary/` is its own route because it
+    # is what a screen refetches after a write, or after a 409
+    # `payment_required` from the delivery endpoint: pulling the whole history
+    # to redraw one number would be wasteful on a counter's phone.
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/payments/',
+        V1ServicePaymentView.as_view(), name='v1-internal-service-payments',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/payment-summary/',
+        V1ServicePaymentSummaryView.as_view(),
+        name='v1-internal-service-payment-summary',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/payments/'
+        '<int:payment_id>/reverse/',
+        V1ServicePaymentReverseView.as_view(),
+        name='v1-internal-service-payment-reverse',
     ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),

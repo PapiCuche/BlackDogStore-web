@@ -3967,6 +3967,205 @@ cuando el técnico las montó), control de calidad, ejecución, cotización,
 
 ---
 
+## 8-sexvicies. Cobro del servicio (M12B / BR-005F)
+
+```
+GET  /api/v1/internal/<slug>/service/orders/<id>/payments/
+POST /api/v1/internal/<slug>/service/orders/<id>/payments/
+GET  /api/v1/internal/<slug>/service/orders/<id>/payment-summary/
+POST /api/v1/internal/<slug>/service/orders/<id>/payments/<pid>/reverse/
+GET  /api/v1/customer/<slug>/repairs/<id>/payment-summary/
+```
+
+### La decisión de arquitectura, y por qué no fue la otra
+
+Se auditó `PaymentTransaction` leyendo el modelo, no el changelog. **No es
+reutilizable**, y no por gusto:
+
+- `order = ForeignKey(Order, PROTECT)` **sin `null=True`**.
+- La clase **no tiene columna de empresa**: su tenancy ES `order.company`, y su
+  propio docstring lo dice. Hacer la FK nullable dejaría a todas las lecturas
+  por tenant sin nada de donde leer.
+- `order_number` es **único global**: los pagos de reparación compartirían un
+  espacio de numeración con la tienda.
+- El webhook resuelve la transacción sin pista de tenant y luego entra por
+  `attempt.order` para comparar contra `Order.total`, escribir `order.paid`,
+  mover stock de venta, vaciar un carrito y mandar correos de pedido. **No hay
+  costura** para un pagador que no sea una `Order`.
+
+Eso es DEC-012 en un párrafo. Se eligió la **arquitectura A**: `RepairPayment`,
+dominio propio, FKs fuertes, e-commerce intacto.
+
+Lo que **sí** se comparte cuando llegue el pago en línea es `store/payments/`:
+el adaptador Izipay no importa un solo modelo y no sabe qué es una `Order`.
+
+### Un libro mayor, no una bandera
+
+`RepairOrder` **no tiene** `paid` y no lo tendrá. Un booleano no sabe decir
+«doscientos de quinientos». Cada pago es una fila, el saldo es aritmética sobre
+las filas, y **no se guarda ningún total en caché** — un saldo almacenado es una
+segunda descripción del mismo hecho, y el día que las dos discrepan nadie sabe
+cuál es el dinero.
+
+### La autoridad financiera es UNA función
+
+`financial_quote()` envuelve `approved_quote()` — la **última revisión
+aprobada** — para que toda pregunta financiera use la misma respuesta.
+
+Sumar las revisiones aprobadas **cobraría dos veces**: una recotización aquí es
+una reformulación completa, no un delta. Revisión 1 aprobada en 300 por la
+pantalla, revisión 2 aprobada en 450 por pantalla **y** batería: se deben 450,
+no 750.
+
+`None` significa «todavía no hay precio acordado». **No es cero**, y el resumen
+lo reporta como `no_quote` en lugar de fingir que la reparación es gratis.
+
+### Pagos parciales sí; pagar de más, no
+
+`0 < importe <= saldo`. Un adelanto y un saldo son el caso normal de un taller.
+Aceptar más de lo que se debe convertiría cada error de tecleo en un reembolso
+que esta plataforma **no puede hacer**.
+
+### Recotizar después de cobrar
+
+Política declarada: **el dinero ya recibido queda como crédito**. El nuevo
+saldo es el nuevo total aprobado menos lo cobrado neto. Si el nuevo total es
+**menor** que lo pagado, no se borra nada: el resumen dice `overpaid`, reporta
+el `credit`, y alguien decide. **No hay reembolso automático.**
+
+**Hallazgo registrado:** hoy **no se puede recotizar** una orden aprobada. Una
+vez aprobada la cotización la orden sale de `DIAGNOSING`, `TRANSITIONS` no tiene
+arista de vuelta, `QUOTABLE_STATES` es `{DIAGNOSING}` y `cancel_quote` rechaza
+una cotización aprobada. Un taller que acordó 500 y luego descubre que la placa
+también está mal **no puede volver a cotizar**. Es un hueco del módulo de
+cotización, no de este; M12B no es la fase que inventa un *supersede*, porque
+eso decidiría de pasada qué ocurre con el trabajo ya hecho contra la cifra
+anterior. La política financiera **sí** queda definida y probada, contra
+exactamente las filas que ese *supersede* produciría.
+
+### Solo escritura, y un reverso que no es un reembolso
+
+`save()` rechaza cambiar lo recibido; `delete()` levanta siempre. Corregir es
+**reversar**: se sella la fila, ambos hechos quedan visibles en el orden en que
+ocurrieron, y el resumen cuenta el neto. Es la forma que `PartUsage` ya usa para
+una pieza montada por error, y el dinero merece al menos el mismo cuidado.
+
+**Un reverso NO es un reembolso.** Dice «esta fila no debió escribirse». Si el
+efectivo volvió por el mostrador es asunto del taller y su cliente; si una
+pasarela devolvió dinero hace falta una llamada al proveedor que no existe. La
+acción de auditoría se llama `service_payment_reversed` precisamente por eso.
+Es idempotente: reversar dos veces devuelve la fila como está.
+
+### Idempotencia — la quinta vez, la misma forma
+
+Clave del cliente + huella SHA-256 como columnas de la propia fila, con
+`UniqueConstraint` parcial. Misma clave + mismo importe/medio/referencia
+devuelve la fila original; misma clave con **otro** importe es **409
+`idempotency_conflict`**.
+
+La clave se consulta **antes** de cualquier regla de negocio. Es el error de M10
+y aquí importa aún más: después del primer cobro el saldo es menor —*por* ese
+cobro— así que rejuzgar el reintento lo rechazaría como pago de más.
+
+### `online` no se puede registrar a mano
+
+Ni por la capa de servicio ni por la base de datos: hay un `CheckConstraint`. La
+fricción es deliberada. Registrar `online` afirmaría que una pasarela autorizó
+algo que nunca vio; la fase que construya ese flujo quita la constraint en la
+misma migración que añade la tabla de intentos.
+
+### Capability propia
+
+`service.payments.manage`, ACTIVE.
+
+| preset | cobra |
+|---|---|
+| platform master (tenant explícito) | sí |
+| Administrador | sí |
+| **Ventas** | **sí** — es el mostrador: la caja, la nota de venta, la recepción técnica desde 0054 y ahora el dinero de una reparación |
+| **Servicio Técnico** | **NO por defecto** |
+| Inventario | no |
+
+La decisión del propietario, fijada por tests: los técnicos autorizados
+gestionan los **estados** de una reparación; de ahí no se sigue que todo técnico
+maneje efectivo. Un taller que quiera lo contrario concede la capability a un
+rol propio — para eso existe un catálogo.
+
+`service.orders.manage` **no** la implica, ni `inventory.adjust`. Y una caja que
+cobra no puede cancelar una orden.
+
+### La política de entrega, por empresa
+
+`CompanySettings.require_service_payment_before_delivery`, **`False` por
+defecto**.
+
+Es compatibilidad, no opinión: M12 publicó la entrega sin concepto de pago, así
+que todos los tenants existentes llevan meses entregando sin él. Activarlo por
+ellos rompería retroactivamente un flujo que usan hoy por una regla que nadie
+les consultó.
+
+La puerta está **dentro de `_deliver_repair`**, dentro del lock y **después** del
+bloque de idempotencia. Ese orden es la parte importante: un reintento se
+responde desde la clave, nunca se rejuzga. Mostrador envía, la entrega se
+confirma, la red pierde la respuesta, alguien reversa un pago, mostrador
+reintenta — rejuzgar rechazaría una entrega que ya ocurrió y le diría al cliente
+que el equipo sigue en el taller.
+
+Responde **409 con `code: 'payment_required'`**. No 402: `HTTP_402` no aparece en
+todo el repositorio y ningún cliente lo entiende, mientras que 409 es lo que
+esta superficie ya significa por «tu petición está bien, el estado actual la
+rechaza».
+
+**Nada se rellena hacia atrás.** Una orden ya `delivered` de M12 sigue entregada
+y sigue sin pagos. No se inventa dinero histórico.
+
+### Dinero y ciclo de vida son ortogonales
+
+Ningún pago escribe `RepairOrder.status`, y **no existe un estado `PAID`**. Un
+equipo puede estar reparado y sin pagar, entregado y sin pagar, o pagado y aún
+en el banco. El único punto donde se tocan es la puerta de entrega, y solo para
+quien la activó.
+
+### Lo que ve el cliente
+
+Cinco números: `currency`, `quoted_total`, `paid`, `outstanding`, `status`. Su
+propio dinero, y ocultárselo sería indefendible.
+
+**No** ve: quién cobró, con qué medio, contra qué voucher, cuándo lo registró la
+caja, ni que un pago fue reversado — un reverso es el taller corrigiendo sus
+libros, y publicarlo convierte una corrección en una acusación cuando el saldo
+ya lo refleja. `overpaid` se reporta como `paid`: es cierto, no alarma, y un
+pago de más es una conversación de mostrador, no un número con el que sorprender
+a alguien en una app.
+
+El serializer de cliente **no hereda** del interno, a propósito: uno que
+extienda un serializer de backoffice filtra el siguiente campo que alguien
+añada arriba.
+
+**No hay botón de pagar.** El pago en línea de servicio no existe, y un endpoint
+que le dijera a un cliente su saldo insinuando que puede liquidarlo aquí sería
+la mentira que toda esta fase evitó.
+
+### Deuda registrada
+
+- **Pago en línea del servicio — PENDIENTE.** El adaptador Izipay es
+  reutilizable; lo que falta es `RepairPaymentAttempt`, el flujo de sesión y la
+  resolución de la notificación firmada contra un intento congelado.
+- **Configuración de merchant — GLOBAL, no por tenant.** `load_credentials()`
+  lee de `settings`. Hoy hay un solo comercio para toda la plataforma; eso no se
+  afirma como multi-merchant porque no lo es.
+- **Recotizar tras aprobar — imposible hoy** (ver arriba).
+- **Sin impuestos.** `tax_amount` sigue siendo una columna muerta: sin tasa, sin
+  régimen, sin configuración. M12B cobra `quote.total` tal como se aprobó y no
+  improvisa un 18%.
+- **Sin comprobante fiscal.** `SalesNote` es explícitamente interno y lleva un
+  recuadro rojo que lo dice; reutilizarlo para servicio sería fabricar un
+  documento fiscal falso. Boleta/factura de servicio es una fase aparte.
+- **Sin reembolso.** Ni manual ni de pasarela.
+- **Sin arqueo de caja ni informe financiero** de servicio.
+
+---
+
 ## 9. Deuda pendiente
 
 1. ~~**Branding por empresa**~~ → **RESUELTO en la Fase 3**: `CompanySettings`

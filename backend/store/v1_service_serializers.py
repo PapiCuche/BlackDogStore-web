@@ -24,7 +24,9 @@ from .models import (
     QualityCheck,
     QualityCheckItem,
     QualityResultCode,
+    PaymentMethod,
     RepairDelivery,
+    RepairPayment,
     RepairDiagnostic,
     RepairExecution,
     RepairOrder,
@@ -1012,3 +1014,129 @@ class V1ServiceDeliveryWriteSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(
         max_length=64, required=False, allow_blank=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# M12B / BR-005F — the payment ledger
+# ---------------------------------------------------------------------------
+
+class V1ServicePaymentSerializer(serializers.ModelSerializer):
+    """
+    One payment, as the internal surface reads it.
+
+    AN ALLOWLIST, and the omissions are the point. `idempotency_key` and
+    `request_fingerprint` are the caller's own bookkeeping. There is no provider
+    payload, no authorization code, no gateway id and no card data anywhere in
+    this model — a manual payment is a counter reporting what it received, and
+    the online flow that would produce those fields does not exist yet.
+    """
+
+    received_by_name = serializers.SerializerMethodField()
+    reversed_by_name = serializers.SerializerMethodField()
+    is_reversed = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = RepairPayment
+        fields = (
+            'id', 'amount', 'currency', 'method', 'reference', 'notes',
+            'received_by_name', 'received_at', 'created_at',
+            'is_reversed', 'reversed_at', 'reversed_by_name', 'reversal_reason',
+        )
+        read_only_fields = fields
+
+    def get_received_by_name(self, obj):
+        user = obj.received_by
+        return user.get_full_name() or user.username if user else ''
+
+    def get_reversed_by_name(self, obj):
+        user = obj.reversed_by
+        return user.get_full_name() or user.username if user else ''
+
+
+class V1ServicePaymentWriteSerializer(serializers.Serializer):
+    """
+    Recording money: WHAT ARRIVED and HOW. Nothing else.
+
+    No currency — it comes from the approved quote, and a client that could
+    choose one could record a payment against a debt in another. No clock, no
+    cashier, no company, no order: all server-owned. No status and no balance:
+    those are arithmetic the server does over the rows.
+    """
+
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    method = serializers.ChoiceField(choices=PaymentMethod.choices)
+    reference = serializers.CharField(
+        max_length=120, required=False, allow_blank=True, default='',
+    )
+    notes = serializers.CharField(
+        max_length=1000, required=False, allow_blank=True, default='',
+    )
+    idempotency_key = serializers.CharField(
+        max_length=64, required=False, allow_blank=True, default='',
+    )
+
+
+class V1ServicePaymentReversalSerializer(serializers.Serializer):
+    """Undoing a payment: WHY, and nothing else. Never an amount."""
+
+    reason = serializers.CharField(
+        max_length=300, required=False, allow_blank=True, default='',
+    )
+
+
+class V1ServicePaymentSummarySerializer(serializers.Serializer):
+    """
+    The balance, computed by the server and never sent by a client.
+
+    `quoted_total` and `outstanding` are NULLABLE, and null is not zero: it
+    means the shop has not agreed a price yet. Rendering that as 0.00 would tell
+    a customer the repair is free.
+    """
+
+    currency = serializers.CharField()
+    quoted_total = serializers.DecimalField(
+        max_digits=12, decimal_places=2, allow_null=True,
+    )
+    confirmed_paid = serializers.DecimalField(max_digits=12, decimal_places=2)
+    outstanding = serializers.DecimalField(
+        max_digits=12, decimal_places=2, allow_null=True,
+    )
+    credit = serializers.DecimalField(max_digits=12, decimal_places=2)
+    payment_status = serializers.CharField()
+    #: The tenant's own policy, so a screen can explain a refusal it has not hit
+    #: yet. It is a PREVIEW: the server re-checks inside the delivery
+    #: transaction, and if the two ever disagree the server wins.
+    requires_payment_before_delivery = serializers.BooleanField()
+
+
+class V1CustomerPaymentSummarySerializer(serializers.Serializer):
+    """
+    What the CUSTOMER is told about the money. FIVE FIELDS, and it does not
+    inherit from the internal one.
+
+    Not inheriting is deliberate. A customer serializer that extends a
+    backoffice one is a serializer that leaks the next field somebody adds
+    upstream — the customer surface has been an explicit allowlist since M8 and
+    stays one here.
+
+    A customer may know what they agreed to, what they have paid and what is
+    left: it is their own money and withholding it would be indefensible.
+
+    They are NOT told who took the payment, by what means, against which
+    voucher, when the till recorded it, or that a payment was reversed. A
+    reversal is the shop correcting its own books; publishing it turns an
+    internal correction into an accusation, and their balance already reflects
+    it. `credit` is absent for the same reason: an overpayment is a
+    conversation to have at a counter, not a number to surprise somebody with
+    in an app — so the app says `paid`, which is true, and the shop raises it.
+    """
+
+    currency = serializers.CharField()
+    quoted_total = serializers.DecimalField(
+        max_digits=12, decimal_places=2, allow_null=True,
+    )
+    paid = serializers.DecimalField(max_digits=12, decimal_places=2)
+    outstanding = serializers.DecimalField(
+        max_digits=12, decimal_places=2, allow_null=True,
+    )
+    status = serializers.CharField()
