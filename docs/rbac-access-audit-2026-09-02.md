@@ -227,3 +227,59 @@ capturar. Traducido a 400 explicado, re-lanzando cualquier otro. Reconoce las
 dos formas del mensaje: **PostgreSQL nombra la constraint, SQLite nombra las
 columnas** — buscar sólo el nombre funcionaba en producción y fallaba en la
 suite, el sentido contrario al útil.
+
+---
+
+## M12A.1 — reconciliación del stack sobre `master` con entrega
+
+`master` avanzó con el módulo de entrega (PR #16) y sus migraciones **0051-0053**
+chocaban en numeración con las de RBAC.
+
+### Renumeración, no nodo de fusión
+
+Verificado primero que era legítimo (§6): ninguna de estas migraciones está en
+`master`, el repositorio **no tiene CI/CD que despliegue**, y sólo se habían
+aplicado a una base de desarrollo local. Como nunca salieron de ramas sin
+mergear, se pueden reordenar.
+
+| Antes | Después |
+| --- | --- |
+| `0047_sales_reception_and_service_supervisor` | `0054_…` |
+| `0048_consolidate_duplicate_role_assignments` | `0055_…` |
+| `0049_role_assignment_uniqueness` | `0056_…` |
+| `0051_merge_rbac_and_quality_control` | **eliminada** |
+| `0052_migrate_legacy_technicians_to_rbac` | `0057_…` |
+
+El nodo de fusión existía para reconciliar dos ramas que ahora son una secuencia
+lineal. Un merge vacío que ya no fusiona nada es ruido en el grafo.
+
+### Y no era cosmético
+
+`Supervisor Técnico` se define como `_TECHNICIAN_CAPS + (…)`, y la migración de
+entrega de `master` extiende `Administrador` y `Servicio Técnico` pero **no
+conoce** ese preset — sólo existe en la rama RBAC. Con el orden anterior el
+supervisor quedaba sin `service.delivery.manage` mientras el técnico sí la
+tenía. Corriendo después de la hoja de `master` la hereda.
+
+Comprobado sobre una base reconstruida desde cero: `servicio-tecnico` 12
+capacidades con entrega, `supervisor-tecnico` 15 con entrega.
+
+Orden final del grafo: **calidad → entrega → RBAC → migración de técnicos
+heredados**, con la última al final porque asignar un preset exige que los
+presets y sus capacidades ya estén asentados.
+
+### Hallazgo ajeno a esta subfase
+
+En una instalación **desde cero**, el preset `Administrador` de la empresa
+sembrada queda en **18 de 37** capacidades. Reproducido en `master` con un
+worktree limpio: **es preexistente**.
+
+La causa es la interacción entre un seed congelado y discriminadores vivos: la
+migración semilla escribió una lista de 18, y cada migración posterior de
+«extender el preset admin sin modificar» compara contra
+`ASSIGNABLE_CAPABILITY_CODES` **de hoy** menos la nueva capacidad (36), que
+nunca iguala 18. En una base migrada incrementalmente cada una corrió en su
+época y encadenó bien; en una base nueva ninguna encaja.
+
+No afecta a empresas creadas por `provision_company_access_defaults`, que lee el
+catálogo vivo. Clasificado **PENDIENTE**, fuera del alcance de M12A.1.
