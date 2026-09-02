@@ -131,9 +131,9 @@ Clasificación: **OBSOLETO / deuda de transición.**
 
 | Migración | Propósito |
 | --- | --- |
-| `0047_sales_reception_and_service_supervisor` | Da recepción a los presets `Ventas` **sin modificar** (igualdad exacta) y ofrece `Supervisor Técnico` a las empresas existentes |
-| `0048_consolidate_duplicate_role_assignments` | Desactiva duplicados `(membresía, rol)` sin área conservando el historial |
-| `0049_role_assignment_uniqueness` | Índice único parcial `WHERE area IS NULL` |
+| `0054_sales_reception_and_service_supervisor` | Da recepción a los presets `Ventas` **sin modificar** (igualdad exacta) y ofrece `Supervisor Técnico` a las empresas existentes |
+| `0055_consolidate_duplicate_role_assignments` | Desactiva duplicados `(membresía, rol)` sin área conservando el historial |
+| `0056_role_assignment_uniqueness` | Índice único parcial `WHERE area IS NULL` |
 
 ## Tests
 

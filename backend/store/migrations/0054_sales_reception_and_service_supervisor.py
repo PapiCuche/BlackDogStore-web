@@ -105,7 +105,7 @@ def drop_service_supervisor_preset(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0046_merge_payments_and_service_execution'),
+        ('store', '0053_delivery_capability_for_untouched_presets'),
     ]
 
     operations = [

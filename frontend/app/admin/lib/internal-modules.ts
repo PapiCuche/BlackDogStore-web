@@ -310,7 +310,7 @@ export const INTERNAL_MODULES: InternalModule[] = [
   { id: "service.diagnostic", group: "service", label: "Diagnóstico", description: "Diagnóstico y cotización.", href: "/admin/service", requiredCapabilities: ["service.diagnostic.manage"], status: "implemented" },
   { id: "service.repair", group: "service", label: "Reparación", description: "Ejecución y repuestos.", href: "/admin/service", requiredCapabilities: ["service.repair.manage"], status: "implemented" },
   { id: "service.quality", group: "service", label: "Control de calidad", description: "Verificación previa a entrega.", href: "/admin/service", requiredCapabilities: ["service.quality.manage"], status: "implemented" },
-  { id: "service.delivery", group: "service", label: "Entrega", description: "Entrega al cliente.", status: "pending" },
+  { id: "service.delivery", group: "service", label: "Entrega", description: "Entrega al cliente. No registra cobro.", href: "/admin/service", requiredCapabilities: ["service.delivery.manage"], status: "implemented" },
   { id: "service.warranty", group: "service", label: "Garantías", description: "Reingresos y garantías.", status: "pending" },
 
   // ── Reportes ─────────────────────────────────────────────────────────────

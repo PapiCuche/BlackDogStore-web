@@ -67,6 +67,8 @@ from .v1_service_serializers import (
     V1ServicePartUsageSerializer,
     V1ServicePartUsageWriteSerializer,
     V1ServicePausePartsSerializer,
+    V1ServiceDeliverySerializer,
+    V1ServiceDeliveryWriteSerializer,
     V1ServiceQualityCheckSerializer,
     V1ServiceQualityDecisionSerializer,
     V1ServiceQualityResultSerializer,
@@ -1392,3 +1394,77 @@ class V1ServiceQualityFailView(V1ServiceQualityMixin, APIView):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(V1ServiceQualityCheckSerializer(check).data)
+
+
+# ---------------------------------------------------------------------------
+# M12 / BR-005E — the handover
+# ---------------------------------------------------------------------------
+
+CAP_DELIVERY_MANAGE = 'service.delivery.manage'
+
+
+class V1ServiceDeliveryView(V1ServiceSurfaceMixin, APIView):
+    """
+    GET — the handover on this order, or null. POST — record one.
+
+    READING uses `service.orders.view`; RECORDING uses
+    `service.delivery.manage`, which is its OWN capability rather than a reuse
+    of `service.orders.manage`.
+
+    WHY ITS OWN. Handing a device back is a counter act, and the person doing it
+    is often reception. `service.orders.manage` is much wider — it moves an
+    order through the lifecycle and can cancel it outright — so a shop that
+    wants the front desk to release devices should not have to hand them the
+    technical machine to do it. The reverse holds too: a shop that wants the
+    technician who repaired it NOT to be the one who releases it must be able to
+    say so.
+
+    409 for an idempotency conflict, the same shape M10 uses: a key reused for a
+    different handover is a client bug and not bad input, and a client has to
+    tell the two apart without parsing Spanish.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        delivery = service.delivery_for(order)
+        return Response({
+            'delivery': (
+                V1ServiceDeliverySerializer(delivery).data
+                if delivery is not None else None
+            ),
+        })
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DELIVERY_MANAGE)
+        order = self.get_order(company, pk)
+
+        serializer = V1ServiceDeliveryWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            delivery = service.deliver_repair(
+                repair_order=order,
+                recipient_name=data['recipient_name'],
+                notes=data.get('notes', ''),
+                idempotency_key=data.get('idempotency_key', ''),
+                actor=request.user, request=request,
+            )
+        except service.DeliveryConflict as exc:
+            return Response(
+                {'detail': str(exc), 'code': 'idempotency_conflict'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            V1ServiceDeliverySerializer(delivery).data,
+            status=status.HTTP_201_CREATED,
+        )

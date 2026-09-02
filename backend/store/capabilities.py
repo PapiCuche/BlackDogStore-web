@@ -264,6 +264,21 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('service.quality.manage', 'service', 'Control de calidad',
          'Ejecutar el control de calidad de una reparación terminada.',
          STATUS_ACTIVE),
+    # M12 — BR-005E. ITS OWN CAPABILITY, and the justification matters because
+    # the alternative was to reuse `service.orders.manage`.
+    #
+    # Handing a device back is a COUNTER act, not a workshop act. The person who
+    # does it is often reception, and `service.orders.manage` is far wider than
+    # that — it can move an order through the lifecycle and cancel it outright.
+    # A shop that wants the front desk to release devices should not have to
+    # hand them the technical machine to do it.
+    #
+    # The reverse also holds: a technician who repairs and inspects need not be
+    # the one who releases the device, and a shop that wants those separate must
+    # be able to say so.
+    _cap('service.delivery.manage', 'service', 'Entrega',
+         'Registrar la entrega de un equipo reparado a quien lo recoge.',
+         STATUS_ACTIVE),
 )
 
 CAPABILITIES: dict[str, Capability] = {c.code: c for c in CAPABILITY_LIST}
