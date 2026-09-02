@@ -35935,3 +35935,335 @@ class M11DuplicatePostIsNotA500Test(TestCase):
         self.assertFalse(_is_duplicate_assignment(_IE(
             'UNIQUE constraint failed: store_cartitem.session_key, '
             'store_cartitem.product_id')))
+
+
+# ===========================================================================
+# M12A — acceso real del técnico
+# ===========================================================================
+#
+# THE PROBLEM, MEASURED FIRST:
+#
+#   A membership with `role='technician'` and no custom role resolves to
+#   `company.view` + `service.manage`, and every module of the service console
+#   asks for one of the nine capabilities the module was decomposed into. So
+#   the technician logs in and the whole section is missing — not some screens,
+#   all of them.
+#
+# `service.manage` was the technical-service module in Phase 2A. M8, M9, M10
+# and quality split it up; the legacy matrix never learned about the split.
+# ===========================================================================
+
+
+class M12ALegacyTechnicianAccessTest(TestCase):
+    """The gap itself, and the shape of the fix."""
+
+    #: What the console actually asks for, read from the module registry.
+    CONSOLE_CAPABILITIES = (
+        'service.orders.view', 'service.orders.create',
+        'service.diagnostic.manage', 'service.repair.manage',
+        'service.quality.manage',
+    )
+
+    def setUp(self):
+        self.company = _saas_company('Taller M12', 'm12a-taller', tax_id='20780030001')
+        provision_company_access_defaults(self.company)
+        self.preset = self.company.roles.get(slug='servicio-tecnico')
+
+    def _legacy_technician(self, username='m12a_legacy_tech'):
+        user = _saas_user(username)
+        membership = Membership.objects.create(
+            user=user, company=self.company, role='technician', is_active=True,
+        )
+        return user, membership
+
+    def _run_migration(self):
+        import importlib
+        from django.apps import apps as django_apps
+        module = importlib.import_module(
+            'store.migrations.0052_migrate_legacy_technicians_to_rbac',
+        )
+        module.migrate_legacy_technicians(django_apps, None)
+
+    # -- el hueco ----------------------------------------------------------
+
+    def test_the_legacy_matrix_grants_none_of_what_the_console_needs(self):
+        """
+        The measurement this phase started from.
+
+        Asserted rather than described, so that widening the legacy matrix —
+        the one-line fix M12A deliberately did not take — would show up here as
+        a change somebody has to justify.
+        """
+        legacy = LEGACY_ROLE_CAPABILITIES['technician']
+        self.assertEqual(set(legacy), {'company.view', 'service.manage'})
+        for code in self.CONSOLE_CAPABILITIES:
+            self.assertNotIn(code, legacy, code)
+
+    def test_a_legacy_technician_cannot_open_the_service_console(self):
+        user, _ = self._legacy_technician('m12a_before')
+        caps = resolve_capabilities(user, self.company)
+        self.assertEqual(caps, frozenset({'company.view', 'service.manage'}))
+        for code in self.CONSOLE_CAPABILITIES:
+            self.assertFalse(has_capability(user, self.company, code), code)
+
+    def test_service_manage_alone_opens_nothing(self):
+        """
+        The vestige, named.
+
+        `service.manage` still resolves and still means something historically.
+        It simply is not what any endpoint asks for any more, and a fix that
+        made it an umbrella again would undo the decomposition.
+        """
+        user, _ = self._legacy_technician('m12a_vestige')
+        self.assertTrue(has_capability(user, self.company, 'service.manage'))
+        self.assertFalse(has_capability(user, self.company, 'service.orders.view'))
+
+    # -- el arreglo --------------------------------------------------------
+
+    def test_the_migration_gives_them_their_companys_technician_role(self):
+        user, membership = self._legacy_technician('m12a_after')
+        self._run_migration()
+
+        self.assertEqual(membership.role_assignments.count(), 1)
+        assignment = membership.role_assignments.get()
+        self.assertEqual(assignment.role_id, self.preset.pk)
+        self.assertTrue(assignment.is_active)
+
+        for code in self.CONSOLE_CAPABILITIES:
+            self.assertTrue(has_capability(user, self.company, code), code)
+
+    def test_after_migrating_they_match_a_technician_hired_today(self):
+        """The point of the fix: remove a difference, do not add one."""
+        legacy_user, _ = self._legacy_technician('m12a_old')
+        self._run_migration()
+
+        fresh_user = _saas_user('m12a_new')
+        fresh_m = Membership.objects.create(
+            user=fresh_user, company=self.company, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(membership=fresh_m, role=self.preset)
+
+        self.assertEqual(
+            resolve_capabilities(legacy_user, self.company),
+            resolve_capabilities(fresh_user, self.company),
+        )
+
+    def test_the_migration_is_idempotent(self):
+        _, membership = self._legacy_technician('m12a_twice')
+        self._run_migration()
+        self._run_migration()
+        self.assertEqual(membership.role_assignments.count(), 1)
+
+    def test_migrated_technicians_can_never_fall_back_to_legacy_again(self):
+        """
+        One-way by design — the M11 rule doing its job.
+
+        Once the assignment exists the membership has adopted RBAC, so revoking
+        the role later leaves zero capabilities rather than reviving
+        `service.manage`.
+        """
+        user, membership = self._legacy_technician('m12a_oneway')
+        self._run_migration()
+        assignment = membership.role_assignments.get()
+        assignment.is_active = False
+        assignment.save(update_fields=['is_active'])
+
+        self.assertEqual(resolve_capabilities(user, self.company), frozenset())
+        self.assertFalse(has_capability(user, self.company, 'service.manage'))
+
+    # -- lo que se niega a tocar -------------------------------------------
+
+    def test_it_does_not_touch_a_membership_that_already_has_a_role(self):
+        user, membership = self._legacy_technician('m12a_modelled')
+        narrow = _role(self.company, 'Estrecho M12', ['company.view'], slug='m12a-estrecho')
+        MembershipRoleAssignment.objects.create(membership=membership, role=narrow)
+
+        self._run_migration()
+
+        self.assertEqual(membership.role_assignments.count(), 1)
+        self.assertEqual(
+            resolve_capabilities(user, self.company), frozenset({'company.view'}),
+        )
+
+    def test_it_does_not_touch_a_membership_whose_role_was_revoked(self):
+        """Zero active roles is a decision, not an absence to be filled in."""
+        user, membership = self._legacy_technician('m12a_revoked')
+        assignment = MembershipRoleAssignment.objects.create(
+            membership=membership, role=self.preset,
+        )
+        assignment.is_active = False
+        assignment.save(update_fields=['is_active'])
+
+        self._run_migration()
+
+        self.assertEqual(membership.role_assignments.count(), 1)
+        self.assertEqual(resolve_capabilities(user, self.company), frozenset())
+
+    def test_it_skips_a_company_that_customised_the_technician_role(self):
+        """A tenant that narrowed the role does not get it widened back."""
+        self.preset.capabilities = ['company.view', 'service.orders.view']
+        self.preset.save(update_fields=['capabilities'])
+        user, membership = self._legacy_technician('m12a_customised')
+
+        self._run_migration()
+
+        self.assertEqual(membership.role_assignments.count(), 0)
+        self.assertFalse(has_capability(user, self.company, 'service.repair.manage'))
+
+    def test_it_leaves_every_other_legacy_role_alone(self):
+        """Only the service module was decomposed."""
+        for legacy_role in ('sales', 'inventory', 'admin'):
+            user = _saas_user(f'm12a_other_{legacy_role}')
+            m = Membership.objects.create(
+                user=user, company=self.company, role=legacy_role, is_active=True,
+            )
+            self._run_migration()
+            self.assertEqual(m.role_assignments.count(), 0, legacy_role)
+
+    def test_it_does_not_touch_an_inactive_membership(self):
+        user, membership = self._legacy_technician('m12a_inactive')
+        membership.is_active = False
+        membership.save(update_fields=['is_active'])
+
+        self._run_migration()
+
+        self.assertEqual(membership.role_assignments.count(), 0)
+
+    def test_it_never_crosses_into_another_company(self):
+        other = _saas_company('Ajena M12', 'm12a-ajena', tax_id='20780030002')
+        provision_company_access_defaults(other)
+        user = _saas_user('m12a_cross')
+        m_other = Membership.objects.create(
+            user=user, company=other, role='technician', is_active=True,
+        )
+
+        self._run_migration()
+
+        assignment = m_other.role_assignments.get()
+        self.assertEqual(assignment.role.company_id, other.pk)
+
+    # -- lo que el técnico sigue SIN poder hacer ---------------------------
+
+    def test_a_migrated_technician_is_still_not_an_administrator(self):
+        user, _ = self._legacy_technician('m12a_limits')
+        self._run_migration()
+        caps = resolve_capabilities(user, self.company)
+        for code in ('inventory.adjust', 'roles.manage', 'memberships.manage',
+                     'settings.manage', 'company.manage', 'memberships.view'):
+            self.assertNotIn(code, caps, code)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M12AMyRepairsFilterTest(TestCase):
+    """
+    §6 — "Mis reparaciones": the technician's own queue, resolved server-side.
+
+    `mine=true` and not `technician_id=<my id>`: a filter that takes an id is a
+    filter somebody can point at a colleague. The server already knows who is
+    asking.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Cola M12', 'm12a-cola', tax_id='20780031001')
+        provision_company_access_defaults(self.company)
+        self.branch = self.company.branches.first()
+        self.preset = self.company.roles.get(slug='servicio-tecnico')
+
+        self.tech, self.tech_m = self._staff('m12a_tech_a')
+        self.other, self.other_m = self._staff('m12a_tech_b')
+
+        self.mine = self._order('m12a-mia', self.tech)
+        self.theirs = self._order('m12a-suya', self.other)
+        self.unassigned = self._order('m12a-libre', None)
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.tech)
+
+    def _staff(self, username):
+        user = _saas_user(username)
+        membership = Membership.objects.create(
+            user=user, company=self.company, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(membership=membership, role=self.preset)
+        return user, membership
+
+    def _order(self, tag, technician):
+        """
+        Built through the domain service, not `objects.create`.
+
+        The service allocates the order number and its sequence value under a
+        lock; creating the row directly skips that and fails on a NOT NULL
+        column — which is the model refusing to be half-built, and correctly so.
+        """
+        from store.models import Customer, Device, TechnicianAssignment
+        from store import service_services
+        customer = Customer.objects.create(
+            company=self.company, first_name='Cli', last_name=tag,
+            document_type='dni', document_number=str(abs(hash(tag)) % 90000000 + 10000000),
+        )
+        device = Device.objects.create(
+            company=self.company, customer=customer, brand='Apple', model=tag,
+        )
+        order = service_services.create_repair_order(
+            company=self.company, branch=self.branch, customer=customer,
+            device=device, reported_issue=f'No enciende ({tag}).', actor=self.tech,
+        )
+        if technician is not None:
+            TechnicianAssignment.objects.create(
+                company=self.company, repair_order=order, technician=technician,
+            )
+        return order
+
+    def _list(self, **params):
+        qs = '&'.join(f'{k}={v}' for k, v in params.items())
+        url = f'/api/v1/internal/{self.company.slug}/service/orders/'
+        res = self.client.get(f'{url}?{qs}' if qs else url)
+        self.assertEqual(res.status_code, 200, res.content[:200])
+        return {row['number'] for row in res.json()['results']}
+
+    def test_without_the_filter_the_technician_sees_the_whole_branch(self):
+        """Not a regression: the console is shared, and supervision needs it."""
+        numbers = self._list()
+        self.assertEqual(
+            numbers,
+            {self.mine.number, self.theirs.number, self.unassigned.number},
+        )
+
+    def test_mine_returns_only_orders_assigned_to_the_caller(self):
+        self.assertEqual(self._list(mine='true'), {self.mine.number})
+
+    def test_mine_accepts_the_usual_truthy_spellings(self):
+        for value in ('true', 'True', '1', 'yes'):
+            self.assertEqual(self._list(mine=value), {self.mine.number}, value)
+
+    def test_anything_else_is_not_a_filter(self):
+        """`mine=false` must not silently mean `mine=true`."""
+        self.assertEqual(len(self._list(mine='false')), 3)
+        self.assertEqual(len(self._list(mine='')), 3)
+
+    def test_mine_ignores_orders_whose_assignment_was_withdrawn(self):
+        from store.models import TechnicianAssignment
+        from django.utils import timezone as _tz
+        assignment = TechnicianAssignment.objects.get(repair_order=self.mine)
+        assignment.unassigned_at = _tz.now()
+        assignment.save(update_fields=['unassigned_at'])
+        self.assertEqual(self._list(mine='true'), set())
+
+    def test_mine_cannot_be_pointed_at_a_colleague(self):
+        """The whole reason it is `mine` and not an id."""
+        other_client = APIClient()
+        other_client.force_authenticate(user=self.other)
+        url = f'/api/v1/internal/{self.company.slug}/service/orders/?mine=true'
+        numbers = {row['number'] for row in other_client.get(url).json()['results']}
+        self.assertEqual(numbers, {self.theirs.number})
+
+    def test_mine_combines_with_status_without_widening_it(self):
+        numbers = self._list(mine='true', status=self.mine.status)
+        self.assertEqual(numbers, {self.mine.number})
+
+    def test_mine_never_reaches_another_company(self):
+        other_co = _saas_company('Ajena cola', 'm12a-ajena-cola', tax_id='20780031002')
+        provision_company_access_defaults(other_co)
+        url = f'/api/v1/internal/{other_co.slug}/service/orders/?mine=true'
+        self.assertIn(self.client.get(url).status_code, (403, 404))

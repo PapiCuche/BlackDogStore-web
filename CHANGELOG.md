@@ -9,6 +9,76 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12A — Acceso real del técnico y «Mis reparaciones»
+
+**Estado: IMPLEMENTADO.** Migración **0052**.
+
+### El técnico entraba y no había taller
+
+Medido antes de escribir nada: una membresía con `role='technician'` y sin rol
+personalizado resuelve exactamente
+
+```
+company.view, service.manage
+```
+
+y cada módulo de la consola pide `service.orders.view`,
+`service.orders.create`, `service.diagnostic.manage`, `service.repair.manage`
+o `service.quality.manage`. Ninguna de las cuales tiene. Así que no faltaban
+algunas pantallas: faltaban todas, y `/admin/service` lo rechazaba.
+
+**No es un fallo de capacidades ni de la UI.** `LEGACY_ROLE_CAPABILITIES` se
+escribió en la Fase 2A, cuando `service.manage` **era** el módulo de servicio
+técnico. M8, M9, M10 y calidad lo descompusieron en nueve capacidades
+granulares, y la matriz heredada nunca se enteró de la descomposición.
+`service.manage` sigue existiendo y sigue resolviendo — simplemente ya no abre
+nada por sí solo.
+
+Estos técnicos no fueron privados de autoridad por nadie. Los estrechó una
+refactorización.
+
+### Por qué migra en vez de ampliar la matriz
+
+Añadir los nueve códigos a `LEGACY_ROLE_CAPABILITIES['technician']` arreglaría
+el síntoma en una línea y sería el arreglo equivocado: esa matriz es un puente
+para membresías que nadie ha modelado todavía, y ampliarla entrega capacidades
+nuevas a todos los técnicos heredados de todas las empresas, para siempre, sin
+registro y sin que una empresa pueda declinar. M11 la congeló justo por eso.
+
+Asignarles el rol `Servicio Técnico` **de su propia empresa** hace que la
+autoridad llegue por el mecanismo construido para transportarla: una fila que
+se ve en la consola, se revoca y se estrecha. Y es lo mismo que recibe un
+técnico contratado mañana, así que elimina una diferencia en vez de crear una.
+
+**Es de ida y eso es el punto.** Crear la asignación hace que
+`has_custom_role_history()` sea cierto, así que esas membresías ya no vuelven
+nunca a la matriz heredada — la regla de M11 funcionando como se diseñó.
+
+La migración se niega a tocar: membresías con cualquier asignación previa
+(su empresa ya decidió), empresas que personalizaron el rol (su definición
+manda), membresías inactivas, y cualquier otro rol heredado — sólo el módulo
+de servicio se descompuso.
+
+### «Mis reparaciones»
+
+`mine=true`, no `technician_id=<mi id>`. El técnico no necesita saber su propio
+id para ver su propio trabajo, y un filtro que acepta un id es un filtro que
+alguien puede apuntar a un compañero. Los supervisores siguen usando
+`technician_id`, porque mirar la cola de otro **es** su trabajo.
+
+La consola abre en «Mis reparaciones» con «Todo el taller» a un clic: supervisar
+también es parte del trabajo, y ocultarlo sería otra forma del mismo error.
+
+### Lo que M12A NO hizo, y por qué
+
+`service.orders.manage` concede a la vez **avanzar** una orden y **asignar**
+técnicos. La decisión de producto deseada es que un técnico avance lo suyo y
+que asignar sea de supervisión. Separarlo toca endpoints, presets, migraciones,
+frontend y tests de cuatro fases anteriores; queda como **PROPUESTA** con el
+análisis hecho, no colado dentro de una subfase que no lo planificó.
+
+---
+
 ## M11 RBAC · M11.1 — Roles múltiples, revocación segura y lectura protegida
 
 **Estado: IMPLEMENTADO.** Migraciones **0047**, **0048**, **0049** y **0051**.
