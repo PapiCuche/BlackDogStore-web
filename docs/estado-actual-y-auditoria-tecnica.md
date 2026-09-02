@@ -2024,12 +2024,30 @@ decidiera. La dirección declarada es migrar hacia RBAC por empresa.
 | Control de calidad | IMPLEMENTADO | **PENDIENTE** | INTEGRADO (M11 mobile) |
 | Editar capacidades de un rol | IMPLEMENTADO (API) | **PENDIENTE** | fuera de alcance |
 
-El frontend Next tiene 40 rutas y **ninguna** toca órdenes de reparación. Su
-propio registro de módulos declara todo el grupo «Servicio Técnico» como
-`pending` sin `href`, lo cual contradice a un backend cuyas capacidades están
-ACTIVE. Y `admin.roles` es `partial` sin pantalla: hoy el único sitio donde se
-pueden tocar las capacidades de un `CompanyRole` es el admin de Django, que
-edita el JSON crudo y se salta la anti-escalación de la API.
+**H2 CERRÓ ESA BRECHA.** `/admin/service` y `/admin/service/orders/[id]`
+existen, contra los **mismos endpoints v1** que consume Mobile, y el registro de
+módulos ya apunta a ellas. La tabla anterior describe el estado previo a H2 y se
+conserva por trazabilidad; la vigente es:
+
+| Acción | Backend | Web UI | Mobile |
+|---|---|---|---|
+| Listar / abrir orden | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Cambiar estado | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Asignar técnico | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Diagnosticar / cotizar / publicar | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Iniciar / pausar / completar reparación | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Repuestos y reverso | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Control de calidad (PASS/FAIL) | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Portal de cliente de reparación | IMPLEMENTADO | **PENDIENTE** | INTEGRADO |
+
+**Lo que la Web sigue sin tener** es el portal de CLIENTE de reparaciones: el
+cliente autenticado no puede seguir su equipo desde la Web como sí lo hace desde
+Mobile. Se declara PENDIENTE.
+
+**Y no hay ni un test de frontend en el repositorio**: sin runner, sin
+configuración, sin script. La consola de servicio se valida con `tsc`, `eslint`
+y `next build`, que no es lo mismo que estar probada. Es la deuda más grande que
+deja H2.
 
 **La paridad que sí se cumple es la que importa**: misma capability, mismo
 endpoint, misma regla de tenant y de sucursal, misma transición. Backend es la
