@@ -367,6 +367,21 @@ class V1ServiceOrderListView(V1ServiceSurfaceMixin, APIView):
                 | Q(device__serial_number__icontains=search)
             )
 
+        # M12A — "MIS REPARACIONES", resolved server-side.
+        #
+        # `mine=true` rather than `technician_id=<my id>` on purpose. The
+        # technician does not need to know their own id to see their own work,
+        # and a filter that takes an id is a filter somebody can change to
+        # somebody else's. Supervisors still use `technician_id`, because
+        # looking at another technician's queue IS their job — and that path is
+        # already gated by the same company and branch scoping as everything
+        # else here.
+        if request.query_params.get('mine', '').strip().lower() in ('1', 'true', 'yes'):
+            rows = rows.filter(
+                assignments__technician=request.user,
+                assignments__unassigned_at__isnull=True,
+            )
+
         raw_technician = request.query_params.get('technician_id')
         if raw_technician:
             try:

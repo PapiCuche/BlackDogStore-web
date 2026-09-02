@@ -56,6 +56,9 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
   const [status, setStatus] = useState("");
   const [branchId, setBranchId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
+  // "Mis reparaciones" — a flag the server resolves, not an id this page
+  // holds. See fetchServiceOrders.
+  const [mine, setMine] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,7 +69,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
     try {
       const [ctxData, pageData] = await Promise.all([
         fetchServiceContext(slug),
-        fetchServiceOrders(slug, { status, branch_id: branchId, search, page }),
+        fetchServiceOrders(slug, { status, branch_id: branchId, search, page, mine }),
       ]);
       setContext(ctxData);
       setRows(pageData.results);
@@ -81,7 +84,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
     } finally {
       setLoading(false);
     }
-  }, [slug, mayView, status, branchId, search, page, ctx]);
+  }, [slug, mayView, status, branchId, search, page, mine, ctx]);
 
   useEffect(() => {
     void load();
@@ -126,6 +129,34 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
         </div>
 
         <Panel>
+          {/* M12A — "Mis reparaciones" primero.
+              El técnico entra a trabajar lo suyo; la vista del taller completo
+              sigue a un clic, porque supervisar también es parte del trabajo. */}
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            {([
+              { value: true, label: "Mis reparaciones" },
+              { value: false, label: "Todo el taller" },
+            ] as const).map((option) => (
+              <button
+                key={String(option.value)}
+                type="button"
+                onClick={() => { setMine(option.value); setPage(1); }}
+                className={`rounded-lg border px-4 py-2 text-sm transition ${
+                  mine === option.value
+                    ? "border-white/30 bg-white/[0.07] text-white"
+                    : "border-white/[0.07] text-white/50 hover:text-white/80"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+            {mine ? (
+              <span className="text-xs text-white/40">
+                Órdenes donde figuras como técnico asignado.
+              </span>
+            ) : null}
+          </div>
+
           <div className="grid gap-3 md:grid-cols-4">
             <label className="text-xs text-white/50">
               Estado
