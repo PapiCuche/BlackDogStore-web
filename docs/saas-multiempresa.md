@@ -3747,7 +3747,19 @@ hacer recuentos, y el rol `Servicio Técnico` sigue sin `inventory.adjust`.
 
 **Leer** el banco de trabajo usa `service.orders.view`, igual que la cotización.
 
-Sigue **RESERVED** `service.quality.manage`.
+M11 promueve `service.quality.manage` a **ACTIVE**, y con eso **el catálogo deja
+de reservar nada**. Era la última: cada capability que alguna vez nombró código
+ausente tiene ya su módulo construido. La frase «ninguna autorización de esta
+plataforma describe algo que nadie escribió» pasa a ser literalmente cierta.
+
+Es capability **propia**, no un añadido de `service.repair.manage`. Un taller que
+quiere un segundo par de ojos sobre el trabajo terminado concede una a un rol y
+otra a otro; plegarlas en una sola habría hecho ese arreglo inexpresable. M11 no
+**exige** la separación —ninguna regla del negocio lo dice, y un taller de una
+persona quedaría fuera— pero guarda `checked_by` aparte de quién hizo el trabajo,
+para que la pregunta se pueda responder el día que alguien la haga.
+
+**Leer** el control usa `service.orders.view`, igual que la cotización y el banco.
 
 ### Deuda registrada
 

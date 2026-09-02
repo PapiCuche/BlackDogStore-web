@@ -29,6 +29,11 @@ from .v1_service_views import (
     V1ServicePartCandidateView,
     V1ServicePartUsageReverseView,
     V1ServicePartUsageView,
+    V1ServiceQualityFailView,
+    V1ServiceQualityHistoryView,
+    V1ServiceQualityItemView,
+    V1ServiceQualityPassView,
+    V1ServiceQualityView,
     V1ServiceQuoteCancelView,
     V1ServiceQuoteDetailView,
     V1ServiceQuoteItemView,
@@ -266,6 +271,32 @@ urlpatterns = [
         'internal/<slug:company_slug>/service/orders/<int:pk>/parts/<int:usage_id>/reverse/',
         V1ServicePartUsageReverseView.as_view(),
         name='v1-internal-service-part-reverse',
+    ),
+    # --- M11 / BR-005D — control de calidad ---
+    #
+    # `history/` is a literal segment and `items/<id>/` an id, so nothing
+    # shadows anything. Every path hangs off `orders/<pk>/`, which is what folds
+    # the branch gate in.
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quality/',
+        V1ServiceQualityView.as_view(), name='v1-internal-service-quality',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quality/history/',
+        V1ServiceQualityHistoryView.as_view(),
+        name='v1-internal-service-quality-history',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quality/items/<int:item_id>/',
+        V1ServiceQualityItemView.as_view(), name='v1-internal-service-quality-item',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quality/pass/',
+        V1ServiceQualityPassView.as_view(), name='v1-internal-service-quality-pass',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quality/fail/',
+        V1ServiceQualityFailView.as_view(), name='v1-internal-service-quality-fail',
     ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),

@@ -47,6 +47,11 @@ from .models import (
     Membership,
     PartUsage,
     Product,
+    QualityCheck,
+    QualityCheckItem,
+    QualityChecklistTemplate,
+    QualityCheckStatus,
+    QualityResultCode,
     RepairDiagnostic,
     RepairExecution,
     RepairOrder,
@@ -126,12 +131,24 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
         RepairStatusCode.IN_REPAIR,
         RepairStatusCode.CANCELLED,
     ),
-    # NOT TERMINAL, and not "ready to collect". The technician finished; the
-    # device still has to pass quality control (M11) and be handed over (M12).
-    # Until those modules exist the only onward move is cancellation, and an
-    # order sitting here is waiting for a phase that has not shipped — which is
-    # the honest answer, not a state that pretends otherwise.
+    # M11 built the inspection. A finished repair goes to quality control, and
+    # that is an event — opening a real checklist — not a dropdown.
     RepairStatusCode.REPAIRED: (
+        RepairStatusCode.QUALITY_CONTROL,
+        RepairStatusCode.CANCELLED,
+    ),
+    # Passing sends it forward; failing sends it back to the bench with a NEW
+    # execution. Both are events, and both are the recorded outcome of somebody
+    # having actually tested the device.
+    RepairStatusCode.QUALITY_CONTROL: (
+        RepairStatusCode.READY_FOR_PICKUP,
+        RepairStatusCode.IN_REPAIR,
+        RepairStatusCode.CANCELLED,
+    ),
+    # NOT TERMINAL, and not "collected". The device passed its tests and may go
+    # to handover — which is M12 and does not exist. Nobody has been told, and
+    # this platform has no channel to tell them with.
+    RepairStatusCode.READY_FOR_PICKUP: (
         RepairStatusCode.CANCELLED,
     ),
     # A rejection is not the end of the conversation. The usual next move is a
@@ -166,6 +183,10 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
 #: it, together with the execution row that gives `in_repair` its meaning.
 #: Pausing for parts and finishing are the same kind of fact. A dropdown that
 #: could assert any of them would let an order claim work that nobody did.
+#: M11 adds two more, on the same principle. `quality_control` means a real
+#: checklist is open against a specific completed execution; `ready_for_pickup`
+#: means a technician ran that checklist and everything required came back
+#: acceptable. Neither is a claim staff can make by choosing it from a list.
 EVENT_ONLY_STATES: frozenset[str] = frozenset({
     RepairStatusCode.WAITING_APPROVAL,
     RepairStatusCode.APPROVED,
@@ -173,6 +194,8 @@ EVENT_ONLY_STATES: frozenset[str] = frozenset({
     RepairStatusCode.IN_REPAIR,
     RepairStatusCode.WAITING_PARTS,
     RepairStatusCode.REPAIRED,
+    RepairStatusCode.QUALITY_CONTROL,
+    RepairStatusCode.READY_FOR_PICKUP,
 })
 
 #: Edges that exist for one operation only, even though their TARGET is an
@@ -2128,3 +2151,343 @@ def part_usages_for(repair_order):
         .select_related('product', 'quote_item', 'actor', 'reversed_by')
         .all()
     )
+
+
+# ===========================================================================
+# M11 / BR-005D — quality control, and the rework a failure starts
+# ===========================================================================
+#
+# THE LOCK ORDER IS UNCHANGED AND EXTENDED THE SAME WAY:
+#
+#     RepairOrder → RepairExecution → QualityCheck → QualityCheckItem
+#
+# Document first, then the row that belongs to it, exactly as M9 and M10 do.
+# Nothing here touches BranchStock — quality control does not move inventory,
+# and a failed test is not a returned part.
+
+
+class QualityError(ServiceError):
+    """A quality-control rule was broken. Views render this as HTTP 400."""
+
+
+#: The only state a quality check may START from. The technician finished; there
+#: is something to inspect.
+INSPECTABLE_STATES: frozenset[str] = frozenset({RepairStatusCode.REPAIRED})
+
+
+def active_quality_template(company, device_type: str = ''):
+    """
+    The checklist this company runs for this kind of device, or None.
+
+    Most specific first: a template for `laptop` beats the company's general
+    one. A company with neither has no checklist, and `start_quality_check`
+    refuses rather than inventing a list — a platform that made up what to test
+    would be a platform asserting it knows the shop's trade.
+    """
+    rows = QualityChecklistTemplate.objects.filter(company=company, is_active=True)
+    if device_type:
+        specific = rows.filter(device_type=device_type).first()
+        if specific is not None:
+            return specific
+    return rows.filter(device_type='').first()
+
+
+def open_quality_check(repair_order):
+    """The inspection currently under way, or None."""
+    return (
+        repair_order.quality_checks
+        .filter(status=QualityCheckStatus.IN_PROGRESS)
+        .order_by('-started_at', '-pk')
+        .first()
+    )
+
+
+def latest_quality_check(repair_order):
+    """The most recent inspection, open or settled, or None."""
+    return repair_order.quality_checks.order_by('-started_at', '-pk').first()
+
+
+def quality_checks_for(repair_order):
+    """Every inspection on this order, newest first."""
+    return repair_order.quality_checks.all()
+
+
+@transaction.atomic
+def start_quality_check(*, repair_order, actor=None, request=None):
+    """
+    Open an inspection. REPAIRED → QUALITY_CONTROL, with a snapshot of the list.
+
+    THE SNAPSHOT IS THE POINT. The items are COPIED off the template, not
+    referenced, so an administrator who edits the checklist tomorrow does not
+    rewrite what was tested today. A report that re-rendered old inspections
+    through the current template would be quietly changing history.
+
+    IDEMPOTENT IN THE ONLY USEFUL WAY: a second call while an inspection is
+    already open returns the SAME one. A double tap is not an error worth a
+    dialog, and the partial unique constraint makes the race safe regardless.
+    """
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+
+    existing = open_quality_check(locked)
+    if existing is not None and locked.status == RepairStatusCode.QUALITY_CONTROL:
+        return existing
+
+    if locked.status not in INSPECTABLE_STATES:
+        raise QualityError(
+            'Solo se puede controlar una reparación que el técnico ya terminó.'
+        )
+
+    execution = (
+        locked.executions.filter(completed_at__isnull=False)
+        .order_by('-completed_at', '-pk')
+        .first()
+    )
+    if execution is None:
+        raise QualityError('Esta orden no tiene un trabajo finalizado que revisar.')
+
+    template = active_quality_template(
+        locked.company, getattr(locked.device, 'device_type', '') or '',
+    )
+    if template is None:
+        raise QualityError(
+            'Esta empresa no tiene una lista de control configurada.'
+        )
+    items = list(template.items.all().order_by('sort_order', 'pk'))
+    if not items:
+        raise QualityError('La lista de control no tiene puntos que revisar.')
+
+    check = QualityCheck(
+        company_id=locked.company_id,
+        repair_order=locked,
+        execution=execution,
+        template=template,
+        template_name=template.name,
+        checked_by=actor,
+        started_at=timezone.now(),
+    )
+    check.save()
+
+    QualityCheckItem.objects.bulk_create([
+        QualityCheckItem(
+            quality_check=check,
+            code=item.code,
+            label=item.label,
+            is_required=item.is_required,
+            sort_order=item.sort_order,
+        )
+        for item in items
+    ])
+
+    _apply_transition(
+        locked,
+        to_status=RepairStatusCode.QUALITY_CONTROL,
+        actor=actor,
+        origin=RepairStatusHistory.ORIGIN_INTERNAL,
+        comment='',
+        request=request,
+    )
+
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_quality_started',
+        target_type='quality_check',
+        target_id=check.pk,
+        metadata={
+            'repair_order_id': locked.pk,
+            'number': locked.number,
+            'execution_id': execution.pk,
+            'template': template.name,
+            'items': len(items),
+        },
+        request=request,
+        company=locked.company,
+    )
+    return check
+
+
+@transaction.atomic
+def record_quality_result(*, item, result: str, notes: str = '', actor=None):
+    """
+    Answer ONE point of an open checklist.
+
+    Not audited per keystroke: this is a technician working down a list, and an
+    audit row per tick is an audit log nobody reads. The writes that matter —
+    opening, passing, failing — are all audited.
+    """
+    locked_item = QualityCheckItem.objects.select_for_update().get(pk=item.pk)
+    check = QualityCheck.objects.select_for_update().get(pk=locked_item.quality_check_id)
+
+    if check.status != QualityCheckStatus.IN_PROGRESS:
+        raise QualityError('Este control de calidad ya está cerrado.')
+    if result not in QualityResultCode.values:
+        raise QualityError('Ese resultado no existe.')
+
+    locked_item.result = result
+    locked_item.notes = (notes or '')[:300]
+    locked_item.save(update_fields=['result', 'notes', 'updated_at'])
+    return locked_item
+
+
+def unresolved_required_items(check):
+    """Required points nobody has answered yet."""
+    return check.items.filter(is_required=True, result='')
+
+
+def failing_items(check):
+    """Points that came back FAIL. `not_applicable` is an answer, not a failure."""
+    return check.items.filter(result=QualityResultCode.FAIL)
+
+
+@transaction.atomic
+def pass_quality_check(*, repair_order, notes: str = '', actor=None, request=None):
+    """
+    The device passed. QUALITY_CONTROL → READY_FOR_PICKUP, atomically.
+
+    THE SERVER DECIDES, NOT THE CALLER. There is no field anywhere that lets a
+    client assert `status='passed'`: this reads the items and refuses if any
+    required one is unanswered or any one failed. A checklist whose result could
+    be sent by whoever filled it in is a checklist that proves nothing.
+
+    WHAT `READY_FOR_PICKUP` MEANS: the device passed its tests and may go to the
+    handover stage. It does NOT mean the customer was told — this platform has
+    no notification channel — and it does not mean anything was paid, collected
+    or closed. M12 is the handover.
+    """
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+    if locked.status != RepairStatusCode.QUALITY_CONTROL:
+        raise QualityError('Esta orden no está en control de calidad.')
+
+    check = open_quality_check(locked)
+    if check is None:
+        raise QualityError('Esta orden no tiene un control de calidad abierto.')
+    locked_check = QualityCheck.objects.select_for_update().get(pk=check.pk)
+
+    pending = list(unresolved_required_items(locked_check))
+    if pending:
+        raise QualityError(
+            f'Faltan {len(pending)} punto(s) obligatorio(s) por responder.'
+        )
+    failed = list(failing_items(locked_check))
+    if failed:
+        raise QualityError(
+            f'{len(failed)} punto(s) no pasaron. Envía el equipo de vuelta a '
+            'reparación en lugar de aprobar el control.'
+        )
+
+    locked_check.status = QualityCheckStatus.PASSED
+    locked_check.completed_at = timezone.now()
+    locked_check.completed_by = actor
+    if notes:
+        locked_check.notes = notes
+    locked_check.save(update_fields=[
+        'status', 'completed_at', 'completed_by', 'notes', 'updated_at',
+    ])
+
+    _apply_transition(
+        locked,
+        to_status=RepairStatusCode.READY_FOR_PICKUP,
+        actor=actor,
+        origin=RepairStatusHistory.ORIGIN_INTERNAL,
+        comment='',
+        request=request,
+    )
+
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_quality_passed',
+        target_type='quality_check',
+        target_id=locked_check.pk,
+        metadata={
+            'repair_order_id': locked.pk,
+            'number': locked.number,
+            'execution_id': locked_check.execution_id,
+        },
+        request=request,
+        company=locked.company,
+    )
+    return locked_check
+
+
+@transaction.atomic
+def fail_quality_check(*, repair_order, notes: str = '', actor=None, request=None):
+    """
+    The device did not pass. QUALITY_CONTROL → IN_REPAIR, with a NEW execution.
+
+    AT LEAST ONE POINT MUST HAVE FAILED. Sending a device back with nothing
+    marked wrong would leave a technician a rework order and no way to know what
+    to rework.
+
+    THE PREVIOUS EXECUTION IS NOT REOPENED. It is finished, immutable evidence
+    of what was done and what it cost in parts, and its `PartUsage` rows stay
+    exactly where they are. The rework is a SECOND execution, which M10's
+    partial unique constraint was designed to allow.
+
+    WHY THE NEW EXECUTION IS OPENED HERE rather than waiting for somebody to
+    press "start" again: the device is already on the bench and the person who
+    just failed it knows what is wrong. Leaving the order in `in_repair` with no
+    open execution would be a trap — `record_part_usage` refuses without one, so
+    the technician's next action would fail for a reason nobody explained.
+
+    NO STOCK MOVES. A part that failed a test is still physically fitted; a
+    failed inspection is not a returned component. If the rework needs a part
+    nobody approved, it goes back through diagnosis and a new quote exactly as
+    M10 requires — this function opens no shortcut around that.
+    """
+    locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
+    if locked.status != RepairStatusCode.QUALITY_CONTROL:
+        raise QualityError('Esta orden no está en control de calidad.')
+
+    check = open_quality_check(locked)
+    if check is None:
+        raise QualityError('Esta orden no tiene un control de calidad abierto.')
+    locked_check = QualityCheck.objects.select_for_update().get(pk=check.pk)
+
+    failed = list(failing_items(locked_check))
+    if not failed:
+        raise QualityError(
+            'Marca al menos un punto como falla antes de devolver el equipo a '
+            'reparación.'
+        )
+
+    locked_check.status = QualityCheckStatus.FAILED
+    locked_check.completed_at = timezone.now()
+    locked_check.completed_by = actor
+    if notes:
+        locked_check.notes = notes
+    locked_check.save(update_fields=[
+        'status', 'completed_at', 'completed_by', 'notes', 'updated_at',
+    ])
+
+    _apply_transition(
+        locked,
+        to_status=RepairStatusCode.IN_REPAIR,
+        actor=actor,
+        origin=RepairStatusHistory.ORIGIN_INTERNAL,
+        comment='',
+        request=request,
+    )
+
+    rework = RepairExecution(
+        company_id=locked.company_id,
+        repair_order=locked,
+        started_at=timezone.now(),
+        started_by=actor,
+    )
+    rework.save()
+
+    AdminAuditLog.log(
+        actor=actor,
+        action='service_quality_failed',
+        target_type='quality_check',
+        target_id=locked_check.pk,
+        metadata={
+            'repair_order_id': locked.pk,
+            'number': locked.number,
+            'failed_items': [i.code for i in failed],
+            'previous_execution_id': locked_check.execution_id,
+            'rework_execution_id': rework.pk,
+        },
+        request=request,
+        company=locked.company,
+    )
+    return locked_check
