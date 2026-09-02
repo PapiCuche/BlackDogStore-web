@@ -68,6 +68,46 @@ class CheckoutLine:
     quantity: int
 
 
+def merge_lines(lines: list[CheckoutLine]) -> list[CheckoutLine]:
+    """
+    Collapse repeated products into one line each — Phase 0.3 / P0-E.
+
+    WHY THIS IS CORRECTNESS AND NOT TIDINESS
+    ----------------------------------------
+    `inventory_services.record_sale_stock_movements` is idempotent per
+    `(order, product)`, and that guard is what makes a replayed Stripe webhook
+    safe. It cannot tell a replay from an order that genuinely carries two lines
+    of one product: it writes the exit for the first and skips the second. Six
+    units charged, three decremented.
+
+    The guard is not the defect and must not be weakened. What has to be
+    impossible is the duplicate line — so every surface merges before it
+    validates, prices or persists anything.
+
+    The native checkout already summed repeated slugs and the POS already merged
+    repeated ids, each for this reason and each in its own way. The browser
+    checkout did neither: it turned every cart row into its own line.
+
+    GROUPED BY PRIMARY KEY, deliberately. Two ORM instances of the same row are
+    the same product; grouping by object identity would merge nothing, and
+    grouping by name or slug would merge things that are not the same article.
+
+    Order is preserved — first appearance wins — so a shopper reading their own
+    basket back sees it in the order they built it.
+    """
+    merged: dict[int, int] = {}
+    first_seen: dict[int, Product] = {}
+    for line in lines:
+        key = line.product.pk
+        if key not in first_seen:
+            first_seen[key] = line.product
+        merged[key] = merged.get(key, 0) + line.quantity
+    return [
+        CheckoutLine(product=first_seen[key], quantity=quantity)
+        for key, quantity in merged.items()
+    ]
+
+
 @dataclass
 class CheckoutPricing:
     subtotal: Decimal
@@ -194,6 +234,12 @@ def validate_lines_and_subtotal(branch, lines: list[CheckoutLine]) -> Decimal:
     if not lines:
         raise CheckoutError('El carrito está vacío.')
 
+    # Merged FIRST. Checking each line on its own asked "is 3 available?" twice
+    # of a shelf holding 5 and answered yes both times, selling six. Stock is a
+    # property of the product, so the question has to be asked once per product,
+    # about the total.
+    lines = merge_lines(lines)
+
     stock = {
         row.product_id: row.quantity
         for row in BranchStock.objects.filter(
@@ -287,6 +333,13 @@ def create_pending_order(
     the order BELONGS to. The browser surface has neither for a guest; the
     native surface always has both, and they are the same person.
     """
+    # Merged here too, not only in validation. This function is the last point
+    # before the lines become rows, and it is reached by every surface, so a
+    # caller that skipped validation — or a future one — still cannot persist two
+    # lines of one product. Merging an already-merged basket is a no-op, so
+    # doing it in both places costs nothing and removes the need to remember.
+    lines = merge_lines(lines)
+
     with transaction.atomic():
         order = Order.objects.create(
             company=company,

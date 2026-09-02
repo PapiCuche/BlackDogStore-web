@@ -554,6 +554,30 @@ class OrderItem(models.Model):
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=10, decimal_places=2)
 
+    class Meta:
+        constraints = [
+            # ONE LINE PER PRODUCT PER ORDER — Phase 0.3 / P0-E.
+            #
+            # Every writer already treats this as the rule. The POS merges
+            # repeated ids before writing and says in its own words that merging
+            # is required for correctness, not tidiness; the native checkout sums
+            # repeated slugs; the browser checkout now merges too. None of them
+            # has a reason to write the same article twice — the price on a line
+            # is the product's price, so two lines of one product in one order
+            # carry no information a single line with the summed quantity does
+            # not.
+            #
+            # It is here because `record_sale_stock_movements` is keyed on
+            # (order, product). That key is what stops a replayed Stripe webhook
+            # decrementing stock twice, and it is only sound while an order has
+            # at most one line per product. This constraint is what keeps it
+            # sound against a writer nobody has written yet.
+            models.UniqueConstraint(
+                fields=['order', 'product'],
+                name='unique_order_line_per_product',
+            ),
+        ]
+
     def __str__(self):
         return f"{self.quantity} x {self.product.name}"
 
@@ -599,6 +623,32 @@ class CartItem(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=1)
     added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # ONE ROW PER BASKET LINE — Phase 0.3 / P0-E.
+            #
+            # The add endpoint reads then writes: it looks for an existing row
+            # and creates one if it finds none. Two requests arriving together
+            # both find none, and the basket ends up holding the same article
+            # twice. From there the damage compounds: the browser checkout turned
+            # each row into its own line, stock was checked per line rather than
+            # per product, and `record_sale_stock_movements` — idempotent per
+            # (order, product) so a replayed webhook is safe — wrote the exit for
+            # the first line and skipped the second. Six charged, three shipped
+            # out of the books.
+            #
+            # The application handles the race; this is what holds when it does
+            # not. A future writer that forgets cannot corrupt the basket.
+            #
+            # NOT scoped by company: the tenant arrives through
+            # `product.company`, and a second copy of it here would be a second
+            # source of truth able to disagree with the first.
+            models.UniqueConstraint(
+                fields=['session_key', 'product'],
+                name='unique_cart_line_per_session',
+            ),
+        ]
 
     def __str__(self):
         return f"CartItem {self.product.name} ({self.quantity})"

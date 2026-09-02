@@ -1715,3 +1715,67 @@ dejado dos clases que mantener en paralelo, y la que se olvidara de acotar
 volvería a ser global. Acotar el queryset del campo **dentro del propio
 serializer**, y dejarlo **vacío** cuando falta el contexto, hace que el camino
 inseguro deje de existir: no hay forma de escribir sin storefront.
+
+
+---
+
+## Fase 0.3 / P0-E — Integridad de cantidades
+
+### Hallazgos revalidados contra HEAD `ea5ecc5`
+
+| ID | Hallazgo | Resultado | Severidad |
+|---|---|---|---|
+| P0-E-01 | `CartItem` sin `Meta` ni unicidad | **CONFIRMADO** | Alta |
+| P0-E-02 | Alta al carrito TOCTOU (`filter().first()` → `create()`) | **CONFIRMADO** | Alta |
+| P0-E-03 | Incremento read-modify-write → lost update | **CONFIRMADO** | Media |
+| P0-E-04 | `validate_lines_and_subtotal` valida línea a línea | **CONFIRMADO** | Alta |
+| P0-E-05 | V1 y POS normalizan; el checkout web no | **CONFIRMADO** | Alta |
+| P0-E-06 | `OrderItem` sin unicidad | **CONFIRMADO** | Alta |
+| P0-E-STOCK-01 | Dos líneas del mismo producto descuentan sólo una | **CONFIRMADO — CRÍTICO** | Crítica |
+| P0-E-08 | Duplicados en datos existentes | **NINGUNO** | — |
+| P0-E-09 | Concurrencia real bajo PostgreSQL | **PENDIENTE — requiere PostgreSQL** | — |
+
+### La medición que resolvió la contradicción
+
+El docstring de `normalize_items` (POS) afirmaba que el servicio de inventario se
+salta la segunda línea repetida. Una primera lectura del bucle sugería lo
+contrario, porque el extracto revisado terminaba **antes** de la línea 525,
+`already_recorded.add(item.product_id)`, que es la que muta el conjunto dentro del
+bucle.
+
+No se decidió por el comentario. Se midió:
+
+```
+OrderItems:      P × 3  +  P × 3   (6 unidades)
+Stock inicial:   10
+Stock final:     7          ← bajaron 3
+Movimientos:     1, cantidad 3
+Replay ×2:       7          ← idempotente, no vuelve a descontar
+```
+
+**El docstring tenía razón; la lectura del código estaba equivocada.** Escenario A.
+
+### Por qué no se toca la guarda
+
+Su clave `(order, product)` es lo que impide que un webhook repetido descuente dos
+veces. No puede distinguir un replay de un pedido con dos líneas del mismo
+artículo. Debilitarla para arreglar el duplicado reabriría el doble descuento —
+cambiar un error de menos por uno de más. Lo que se vuelve imposible es el
+duplicado.
+
+### SQLite y PostgreSQL — qué queda probado
+
+| Propiedad | Probada aquí | Cómo |
+|---|---|---|
+| Unicidad de línea de carrito | **Sí** | Constraint, verificada en SQLite |
+| Unicidad de línea de pedido | **Sí** | Constraint |
+| Normalización de líneas repetidas | **Sí** | Funcional |
+| Validación de stock agregada | **Sí** | Funcional |
+| Incremento del lado de la BD | **Sí** | Estructural, sobre el AST |
+| Carrera perdida no da 500 | **Sí** | Estructural |
+| Interleaving real de dos escritores | **No** | SQLite serializa y responde «database table is locked» |
+
+Los tests con hilos y barrera están escritos y **se omiten explícitamente** en
+SQLite con esa razón. Correrán sin cambios el día que la suite apunte a
+PostgreSQL. Lo que garantiza la invariante —constraint más incremento atómico— no
+depende de cómo el motor planifique los escritores.

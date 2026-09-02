@@ -29990,3 +29990,535 @@ class P0DProductRatingIsolationTest(TestCase):
         self.assertNotIn(self.product_b.pk, rows)
         self.assertEqual(rows[self.product_a.pk]['review_count'], 1)
         self.assertEqual(float(rows[self.product_a.pk]['average_rating']), 5.0)
+
+
+# =============================================================================
+# FASE 0.3 / P0-E — cart and order quantity integrity
+# =============================================================================
+#
+# THE INVARIANT THIS PHASE DEFENDS
+# --------------------------------
+#     units ordered == units persisted == units decremented from inventory
+#
+# It broke through a chain of three small gaps, none of which is a bug on its
+# own:
+#
+#   1. `CartItem` had no uniqueness, and the add endpoint read-then-wrote, so a
+#      race could leave two rows for one product in one basket.
+#   2. The WEB checkout turned each cart row into its own line without merging,
+#      and validated stock LINE BY LINE — so 3 + 3 against a shelf of 5 passed.
+#   3. `record_sale_stock_movements` is idempotent per `(order, product)`. That
+#      guard is what makes a replayed Stripe webhook safe, and it CANNOT tell a
+#      replay from an order that genuinely carries two lines of one product: it
+#      writes the exit for the first and skips the second.
+#
+# So six units could be charged and three decremented. The guard is not the
+# defect — removing it would reopen double-decrement on replay. The defect is
+# that duplicate lines can exist at all.
+
+
+class P0EStockMovementWithDuplicateLinesTest(TestCase):
+    """
+    What the service actually does with duplicate lines, measured.
+
+    Written before any fix, because the POS docstring and a first reading of the
+    loop disagreed about whether the second line is skipped. It is: the set is
+    mutated inside the loop (`already_recorded.add`), so the guard swallows it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p0e-mov', 'Movimientos P0E')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.company.default_inventory_branch = self.branch
+        self.company.save(update_fields=['default_inventory_branch'])
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.INITIAL_STOCK, quantity=10, reason='alta',
+        )
+        self.order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.branch,
+            customer_name='X', customer_email='x@x.test', total=Decimal('60.00'),
+        )
+
+    def _sale_exits(self):
+        return StockMovement.objects.filter(
+            order=self.order, movement_type=StockMovement.SALE_EXIT,
+        )
+
+    def test_the_state_that_caused_the_loss_can_no_longer_be_created(self):
+        """
+        WHAT WAS MEASURED, AND WHY IT IS NOW UNREACHABLE.
+
+        Before this phase, an order carrying two lines of one product — 3 and 3 —
+        decremented THREE. Measured, not inferred: stock went 10 → 7 and exactly
+        one sale movement was written. Six units left the shop and the books
+        recorded half of them.
+
+        The cause is not a bug in the movement service. Its idempotency key is
+        `(order, product)`, which is precisely what stops a replayed Stripe
+        webhook decrementing twice, and it cannot tell a replay from an order
+        that genuinely holds the same article on two lines: it writes the exit
+        for the first and skips the second.
+
+        So the guard stays exactly as it is, and the duplicate becomes
+        impossible instead. This test asserts the anomaly can no longer be
+        built — which is what makes that key sound.
+        """
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=3, price=Decimal('10.00'),
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                OrderItem.objects.create(
+                    order=self.order, product=self.product, quantity=3,
+                    price=Decimal('10.00'),
+                )
+
+        inventory_services.record_sale_stock_movements(self.order)
+        self.assertEqual(self._sale_exits().count(), 1)
+        # Three ordered, three gone — the two numbers agree again.
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 7,
+        )
+
+    def test_a_single_line_decrements_all_of_it(self):
+        """The control: with one line the quantity goes out in full."""
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=6, price=Decimal('10.00'),
+        )
+        inventory_services.record_sale_stock_movements(self.order)
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 4,
+        )
+        self.assertEqual(self._sale_exits().count(), 1)
+
+    def test_replaying_the_webhook_never_decrements_twice(self):
+        """
+        §25. The guard's real job. This must keep passing after the fix — the
+        cure for duplicate lines must not be to remove it.
+        """
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=6, price=Decimal('10.00'),
+        )
+        for _ in range(3):
+            inventory_services.record_sale_stock_movements(self.order)
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 4,
+        )
+        self.assertEqual(self._sale_exits().count(), 1)
+
+
+class P0ECartUniquenessTest(TestCase):
+    """§P0-E-01, §P0-E-03 — the database guarantees, or the lack of them."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p0e-cart', 'Carrito P0E')
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        _seeded(self.product, 10)
+        self.session = 'p0e-session'
+
+    def test_the_database_refuses_a_second_row_for_the_same_basket_line(self):
+        """
+        One basket, one product, one row. Without this the API's read-then-write
+        can leave two, and everything downstream inherits the duplicate.
+        """
+        CartItem.objects.create(
+            session_key=self.session, product=self.product, quantity=1,
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                CartItem.objects.create(
+                    session_key=self.session, product=self.product, quantity=1,
+                )
+
+    def test_different_baskets_may_hold_the_same_product(self):
+        CartItem.objects.create(
+            session_key='sesion-a', product=self.product, quantity=1,
+        )
+        CartItem.objects.create(
+            session_key='sesion-b', product=self.product, quantity=1,
+        )
+        self.assertEqual(CartItem.objects.filter(product=self.product).count(), 2)
+
+    def test_one_basket_may_hold_different_products(self):
+        other = _c1_product(self.company, 'Cargador', '20.00')
+        _seeded(other, 10)
+        CartItem.objects.create(
+            session_key=self.session, product=self.product, quantity=1,
+        )
+        CartItem.objects.create(
+            session_key=self.session, product=other, quantity=1,
+        )
+        self.assertEqual(CartItem.objects.filter(session_key=self.session).count(), 2)
+
+
+class P0EOrderItemUniquenessTest(TestCase):
+    """§P0-E-03 — one line per product per order, enforced by the database."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p0e-item', 'Lineas P0E')
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        self.order = Order.objects.create(
+            company=self.company, customer_name='X',
+            customer_email='x@x.test', total=Decimal('20.00'),
+        )
+
+    def test_the_database_refuses_a_second_line_of_the_same_product(self):
+        """
+        Every writer already treats this as invalid: the POS merges before
+        writing and says in so many words that merging is required for
+        correctness, and the native checkout sums repeated slugs. The constraint
+        is what makes that true for a writer nobody has written yet.
+        """
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=1, price=Decimal('10.00'),
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                OrderItem.objects.create(
+                    order=self.order, product=self.product, quantity=1,
+                    price=Decimal('10.00'),
+                )
+
+    def test_different_orders_may_carry_the_same_product(self):
+        other = Order.objects.create(
+            company=self.company, customer_name='Y',
+            customer_email='y@y.test', total=Decimal('10.00'),
+        )
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=1, price=Decimal('10.00'),
+        )
+        OrderItem.objects.create(
+            order=other, product=self.product, quantity=1, price=Decimal('10.00'),
+        )
+        self.assertEqual(OrderItem.objects.filter(product=self.product).count(), 2)
+
+
+class P0ECheckoutAggregationTest(TestCase):
+    """§P0-E-02, §16 — stock is checked against the TOTAL, not line by line."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('p0e-agg', 'Agregacion P0E')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.company.default_inventory_branch = self.branch
+        self.company.save(update_fields=['default_inventory_branch'])
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        inventory_services.create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.INITIAL_STOCK, quantity=5, reason='alta',
+        )
+
+    def _lines(self, *quantities):
+        from . import checkout_services as checkout
+
+        return [
+            checkout.CheckoutLine(product=self.product, quantity=q)
+            for q in quantities
+        ]
+
+    def test_two_lines_of_one_product_are_weighed_together(self):
+        """
+        THE GAP. Shelf holds 5. Two lines of 3 each passed because the check was
+        `3 <= 5` twice — six units sold off a shelf of five, and the shortfall
+        only surfaced at the webhook, after the money was taken.
+        """
+        from . import checkout_services as checkout
+
+        with self.assertRaises(checkout.CheckoutError) as caught:
+            checkout.validate_lines_and_subtotal(self.branch, self._lines(3, 3))
+        self.assertTrue(
+            any('stock' in e.lower() for e in (caught.exception.errors or [])),
+            caught.exception.errors,
+        )
+
+    def test_the_subtotal_counts_every_unit(self):
+        """A merged line must still be priced for all of its units."""
+        from . import checkout_services as checkout
+
+        subtotal = checkout.validate_lines_and_subtotal(self.branch, self._lines(2, 2))
+        self.assertEqual(subtotal, Decimal('40.00'))
+
+    def test_a_total_within_stock_is_accepted(self):
+        from . import checkout_services as checkout
+
+        subtotal = checkout.validate_lines_and_subtotal(self.branch, self._lines(2, 3))
+        self.assertEqual(subtotal, Decimal('50.00'))
+
+    def test_the_order_carries_one_line_per_product(self):
+        """
+        End of the chain: whatever arrives, what is persisted is one line per
+        product — which is what makes the sale movement's `(order, product)`
+        idempotency key correct rather than lossy.
+        """
+        from . import checkout_services as checkout
+
+        lines = self._lines(2, 3)
+        subtotal = checkout.validate_lines_and_subtotal(self.branch, lines)
+        pricing = checkout.price_checkout(self.company, subtotal)
+        order = checkout.create_pending_order(
+            company=self.company, branch=self.branch, lines=lines, pricing=pricing,
+            details=checkout.CustomerDetails(
+                name='X', email='x@x.test', phone='', document_type='',
+                document_number='', delivery_method='', address_line='', city='',
+                district='', reference='', notes='', receipt_type='',
+                accepted_terms=True, accepted_warranty_policy=True,
+            ),
+        )
+        items = list(order.items.all())
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].quantity, 5)
+
+    def test_and_the_whole_quantity_leaves_the_shelf(self):
+        """The invariant, end to end: 5 ordered, 5 decremented."""
+        from . import checkout_services as checkout
+
+        lines = self._lines(2, 3)
+        subtotal = checkout.validate_lines_and_subtotal(self.branch, lines)
+        pricing = checkout.price_checkout(self.company, subtotal)
+        order = checkout.create_pending_order(
+            company=self.company, branch=self.branch, lines=lines, pricing=pricing,
+            details=checkout.CustomerDetails(
+                name='X', email='x@x.test', phone='', document_type='',
+                document_number='', delivery_method='', address_line='', city='',
+                district='', reference='', notes='', receipt_type='',
+                accepted_terms=True, accepted_warranty_policy=True,
+            ),
+        )
+        inventory_services.record_sale_stock_movements(order)
+        self.assertEqual(
+            inventory_services.branch_quantity(self.branch, self.product), 0,
+        )
+        self.assertEqual(
+            sum(i.quantity for i in order.items.all()),
+            sum(m.quantity for m in StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT,
+            )),
+        )
+
+
+class P0ECartConcurrencyTest(TransactionTestCase):
+    """
+    Real threads, real connections, a real barrier — §23, §40-43.
+
+    `TransactionTestCase` and not `TestCase`: the latter wraps each test in one
+    transaction that is rolled back, so a second thread would never see the
+    first thread's rows and the race being reproduced would not exist.
+
+    WHAT THIS PROVES AND WHAT IT DOES NOT
+    -------------------------------------
+    It proves the OUTCOME: two adds arriving together leave one row with the
+    right quantity, and neither request fails. On SQLite it does not prove the
+    interleaving that would occur on PostgreSQL — SQLite serialises writers, so
+    the window this test opens is narrower there than in production. The
+    guarantee that carries across both is the UNIQUE constraint plus the
+    database-side increment, neither of which depends on how the engine
+    schedules writers. See the phase notes.
+    """
+
+    reset_sequences = True
+
+    def setUp(self):
+        from django.db import connection
+
+        if connection.vendor == 'sqlite':
+            # SQLite serialises writers and, rather than queueing, answers
+            # "database table is locked". So this class cannot open the window it
+            # exists to open: the threads never overlap inside the write, and a
+            # green result here would say nothing about production.
+            #
+            # Skipped LOUDLY instead of adapted into something that passes. What
+            # actually guarantees the invariant is engine-independent and IS
+            # proven elsewhere in this phase — `UNIQUE(session_key, product)`
+            # (P0ECartUniquenessTest) and an increment computed by the database
+            # rather than in Python (P0ECartWriterStructureTest). This class adds
+            # the outcome-level proof under a real concurrent engine, and runs
+            # the day the suite points at PostgreSQL.
+            self.skipTest(
+                'La concurrencia real requiere PostgreSQL: SQLite serializa los '
+                'escritores y devuelve "database table is locked" en vez de '
+                'intercalarlos.'
+            )
+        cache.clear()
+        self.company = _p3_company('p0e-race', 'Carrera P0E')
+        self.product = _c1_product(self.company, 'Cable', '10.00')
+        _seeded(self.product, 50)
+        self.session = 'p0e-race-session'
+
+    def _add(self, barrier, quantity, results):
+        """One thread's add, released simultaneously with the others."""
+        from django.db import close_old_connections
+
+        try:
+            barrier.wait(timeout=10)
+            with _storefront_of(self.company):
+                response = APIClient().post(
+                    '/api/cart/add/',
+                    {'session_key': self.session, 'product': self.product.pk,
+                     'quantity': quantity},
+                    format='json',
+                )
+            results.append(response.status_code)
+        except Exception as exc:                      # noqa: BLE001
+            results.append(f'{type(exc).__name__}: {exc}')
+        finally:
+            # Each thread opened its own connection; leaving it behind would
+            # leak it into the next test.
+            close_old_connections()
+
+    def _race(self, quantities):
+        import threading
+
+        barrier = threading.Barrier(len(quantities))
+        results = []
+        threads = [
+            threading.Thread(target=self._add, args=(barrier, q, results))
+            for q in quantities
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        return results
+
+    def test_two_simultaneous_first_adds_leave_one_line(self):
+        """
+        The original race. Both requests looked for a row, both found none, and
+        both created one — a basket holding the same article twice, which every
+        later step then inherited.
+        """
+        results = self._race([2, 3])
+
+        rows = CartItem.objects.filter(
+            session_key=self.session, product=self.product,
+        )
+        self.assertEqual(rows.count(), 1, results)
+        self.assertEqual(rows.first().quantity, 5, results)
+
+    def test_neither_request_fails(self):
+        """
+        §54. Losing the race is a normal outcome, not an error. A caller who
+        adds to a basket at the same moment as another tab must not receive a
+        500 from a constraint doing its job.
+        """
+        results = self._race([1, 1])
+        self.assertEqual(
+            [r for r in results if r != status.HTTP_200_OK], [], results,
+        )
+
+    def test_simultaneous_increments_do_not_lose_units(self):
+        """
+        The lost update. Both requests read the same quantity and the second
+        wrote over the first, so the shopper asked for six and got three. The
+        increment is computed by the database now, so they add up.
+        """
+        CartItem.objects.create(
+            session_key=self.session, product=self.product, quantity=1,
+        )
+        results = self._race([3, 3])
+
+        rows = CartItem.objects.filter(
+            session_key=self.session, product=self.product,
+        )
+        self.assertEqual(rows.count(), 1, results)
+        self.assertEqual(rows.first().quantity, 7, results)
+
+    def test_many_at_once_still_add_up(self):
+        results = self._race([1, 1, 1, 1, 1])
+        rows = CartItem.objects.filter(
+            session_key=self.session, product=self.product,
+        )
+        self.assertEqual(rows.count(), 1, results)
+        self.assertEqual(rows.first().quantity, 5, results)
+
+
+class P0ECartWriterStructureTest(TestCase):
+    """
+    The lost-update guarantee, proven without needing a concurrent engine.
+
+    `P0ECartConcurrencyTest` shows the OUTCOME under real threads but only runs
+    on PostgreSQL. What makes the outcome true is structural and holds on any
+    engine: the quantity is never read into Python, added to, and written back.
+    That is checkable here, so the guarantee is not left resting on a class the
+    local suite skips.
+
+    Asserted over the SYNTAX TREE rather than by scanning text: the surrounding
+    comments necessarily describe the read-modify-write pattern they replaced,
+    and a text scan cannot tell an explanation from the thing it explains.
+    """
+
+    def _add_to_cart_source(self):
+        import ast
+        import inspect
+        import textwrap
+
+        from .views import CartViewSet
+
+        for name, member in inspect.getmembers(CartViewSet, inspect.isfunction):
+            if name == 'add':
+                return ast.parse(textwrap.dedent(inspect.getsource(member)))
+        self.fail('No se encontró la acción `add` del carrito.')
+
+    def test_the_increment_is_computed_by_the_database(self):
+        """`F('quantity') + n`, never `item.quantity + n` assigned back."""
+        import ast
+
+        tree = self._add_to_cart_source()
+        uses_f = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == 'F'
+            for node in ast.walk(tree)
+        )
+        self.assertTrue(uses_f, 'el incremento no lo calcula la base de datos')
+
+    def test_the_quantity_is_never_assigned_from_a_value_read_earlier(self):
+        """
+        The pattern this phase removed:
+
+            item.quantity = <something>
+            item.save()
+
+        Two requests reading the same number and both writing it back is how the
+        shopper asked for six and got three.
+        """
+        import ast
+
+        tree = self._add_to_cart_source()
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Attribute) and target.attr == 'quantity'
+        ]
+        self.assertEqual(offenders, [], 'sigue habiendo read-modify-write')
+
+    def test_the_lost_race_is_handled_and_not_returned_as_a_server_error(self):
+        """
+        §54. Losing the insert race is a normal outcome — the other tab got
+        there first. It must be caught precisely, not swallowed generically and
+        not surfaced as a 500.
+        """
+        import ast
+
+        tree = self._add_to_cart_source()
+        handlers = [
+            node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)
+        ]
+        caught = set()
+        for handler in handlers:
+            if handler.type is None:
+                self.fail('un `except:` desnudo ocultaría fallos reales')
+            names = (
+                handler.type.elts if isinstance(handler.type, ast.Tuple)
+                else [handler.type]
+            )
+            caught.update(
+                n.id for n in names if isinstance(n, ast.Name)
+            )
+        self.assertIn('IntegrityError', caught)

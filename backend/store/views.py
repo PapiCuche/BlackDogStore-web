@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import stripe
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -638,12 +638,43 @@ class CartViewSet(
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        existing = CartItem.objects.filter(session_key=session_key, product=product).first()
-        current_qty = existing.quantity if existing else 0
+        # CONCURRENCY — Phase 0.3 / P0-E.
+        #
+        # This used to read the row, decide, and then either create or assign
+        # `quantity = <what was read> + n`. Both halves are races. Two first adds
+        # arriving together each found nothing and each created a row, leaving
+        # the basket holding one article twice; two increments each read the same
+        # number and the second overwrote the first, losing units the shopper
+        # asked for.
+        #
+        # Now the row is taken (or made) in one statement, and the increment is
+        # computed BY THE DATABASE with `F()`, so simultaneous adds add up
+        # instead of overwriting. `UNIQUE(session_key, product)` is what makes
+        # `get_or_create` a real guarantee rather than a smaller window: without
+        # it, two concurrent creators both succeed.
+        #
+        # The IntegrityError branch is the lost race — the other request created
+        # the row between our SELECT and our INSERT. That is a normal outcome, so
+        # it is handled and answered like any other add, never surfaced as a 500.
+        try:
+            with transaction.atomic():
+                item, created = CartItem.objects.get_or_create(
+                    session_key=session_key, product=product,
+                    defaults={'quantity': 0},
+                )
+        except IntegrityError:
+            created = False
+            item = CartItem.objects.get(session_key=session_key, product=product)
+
+        current_qty = 0 if created else item.quantity
         new_qty = current_qty + quantity
 
         available = storefront_available_stock(request, product)
         if new_qty > available:
+            if created:
+                # The placeholder row was ours and holds nothing. Leaving it
+                # would put an empty line in a basket the shopper never filled.
+                item.delete()
             return Response(
                 {
                     'detail': (
@@ -654,14 +685,9 @@ class CartViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if existing:
-            existing.quantity = new_qty
-            existing.save(update_fields=['quantity'])
-            return Response(CartItemSerializer(existing, context=self._cart_context()).data)
-
-        item = CartItem.objects.create(
-            session_key=session_key,
-            product=product,
-            quantity=quantity,
-        )
+        # ADD, not SET. The endpoint's contract is "put n more in the basket",
+        # and only the database can add to a number it is holding without first
+        # telling us what it is.
+        CartItem.objects.filter(pk=item.pk).update(quantity=F('quantity') + quantity)
+        item.refresh_from_db(fields=['quantity'])
         return Response(CartItemSerializer(item, context=self._cart_context()).data)

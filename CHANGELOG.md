@@ -9,6 +9,66 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Fase 0.3 / P0-E — Integridad de cantidades: carrito, pedido e inventario
+
+**Estado: IMPLEMENTADO.** Migraciones **0041** (consolidación) y **0042** (constraints).
+
+### Seis cobradas, tres descontadas
+
+Medido, no deducido. Un pedido con dos líneas del mismo producto —3 y 3— dejaba
+el stock en 10 → **7**, con **un solo** movimiento de venta. Seis unidades salían
+de la tienda y los libros registraban la mitad.
+
+La causa **no** es un fallo del servicio de inventario. Su clave de idempotencia
+es `(order, product)`, que es exactamente lo que impide que un webhook de Stripe
+repetido descuente dos veces, y **no puede distinguir** un replay de un pedido que
+de verdad lleva el mismo artículo en dos líneas: escribe la salida de la primera y
+se salta la segunda.
+
+Así que la guarda se queda como está —debilitarla reabriría el doble descuento— y
+lo que se vuelve imposible es la línea duplicada.
+
+### Tres huecos encadenados
+
+1. **`CartItem` sin unicidad** y un writer que leía y luego escribía: dos altas
+   simultáneas no encontraban fila, ambas creaban una.
+2. **El checkout web** convertía cada fila del carrito en su propia línea y
+   validaba el stock **línea a línea**: `3 ≤ 5` dos veces sobre un estante de 5.
+3. La guarda anterior convertía el duplicado en pérdida de inventario.
+
+Ninguno es un fallo por separado.
+
+### Lo que cambia
+
+- **`UNIQUE(session_key, product)`** en `CartItem` y **`UNIQUE(order, product)`**
+  en `OrderItem`. La segunda no es una regla nueva: el POS ya fusionaba líneas
+  repetidas *«por corrección, no por limpieza»* según su propio código, y el
+  checkout nativo ya sumaba slugs repetidos. Sólo el web no lo hacía.
+- **`merge_lines()`** compartido, aplicado en `validate_lines_and_subtotal` y en
+  `create_pending_order`. Fusionar algo ya fusionado no hace nada, así que
+  hacerlo en ambos sitios no cuesta y elimina la necesidad de acordarse.
+- **Stock validado sobre el total** por producto, no por línea.
+- **Alta al carrito concurrency-safe**: `get_or_create` respaldado por la
+  constraint, incremento con `F()` calculado por la base de datos, y la carrera
+  perdida se atiende como un alta normal — nunca un 500.
+
+### Consolidación que se detiene antes de inventar
+
+La migración 0041 suma cantidades duplicadas. Para pedidos **comprueba los
+precios**: si dos líneas del mismo producto discrepan, **se detiene**. Sumarlas
+bajo uno de los dos precios cambiaría en silencio lo que se cobró en un pedido ya
+emitido, dentro de una migración que nadie está mirando. Negarse es el daño menor.
+
+### Lo que no queda probado aquí
+
+La suite local usa SQLite, que **serializa** los escritores y responde «database
+table is locked» en vez de intercalarlos. Los tests con hilos y barrera existen y
+se **omiten explícitamente** en SQLite; correrán el día que la suite apunte a
+PostgreSQL. Lo que sí queda garantizado con independencia del motor son las
+constraints y el incremento del lado de la base de datos, y eso está probado.
+
+---
+
 ## Fase 0.3 / P0-D — Reseñas tenant-safe
 
 **Estado: IMPLEMENTADO.** Sin migraciones.

@@ -26,6 +26,24 @@ STRIPE_WEBHOOK_SECRET=whsec_xxx
 STRIPE_CURRENCY=pen             # Soles peruanos — NO cambiar a usd
 STRIPE_DOMAIN=http://localhost:3000
 
+### Integridad de cantidades (Fase 0.3 / P0-E)
+
+```
+Añadir al carrito → get_or_create + UNIQUE(session_key, product)
+                    incremento con F(), calculado por la base de datos
+                              ↓
+                    UNA fila por producto y sesión
+Checkout          → merge_lines() → stock validado sobre el TOTAL
+                              ↓
+                    UNA línea por producto  ·  UNIQUE(order, product)
+Webhook de pago   → inventario bajo lock, salida idempotente por (order, product)
+```
+
+La regla que sostiene todo: **una línea por producto**. El descuento de stock es
+idempotente por `(order, product)` —eso es lo que hace seguro repetir un webhook
+de Stripe— y esa clave sólo es correcta mientras un pedido no lleve el mismo
+artículo dos veces.
+
 ### Autoridad de plataforma vs. de empresa (Fase 0.3 / P0-C)
 
 ```
