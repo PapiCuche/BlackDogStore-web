@@ -18,6 +18,7 @@ Nothing here can write `User.is_superuser`, `User.is_staff` or `UserProfile.role
 
 import logging
 
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -86,6 +87,54 @@ CAP_MEMBERSHIPS_VIEW = 'memberships.view'
 READ_MEMBERSHIPS = (CAP_MEMBERSHIPS_VIEW, CAP_MEMBERSHIPS_MANAGE)
 READ_ROLES = (CAP_ROLES_MANAGE, CAP_MEMBERSHIPS_VIEW, CAP_MEMBERSHIPS_MANAGE)
 READ_AREAS = (CAP_AREAS_MANAGE, CAP_MEMBERSHIPS_VIEW, CAP_MEMBERSHIPS_MANAGE)
+
+
+_ASSIGNMENT_EXISTS = 'Esa asignación ya existe.'
+
+# What "this assignment is already recorded" looks like, PER BACKEND.
+#
+# THE TWO DATABASES DO NOT SAY THE SAME THING, and assuming they did is a bug
+# that hides where it cannot be seen. PostgreSQL names the constraint:
+#
+#   duplicate key value violates unique constraint
+#   "unique_role_assignment_without_area"
+#
+# SQLite names the COLUMNS and never the constraint:
+#
+#   UNIQUE constraint failed:
+#   store_membershiproleassignment.membership_id,
+#   store_membershiproleassignment.role_id
+#
+# Matching only on the constraint name works in production and silently fails
+# in the test suite — which is the wrong way round, because it means the
+# 500 nobody wants is the one nobody tests. Both shapes are recognised.
+_DUPLICATE_ASSIGNMENT_CONSTRAINTS = (
+    'unique_role_assignment_per_area',
+    'unique_role_assignment_without_area',
+)
+_ASSIGNMENT_TABLE = 'store_membershiproleassignment'
+
+
+def _is_duplicate_assignment(exc) -> bool:
+    """
+    Whether this IntegrityError is the duplicate one, and not some other.
+
+    Kept NARROW on purpose. A broad "any IntegrityError means duplicate" would
+    report a genuine data fault to the operator as "esa asignación ya existe",
+    which is a lie that hides the real problem.
+    """
+    message = str(exc)
+    if any(name in message for name in _DUPLICATE_ASSIGNMENT_CONSTRAINTS):
+        return True
+    # SQLite: it must be a uniqueness failure, on THIS table, mentioning the
+    # columns these constraints are built from.
+    lowered = message.lower()
+    return (
+        'unique constraint failed' in lowered
+        and _ASSIGNMENT_TABLE in lowered
+        and f'{_ASSIGNMENT_TABLE}.membership_id' in lowered
+        and f'{_ASSIGNMENT_TABLE}.role_id' in lowered
+    )
 
 
 def _readable_company_ids(user, codes):
@@ -465,13 +514,32 @@ class AdminRoleAssignmentListView(APIView):
             membership=membership, role=role, area=area,
         ).exists():
             return Response(
-                {'detail': 'Esa asignación ya existe.'}, status=status.HTTP_400_BAD_REQUEST
+                {'detail': _ASSIGNMENT_EXISTS}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        assignment = MembershipRoleAssignment.objects.create(
-            membership=membership, role=role, area=area,
-            is_active=data.get('is_active', True), assigned_by=request.user,
-        )
+        # THE CHECK ABOVE IS THE FRIENDLY ANSWER; THE CONSTRAINT IS THE REAL ONE.
+        #
+        # `.exists()` then `.create()` is a read before a write, so two requests
+        # arriving together both pass it and both insert. Since M11 the database
+        # refuses the second — which is the point of putting it there — and an
+        # uncaught IntegrityError would surface to the loser as a 500: an
+        # alarming answer to a request whose only fault was arriving twice.
+        #
+        # So the known violation becomes the same 400 the pre-check gives, and
+        # EVERY OTHER IntegrityError is re-raised untouched. Swallowing all of
+        # them would hide a genuine data problem behind a validation message.
+        try:
+            with transaction.atomic():
+                assignment = MembershipRoleAssignment.objects.create(
+                    membership=membership, role=role, area=area,
+                    is_active=data.get('is_active', True), assigned_by=request.user,
+                )
+        except IntegrityError as exc:
+            if not _is_duplicate_assignment(exc):
+                raise
+            return Response(
+                {'detail': _ASSIGNMENT_EXISTS}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         AdminAuditLog.log(
             actor=request.user, action='role_assignment_created',
