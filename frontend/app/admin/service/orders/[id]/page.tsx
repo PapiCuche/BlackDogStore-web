@@ -27,6 +27,7 @@ import {
   type InternalContext,
 } from "../../../components/InternalControlGuard";
 import { Button, Confirm, ErrorNote, Field, Panel, Pill, dateTime } from "../../components/ServiceUi";
+import { EvidenceGallery } from "../../components/EvidenceGallery";
 import {
   CAP_DELIVERY_MANAGE,
   CAP_PAYMENTS_MANAGE,
@@ -265,6 +266,12 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         <QualitySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <PaymentSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <DeliverySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
+        <Panel
+          title="Evidencias"
+          subtitle="Fotografías del estado del equipo. Nacen internas: compartirlas con el cliente es una acción aparte."
+        >
+          <EvidenceGallery slug={slug} orderId={orderId} may={may} />
+        </Panel>
         <HistorySection history={data.history} />
       </div>
     </AdminShell>
