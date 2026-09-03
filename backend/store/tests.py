@@ -44423,3 +44423,268 @@ class M12DAuditTest(M12DEvidenceBase):
         meta = self._entry('service_evidence_uploaded', e.pk).metadata
         self.assertEqual(meta['repair_order_id'], self.order.pk)
         self.assertEqual(meta['stage'], _Ev.Stage.QUALITY)
+
+
+class M12DSurvivingDefenceTest(M12DEvidenceBase):
+    """
+    Las cuatro defensas que sobrevivieron a su propia retirada.
+
+    Ninguna estaba rota: cada una tenía detrás una red de seguridad que hacía el
+    mismo trabajo, así que quitarla no rompía nada visible. Eso no las hace
+    prescindibles — hace que nadie se enteraría de que desaparecieron. Estas
+    pruebas les preguntan directamente, en vez de preguntarle a la red.
+    """
+
+    # --- 1. La allowlist de formatos ---------------------------------------
+    #
+    # El hueco REAL de los cuatro. Un PDF o un ZIP no llegan a la allowlist:
+    # revientan antes, al decodificar. Lo que la allowlist gobierna son los
+    # formatos que Pillow SÍ sabe abrir y que aun así no queremos — y de ésos no
+    # había ni un test.
+
+    def _encoded(self, fmt):
+        import io as _io
+        from PIL import Image as _Img
+        buf = _io.BytesIO()
+        _Img.new('RGB', (600, 400), (90, 120, 60)).save(buf, fmt)
+        return buf.getvalue()
+
+    def test_gif_is_refused_even_though_pillow_can_read_it(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(self._encoded('GIF'))
+
+    def test_bmp_is_refused_even_though_pillow_can_read_it(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(self._encoded('BMP'))
+
+    def test_tiff_is_refused_even_though_pillow_can_read_it(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(self._encoded('TIFF'))
+
+    def test_the_allowlist_names_exactly_the_photographic_formats(self):
+        self.assertEqual(
+            _ei.ACCEPTED_INPUT_FORMATS,
+            frozenset({'JPEG', 'PNG', 'WEBP', 'HEIF', 'HEIC', 'MPO'}),
+        )
+
+    # --- 2. El alcance por sucursal ----------------------------------------
+    #
+    # `get_order()` ya acota por sucursales visibles, así que por HTTP una orden
+    # de otro local devuelve 404 antes de llegar a la comprobación de etapa. La
+    # comprobación sigue siendo correcta —dos ejes, capacidad y lugar— y se le
+    # pregunta directamente.
+
+    def test_the_stage_check_asks_for_the_branch_too(self):
+        from .models import Branch, MembershipBranchAccess
+        other_branch = Branch.objects.create(
+            company=self.company, name='Sucursal M12D',
+        )
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.create(
+            membership=self.membership, branch=self.order.branch,
+        )
+        cache.clear()
+        self.assertTrue(_ev_svc.may_act_on_stage(
+            self.staff, self.company, _Ev.Stage.INTAKE, branch=self.order.branch,
+        ))
+        self.assertFalse(
+            _ev_svc.may_act_on_stage(
+                self.staff, self.company, _Ev.Stage.INTAKE, branch=other_branch,
+            ),
+            'la autoridad de etapa ignoró la sucursal',
+        )
+
+    # --- 3. La limpieza de metadata ----------------------------------------
+    #
+    # El codificador WebP de Pillow no arrastra EXIF, así que quitar `_strip`
+    # dejaba la suite verde. Eso hace que la garantía de privacidad dependa del
+    # comportamiento de una librería y no de nuestro código: una versión futura
+    # que decidiera preservar metadata filtraría GPS en silencio. `_strip` es el
+    # cinturón; el codificador, los tirantes.
+
+    def test_strip_removes_the_metadata_from_the_image_itself(self):
+        import io as _io
+        from PIL import Image as _Img
+        from PIL.ExifTags import IFD
+        exif = _Img.Exif()
+        exif[272] = 'iPhone 15 Pro'
+        g = exif.get_ifd(IFD.GPSInfo)
+        g[1] = 'S'; g[2] = (16.0, 23.0, 59.0)
+        buf = _io.BytesIO()
+        _Img.new('RGB', (400, 300), (100, 100, 100)).save(
+            buf, 'JPEG', exif=exif.tobytes(),
+        )
+        loaded = _Img.open(_io.BytesIO(buf.getvalue()))
+        loaded.load()
+        self.assertTrue(loaded.getexif(), 'el fixture no traía EXIF')
+
+        stripped = _ei._strip(loaded)
+        self.assertEqual(
+            len(stripped.getexif()), 0,
+            'la limpieza depende del codificador en vez de hacerla ella',
+        )
+        self.assertEqual(stripped.size, loaded.size)
+
+    # --- 4. La idempotencia de subida --------------------------------------
+    #
+    # La constraint de base de datos atrapa el duplicado y devuelve al ganador,
+    # así que el resultado observable es idéntico con o sin la consulta previa.
+    # Lo que la consulta evita es ESCRIBIR un objeto para borrarlo acto seguido:
+    # un reintento no debería costar una escritura en el bucket.
+
+    def test_a_retry_does_not_even_write_to_storage(self):
+        from unittest.mock import patch
+        self.upload(idempotency_key='cam-storage')
+        with patch.object(
+            _ev_store, 'save', wraps=_ev_store.save,
+        ) as spy:
+            self.upload(idempotency_key='cam-storage')
+        self.assertEqual(
+            spy.call_count, 0,
+            'el reintento escribió un objeto para después borrarlo',
+        )
+
+
+class M12DPilotPaletteTest(TestCase):
+    """
+    §DECISIÓN 1 — la paleta del manual v3.0, en la configuración del PILOTO.
+
+    BLACK DOG STORE ES EL PILOTO, NO EL BRANDING DEL SaaS. Estas pruebas
+    existen sobre todo para lo segundo: que ninguna otra empresa herede estos
+    colores, ni hoy ni al crear una nueva.
+    """
+
+    def setUp(self):
+        self.module = importlib.import_module(
+            'store.migrations.0065_pilot_brand_palette'
+        )
+        self.pilot = Company.objects.get(slug=self.module.PILOT_SLUG)
+        self.settings_row = CompanySettings.objects.get(company=self.pilot)
+
+    def _apps(self):
+        outer = self
+
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                outer.assertEqual(app_label, 'store')
+                return {
+                    'Company': Company,
+                    'CompanySettings': CompanySettings,
+                }[model_name]
+        return _Apps()
+
+    def _theme(self, row):
+        return {f: (getattr(row, f) or '').upper() for f in self.module._FIELDS}
+
+    def test_the_pilot_wears_the_manual_palette_after_migration(self):
+        expected = {k: v.upper() for k, v in self.module._BRAND_V3_THEME.items()}
+        self.assertEqual(self._theme(self.settings_row), expected)
+
+    def test_the_warm_white_replaced_pure_white(self):
+        """
+        No es cosmético. Blanco puro sobre negro da el contraste duro de una
+        interfaz de sistema; el cálido es lo que hace que se lea como marca.
+        """
+        self.assertEqual(self.settings_row.text_color.upper(), '#F5F3EE')
+        self.assertNotEqual(self.settings_row.text_color.upper(), '#FFFFFF')
+
+    def test_the_gold_is_the_accent_and_never_the_primary(self):
+        """
+        `primary_color` pinta botones sólidos y bloques principales: el dorado
+        ahí sería el color dominante de cada pantalla, y el manual pide 3-5%.
+        """
+        self.assertEqual(self.settings_row.accent_color.upper(), '#C8A45D')
+        self.assertNotEqual(self.settings_row.primary_color.upper(), '#C8A45D')
+
+    def test_a_brand_new_company_does_not_inherit_the_pilot_palette(self):
+        """La prueba que más importa de todas: no es el default del SaaS."""
+        from .company_settings import NEUTRAL_THEME
+        other = _saas_company('Ajena Marca', 'm12d-marca', tax_id='20780070001')
+        # Por el camino REAL de alta de empresa, que es donde se aplica el tema
+        # neutro. Un `get_or_create` desnudo deja los colores vacíos y no
+        # respondería la pregunta que este test hace.
+        provision_company_access_defaults(other)
+        row = CompanySettings.objects.get(company=other)
+        theme = {f: (getattr(row, f) or '').upper() for f in self.module._FIELDS}
+
+        # Sobre el tema COMPLETO, no campo a campo. El neutro de la plataforma
+        # también usa `#0A0A0A` de fondo, porque negro es negro: exigir que
+        # ningún valor coincida convertiría una coincidencia legítima en una
+        # falsa alarma. Lo que no debe ocurrir es heredar la paleta ENTERA.
+        pilot = {f: v.upper() for f, v in self.module._BRAND_V3_THEME.items()}
+        self.assertNotEqual(theme, pilot, 'la paleta del piloto se filtró')
+        self.assertNotIn(
+            '#C8A45D', theme.values(),
+            'el dorado de Black Dog llegó a otra empresa',
+        )
+        self.assertNotIn(
+            '#F5F3EE', theme.values(),
+            'el blanco cálido de Black Dog llegó a otra empresa',
+        )
+        self.assertEqual(
+            {f: (getattr(row, f) or '') for f in self.module._FIELDS},
+            {f: NEUTRAL_THEME[f] for f in self.module._FIELDS},
+            'una empresa nueva debe nacer con el tema neutro de la plataforma',
+        )
+
+    def test_another_tenant_is_untouched_by_the_migration(self):
+        other = _saas_company('Intacta SA', 'm12d-intacta', tax_id='20780070002')
+        row = CompanySettings.objects.create(
+            company=other, primary_color='#123456', accent_color='#654321',
+            background_color='#111111', surface_color='#222222',
+            text_color='#333333', border_color='#444444',
+        )
+        before = self._theme(row)
+        self.module.apply_brand_palette(self._apps(), None)
+        row.refresh_from_db()
+        self.assertEqual(self._theme(row), before)
+
+    def test_a_pilot_that_customised_its_colours_is_left_alone(self):
+        """
+        Si el taller ya eligió, esos valores son suyos. Misma regla que M12B.1
+        estableció para los presets de roles, y por el mismo motivo.
+        """
+        self.settings_row.accent_color = '#00FF00'
+        self.settings_row.save(update_fields=['accent_color'])
+        self.module.apply_brand_palette(self._apps(), None)
+        self.settings_row.refresh_from_db()
+        self.assertEqual(self.settings_row.accent_color.upper(), '#00FF00')
+
+    def test_it_is_safe_when_the_pilot_does_not_exist(self):
+        """Una base arrancada de otra forma no es un error."""
+        slug = self.module.PILOT_SLUG
+        self.module.PILOT_SLUG = 'no-existe-esta-empresa'
+        try:
+            self.module.apply_brand_palette(self._apps(), None)
+        finally:
+            self.module.PILOT_SLUG = slug
+
+    def test_the_previous_shape_is_frozen_not_imported(self):
+        """
+        La lección de M12B.1: una migración reconoce el pasado con su propio
+        literal, nunca importando lo que el código significa hoy.
+        """
+        import ast, inspect
+        tree = ast.parse(inspect.getsource(self.module))
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef):
+                break
+            names = {a.name for n in ast.walk(node)
+                     if isinstance(n, ast.ImportFrom) for a in n.names}
+            self.assertNotIn('NEUTRAL_THEME', names)
+        self.assertEqual(len(self.module._PREVIOUS_PILOT_THEME), 6)
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        self.module.apply_brand_palette(self._apps(), None)
+        self.settings_row.refresh_from_db()
+        first = self._theme(self.settings_row)
+        self.module.apply_brand_palette(self._apps(), None)
+        self.settings_row.refresh_from_db()
+        self.assertEqual(self._theme(self.settings_row), first)
+
+    def test_every_colour_is_a_valid_hex(self):
+        import re
+        for field, value in self.module._BRAND_V3_THEME.items():
+            self.assertRegex(value, r'^#[0-9A-Fa-f]{6}$', field)
