@@ -67,11 +67,11 @@ lo que decide si una función se construye o se clasifica PENDIENTE.
 | Stock por sucursal | `inventory_services.py:1108` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
 | Kardex / movimientos | `inventory_services.py:1318` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
 | Entrada / salida manual | `inventory_services.apply_manual_stock_movement:312` | ✅ | ✅ `inventory/adjustments/` | ✅ | `inventory.adjust` | **A** |
-| Transferencia — crear | `inventory_services.create_stock_transfer:612` | `/admin/inventory/transfers` | PENDIENTE | PENDIENTE | por confirmar en IP1B | **C** |
-| Transferencia — líneas | `inventory_services.set_transfer_item:638` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
-| Transferencia — despachar | `inventory_services.dispatch_transfer:673` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
-| Transferencia — recibir | `inventory_services.receive_transfer:761` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
-| Transferencia — cancelar | `inventory_services.cancel_transfer:833` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
+| Transferencia — crear | `inventory_services.create_stock_transfer:612` | `/admin/inventory/transfers` | **`inventory/transfers/`** | pendiente | `inventory.adjust` | **B** |
+| Transferencia — líneas | `inventory_services.set_transfer_item:638` | ✅ | **`inventory/transfers/<id>/items/`** | pendiente | `inventory.adjust` | **B** |
+| Transferencia — despachar | `inventory_services.dispatch_transfer:673` | ✅ | **`inventory/transfers/<id>/dispatch/`** | pendiente | `inventory.adjust` | **B** |
+| Transferencia — recibir | `inventory_services.receive_transfer:761` | ✅ | **`inventory/transfers/<id>/receive/`** | pendiente | `inventory.adjust` | **B** |
+| Transferencia — cancelar | `inventory_services.cancel_transfer:833` | ✅ | **`inventory/transfers/<id>/cancel/`** | pendiente | `inventory.adjust` | **B** |
 | Recuento — crear | `inventory_services.create_inventory_count:884` | `/admin/inventory/counts` | PENDIENTE | PENDIENTE | ídem | **C** |
 | Recuento — contar | `inventory_services.set_count_item:901` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
 | Recuento — aprobar | `inventory_services.approve_inventory_count:947` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
@@ -156,6 +156,11 @@ capability que el backend exige, y el SHA en el que esa ruta se mergeó.
 | `service.payments.reverse` | `.../payments/<id>/reverse/` | `service.payments.manage` | M12B |
 | `sales.pos.sale` | `internal/<slug>/sales/pos/sales/` | `sales.pos.use` | **IP1A** |
 | `sales.pos.preview` | `internal/<slug>/sales/pos/preview/` | `sales.pos.use` | **IP1A** |
+| `inventory.transfer.create` | `internal/<slug>/inventory/transfers/` | `inventory.adjust` | **IP1B** |
+| `inventory.transfer.items` | `internal/<slug>/inventory/transfers/<id>/items/` | `inventory.adjust` | **IP1B** |
+| `inventory.transfer.dispatch` | `internal/<slug>/inventory/transfers/<id>/dispatch/` | `inventory.adjust` | **IP1B** |
+| `inventory.transfer.receive` | `internal/<slug>/inventory/transfers/<id>/receive/` | `inventory.adjust` | **IP1B** |
+| `inventory.transfer.cancel` | `internal/<slug>/inventory/transfers/<id>/cancel/` | `inventory.adjust` | **IP1B** |
 
 ---
 
@@ -166,3 +171,27 @@ capability que el backend exige, y el SHA en el que esa ruta se mergeó.
 3. Ninguna operación TIPO **D** o **E** se construye en Mobile.
 4. `INTEGRADO` solo cuando lo están **todas** las superficies que la fila nombra;
    si falta una, se dice cuál.
+
+
+## Transferencias — las dos preguntas de sucursal
+
+**Ver** una transferencia necesita acceso a **cualquiera** de los dos extremos:
+quien dirige la tienda de destino tiene que ver lo que le llega aunque el origen
+sea una tienda en la que nunca entra.
+
+**Operarla** necesita **ambos**. Despachar saca unidades de un estante y recibir
+las pone en otro; quien alcanza solo uno de los dos no está en posición de
+afirmar que ocurrió todo.
+
+Las dos reglas son las de la superficie Web —`visible_branches` y
+`assert_branch_access`— reutilizadas, no reescritas.
+
+**El stock se mueve en dos transiciones, no en cuatro.** Entre despachar y
+recibir las unidades no están en ningún estante: una tienda que envió algo está
+corta antes de que la otra esté larga, y fingir que el movimiento es instantáneo
+dejaría uno de los dos recuentos mal mientras la furgoneta está en la carretera.
+
+**Despachar y recibir son idempotentes** en el dominio: repetir la llamada
+devuelve el mismo estado y no vuelve a mover nada. Mejor que un error — un
+doble toque en un teléfono, o un reintento tras una respuesta perdida, no es un
+fallo del operador y no debe parecerlo.

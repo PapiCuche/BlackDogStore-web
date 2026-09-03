@@ -53,6 +53,14 @@ from .v1_service_views import (
     V1ServiceOrderListView,
     V1ServiceOrderTransitionView,
 )
+from .v1_transfer_views import (
+    V1TransferCancelView,
+    V1TransferDetailView,
+    V1TransferDispatchView,
+    V1TransferItemsView,
+    V1TransferListView,
+    V1TransferReceiveView,
+)
 from .v1_pos_views import (
     V1PosContextView,
     V1PosPreviewView,
@@ -186,6 +194,35 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/inventory/movements/',
         V1InventoryMovementsView.as_view(), name='v1-internal-inventory-movements',
+    ),
+    # ── IP1B — inter-branch transfers, for native clients ────────────────────
+    # One endpoint per TRANSITION, not a status field somebody PATCHes: they are
+    # different acts, and a single "set the status" route would let a client
+    # assert `received` for stock that never left. The state machine lives in
+    # `inventory_services`, which both surfaces call.
+    path(
+        'internal/<slug:company_slug>/inventory/transfers/',
+        V1TransferListView.as_view(), name='v1-internal-transfers',
+    ),
+    path(
+        'internal/<slug:company_slug>/inventory/transfers/<int:pk>/',
+        V1TransferDetailView.as_view(), name='v1-internal-transfer-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/inventory/transfers/<int:pk>/items/',
+        V1TransferItemsView.as_view(), name='v1-internal-transfer-items',
+    ),
+    path(
+        'internal/<slug:company_slug>/inventory/transfers/<int:pk>/dispatch/',
+        V1TransferDispatchView.as_view(), name='v1-internal-transfer-dispatch',
+    ),
+    path(
+        'internal/<slug:company_slug>/inventory/transfers/<int:pk>/receive/',
+        V1TransferReceiveView.as_view(), name='v1-internal-transfer-receive',
+    ),
+    path(
+        'internal/<slug:company_slug>/inventory/transfers/<int:pk>/cancel/',
+        V1TransferCancelView.as_view(), name='v1-internal-transfer-cancel',
     ),
     path(
         'internal/<slug:company_slug>/inventory/adjustments/',
