@@ -1,0 +1,168 @@
+# Matriz de paridad funcional interna
+
+**Contrato base:** `origin/master` — la columna «SHA» de cada operación dice en
+qué commit apareció su ruta v1.
+
+> **ESTE DOCUMENTO NO CONCEDE PERMISOS.** Es un inventario, no autoridad. Toda
+> capability se resuelve en el servidor, en cada petición, contra
+> `resolve_capabilities()`. Una fila que diga `sales.pos.use` describe lo que el
+> backend exigirá; no hace que nadie lo tenga.
+
+## Para qué existe
+
+Backend manda. Web y Mobile representan.
+
+Una operación solo puede integrarse en un cliente si **ya existe** en el dominio
+del backend y es alcanzable. Esta tabla es el registro de qué existe dónde, y es
+lo que decide si una función se construye o se clasifica PENDIENTE.
+
+## Cómo se lee
+
+**TIPO**
+
+| | significado | qué hacer |
+|---|---|---|
+| **A** | Backend + Web + V1 + Mobile | nada: paridad cerrada |
+| **B** | Backend + Web + V1, falta Mobile | integrar en Mobile |
+| **C** | Backend + Web, **sin V1** | crear adapter V1 → merge → smoke → Mobile |
+| **D** | Backend existe, **ninguna pantalla Web lo alcanza** | evaluar paridad Web **antes** que Mobile |
+| **E** | El dominio **no existe** | PENDIENTE. Mobile prohibido |
+
+**Estado:** `IMPLEMENTADO` · `PARCIAL` · `PENDIENTE` · `PROPUESTA` · `OBSOLETO`.
+
+---
+
+## VENTAS
+
+| Función | Backend | Web | V1 | Mobile | Capability | TIPO |
+|---|---|---|---|---|---|---|
+| POS — contexto | `pos_views.py:135` | `/admin/sales/pos` | **`sales/pos/context/`** | pendiente | `sales.pos.use` | **B** |
+| POS — buscar producto | `pos_views.py:253` | ✅ | **`sales/pos/products/search/`** | pendiente | `sales.pos.use` | **B** |
+| POS — leer código | `pos_views.py:210` | ✅ | **`sales/pos/products/lookup/`** | pendiente | `sales.pos.use` | **B** |
+| POS — previsualizar | `pos_services.build_pos_sale:658` | ✅ | **`sales/pos/preview/`** | pendiente | `sales.pos.use` | **B** |
+| **POS — registrar venta** | **`pos_services.create_pos_sale:768`** | ✅ | **`sales/pos/sales/`** | pendiente | `sales.pos.use` | **B** |
+| POS — asignar vendedor | `pos_services.resolve_pos_seller:554` | ✅ | ✅ (dentro de la venta) | pendiente | `sales.pos.assign_seller` | **B** |
+| POS — descuento manual | `pos_services.resolve_discount:292` | ✅ | ✅ (dentro de la venta) | pendiente | `sales.discounts.apply` | **B** |
+| POS — cupón | `pos_services.resolve_discount:329` | ✅ | ✅ (dentro de la venta) | pendiente | — (ninguna, por diseño) | **B** |
+| POS — promoción automática | `promotion_services.py:119` | ✅ | ✅ (la calcula el servidor) | pendiente | — (automática) | **B** |
+| POS — comisión | `pos_services.calculate_commission:419` | ✅ | ✅ (la devuelve la venta) | pendiente | `sales.commissions.view` para verla | **B** |
+| POS — combos sugeridos | `promotion_services.py:182` | ✅ | PENDIENTE | PENDIENTE | `sales.pos.use` | **C** |
+| Pedidos — listar / abrir | `v1_internal_views.py:143` | ✅ | ✅ | ✅ | `sales.orders.view` | **A** |
+| Pedidos — fulfillment | `order_fulfillment_services.py:68` | ✅ | ✅ | ✅ | `sales.orders.manage` | **A** |
+| Notas de venta | `sales_note_services.py:55` | ✅ | PENDIENTE | PENDIENTE | `sales.notes.manage` | **C** |
+| Comisiones — informe | `sales_analytics_views.py:512` | ✅ | PENDIENTE | PENDIENTE | `sales.commissions.view` | **C** |
+| Comisiones — tarifas | `pos_views.py:711` | ✅ | PENDIENTE | PENDIENTE | `sales.commissions.manage` | **C** |
+| Analytics de ventas | `sales_analytics_views.py:148` | ✅ | PENDIENTE | PENDIENTE | `sales.analytics.view` | **C** |
+| Promociones — CRUD | `promotion_views.py:91` | ✅ (update solo archiva) | PENDIENTE | PENDIENTE | `sales.promotions.*` | **C** |
+| Cupones | `promotion_views.py:417` | ✅ | PENDIENTE | PENDIENTE | `sales.promotions.*` | **C** |
+| Códigos de barras — gestionar | `pos_views.py:465` | **ninguna página lo llama** | PENDIENTE | PENDIENTE | `products.manage` | **D** |
+| Anulación / devolución POS | **no existe** | — | — | — | — | **E** |
+| Arqueo / sesión de caja | **no existe** | — | — | — | — | **E** |
+
+## INVENTARIO
+
+| Función | Backend | Web | V1 | Mobile | Capability | TIPO |
+|---|---|---|---|---|---|---|
+| Resumen | `inventory_services.py:1262` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
+| Stock por sucursal | `inventory_services.py:1108` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
+| Kardex / movimientos | `inventory_services.py:1318` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
+| Entrada / salida manual | `inventory_services.apply_manual_stock_movement:312` | ✅ | ✅ `inventory/adjustments/` | ✅ | `inventory.adjust` | **A** |
+| Transferencia — crear | `inventory_services.create_stock_transfer:612` | `/admin/inventory/transfers` | PENDIENTE | PENDIENTE | por confirmar en IP1B | **C** |
+| Transferencia — líneas | `inventory_services.set_transfer_item:638` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
+| Transferencia — despachar | `inventory_services.dispatch_transfer:673` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
+| Transferencia — recibir | `inventory_services.receive_transfer:761` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
+| Transferencia — cancelar | `inventory_services.cancel_transfer:833` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
+| Recuento — crear | `inventory_services.create_inventory_count:884` | `/admin/inventory/counts` | PENDIENTE | PENDIENTE | ídem | **C** |
+| Recuento — contar | `inventory_services.set_count_item:901` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
+| Recuento — aprobar | `inventory_services.approve_inventory_count:947` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
+| Recuento — cancelar | `inventory_services.cancel_inventory_count:1050` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
+| Reposición | `inventory_services.py:1153` | ✅ | PENDIENTE | PENDIENTE | `inventory.reports` | **C** |
+| Reportes (8 funciones) | `inventory_services.py:1135-1424` | ✅ | PENDIENTE | PENDIENTE | `inventory.reports` | **C** |
+| Importación Excel | `stock_import_services.py` | ✅ | PENDIENTE | PENDIENTE | `inventory.adjust` | **C** |
+| Exportación | `inventory_views.py` | ✅ | PENDIENTE | PENDIENTE | `inventory.reports` | **C** |
+| Serial / IMEI | **no existe** | — | — | — | — | **E** |
+
+## PRODUCTOS · CLIENTES
+
+| Función | Backend | Web | V1 | Mobile | Capability | TIPO |
+|---|---|---|---|---|---|---|
+| Producto — búsqueda interna | `pos_views.py:253` | ✅ | **`sales/pos/products/search/`** | pendiente | `sales.pos.use` | **B** |
+| Producto — CRUD | `admin_views.AdminProduct*` | `/admin/products` | PENDIENTE | PENDIENTE | `products.manage` | **C** |
+| Producto — importación | `import_services.py` | ✅ | PENDIENTE | PENDIENTE | `products.manage` | **C** |
+| Categorías | `admin_views` | ✅ | PENDIENTE | PENDIENTE | `products.manage` | **C** |
+| Clientes — CRUD interno | `customer_services.py` | `/admin/customers` | PENDIENTE | PENDIENTE | `service.customers.*` | **C** |
+
+## SERVICIO TÉCNICO (M8–M12B — regresión)
+
+Toda la cadena está en **TIPO A**: recepción, diagnóstico, cotización,
+aprobación del cliente, ejecución, repuestos, control de calidad, entrega y
+cobro. 34 rutas v1, 32 consumidas por Mobile.
+
+---
+
+## Matriz de capabilities — **medida**, no leída
+
+Ejecutada contra `resolve_capabilities()` sobre una empresa aprovisionada.
+
+| rol | pos.use | assign_seller | discounts | ord.view | ord.manage | notes | comm.view | analytics | promo.* | inv.view | inv.adjust | inv.reports | prod.view | prod.manage |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **Administrador** | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí |
+| **Ventas** | **sí** | **no** | **no** | sí | sí | sí | no | no | no | **no** | no | no | sí | no |
+| **Inventario** | **no** | no | no | no | no | no | no | no | no | sí | sí | sí | sí | no |
+| Servicio Técnico | no | no | no | no | no | no | no | no | no | no | no | no | no | no |
+| Supervisor Técnico | no | no | no | no | no | no | no | no | no | no | no | no | no | no |
+| **Platform master** (tenant explícito) | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí | sí |
+| Rol custom «solo caja» | **sí** | no | no | no | no | no | no | no | no | no | no | no | no | no |
+| **Admin de OTRA empresa** | **no** | no | no | no | no | no | no | no | no | no | no | no | no | no |
+| Cliente | no | no | no | no | no | no | no | no | no | no | no | no | no | no |
+
+Tres cosas que esto fija y que no se pueden asumir:
+
+- **`Ventas` ≠ todo Sales.** Tiene la caja; no tiene asignación de vendedor, ni
+  descuento manual, ni comisiones, ni analytics, ni promociones, ni inventario.
+- **`Inventario` no tiene POS.** Trabajar en la tienda no es cobrar en ella.
+- **El admin de otra empresa resuelve a cero.** El aislamiento es del resolver,
+  no de una comprobación en una vista.
+
+### Presets que los documentos nombran y `company_provisioning` NO crea
+
+`Recepción` y `Control de Calidad` aparecen en la documentación histórica y **no
+existen**. Se clasifican **PROPUESTA**. Crearlos exige decidir qué autoridad
+recibe cada uno, y esa es una decisión de producto que no se toma de pasada.
+
+---
+
+## Manifiesto de contrato — mutaciones internas de Mobile
+
+Toda mutación interna de Mobile debe tener una fila aquí, con la ruta y la
+capability que el backend exige, y el SHA en el que esa ruta se mergeó.
+
+| operación | endpoint v1 | capability | SHA que la introdujo |
+|---|---|---|---|
+| `sales.orders.fulfillment` | `internal/<slug>/orders/<id>/fulfillment/` | `sales.orders.manage` | histórico |
+| `inventory.adjust` | `internal/<slug>/inventory/adjustments/` | `inventory.adjust` | histórico |
+| `service.orders.create` | `internal/<slug>/service/orders/` | `service.orders.create` | M8 |
+| `service.orders.transition` | `internal/<slug>/service/orders/<id>/transition/` | `service.orders.manage` | M8 |
+| `service.orders.assignment` | `internal/<slug>/service/orders/<id>/assignment/` | `service.orders.manage` | M8 |
+| `service.devices.create` | `internal/<slug>/service/devices/` | `service.devices.manage` | M8 |
+| `service.diagnostic.*` | `.../diagnostics/`, `.../diagnostics/<id>/` | `service.diagnostic.manage` | M9 |
+| `service.quote.*` | `.../quotes/…` (5 rutas) | `service.diagnostic.manage` | M9 |
+| `service.quote.decision` | `customer/<slug>/repairs/<id>/quotes/<id>/decision/` | — (dueño) | M9 |
+| `service.execution.*` | `.../execution/…` (5 rutas) | `service.repair.manage` | M10 |
+| `service.parts.*` | `.../parts/`, `.../parts/<id>/reverse/` | `service.repair.manage` | M10 |
+| `service.quality.*` | `.../quality/…` (4 rutas) | `service.quality.manage` | M11 |
+| `service.delivery.create` | `.../delivery/` | `service.delivery.manage` | M12 |
+| `service.payments.create` | `.../payments/` | `service.payments.manage` | M12B |
+| `service.payments.reverse` | `.../payments/<id>/reverse/` | `service.payments.manage` | M12B |
+| `sales.pos.sale` | `internal/<slug>/sales/pos/sales/` | `sales.pos.use` | **IP1A** |
+| `sales.pos.preview` | `internal/<slug>/sales/pos/preview/` | `sales.pos.use` | **IP1A** |
+
+---
+
+## Reglas que esta matriz hace cumplir
+
+1. Ninguna mutación de Mobile sin una ruta v1 **mergeada** en `origin/master`.
+2. Ninguna capability que no exista en `capabilities.py`.
+3. Ninguna operación TIPO **D** o **E** se construye en Mobile.
+4. `INTEGRADO` solo cuando lo están **todas** las superficies que la fila nombra;
+   si falta una, se dice cuál.
