@@ -135,7 +135,16 @@ export default function Hero() {
 
           {/* Right: dog mascot graphic */}
           <div className="relative flex items-center justify-center lg:justify-end">
-            <div className="relative flex h-[340px] w-[340px] items-center justify-center sm:h-[420px] sm:w-[420px]">
+            {/*
+              FLUIDO, NO FIJO. Esto medía 340 px de lado. Con el `px-6` del
+              contenedor, en un viewport de 320 px el espacio disponible son
+              272 px: el cuadro desbordaba 68 px y la portada tenía scroll
+              horizontal en el móvil más estrecho que soportamos.
+
+              `aspect-square` mantiene la proporción sin fijar el lado, y
+              `max-w` conserva el tamaño de siempre en cuanto hay sitio.
+            */}
+            <div className="relative flex aspect-square w-full max-w-[340px] items-center justify-center sm:max-w-[420px]">
               {/* Subtle glow rings */}
               <div className="absolute inset-8 rounded-full border border-white/[0.04]" />
               <div className="absolute inset-20 rounded-full border border-white/[0.03]" />
