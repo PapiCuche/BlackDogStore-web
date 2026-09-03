@@ -13477,11 +13477,22 @@ class Phase3IdentityFallbackTest(TestCase):
         self.assertEqual(branding.logo_url, '')
 
     def test_css_variable_names_are_fixed(self):
+        """
+        La lista es un CONTRATO, no una instantánea: el frontend tiene una
+        allowlist con estos mismos nombres y descarta cualquier otro antes de
+        llegar al atributo `style`. Añadir una variable al backend sin añadirla
+        allí produce el síntoma exacto que tuvo M12E — el backend la manda y la
+        página no la ve.
+
+        Las dos de tema claro se suman en M12E, a propósito y con su contraparte
+        en `app/lib/storefront.ts`.
+        """
         branding = company_branding(self.bare)
         self.assertEqual(
             set(branding.css_variables()),
             {'--brand-primary', '--brand-accent', '--brand-background',
-             '--brand-surface', '--brand-text', '--brand-border'},
+             '--brand-surface', '--brand-text', '--brand-border',
+             '--brand-light-background', '--brand-light-surface'},
         )
 
 
@@ -44771,3 +44782,84 @@ class M12DPilotLogoTest(TestCase):
         doc = inspect.getdoc(self.module) or ''
         self.assertIn('logo_horizontal_url', doc)
         self.assertIn('CABECERA', doc)
+
+
+class M12EAssetUrlValidationTest(TestCase):
+    """
+    M12E — la regresión que la suite completa atrapó, y su defensa.
+
+    Ampliar `logo_url` de `URLField` a `CharField` era necesario —estas rutas
+    las sirve el frontend, y una URL absoluta rompe el logo al cambiar de host—
+    pero se llevó por delante TODA la validación. El valor acaba en el `src` de
+    una imagen: un esquema que el navegador pueda interpretar no es una ruta de
+    logotipo por mucho que quepa en una columna de texto.
+    """
+
+    def setUp(self):
+        self.company = _saas_company('Assets SA', 'm12e-assets', tax_id='20780090001')
+        self.row, _ = CompanySettings.objects.get_or_create(company=self.company)
+
+    def _set(self, field, value):
+        from django.core.exceptions import ValidationError
+        setattr(self.row, field, value)
+        try:
+            self.row.save(update_fields=[field])
+            return None
+        except ValidationError as exc:
+            return exc
+
+    FIELDS = (
+        'logo_url', 'logo_on_light_url', 'logo_on_dark_url',
+        'logo_horizontal_on_light_url', 'logo_horizontal_on_dark_url',
+    )
+
+    def test_a_site_relative_path_is_accepted(self):
+        """Lo que M12E necesitaba y un `URLField` rechazaba."""
+        for field in self.FIELDS:
+            self.assertIsNone(
+                self._set(field, '/assets/branding/logo.png'), field,
+            )
+
+    def test_an_absolute_https_url_is_still_accepted(self):
+        """Ampliar el tipo no puede romper a quien ya guardaba una URL."""
+        self.assertIsNone(self._set('logo_url', 'https://cdn.example/logo.png'))
+
+    def test_javascript_scheme_is_refused(self):
+        for field in self.FIELDS:
+            self.assertIsNotNone(self._set(field, 'javascript:alert(1)'), field)
+
+    def test_data_scheme_is_refused(self):
+        self.assertIsNotNone(
+            self._set('logo_url', 'data:text/html;base64,PHNjcmlwdD4='),
+        )
+
+    def test_a_protocol_relative_url_is_refused(self):
+        """
+        `//evil.example/logo.png` PARECE una ruta del sitio y es una URL
+        absoluta de protocolo relativo. Empieza por «/», así que un filtro
+        ingenuo la deja pasar.
+        """
+        self.assertIsNotNone(self._set('logo_url', '//evil.example/logo.png'))
+
+    def test_empty_is_accepted(self):
+        """Vacío significa «no tengo esta variante», y es legítimo."""
+        for field in self.FIELDS:
+            self.assertIsNone(self._set(field, ''), field)
+
+    def test_the_validator_runs_on_save_not_only_in_a_form(self):
+        """
+        `full_clean()` no lo llama `save()`, así que un validador colgado del
+        campo protege un serializador y un formulario de admin y nada más. Ésa
+        es exactamente la razón de que una ruta escrita por una migración de
+        datos llegara a la base sin comprobarse.
+        """
+        from django.core.exceptions import ValidationError
+        self.row.logo_url = 'javascript:alert(1)'
+        with self.assertRaises(ValidationError):
+            self.row.save()
+
+    def test_the_light_colours_are_validated_too(self):
+        from django.core.exceptions import ValidationError
+        self.row.light_background_color = 'url(evil)'
+        with self.assertRaises(ValidationError):
+            self.row.save()

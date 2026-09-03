@@ -2235,6 +2235,40 @@ class InventoryCountItem(models.Model):
 # SaaS Phase 3 — company configuration and branding
 # ---------------------------------------------------------------------------
 
+def validate_asset_url(value):
+    """
+    Una ruta del propio sitio, o una URL absoluta http(s). Nada más.
+
+    M12E amplió `logo_url` de `URLField` a `CharField` porque estas rutas son
+    SERVIDAS POR EL FRONTEND —`/assets/branding/logo.png`— y un `URLField` las
+    rechaza: una URL absoluta convertiría un cambio de host en un logo roto.
+
+    Pero ampliar el tipo se llevó por delante toda la validación, y eso fue una
+    regresión de seguridad que la suite atrapó: el valor acaba en el `src` de una
+    imagen, así que `javascript:` y `data:` tienen que seguir siendo imposibles.
+    Un esquema que el navegador pueda interpretar como código no es una ruta de
+    logotipo por mucho que quepa en una columna de texto.
+
+    Vacío se acepta: significa «no tengo esta variante».
+    """
+    import re
+
+    from django.core.exceptions import ValidationError
+
+    if not value:
+        return
+    text = str(value).strip()
+    # Relativa del propio sitio. `//` queda fuera a propósito: `//evil.example`
+    # es una URL absoluta de protocolo relativo disfrazada de ruta.
+    if text.startswith('/') and not text.startswith('//'):
+        return
+    if re.match(r'^https?://[^\s]+$', text, re.IGNORECASE):
+        return
+    raise ValidationError(
+        'Usa una ruta del sitio que empiece por «/» o una URL http(s).'
+    )
+
+
 def validate_hex_color(value):
     """
     Accept `#RRGGBB` and nothing else.
@@ -2360,7 +2394,9 @@ class CompanySettings(models.Model):
     # el que fallaba, sobre un campo que nadie había tocado.
     #
     # Ampliar a `CharField` no rompe a nadie: una URL absoluta sigue cabiendo.
-    logo_url = models.CharField(max_length=500, blank=True)
+    logo_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
 
     # --- M12E — variantes por contraste -----------------------------------
     #
@@ -2376,10 +2412,18 @@ class CompanySettings(models.Model):
     #
     # Vacío es una respuesta válida y significa «no tengo esta variante». El
     # consumidor cae al nombre de la empresa antes que dibujar algo ilegible.
-    logo_on_light_url = models.CharField(max_length=500, blank=True)
-    logo_on_dark_url = models.CharField(max_length=500, blank=True)
-    logo_horizontal_on_light_url = models.CharField(max_length=500, blank=True)
-    logo_horizontal_on_dark_url = models.CharField(max_length=500, blank=True)
+    logo_on_light_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_on_dark_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_horizontal_on_light_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_horizontal_on_dark_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
 
     # --- M12E — tema claro ------------------------------------------------
     #
@@ -2522,6 +2566,17 @@ class CompanySettings(models.Model):
             ('border_color', validate_hex_color),
             ('timezone', validate_timezone_name),
             ('whatsapp_number', validate_whatsapp_number),
+            # M12E. Faltaban aquí, y ésa es la razón de que una ruta inválida
+            # escrita por una migración de datos llegara a la base sin que nada
+            # se quejara: un validador colgado del campo protege un serializador
+            # y un formulario de admin, no una escritura por código.
+            ('logo_url', validate_asset_url),
+            ('logo_on_light_url', validate_asset_url),
+            ('logo_on_dark_url', validate_asset_url),
+            ('logo_horizontal_on_light_url', validate_asset_url),
+            ('logo_horizontal_on_dark_url', validate_asset_url),
+            ('light_background_color', validate_hex_color),
+            ('light_surface_color', validate_hex_color),
         ):
             try:
                 validator(getattr(self, field))
