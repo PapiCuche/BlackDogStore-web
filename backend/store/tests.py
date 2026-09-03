@@ -43596,3 +43596,830 @@ class M12CPlatformApiTest(M12CBase):
             body['recipient_count'],
             sum(c['recipient_count'] for c in body['companies']),
         )
+
+
+# ---------------------------------------------------------------------------
+# M12D — evidencias fotográficas
+# ---------------------------------------------------------------------------
+
+from . import evidence_images as _ei                     # noqa: E402
+from . import evidence_services as _ev_svc               # noqa: E402
+from . import evidence_storage as _ev_store              # noqa: E402
+from .models import RepairEvidence as _Ev                # noqa: E402
+
+
+def _photo(width=2400, height=1800, *, fmt='JPEG', exif=None, mode='RGB',
+           colour=(120, 90, 60)):
+    """
+    Una imagen de prueba con textura real.
+
+    Un lienzo de color plano comprime a casi nada y haría pasar cualquier
+    medición de compresión, así que se le mete estructura: bandas, ruido y
+    formas. No es una fotografía, y ninguna prueba de aquí afirma que lo sea.
+    """
+    import io as _io
+    import random as _random
+    from PIL import Image as _Img, ImageDraw as _Draw
+
+    _random.seed(width * height)
+    img = _Img.new(mode if mode != 'RGBA' else 'RGBA', (width, height))
+    d = _Draw.Draw(img)
+    for y in range(0, height, 6):
+        v = 70 + (y * 97) % 150
+        fill = (v, max(0, v - 25), max(0, v - 50))
+        d.rectangle([0, y, width, y + 6], fill=fill + ((255,) if mode == 'RGBA' else ()))
+    for _ in range(400):
+        x0 = _random.randint(0, width - 1)
+        y0 = _random.randint(0, height - 1)
+        d.ellipse([x0, y0, x0 + _random.randint(4, 30), y0 + _random.randint(4, 30)],
+                  fill=(colour + ((255,) if mode == 'RGBA' else ())))
+    buf = _io.BytesIO()
+    if fmt == 'HEIF':
+        import pillow_heif
+        pillow_heif.from_pillow(img.convert('RGB')).save(buf, format='HEIF', quality=85)
+    elif fmt == 'JPEG':
+        img.convert('RGB').save(buf, 'JPEG', quality=92,
+                                **({'exif': exif} if exif else {}))
+    else:
+        img.save(buf, fmt)
+    return buf.getvalue()
+
+
+def _upload(content, name='foto.jpg', content_type='image/jpeg'):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    return SimpleUploadedFile(name, content, content_type=content_type)
+
+
+class M12DImagePipelineTest(TestCase):
+    """
+    §14, §20, §21 — lo que se guarda no es lo que llegó.
+
+    Aquí no se mide «calidad visual»: eso no se comprueba comparando píxeles.
+    Se comprueban propiedades — que abre, que no crece, que no excede el lado
+    máximo, que no queda metadata — y las mediciones de peso van en su propio
+    test, sin fijar un porcentaje que depende de la escena.
+    """
+
+    def test_a_large_jpeg_is_downscaled(self):
+        r = _ei.process(_photo(4032, 3024))
+        self.assertEqual(max(r.width, r.height), _ei.max_edge())
+        self.assertEqual((r.source_width, r.source_height), (4032, 3024))
+
+    def test_aspect_ratio_survives(self):
+        r = _ei.process(_photo(3000, 2000))
+        self.assertAlmostEqual(r.width / r.height, 3000 / 2000, places=2)
+
+    def test_a_portrait_photo_stays_portrait(self):
+        r = _ei.process(_photo(1800, 2400))
+        self.assertLess(r.width, r.height)
+        self.assertEqual(max(r.width, r.height), _ei.max_edge())
+
+    def test_a_small_image_is_never_upscaled(self):
+        """Ampliar no añade información: inventa píxeles y engorda el archivo."""
+        r = _ei.process(_photo(800, 600))
+        self.assertEqual((r.width, r.height), (800, 600))
+
+    def test_png_is_accepted_and_normalised(self):
+        r = _ei.process(_photo(2000, 1500, fmt='PNG'))
+        self.assertEqual(r.source_format, 'PNG')
+        self.assertEqual(r.mime_type, 'image/webp')
+
+    def test_webp_is_accepted_and_recompressed(self):
+        r = _ei.process(_photo(2000, 1500, fmt='WEBP'))
+        self.assertEqual(r.source_format, 'WEBP')
+        self.assertEqual(r.mime_type, 'image/webp')
+
+    def test_transparency_does_not_become_a_black_photo(self):
+        """
+        Convertir RGBA a RGB sin componer pinta el fondo de negro, y una foto de
+        un equipo sobre negro es justo lo que no se quería ver.
+        """
+        import io as _io
+        from PIL import Image as _Img
+        src = _Img.new('RGBA', (900, 700), (0, 0, 0, 0))
+        src.paste(_Img.new('RGBA', (300, 300), (200, 40, 40, 255)), (100, 100))
+        buf = _io.BytesIO(); src.save(buf, 'PNG')
+        r = _ei.process(buf.getvalue())
+        out = _Img.open(_io.BytesIO(r.content)).convert('RGB')
+        self.assertEqual(out.getpixel((10, 10)), (255, 255, 255))
+
+    def test_the_output_always_opens(self):
+        from PIL import Image as _Img
+        import io as _io
+        r = _ei.process(_photo(2500, 1900))
+        img = _Img.open(_io.BytesIO(r.content))
+        img.load()
+        self.assertEqual(img.format, 'WEBP')
+
+    def test_the_output_format_is_webp_whatever_came_in(self):
+        for fmt in ('JPEG', 'PNG', 'WEBP'):
+            r = _ei.process(_photo(1200, 900, fmt=fmt))
+            self.assertEqual(r.mime_type, 'image/webp')
+
+    def test_the_metadata_describes_the_output_not_the_input(self):
+        import io as _io
+        from PIL import Image as _Img
+        r = _ei.process(_photo(4032, 3024))
+        img = _Img.open(_io.BytesIO(r.content))
+        self.assertEqual((r.width, r.height), img.size)
+        self.assertEqual(r.byte_size, len(r.content))
+
+    def test_the_hash_describes_the_bytes_that_get_stored(self):
+        import hashlib as _h
+        r = _ei.process(_photo(2000, 1500))
+        self.assertEqual(r.sha256, _h.sha256(r.content).hexdigest())
+        self.assertNotEqual(r.sha256, r.source_sha256)
+
+
+class M12DMetadataTest(TestCase):
+    """§20 — la orientación se aplica, y después no queda nada."""
+
+    def _with_exif(self, orientation=None, gps=True):
+        from PIL import Image as _Img
+        from PIL.ExifTags import IFD
+        exif = _Img.Exif()
+        exif[271] = 'Apple'
+        exif[272] = 'iPhone 15 Pro'
+        exif[305] = 'iOS 18.2'
+        if orientation:
+            exif[274] = orientation
+        if gps:
+            g = exif.get_ifd(IFD.GPSInfo)
+            g[1] = 'S'; g[2] = (16.0, 23.0, 59.0)
+            g[3] = 'W'; g[4] = (71.0, 32.0, 11.0)
+        return _photo(900, 600, exif=exif.tobytes() if hasattr(exif, 'tobytes') else exif)
+
+    def test_exif_orientation_is_applied_before_it_is_discarded(self):
+        """
+        Las fotos de móvil salen del sensor en horizontal y dependen de una
+        etiqueta para saber qué lado es arriba. Limpiar primero la deja tumbada
+        para siempre — y en el móvil que la tomó se veía bien.
+        """
+        r = _ei.process(self._with_exif(orientation=6))
+        self.assertGreater(r.height, r.width, 'la orientación EXIF no se aplicó')
+
+    def test_gps_does_not_survive(self):
+        import io as _io
+        from PIL import Image as _Img
+        from PIL.ExifTags import IFD
+        raw = self._with_exif()
+        self.assertTrue(_Img.open(_io.BytesIO(raw)).getexif().get_ifd(IFD.GPSInfo))
+        r = _ei.process(raw)
+        out = _Img.open(_io.BytesIO(r.content))
+        self.assertFalse(out.getexif().get_ifd(IFD.GPSInfo))
+
+    def test_the_device_model_does_not_survive(self):
+        import io as _io
+        from PIL import Image as _Img
+        r = _ei.process(self._with_exif())
+        self.assertEqual(len(_Img.open(_io.BytesIO(r.content)).getexif()), 0)
+
+    def test_no_identifying_string_survives_in_the_raw_bytes(self):
+        """
+        Preguntado a los BYTES, no a la API de Pillow. Un decodificador puede
+        exponer una vista limpia de un archivo que aun así lleva la cadena
+        dentro, y lo que se sube a un bucket son los bytes.
+        """
+        r = _ei.process(self._with_exif())
+        for leak in (b'iPhone', b'Apple', b'iOS'):
+            self.assertNotIn(leak, r.content)
+
+
+class M12DHeicTest(TestCase):
+    """
+    §11 — una foto de iPhone entra sin pedirle nada al técnico.
+
+    El ajuste «Alta eficiencia» viene activado de fábrica. Sin esto la fase
+    obligaría a cambiar Ajustes → Cámara → Formatos antes de fotografiar un
+    equipo, que es el tipo de requisito que se olvida justo cuando el equipo ya
+    está abierto sobre la mesa.
+    """
+
+    def test_the_plugin_is_registered(self):
+        self.assertTrue(_ei.HEIF_SUPPORTED, 'falta pillow-heif')
+
+    def test_a_heic_photo_is_decoded(self):
+        r = _ei.process(_photo(2400, 1800, fmt='HEIF'))
+        self.assertIn(r.source_format, ('HEIF', 'HEIC'))
+
+    def test_a_heic_photo_is_stored_as_webp(self):
+        r = _ei.process(_photo(2400, 1800, fmt='HEIF'))
+        self.assertEqual(r.mime_type, 'image/webp')
+        self.assertEqual(max(r.width, r.height), _ei.max_edge())
+
+    def test_the_heic_output_opens_and_hashes_to_what_is_stored(self):
+        import hashlib as _h, io as _io
+        from PIL import Image as _Img
+        r = _ei.process(_photo(2400, 1800, fmt='HEIF'))
+        _Img.open(_io.BytesIO(r.content)).load()
+        self.assertEqual(r.sha256, _h.sha256(r.content).hexdigest())
+
+
+class M12DRejectionTest(TestCase):
+    """§38, §39 — lo que no entra, y por qué."""
+
+    def test_an_empty_file_is_refused(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'')
+
+    def test_a_text_file_named_jpg_is_refused(self):
+        """Una extensión no es una prueba. Lo único que decide es el decoder."""
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'esto no es una imagen, por mucho que se llame foto.jpg')
+
+    def test_a_pdf_is_refused(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'%PDF-1.7\n1 0 obj\n<<>>\nendobj\n')
+
+    def test_an_svg_is_refused(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>')
+
+    def test_a_zip_is_refused(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'PK\x03\x04' + b'\x00' * 60)
+
+    def test_a_truncated_image_is_refused(self):
+        raw = _photo(1600, 1200)
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(raw[: len(raw) // 3])
+
+    def test_an_oversized_upload_is_refused(self):
+        with override_settings(SERVICE_EVIDENCE_MAX_UPLOAD_BYTES=1024):
+            with self.assertRaises(_ei.EvidenceImageError):
+                _ei.process(_photo(1200, 900))
+
+    def test_a_decompression_bomb_is_refused_before_it_is_decoded(self):
+        """
+        Un PNG de pocos KB puede declarar 30.000 px de lado y pedir varios GB al
+        decodificarse. El límite de BYTES no lo ve venir: hay que mirar lo que
+        el archivo dice que mide, y mirarlo antes de `load()`.
+        """
+        import io as _io
+        from PIL import Image as _Img
+        buf = _io.BytesIO()
+        _Img.new('RGB', (12000, 9000), (255, 255, 255)).save(buf, 'PNG')
+        with override_settings(SERVICE_EVIDENCE_MAX_PIXELS=1_000_000):
+            with self.assertRaises(_ei.EvidenceImageError):
+                _ei.process(buf.getvalue())
+
+
+class M12DCompressionTest(TestCase):
+    """
+    §77 — propiedades, no un porcentaje.
+
+    No se afirma «reduce un 95%»: eso depende por completo de la escena, y un
+    test que lo fijara se rompería con la primera foto distinta. Lo que sí se
+    puede exigir es que no crezca, que respete el lado máximo y que no baje del
+    piso de calidad.
+    """
+
+    def test_a_large_photo_ends_up_smaller(self):
+        r = _ei.process(_photo(4032, 3024))
+        self.assertLess(r.byte_size, r.source_byte_size)
+
+    def test_the_max_edge_is_never_exceeded(self):
+        for w, h in ((4032, 3024), (3024, 4032), (5000, 1000)):
+            r = _ei.process(_photo(w, h))
+            self.assertLessEqual(max(r.width, r.height), _ei.max_edge())
+
+    def test_quality_never_falls_below_the_floor(self):
+        """
+        Una evidencia que ya no permite ver el daño no es una evidencia más
+        ligera: no es una evidencia. Con un objetivo imposible se conserva más
+        peso antes que destruirla.
+        """
+        with override_settings(SERVICE_EVIDENCE_TARGET_BYTES=1):
+            r = _ei.process(_photo(3000, 2200))
+        self.assertGreaterEqual(r.quality, _ei.min_quality())
+        self.assertLessEqual(r.attempts, _ei.max_attempts())
+
+    def test_an_impossible_target_terminates(self):
+        with override_settings(SERVICE_EVIDENCE_TARGET_BYTES=1,
+                               SERVICE_EVIDENCE_MAX_COMPRESSION_ATTEMPTS=3):
+            r = _ei.process(_photo(3000, 2200))
+        self.assertLessEqual(r.attempts, 3)
+
+    def test_a_generous_target_needs_only_one_attempt(self):
+        r = _ei.process(_photo(4032, 3024))
+        self.assertEqual(r.attempts, 1)
+
+
+import tempfile as _tempfile   # noqa: E402
+
+#: Storage de pruebas: un directorio temporal, SIN red y sin tocar el repo.
+#: Ninguna prueba de esta suite habla con R2 — no hay credenciales, no debe
+#: haberlas, y una suite que dependa de una cuenta remota deja de correr el día
+#: que alguien la ejecuta sin ella.
+_EVIDENCE_TEST_STORAGE = dict(
+    EVIDENCE_STORAGE_BACKEND='filesystem',
+    EVIDENCE_STORAGE_ROOT=_tempfile.mkdtemp(prefix='m12d-evidence-'),
+)
+
+
+@override_settings(**_EVIDENCE_TEST_STORAGE)
+class M12DEvidenceBase(M12BPaymentBase):
+    """La orden de M12, más una foto pequeña que no tarda en procesarse."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.photo = _photo(1200, 900)
+
+    def upload(self, stage=_Ev.Stage.INTAKE, content=None, actor=None, **kw):
+        return _ev_svc.upload_evidence(
+            repair_order=self.order, stage=stage,
+            content=content if content is not None else self.photo,
+            actor=actor or self.staff, **kw,
+        )
+
+
+class M12DModelTest(M12DEvidenceBase):
+    """§74 — lo que la fila garantiza por sí sola."""
+
+    def test_evidence_belongs_to_the_orders_company(self):
+        e = self.upload()
+        self.assertEqual(e.company_id, self.order.company_id)
+        self.assertEqual(e.repair_order_id, self.order.pk)
+
+    def test_new_evidence_is_internal(self):
+        """TODA EVIDENCIA NACE INTERNA. No hay parámetro para nacer de otra forma."""
+        self.assertEqual(self.upload().visibility, _Ev.Visibility.INTERNAL)
+
+    def test_the_storage_key_is_unique(self):
+        a, b = self.upload(), self.upload(content=_photo(1100, 800))
+        self.assertNotEqual(a.storage_key, b.storage_key)
+
+    def test_the_storage_key_is_generated_server_side_and_carries_no_pii(self):
+        e = self.upload()
+        self.assertTrue(e.storage_key.startswith(
+            f'companies/{self.company.pk}/service/{self.order.pk}/evidence/'
+        ))
+        haystack = e.storage_key.lower()
+        for leak in ('foto', '.jpg', self.order.number.lower(),
+                     self.staff.username.lower()):
+            self.assertNotIn(leak, haystack)
+
+    def test_the_stored_hash_matches_the_stored_bytes(self):
+        import hashlib as _h
+        e = self.upload()
+        with _ev_store.open_stream(e.storage_key) as fh:
+            data = fh.read()
+        self.assertEqual(_h.sha256(data).hexdigest(), e.sha256)
+        self.assertEqual(len(data), e.byte_size)
+
+    def test_the_original_is_not_stored_anywhere(self):
+        """
+        EL ORIGINAL DE CÁMARA NO ES EL ACTIVO QUE HAY QUE CONSERVAR. Se guarda
+        una versión y sólo una.
+        """
+        e = self.upload(content=_photo(4032, 3024))
+        with _ev_store.open_stream(e.storage_key) as fh:
+            data = fh.read()
+        self.assertLess(len(data), e.source_byte_size)
+        self.assertEqual(e.mime_type, 'image/webp')
+
+    def test_an_unknown_stage_is_refused(self):
+        with self.assertRaises(_ev_svc.EvidenceError):
+            self.upload(stage='warranty')
+
+    def test_void_keeps_the_row_and_needs_a_reason(self):
+        e = self.upload()
+        with self.assertRaises(_ev_svc.EvidenceError):
+            _ev_svc.void_evidence(evidence=e, reason='   ', actor=self.staff)
+        voided = _ev_svc.void_evidence(
+            evidence=e, reason='Salió movida.', actor=self.staff,
+        )
+        self.assertTrue(_Ev.objects.filter(pk=e.pk).exists())
+        self.assertTrue(voided.is_voided)
+        self.assertEqual(voided.void_reason, 'Salió movida.')
+
+    def test_voiding_twice_does_not_rewrite_the_original_reason(self):
+        e = _ev_svc.void_evidence(
+            evidence=self.upload(), reason='Primera razón.', actor=self.staff,
+        )
+        again = _ev_svc.void_evidence(
+            evidence=e, reason='Otra cosa distinta.', actor=self.staff,
+        )
+        self.assertEqual(again.void_reason, 'Primera razón.')
+        self.assertEqual(again.voided_at, e.voided_at)
+
+    def test_voiding_also_withdraws_it_from_the_customer(self):
+        e = _ev_svc.publish_to_customer(evidence=self.upload(), actor=self.staff)
+        voided = _ev_svc.void_evidence(
+            evidence=e, reason='Se anula.', actor=self.staff,
+        )
+        self.assertEqual(voided.visibility, _Ev.Visibility.INTERNAL)
+        self.assertNotIn(
+            voided, _ev_svc.customer_evidence_for_order(self.order),
+        )
+
+    def test_uploading_does_not_move_the_repair_order(self):
+        """UNA FOTO NO AVANZA EL ESTADO DE LA REPARACIÓN."""
+        before = self.order.status
+        self.upload(stage=_Ev.Stage.DELIVERY)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, before)
+
+    def test_publishing_does_not_move_the_repair_order_either(self):
+        before = self.order.status
+        _ev_svc.publish_to_customer(evidence=self.upload(), actor=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, before)
+
+
+class M12DIdempotencyTest(M12DEvidenceBase):
+    """§77 — un reintento no crea dos evidencias ni dos objetos."""
+
+    def test_the_same_key_and_the_same_file_produce_one_evidence(self):
+        a = self.upload(idempotency_key='cam-1')
+        b = self.upload(idempotency_key='cam-1')
+        self.assertEqual(a.pk, b.pk)
+        self.assertEqual(_Ev.objects.count(), 1)
+
+    def test_the_same_key_with_a_different_file_is_a_conflict(self):
+        self.upload(idempotency_key='cam-2')
+        with self.assertRaises(_ev_svc.EvidenceConflict):
+            self.upload(idempotency_key='cam-2', content=_photo(1000, 800))
+
+    def _objects_on_disk(self):
+        """
+        Los objetos que hay AHORA. El directorio temporal se comparte entre las
+        pruebas de la clase, así que lo que importa es el delta, no el total —
+        contar el total mide el orden de ejecución, no el comportamiento.
+        """
+        import os as _os
+        from django.conf import settings as _s
+        return {
+            _os.path.join(root, f)
+            for root, _d, files in _os.walk(_s.EVIDENCE_STORAGE_ROOT)
+            for f in files
+        }
+
+    def test_a_retry_does_not_write_a_second_object(self):
+        before = self._objects_on_disk()
+        a = self.upload(idempotency_key='cam-3')
+        after_first = self._objects_on_disk()
+        self.upload(idempotency_key='cam-3')
+        after_retry = self._objects_on_disk()
+        self.assertEqual(len(after_first - before), 1)
+        self.assertEqual(after_retry, after_first, 'el reintento escribió otro objeto')
+        self.assertTrue(_ev_store.open_stream(a.storage_key))
+
+    def test_the_fingerprint_uses_the_source_not_the_processed_bytes(self):
+        """
+        Si dependiera del hash final, una actualización de Pillow que cambiara
+        un byte del WebP haría que un reintento legítimo dejara de reconocerse.
+        """
+        e = self.upload(idempotency_key='cam-4')
+        expected = _ev_svc._fingerprint(
+            repair_order_id=self.order.pk, stage=_Ev.Stage.INTAKE,
+            source_sha256=_ei.process(self.photo).source_sha256,
+        )
+        self.assertEqual(e.request_fingerprint, expected)
+
+    def test_two_uploads_without_a_key_are_two_evidences(self):
+        self.upload()
+        self.upload()
+        self.assertEqual(_Ev.objects.count(), 2)
+
+    def test_the_same_photo_in_another_company_is_not_deduplicated(self):
+        """
+        NO HAY DEDUPE ENTRE EMPRESAS. Que dos talleres suban la misma foto no es
+        asunto de ninguno de los dos, y responder «ya existe» lo delataría.
+        """
+        e = self.upload()
+        other = _saas_company('Otra Ev', 'm12d-otra', tax_id='20780060001')
+        self.assertEqual(
+            _Ev.objects.filter(sha256=e.sha256).count(), 1,
+        )
+        self.assertFalse(_Ev.objects.filter(company=other).exists())
+
+
+class M12DStorageConsistencyTest(M12DEvidenceBase):
+    """§36 — el bucket no participa en la transacción de PostgreSQL."""
+
+    def _objects_on_disk(self):
+        import os as _os
+        from django.conf import settings as _s
+        return {
+            _os.path.join(root, f)
+            for root, _d, files in _os.walk(_s.EVIDENCE_STORAGE_ROOT)
+            for f in files
+        }
+
+    def test_a_database_failure_removes_the_object_it_had_just_written(self):
+        """
+        El objeto se escribe ANTES que la fila, y esa asimetría hay que
+        compensarla a mano. Una fila apuntando a algo que no existe es peor que
+        no tener la fila: parece un fallo de red y es un dato perdido.
+        """
+        from unittest.mock import patch
+        before = self._objects_on_disk()
+        with patch.object(
+            _Ev.objects, 'create', side_effect=RuntimeError('boom'),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.upload()
+        self.assertEqual(
+            self._objects_on_disk(), before, 'quedó un objeto huérfano',
+        )
+        self.assertEqual(_Ev.objects.count(), 0)
+
+    def test_a_storage_failure_creates_no_row(self):
+        from unittest.mock import patch
+        with patch.object(
+            _ev_store, 'save',
+            side_effect=_ev_store.EvidenceStorageError('sin espacio'),
+        ):
+            with self.assertRaises(_ev_store.EvidenceStorageError):
+                self.upload()
+        self.assertEqual(_Ev.objects.count(), 0)
+
+    def test_a_failed_cleanup_never_leaks_anything(self):
+        from unittest.mock import patch
+        with self.assertLogs('store.evidence_storage', level='WARNING') as logs:
+            with patch.object(
+                _ev_store, 'get_storage',
+                side_effect=_ev_store.EvidenceStorageError('endpoint x'),
+            ):
+                self.assertFalse(_ev_store.delete_quietly('alguna/clave.webp'))
+        blob = ' '.join(logs.output)
+        for leak in ('endpoint x', 'secret', 'AKIA', 'Signature'):
+            self.assertNotIn(leak, blob)
+
+    def test_the_storage_error_message_never_carries_provider_detail(self):
+        from unittest.mock import patch
+        with patch.object(
+            _ev_store, 'get_storage',
+        ) as fake:
+            fake.return_value.save.side_effect = RuntimeError(
+                'https://abc.r2.cloudinarystorage.com?X-Amz-Signature=deadbeef'
+            )
+            with self.assertRaises(_ev_store.EvidenceStorageError) as ctx:
+                _ev_store.save('k.webp', b'x')
+        message = str(ctx.exception)
+        for leak in ('r2', 'Signature', 'deadbeef', 'http'):
+            self.assertNotIn(leak, message)
+
+
+class M12DTenantIsolationTest(M12DEvidenceBase):
+    """
+    §78 — EMPRESA A NO PUEDE SABER QUE EXISTE UN OBJETO DE EMPRESA B.
+
+    Todo responde 404. Un 403 confirmaría el id, y confirmar ids es exactamente
+    lo que pide quien prueba números.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.evidence = self.upload()
+        self.other = _saas_company('Ajena SA', 'm12d-ajena', tax_id='20780060002')
+        provision_company_access_defaults(self.other)
+
+    def _url(self, tail='', slug=None, order=None):
+        return (f'/api/v1/internal/{slug or self.company.slug}/service/orders/'
+                f'{order or self.order.pk}/evidence/{tail}')
+
+    def test_another_company_cannot_list_this_orders_evidence(self):
+        res = self.client.get(self._url(slug=self.other.slug))
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_company_cannot_open_the_detail(self):
+        res = self.client.get(
+            self._url(f'{self.evidence.pk}/', slug=self.other.slug),
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_company_cannot_fetch_the_content(self):
+        res = self.client.get(
+            self._url(f'{self.evidence.pk}/content/', slug=self.other.slug),
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_company_cannot_publish_it(self):
+        res = self.client.post(
+            self._url(f'{self.evidence.pk}/publish-to-customer/',
+                      slug=self.other.slug),
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_company_cannot_void_it(self):
+        res = self.client.post(
+            self._url(f'{self.evidence.pk}/void/', slug=self.other.slug),
+            {'reason': 'no es mía'}, format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_an_evidence_from_another_order_is_not_found(self):
+        """
+        El id existe, pero no cuelga de esta orden. La galería se resuelve
+        SIEMPRE contra la orden, no contra la tabla entera.
+        """
+        other_order = _m8_service.create_repair_order(
+            company=self.company, branch=self.order.branch,
+            customer=self.order.customer, device=self.order.device,
+            reported_issue='Otra cosa.', actor=self.staff,
+        )
+        res = self.client.get(
+            self._url(f'{self.evidence.pk}/', order=other_order.pk),
+        )
+        self.assertEqual(res.status_code, 404)
+
+
+class M12DStageAuthorityTest(M12DEvidenceBase):
+    """
+    §80 — la autoridad para fotografiar un momento es la de producirlo.
+
+    Quien puede diagnosticar no adquiere por eso la capacidad de fotografiar una
+    entrega, y al revés. Es la razón por la que M12D NO creó
+    `service.evidence.manage`: una capability única se concede una vez y abre
+    las siete etapas de golpe.
+    """
+
+    def _url(self, tail=''):
+        return (f'/api/v1/internal/{self.company.slug}/service/orders/'
+                f'{self.order.pk}/evidence/{tail}')
+
+    def _post(self, stage):
+        return self.client.post(
+            self._url(), {'stage': stage, 'image': _upload(self.photo)},
+            format='multipart',
+        )
+
+    def test_the_matrix_covers_every_stage(self):
+        self.assertEqual(
+            set(_ev_svc.STAGE_CAPABILITY), set(_Ev.Stage.values),
+        )
+
+    def test_no_new_capability_was_invented_for_evidence(self):
+        from .capabilities import ALL_CAPABILITY_CODES
+        for invented in ('service.evidence.manage', 'service.evidence.view',
+                         'evidence.manage'):
+            self.assertNotIn(invented, ALL_CAPABILITY_CODES)
+        for used in set(_ev_svc.STAGE_CAPABILITY.values()):
+            self.assertIn(used, ALL_CAPABILITY_CODES)
+
+    def test_a_diagnostician_may_photograph_a_diagnosis(self):
+        self.client = self.only_capabilities(
+            'service.orders.view', 'service.diagnostic.manage', slug='m12d-diag',
+        )
+        self.assertEqual(self._post(_Ev.Stage.DIAGNOSIS).status_code, 201)
+
+    def test_a_diagnostician_may_not_photograph_a_delivery(self):
+        self.client = self.only_capabilities(
+            'service.orders.view', 'service.diagnostic.manage', slug='m12d-diag2',
+        )
+        self.assertEqual(self._post(_Ev.Stage.DELIVERY).status_code, 403)
+
+    def test_delivery_staff_may_not_photograph_a_diagnosis(self):
+        self.client = self.only_capabilities(
+            'service.orders.view', 'service.delivery.manage', slug='m12d-deliv',
+        )
+        self.assertEqual(self._post(_Ev.Stage.DIAGNOSIS).status_code, 403)
+        self.assertEqual(self._post(_Ev.Stage.DELIVERY).status_code, 201)
+
+    def test_reading_the_gallery_needs_only_orders_view(self):
+        """
+        Ver la galería es leer la orden. Pedir una segunda autoridad para mirar
+        lo que la orden ya implica sería teatro.
+        """
+        self.client = self.only_capabilities('service.orders.view', slug='m12d-ro')
+        self.assertEqual(self.client.get(self._url()).status_code, 200)
+
+    def test_without_orders_view_the_order_is_not_found(self):
+        self.client = self.only_capabilities('company.view', slug='m12d-nada')
+        self.assertIn(self.client.get(self._url()).status_code, (403, 404))
+
+    def test_an_unknown_stage_is_rejected_before_any_authority_check(self):
+        self.assertEqual(self._post('warranty').status_code, 400)
+
+
+class M12DCustomerPrivacyTest(M12DEvidenceBase):
+    """§81 — lo que el cliente ve, y lo que no debe poder deducir."""
+
+    def setUp(self):
+        super().setUp()
+        self.internal = self.upload(stage=_Ev.Stage.DIAGNOSIS)
+        self.shared = _ev_svc.publish_to_customer(
+            evidence=self.upload(stage=_Ev.Stage.DELIVERY,
+                                 content=_photo(1000, 750)),
+            actor=self.staff,
+        )
+        self.customer_user = _saas_user('m12d_cliente')
+        customer = self.order.customer
+        customer.user = self.customer_user
+        customer.save(update_fields=['user'])
+        self.cclient = APIClient()
+        self.cclient.force_authenticate(user=self.customer_user)
+
+    def _curl(self, tail='', slug=None, order=None):
+        return (f'/api/v1/customer/{slug or self.company.slug}/repairs/'
+                f'{order or self.order.pk}/evidence/{tail}')
+
+    def test_the_customer_sees_only_what_was_shared(self):
+        body = self.cclient.get(self._curl()).json()
+        self.assertEqual([r['id'] for r in body['results']], [self.shared.pk])
+
+    def test_the_customer_cannot_open_an_internal_one_by_id(self):
+        res = self.cclient.get(self._curl(f'{self.internal.pk}/content/'))
+        self.assertEqual(res.status_code, 404)
+
+    def test_hiding_revokes_access_immediately(self):
+        _ev_svc.hide_from_customer(evidence=self.shared, actor=self.staff)
+        self.assertEqual(self.cclient.get(self._curl()).json()['results'], [])
+        self.assertEqual(
+            self.cclient.get(self._curl(f'{self.shared.pk}/content/')).status_code,
+            404,
+        )
+
+    def test_a_voided_one_disappears_for_the_customer(self):
+        _ev_svc.void_evidence(
+            evidence=self.shared, reason='Se anula.', actor=self.staff,
+        )
+        self.assertEqual(self.cclient.get(self._curl()).json()['results'], [])
+
+    def test_the_customer_serializer_is_an_allowlist(self):
+        """
+        No hereda del interno quitando campos: eso haría que el próximo campo
+        que alguien añada arriba apareciera aquí sin que nadie lo decidiera.
+        """
+        row = self.cclient.get(self._curl()).json()['results'][0]
+        self.assertEqual(
+            set(row), {'id', 'stage', 'width', 'height', 'created_at'},
+        )
+        for forbidden in ('storage_key', 'uploaded_by', 'void_reason',
+                          'sha256', 'idempotency_key', 'visibility'):
+            self.assertNotIn(forbidden, row)
+
+    def test_another_customers_repair_is_not_found(self):
+        stranger = _saas_user('m12d_extrano')
+        client = APIClient()
+        client.force_authenticate(user=stranger)
+        self.assertEqual(client.get(self._curl()).status_code, 404)
+
+    def test_the_customer_cannot_upload(self):
+        res = self.cclient.post(
+            self._curl(), {'stage': _Ev.Stage.INTAKE, 'image': _upload(self.photo)},
+            format='multipart',
+        )
+        self.assertIn(res.status_code, (403, 404, 405))
+
+    def test_the_customer_cannot_void_or_publish(self):
+        for tail in ('void/', 'publish-to-customer/', 'hide-from-customer/'):
+            res = self.cclient.post(self._curl(f'{self.shared.pk}/{tail}'))
+            self.assertIn(res.status_code, (403, 404, 405))
+
+    def test_the_internal_serializer_never_leaks_the_storage_key(self):
+        row = self.client.get(
+            f'/api/v1/internal/{self.company.slug}/service/orders/'
+            f'{self.order.pk}/evidence/'
+        ).json()['results'][0]
+        for forbidden in ('storage_key', 'bucket', 'endpoint', 'sha256',
+                          'source_sha256', 'idempotency_key'):
+            self.assertNotIn(forbidden, row)
+
+    def test_private_content_is_never_cacheable(self):
+        res = self.client.get(
+            f'/api/v1/internal/{self.company.slug}/service/orders/'
+            f'{self.order.pk}/evidence/{self.internal.pk}/content/'
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('no-store', res['Cache-Control'])
+        self.assertIn('private', res['Cache-Control'])
+
+
+class M12DAuditTest(M12DEvidenceBase):
+    """§82 — qué queda registrado, y qué no debe quedar."""
+
+    def _entry(self, action, target):
+        return AdminAuditLog.objects.filter(
+            action=action, target_id=str(target),
+        ).latest('id')
+
+    def test_the_four_actions_are_audited(self):
+        e = self.upload()
+        _ev_svc.publish_to_customer(evidence=e, actor=self.staff)
+        _ev_svc.hide_from_customer(evidence=e, actor=self.staff)
+        _ev_svc.void_evidence(evidence=e, reason='Se anula.', actor=self.staff)
+        for action in ('service_evidence_uploaded',
+                       'service_evidence_published_to_customer',
+                       'service_evidence_hidden_from_customer',
+                       'service_evidence_voided'):
+            entry = self._entry(action, e.pk)
+            self.assertEqual(entry.actor_id, self.staff.pk)
+            self.assertEqual(entry.company_id, self.company.pk)
+
+    def test_the_audit_entry_never_carries_the_storage_key_or_a_hash(self):
+        e = self.upload()
+        blob = str(self._entry('service_evidence_uploaded', e.pk).metadata)
+        for leak in (e.storage_key, e.sha256, e.source_sha256, 'Signature',
+                     'X-Amz', 'http'):
+            if leak:
+                self.assertNotIn(leak, blob)
+
+    def test_the_upload_entry_names_the_order_and_the_stage(self):
+        e = self.upload(stage=_Ev.Stage.QUALITY)
+        meta = self._entry('service_evidence_uploaded', e.pk).metadata
+        self.assertEqual(meta['repair_order_id'], self.order.pk)
+        self.assertEqual(meta['stage'], _Ev.Stage.QUALITY)
