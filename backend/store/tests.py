@@ -14565,10 +14565,25 @@ class Phase3MigrationRuleTest(TestCase):
         self.assertNotEqual(identity.warranty_policy_text, '')
 
     def test_the_pilot_kept_its_palette(self):
+        """
+        Lo que esta prueba afirma es que el piloto tiene paleta PROPIA, como
+        dato, distinta de la neutra de la plataforma. Eso sigue siendo cierto.
+
+        El literal `#080808` que había aquí era otra cosa: una instantánea del
+        valor que 0028 escribió en la Fase 3, congelada como si fuera un
+        invariante. No lo es — un color de marca es dato del tenant y cambia
+        cuando la marca cambia, que es justo lo que hizo M12D al aplicar el
+        manual v3.0. La aserción que importa no lleva un hex dentro.
+        """
         pilot = Company.objects.filter(slug='black-dog-store').first()
         colors = company_branding(pilot).colors
-        self.assertEqual(colors['background_color'], '#080808')
-        self.assertNotEqual(colors, NEUTRAL_THEME)
+        self.assertNotEqual(
+            colors, NEUTRAL_THEME,
+            'el piloto perdió su identidad y quedó con el tema de plataforma',
+        )
+        self.assertTrue(
+            all(v.startswith('#') and len(v) == 7 for v in colors.values()),
+        )
 
     def test_another_company_never_inherits_the_pilots_identity(self):
         """
