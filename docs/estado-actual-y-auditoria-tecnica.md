@@ -2146,3 +2146,72 @@ colgado de la capability ancha, no podría.
    edición de una orden cerrada.
 5. **Evidencias** (DEC-016), **notificaciones**, **BR-008**, **editor de roles en
    la Web**.
+
+---
+
+## M12B — Centro de notificaciones
+
+**Estado: IMPLEMENTADO** para `IN_APP` y `EMAIL`. Migración **0058**.
+
+### Por qué tres tablas y no una
+
+```
+NotificationEvent      algo ocurrió
+Notification           alguien debe saberlo
+NotificationDelivery   intentamos avisarle por un canal
+```
+
+Una sola tabla con un booleano `email_enviado` se rompe con el segundo
+destinatario, el segundo canal o el primer reintento — y se rompe en silencio.
+
+`IN_APP` no tiene fila de entrega: la `Notification` **es** la entrega in-app, y
+una fila diciendo «escribimos con éxito la fila a la que estamos unidos» sería
+una tautología con un índice encima.
+
+### Idempotencia en tres capas
+
+| Capa | Constraint |
+| --- | --- |
+| Evento | `event_key` UNIQUE, derivado de la entidad |
+| Destinatario | `UNIQUE(event, user)` · `UNIQUE(event, customer)` |
+| Canal | `UNIQUE(notification, channel)` |
+
+Más una `CheckConstraint`: exactamente un destinatario. Ninguno significa que no
+es de nadie; ambos, que dos superficies la reclamarían.
+
+### Eventos implementados
+
+| Evento | Origen real | Audiencia |
+| --- | --- | --- |
+| `service.assignment.created` | `assign_technician()` | técnico asignado |
+| `service.quote.available` | `publish_quote()` | cliente |
+| `service.quote.approved/rejected` | `record_quote_decision()` | técnico o gestión |
+| `service.ready_for_pickup` | transición real | cliente **y** personal de entrega de esa sucursal |
+| `service.delivered` | transición real | cliente |
+| `service.status.changed` | transición real | cliente (sólo estados con mensaje) |
+| `commerce.payment.confirmed` | IPN verificado | cliente |
+| `commerce.fulfillment.ready/shipped/delivered` | `change_fulfillment_status()` | cliente |
+| `commerce.order.cancelled` | `change_fulfillment_status()` | cliente |
+
+Todos respaldados por una transición que ya existía. No se inventó ningún
+estado, y `wallet.*` no aparece porque el módulo no existe.
+
+### El master de plataforma no es destinatario automático
+
+`resolve_capabilities()` devuelve todas las capacidades al superusuario en todas
+las empresas. Una consulta de «quién tiene esta capacidad» le entregaría cada
+evento de cada tenant. **Autorizar y direccionar son preguntas distintas**, y la
+resolución de destinatarios lo excluye a propósito.
+
+### El correo de confirmación no se duplicó
+
+`commerce.payment.confirmed` no está en `EMAIL_WORTHY_EVENTS`: `email_services`
+ya lo envía con su recibo y su idempotencia. M12B aporta el registro in-app.
+
+### Deuda declarada
+
+Preferencias por evento/canal (**PARCIAL**) · reintentos automáticos (existe
+`retry_failed_delivery`, sin planificador — **PROPUESTA**) · push, WhatsApp, SMS
+(**PROPUESTA**) · portal web de reparaciones del cliente (**PENDIENTE**) ·
+Mobile (**PENDIENTE**) · `Administrador 18/37` en instalación desde cero
+(**PENDIENTE PREEXISTENTE**, no ampliado por esta fase).

@@ -9,6 +9,102 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12B — Centro de notificaciones multiempresa
+
+**Estado: IMPLEMENTADO** para in-app y correo. Migración **0058**.
+
+### Cuatro cosas que no son la misma cosa
+
+```
+algo ocurrió        → NotificationEvent
+alguien debe saberlo → Notification
+intentamos avisarle  → NotificationDelivery
+lo leyó              → Notification.read_at
+```
+
+La tentación es una tabla con un booleano `email_enviado`. Se rompe en cuanto
+aparece un segundo destinatario, un segundo canal o un reintento — y se rompe
+en silencio: se descubre cuando alguien recibe cinco copias del mismo mensaje
+porque un webhook se repitió.
+
+**In-app es el registro durable.** Una fila `Notification` **es** la
+notificación; el correo es un intento de entrega contra ella. Un SMTP caído no
+puede hacer desaparecer el hecho de que la cotización está lista.
+
+### Tres capas de idempotencia
+
+| Capa | Garantía |
+| --- | --- |
+| Evento | `event_key` único, derivado de la **entidad** y nunca de la petición |
+| Destinatario | `UNIQUE(event, user)` y `UNIQUE(event, customer)` |
+| Canal | `UNIQUE(notification, channel)` |
+
+Diez IPN repetidos son diez peticiones sobre **un** pago, así que la clave
+describe el pago. Quien cumple dos reglas de destinatario a la vez —el técnico
+que además es personal de entrega de esa sucursal— recibe **un** aviso, y lo
+decide la base de datos.
+
+### La frontera de la transacción
+
+```
+BEGIN
+  el cambio de negocio
+  el evento y sus avisos      ← durables, dentro
+COMMIT
+  on_commit: intentar correo  ← fuera, porque sale del proceso
+```
+
+Un rollback se lleva el evento, así que nadie se entera de algo que no pasó. Y
+un fallo de SMTP ya no puede revertir nada, porque a esas alturas no queda nada
+que revertir.
+
+### El master no recibe todo el SaaS
+
+`resolve_capabilities()` devuelve **todas** las capacidades al superusuario en
+**todas** las empresas, así que una consulta ingenua de «quién tiene esta
+capacidad» le entrega cada evento de cada tenant. Poder actuar en todas partes
+no es querer enterarse de todo: la resolución de destinatarios lo excluye
+explícitamente. Autorizar y direccionar son preguntas distintas.
+
+### El correo de confirmación sigue siendo uno
+
+`commerce.payment.confirmed` **no** es email-worthy, a propósito:
+`email_services` ya envía la confirmación con su recibo, su identidad de tenant
+y su propia idempotencia. M12B aporta el registro in-app y nada más. Convertir
+las notificaciones en una segunda vía de correo habría duplicado cada
+confirmación de la plataforma.
+
+Tampoco todos los eventos merecen correo. In-app es granular; el correo
+interrumpe, así que se reserva para lo accionable. Un cliente que recibe un
+mail por cada transición interna deja de leerlos, que es peor que no enviarlos.
+
+### Nada de lo que se dice puede filtrar
+
+Los textos se escriben desde el evento, la etiqueta de estado visible al cliente
+y el número de orden. Nunca desde `internal_notes`, un diagnóstico, una nota de
+calidad, un coste, un proveedor ni el nombre del técnico. Y «enviado» no promete
+un número de seguimiento que este proyecto no tiene.
+
+### Una notificación no concede autorización
+
+Lleva `target_type` / `target_id`, nunca una URL. El cliente construye la ruta y
+el destino vuelve a comprobar empresa, capacidad y propiedad. Quien perdió el
+acceso ayer puede conservar el aviso de la semana pasada y seguirá siendo
+rechazado en la puerta.
+
+### Dos superficies que no se tocan
+
+`/internal/` y `/customer/` nacen acotadas a su audiencia. Ningún endpoint elige
+el queryset mirando si quien pregunta es staff.
+
+### Lo que NO se hizo
+
+Sin capacidades RBAC nuevas — leer la propia bandeja no necesita permiso, y el
+defecto conocido de `Administrador 18/37` no se amplía. Sin Celery, sin
+WebSocket, sin push, sin WhatsApp, sin comunicados manuales, sin wallet.
+
+---
+
 ## M12A — Acceso real del técnico y «Mis reparaciones»
 
 **Estado: IMPLEMENTADO.** Migración **0057**.
