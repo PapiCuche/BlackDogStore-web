@@ -9,6 +9,117 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12D — Evidencias fotográficas privadas + auditoría visual del piloto
+
+**Estado: IMPLEMENTADO** para web interna. Migración **0064**.
+
+### Cuatro principios, y el código los obedece
+
+```
+UNA FOTO NO ES UN BLOB DE BASE DE DATOS
+EL STORAGE KEY NO ES AUTORIZACIÓN
+TODA EVIDENCIA NACE INTERNA
+CORREGIR = ANULAR + SUBIR OTRA, NUNCA REEMPLAZAR
+```
+
+### El pipeline
+
+```
+bytes → límite → decodificar → validar dimensiones → ORIENTAR
+      → aplanar → limpiar metadata → reducir → comprimir
+      → validar salida → SHA-256 → bucket privado → fila
+```
+
+**Orientar antes de limpiar**, y el orden no es un detalle. Las fotos de móvil
+salen del sensor en horizontal y dependen de una etiqueta EXIF para saber qué
+lado es arriba; limpiar primero la deja tumbada para siempre, y en el móvil que
+la tomó se veía bien.
+
+**El hash describe lo que realmente guardamos**, no el archivo que se descarta.
+
+### HEIC de iPhone entra sin pedirle nada al técnico
+
+`pillow-heif==1.6.0`. Un iPhone con «Alta eficiencia» —el ajuste de fábrica—
+entrega HEIC. Sin el plugin, esta fase obligaría a cambiar Ajustes → Cámara →
+Formatos antes de fotografiar un equipo: el tipo de requisito que se olvida
+justo cuando el equipo ya está abierto sobre la mesa.
+
+Entrada JPEG, PNG, WebP, HEIC o HEIF → **salida siempre WebP**.
+
+### Compresión medida sobre los fixtures de la suite
+
+| Fixture | Entrada | Salida | Resolución final |
+| --- | ---: | ---: | --- |
+| equipo, JPEG 12 MP | 2460 KB | 19 KB | 1600×1200 |
+| pantalla, JPEG vertical | 2462 KB | 18 KB | 1200×1600 |
+| componente, PNG | 59 KB | 21 KB | 1600×1200 |
+| carcasa, WebP | 45 KB | 24 KB | 1600×1200 |
+| iPhone, HEIC | 109 KB | 19 KB | 1600×1200 |
+| ya pequeña, JPEG | 275 KB | 28 KB | 1280×960 *(no se amplía)* |
+
+> **Estos fixtures son sintéticos, no fotografías.** El reescalado promedia el
+> grano que el generador inyecta, así que la reducción sale más alta de lo que
+> dará una foto real, donde la textura de escena sobrevive. Las cifras sirven
+> para verificar el pipeline, no para prometer un ahorro.
+
+Por eso **ningún test fija un porcentaje**: depende por completo de la escena.
+Se comprueban propiedades — que no crece, que respeta el lado máximo, que no
+baja del piso de calidad, que el bucle termina.
+
+### Ninguna capability nueva
+
+La autoridad para fotografiar un momento es la de producirlo:
+
+| Etapa | Autoridad |
+| --- | --- |
+| `INTAKE` | `service.orders.create` |
+| `DIAGNOSIS` | `service.diagnostic.manage` |
+| `REPAIR_BEFORE/DURING/AFTER` | `service.repair.manage` |
+| `QUALITY` | `service.quality.manage` |
+| `DELIVERY` | `service.delivery.manage` |
+| `OTHER` | `service.orders.manage` |
+
+Un `service.evidence.manage` se concede una vez y abre las siete de golpe.
+
+### El objeto se escribe antes que la fila
+
+El bucket no participa en la transacción de PostgreSQL, así que la compensación
+es explícita: si el INSERT falla se borra el objeto; si el guardado falla no hay
+fila. Una fila apuntando a algo que no existe parece un fallo de red y es un
+dato perdido.
+
+---
+
+## M12D-UX — Once claims retirados del storefront piloto
+
+Auditoría contra `docs/black-dog-store-brand-master.md`.
+
+**El más grave no era una cifra.** `title: "Servicio Técnico Apple"` en la
+metadata de `/services` — lo que indexa un buscador — se lee como servicio
+oficial de Apple, y la §2 del manual lo prohíbe sin acreditación vigente. El H1
+del home decía «El Mejor Servicio Apple en Perú»: superlativo indemostrable más
+el mismo encuadre prohibido en una sola frase.
+
+**Una contradicción interna.** «100% repuestos originales» convivía con
+«baterías originales Nasan certificadas» a dos tarjetas de distancia. Nasan es
+una marca de terceros.
+
+**Cifras sin respaldo.** «5,000+ dispositivos reparados» no los ha contado
+nadie. «6 meses de garantía» aparecía en cuatro sitios mientras el manual marca
+la política de garantía como PENDIENTE: prometer un plazo en portada mientras la
+política no existe compromete a la tienda con algo que no ha decidido.
+
+El plazo pasa a leerse de `policies.warranty_text`, que **ya existía** en la
+configuración del tenant — sin campos nuevos. Sin dato, no se dibuja nada.
+
+El copy que sustituye sale **literalmente** del manual. Verificado sobre el HTML
+servido, con el servidor levantado.
+
+**Black Dog Store es el tenant piloto, no el branding del SaaS.** `NEUTRAL_CONFIG`
+sigue siendo negro/blanco/gris sin identidad de nadie.
+
+---
+
 ## M12C — Comunicados internos multiempresa
 
 **Estado: IMPLEMENTADO** para in-app. Migraciones **0062** y **0063**.

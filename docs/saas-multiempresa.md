@@ -4500,3 +4500,32 @@ lista vacía es un error; una empresa nula no es un broadcast.
 
 No hay editar, retirar ni borrar. Una corrección es un comunicado nuevo. Una
 bandeja que puede reescribirse a tu espalda es peor que no tener registro.
+
+---
+
+## Black Dog Store es el tenant piloto, no el branding del SaaS
+
+`NEUTRAL_CONFIG` en `app/lib/storefront.ts` sigue siendo negro, blanco y gris sin
+identidad de nadie. El logo, los colores, el contacto y las políticas de un
+storefront salen de la configuración de SU empresa; una empresa desconocida no
+hereda la marca del piloto.
+
+El copy comercial del piloto vive en sus componentes y **es contenido del
+storefront piloto, no comportamiento del dominio**. Apple, Nasan, Arequipa y los
+plazos de garantía no son reglas de la plataforma.
+
+### Un claim compilado es una promesa que la empresa no tomó
+
+M12D-UX retiró once afirmaciones del storefront. La lección no es que estuvieran
+mal escritas: es que estaban **compiladas**. Un plazo de garantía en el JSX
+compromete a cada tenant que use ese componente con una política que quizá no
+tiene, y la del piloto estaba marcada como pendiente de redactar en su propio
+manual de marca.
+
+Lo verificable va en configuración —`policies.warranty_text` ya existía— y sin
+dato configurado no se dibuja nada. **Un hueco es honesto; un número inventado,
+no.**
+
+Y hay una categoría peor que la cifra sin respaldo: la afirmación que el manual
+de marca **prohíbe**. `title: "Servicio Técnico Apple"` se lee como servicio
+oficial de Apple, y estaba en la metadata que indexa un buscador.
