@@ -40249,6 +40249,118 @@ class Ip1ParityManifestTest(TestCase):
                     cells.add(token.strip(','))
         return cells
 
+    def _column(self, header):
+        """
+        Every (row name, cell) pair under a column with this header.
+
+        BY HEADER, never by position and never by grepping the whole file. The
+        capability guard below learned that the hard way — it used to match
+        anything shaped `a.b.c` anywhere in the document and flagged an
+        OPERATION code as an invented permission. A guard that fires on the
+        document's own vocabulary gets loosened by the next person, and then it
+        guards nothing.
+        """
+        out = []
+        index = None
+        for line in self._manifest().split('\n'):
+            if not line.strip().startswith('|'):
+                index = None
+                continue
+            cols = [c.strip() for c in line.strip().strip('|').split('|')]
+            lowered = [c.lower() for c in cols]
+            if header in lowered:
+                index = lowered.index(header)
+                continue
+            if index is None or index >= len(cols):
+                continue
+            if set(cols[0]) <= set('- '):      # the |---|---| separator
+                continue
+            out.append((cols[0], cols[index]))
+        return out
+
+    @staticmethod
+    def _is_outstanding(cell):
+        upper = cell.upper()
+        return (
+            'PENDIENTE' in upper
+            or 'PARCIAL' in upper
+            or cell.strip() in ('', '\u2014')
+        )
+
+    def test_every_backend_symbol_it_names_really_exists(self):
+        """
+        The document used to cite `archivo.py:123`.
+
+        Five of those citations pointed at a blank line, at another class's
+        docstring, or past the end of the file — not because nobody looked, but
+        because a line number ages with every edit made above it. A symbol
+        survives a refactor, and unlike a line number it can be checked, which
+        is the whole reason the citations changed shape in H4.
+        """
+        import os
+        import re
+
+        base = os.path.join(os.path.dirname(__file__))
+        named = set()
+        for _row, cell in self._column('backend'):
+            named.update(re.findall(r'`([a-z_]+)\.([A-Za-z_]\w*)`', cell))
+
+        self.assertGreater(len(named), 20, 'la matriz dejó de citar símbolos')
+
+        missing = []
+        for module, symbol in sorted(named):
+            path = os.path.join(base, f'{module}.py')
+            if not os.path.exists(path):
+                missing.append(f'{module}.{symbol} (no existe el módulo)')
+                continue
+            with open(path, encoding='utf-8') as fh:
+                source = fh.read()
+            if not re.search(rf'^(def|class)\s+{re.escape(symbol)}\b', source, re.M):
+                missing.append(f'{module}.{symbol} (no está definido)')
+        self.assertEqual(missing, [], f'símbolos que la matriz inventa: {missing}')
+
+    def test_it_cites_no_line_numbers_in_its_tables(self):
+        """
+        A line number is a citation with a shelf life. Keeping them out of the
+        tables is cheaper than checking each one every time somebody edits a
+        service module.
+        """
+        import re
+
+        offenders = [
+            f'{row}: {cell}'
+            for row, cell in self._column('backend')
+            if re.search(r'`[a-z_.]+(?:\.py)?:\d+`', cell)
+        ]
+        self.assertEqual(offenders, [], f'volvieron los números de línea: {offenders}')
+
+    def test_the_type_column_describes_the_present(self):
+        """
+        A is «Backend + Web + V1 + Mobile». B is «falta Mobile». C is «sin V1».
+
+        A row that shipped to Mobile and stayed B is not a small documentation
+        slip: the next wave plans against this table, and a stale B asks
+        somebody to build what already exists. IP1 closed nine rows and left
+        every one of them marked B — that is what this test is for.
+        """
+        types = dict(self._column('tipo'))
+        mobile = dict(self._column('mobile'))
+        v1 = dict(self._column('v1'))
+
+        self.assertGreater(len(types), 20, 'la matriz perdió su columna TIPO')
+
+        wrong = []
+        for name, raw in types.items():
+            kind = raw.strip('* ').strip()
+            mob = mobile.get(name, '')
+            if kind == 'A' and self._is_outstanding(mob):
+                wrong.append(f'{name}: TIPO A pero Mobile dice «{mob}»')
+            if kind == 'B' and not self._is_outstanding(mob):
+                wrong.append(f'{name}: TIPO B pero Mobile dice «{mob}»')
+            if kind == 'C' and 'PENDIENTE' not in v1.get(name, '').upper():
+                wrong.append(f'{name}: TIPO C pero V1 dice «{v1.get(name)}»')
+        self.assertEqual(wrong, [], f'el TIPO ya no describe el presente: {wrong}')
+
     def test_every_capability_it_names_exists_in_the_catalogue(self):
         from .capabilities import CAPABILITIES
 
