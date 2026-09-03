@@ -15,7 +15,7 @@ type CartItemCardProps = {
 
 export function CartItemCard({ quantity, product, onQuantityChange, onRemove }: CartItemCardProps) {
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-[#111] p-5 transition hover:border-white/15">
+    <div className="rounded-2xl border border-white/[0.08] bg-surface p-5 transition hover:border-white/15">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4">
           <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.04]">

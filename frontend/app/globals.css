@@ -138,8 +138,12 @@
   --color-zinc-300: color-mix(in srgb, var(--foreground) 86%, var(--background));
   --color-zinc-400: color-mix(in srgb, var(--foreground) 78%, var(--background));
   --color-zinc-500: var(--muted);
-  --color-zinc-600: color-mix(in srgb, var(--foreground) 68%, var(--background));
-  --color-zinc-700: color-mix(in srgb, var(--foreground) 65%, var(--background));
+  /* 70 y 68 y no menos: por debajo del 68 % estos grises dejan de medir 4.5:1
+     sobre la superficie elevada del tema oscuro. El diseño original los usaba
+     más apagados porque nunca se midieron; la gradación se comprime aquí
+     porque lo que había debajo no se leía. */
+  --color-zinc-600: color-mix(in srgb, var(--foreground) 70%, var(--background));
+  --color-zinc-700: color-mix(in srgb, var(--foreground) 68%, var(--background));
   /* A partir de aquí dejan de ser texto y pasan a ser superficies. */
   --color-zinc-800: var(--surface-2);
   --color-zinc-900: var(--surface);

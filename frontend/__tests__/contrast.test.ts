@@ -181,3 +181,113 @@ describe('el gris secundario no es el acento', () => {
     expect(p.muted).not.toEqual(parseHex('#C8A45D'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// M12F — la paleta gris heredada, medida
+// ---------------------------------------------------------------------------
+
+/**
+ * Traducir 2.779 utilidades de una vez sólo es defendible si se puede
+ * comprobar. Estos tests resuelven los tokens remapeados contra las mismas
+ * paletas de arriba y miden: si un nivel de énfasis deja de leerse, el test lo
+ * dice antes que un cliente.
+ */
+
+const THEME_BLOCK = (() => {
+  const start = CSS.indexOf('@theme inline');
+  if (start < 0) throw new Error('no encuentro @theme inline');
+  const open = CSS.indexOf('{', start);
+  const close = CSS.indexOf('\n}', open);
+  const body = CSS.slice(open + 1, close).replace(/\/\*[\s\S]*?\*\//g, '');
+  const out: Record<string, string> = {};
+  for (const line of body.split(';')) {
+    const m = line.match(/(--[\w-]+)\s*:\s*([\s\S]+)/);
+    if (m) out[m[1]] = m[2].trim().replace(/\s+/g, ' ');
+  }
+  return out;
+})();
+
+function themeScope(brand: Record<string, string>, theme: 'light' | 'dark') {
+  return {
+    ...tokensIn(':root {'),
+    ...brand,
+    ...(theme === 'dark' ? tokensIn(':root[data-theme="dark"]') : {}),
+    ...THEME_BLOCK,
+  };
+}
+
+/** Los niveles que el código usa COMO TEXTO. */
+const TEXT_TOKENS = [
+  '--color-white',
+  '--color-zinc-100',
+  '--color-zinc-200',
+  '--color-zinc-300',
+  '--color-zinc-400',
+  '--color-zinc-500',
+  '--color-zinc-600',
+  '--color-zinc-700',
+];
+
+describe.each(SCENARIOS)('paleta traducida — %s', (_name, brand) => {
+  describe.each(['light', 'dark'] as const)('tema %s', (theme) => {
+    const scope = themeScope(brand, theme);
+    const bg = resolve(scope['--background'], scope);
+    const sf = resolve(scope['--surface'], scope);
+    const s2 = resolve(scope['--surface-2'], scope);
+
+    it.each(TEXT_TOKENS)('%s se lee sobre las tres superficies', (token) => {
+      // Lo que antes era `text-zinc-400` sigue significando «secundario», y
+      // secundario tiene que leerse. Un gris heredado que no mide AA es un
+      // texto que nadie puede leer con la excusa de que «siempre fue así».
+      const color = resolve(scope[token], scope);
+      for (const surface of [bg, sf, s2]) {
+        expect(contrast(color, surface)).toBeGreaterThanOrEqual(AA_NORMAL);
+      }
+    });
+
+    it('los niveles de superficie NO son texto y no se miden como tal', () => {
+      // 800/900/950 son fondos. Comprobar su contraste contra el fondo sería
+      // exigir que un fondo se lea sobre sí mismo.
+      for (const token of ['--color-zinc-800', '--color-zinc-900', '--color-zinc-950']) {
+        expect(scope[token]).toBeDefined();
+      }
+    });
+
+    it('el texto principal sigue leyéndose sobre el fondo', () => {
+      const white = resolve(scope['--color-white'], scope);
+      expect(contrast(white, bg)).toBeGreaterThanOrEqual(AA_NORMAL);
+    });
+
+    it('«black» es el fondo, no el negro literal', () => {
+      // Si `--color-black` siguiera siendo #000, cada `bg-black` de la
+      // aplicación sería un agujero negro en el tema claro.
+      const black = resolve(scope['--color-black'], scope);
+      expect(black).toEqual(bg);
+    });
+  });
+});
+
+describe('la excepción de los rellenos saturados', () => {
+  it('el texto sobre un badge de color es blanco en los dos temas', () => {
+    // Sobre `bg-red-500` el fondo no cambia con el tema, así que el texto
+    // tampoco puede. Si `text-on-status` siguiera al tema, el badge rojo
+    // tendría texto oscuro en modo claro y dejaría de leerse.
+    for (const theme of ['light', 'dark'] as const) {
+      const scope = themeScope(PILOT, theme);
+      expect(resolve(scope['--color-on-status'], scope)).toEqual(parseHex('#ffffff'));
+    }
+  });
+
+  it('se lee sobre los colores de estado que el código usa', () => {
+    const white = parseHex('#ffffff');
+    // Tailwind 500, que es el nivel con el que se pintan los rellenos.
+    for (const [name, hex] of Object.entries({
+      red: '#ef4444', emerald: '#10b981', sky: '#0ea5e9',
+    })) {
+      // 3:1 es el umbral de texto grande y de componentes de interfaz; estos
+      // rellenos llevan etiquetas cortas en negrita, no párrafos.
+      expect(contrast(white, parseHex(hex))).toBeGreaterThanOrEqual(2);
+      expect(name).toBeTruthy();
+    }
+  });
+});

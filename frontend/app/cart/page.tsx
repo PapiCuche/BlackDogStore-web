@@ -120,7 +120,7 @@ export default function CartPage() {
   const total = subtotal - discountAmount;
 
   return (
-    <div className="min-h-screen bg-[#080808] px-6 py-12">
+    <div className="min-h-screen bg-background px-6 py-12">
       <div className="mx-auto max-w-5xl">
         <div className="mb-8 flex items-end justify-between">
           <div>
@@ -147,7 +147,7 @@ export default function CartPage() {
               <p className="font-display text-2xl font-black uppercase text-zinc-600">Tu carrito está vacío</p>
               <p className="mt-1 text-sm text-zinc-700">Explora nuestro catálogo y agrega productos.</p>
             </div>
-            <Link href="/product" className="rounded-full bg-white px-6 py-3 text-xs font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200">
+            <Link href="/product" className="rounded-full bg-white px-6 py-3 text-xs font-black uppercase tracking-widest text-background transition hover:bg-zinc-200">
               Ver catálogo
             </Link>
           </div>
@@ -236,7 +236,7 @@ export default function CartPage() {
 
                 <Link
                   href="/checkout"
-                  className="mt-6 block w-full rounded-full bg-white py-3 text-center text-xs font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
+                  className="mt-6 block w-full rounded-full bg-white py-3 text-center text-xs font-black uppercase tracking-widest text-background transition hover:bg-zinc-200"
                 >
                   Ir al checkout →
                 </Link>

@@ -67,7 +67,7 @@ export default function AuthPage() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#080808]">
+      <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent" />
       </div>
     );
@@ -75,9 +75,9 @@ export default function AuthPage() {
 
   if (user) {
     return (
-      <div className="min-h-screen bg-[#080808] px-6 py-12">
+      <div className="min-h-screen bg-background px-6 py-12">
         <div className="mx-auto max-w-xl">
-          <div className="rounded-2xl border border-white/[0.08] bg-[#111] p-8">
+          <div className="rounded-2xl border border-white/[0.08] bg-surface p-8">
             <div className="flex items-start justify-between">
               <div>
                 <span className="section-label">Cuenta</span>
@@ -112,11 +112,11 @@ export default function AuthPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#080808]">
+    <div className="min-h-screen bg-background">
       <div className="grid min-h-screen lg:grid-cols-2">
 
         {/* Left — brand panel */}
-        <div className="relative hidden overflow-hidden border-r border-white/[0.06] bg-[#080808] lg:flex lg:flex-col lg:justify-between lg:p-12">
+        <div className="relative hidden overflow-hidden border-r border-white/[0.06] bg-background lg:flex lg:flex-col lg:justify-between lg:p-12">
           <div className="topo-bg absolute inset-0 pointer-events-none" />
           <div className="dot-grid absolute right-0 top-0 h-64 w-64 opacity-20 pointer-events-none" />
 
@@ -250,7 +250,7 @@ export default function AuthPage() {
                 </div>
               )}
 
-              <button className="mt-2 w-full rounded-full bg-white px-6 py-3.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200">
+              <button className="mt-2 w-full rounded-full bg-white px-6 py-3.5 text-sm font-black uppercase tracking-widest text-background transition hover:bg-zinc-200">
                 {isLogin ? "Iniciar sesión" : "Registrarme"}
               </button>
             </form>

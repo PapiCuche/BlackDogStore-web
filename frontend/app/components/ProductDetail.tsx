@@ -160,7 +160,7 @@ export default function ProductDetail({ product }: { product: Product }) {
   const lowStock = product.inventory > 0 && product.inventory <= 3;
 
   return (
-    <div className="min-h-screen bg-[#080808] text-white">
+    <div className="min-h-screen bg-background text-white">
       <div className="mx-auto max-w-6xl px-6 py-12 lg:px-8">
 
         {/* Breadcrumb */}
@@ -184,7 +184,7 @@ export default function ProductDetail({ product }: { product: Product }) {
         <div className="grid gap-10 lg:grid-cols-[1.5fr_1fr]">
 
           {/* Image */}
-          <div className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111]">
+          <div className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-surface">
             {product.image_url ? (
               <div className="relative h-80 lg:h-[480px]">
                 <Image
@@ -248,7 +248,7 @@ export default function ProductDetail({ product }: { product: Product }) {
             </div>
 
             {/* Buy box */}
-            <div className="rounded-2xl border border-white/[0.08] bg-[#111] p-6">
+            <div className="rounded-2xl border border-white/[0.08] bg-surface p-6">
               <div className="flex items-baseline gap-2">
                 <span className="text-xs font-bold uppercase tracking-widest text-zinc-600">S/</span>
                 <span className="font-display text-5xl font-black text-white">{formatMoney(product.price)}</span>
@@ -284,7 +284,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                 type="button"
                 onClick={handleAddToCart}
                 disabled={loading || !inStock}
-                className="mt-5 w-full rounded-full bg-white px-4 py-3.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                className="mt-5 w-full rounded-full bg-white px-4 py-3.5 text-sm font-black uppercase tracking-widest text-background transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {loading ? "Agregando..." : !inStock ? "Sin stock" : "Agregar al carrito"}
               </button>
@@ -342,7 +342,7 @@ export default function ProductDetail({ product }: { product: Product }) {
           ) : (
             <div className="mt-6 space-y-4">
               {reviews.map((review) => (
-                <div key={review.id} className="rounded-2xl border border-white/[0.08] bg-[#111] p-5">
+                <div key={review.id} className="rounded-2xl border border-white/[0.08] bg-surface p-5">
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="font-bold text-white">{review.author_name || "Cliente verificado"}</p>
@@ -365,7 +365,7 @@ export default function ProductDetail({ product }: { product: Product }) {
           )}
 
           {/* Review form */}
-          <div className="mt-8 rounded-2xl border border-white/[0.08] bg-[#111] p-6">
+          <div className="mt-8 rounded-2xl border border-white/[0.08] bg-surface p-6">
             <h3 className="font-display mb-4 text-xl font-black uppercase text-white">Deja tu reseña</h3>
             {reviewSuccess ? (
               <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4 text-sm text-zinc-200">
@@ -393,7 +393,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                 <button
                   type="submit"
                   disabled={reviewSubmitting}
-                  className="rounded-full bg-white px-6 py-2.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200 disabled:opacity-50"
+                  className="rounded-full bg-white px-6 py-2.5 text-sm font-black uppercase tracking-widest text-background transition hover:bg-zinc-200 disabled:opacity-50"
                 >
                   {reviewSubmitting ? "Enviando..." : "Publicar reseña"}
                 </button>

@@ -223,7 +223,7 @@ export default function CheckoutPage() {
     "rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 space-y-4";
 
   return (
-    <div className="min-h-screen bg-[#080808] px-4 py-12">
+    <div className="min-h-screen bg-background px-4 py-12">
       {/* Loaded ONLY from the constant map in lib/payments, and only once the
           backend has said which environment. The response never supplies a
           script address. */}

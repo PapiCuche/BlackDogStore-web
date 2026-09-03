@@ -54,10 +54,10 @@ export function ProductCard({
   return (
     <Link
       href={`/product/${slug}`}
-      className="group flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111] transition-all duration-300 hover:border-white/20 hover:bg-[#161616]"
+      className="group flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-surface transition-all duration-300 hover:border-white/20 hover:bg-surface"
     >
       {/* Image */}
-      <div className="relative h-52 overflow-hidden bg-[#0d0d0d]">
+      <div className="relative h-52 overflow-hidden bg-surface">
         {image_url ? (
           <Image
             src={image_url}
@@ -75,7 +75,7 @@ export function ProductCard({
             />
           </div>
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#111]/80 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-surface/80 to-transparent" />
 
         {/* Stock badge overlay */}
         <div className="absolute left-3 top-3">

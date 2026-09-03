@@ -104,7 +104,7 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 z-50 mt-1.5 min-w-[14rem] overflow-hidden rounded-xl border border-white/10 bg-[#0d0d0d] py-1 shadow-2xl"
+          className="absolute right-0 z-50 mt-1.5 min-w-[14rem] overflow-hidden rounded-xl border border-white/10 bg-surface py-1 shadow-2xl"
         >
           {options.map((option) => {
             const selected = option.value === value;

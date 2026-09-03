@@ -118,7 +118,7 @@ const faqs = [
 
 export default function ServicesPage() {
   return (
-    <div className="min-h-screen bg-[#080808] text-white">
+    <div className="min-h-screen bg-background text-white">
 
       {/* Hero */}
       <section className="relative overflow-hidden border-b border-white/[0.06]">
@@ -139,7 +139,7 @@ export default function ServicesPage() {
           <div className="mt-8 flex flex-wrap gap-3">
             <ServicesCta
               label="Diagnóstico gratuito"
-              className="inline-flex items-center gap-2.5 rounded-full bg-white px-8 py-4 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
+              className="inline-flex items-center gap-2.5 rounded-full bg-white px-8 py-4 text-sm font-black uppercase tracking-widest text-background transition hover:bg-zinc-200"
             />
             <Link
               href="/product"
@@ -152,7 +152,7 @@ export default function ServicesPage() {
       </section>
 
       {/* Stats bar */}
-      <section className="border-b border-white/[0.06] bg-[#111]">
+      <section className="border-b border-white/[0.06] bg-surface">
         <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-white/[0.06] lg:grid-cols-4">
           {stats.map((item) => (
             <div key={item.label} className="px-8 py-8 text-center">
@@ -219,7 +219,7 @@ export default function ServicesPage() {
         </section>
 
         {/* Nasan Certificate section */}
-        <section className="mt-20 overflow-hidden rounded-3xl border border-white/[0.08] bg-[#111]">
+        <section className="mt-20 overflow-hidden rounded-3xl border border-white/[0.08] bg-surface">
           <div className="grid gap-0 lg:grid-cols-2">
             <div className="border-b border-white/[0.06] px-8 py-12 sm:px-12 lg:border-b-0 lg:border-r">
               <span className="section-label">Certificación</span>
@@ -246,7 +246,7 @@ export default function ServicesPage() {
                   { label: "Certificado", sub: "Nasan Technology" },
                   { label: "Sin msg", sub: "Pieza reparada" },
                 ].map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-white/[0.06] bg-[#0d0d0d] p-5">
+                  <div key={item.label} className="rounded-2xl border border-white/[0.06] bg-surface p-5">
                     <p className="font-display text-3xl font-black text-white">{item.label}</p>
                     <p className="mt-1 text-xs text-zinc-600">{item.sub}</p>
                   </div>
@@ -275,7 +275,7 @@ export default function ServicesPage() {
         {/* Final CTA */}
         <section className="my-20 overflow-hidden rounded-3xl bg-white text-center">
           <div className="relative px-8 py-16 sm:px-12">
-            <p className="font-display text-5xl font-black uppercase leading-none tracking-tight text-[#080808] sm:text-6xl">
+            <p className="font-display text-5xl font-black uppercase leading-none tracking-tight text-background sm:text-6xl">
               ¿Listo para<br />reparar tu Apple?
             </p>
             <p className="mt-4 text-sm text-zinc-600">
@@ -283,7 +283,7 @@ export default function ServicesPage() {
             </p>
             <ServicesCta
               label="Hablar con un técnico"
-              className="mt-8 inline-flex items-center gap-2.5 rounded-full bg-[#080808] px-8 py-4 text-sm font-black uppercase tracking-widest text-white transition hover:bg-zinc-800"
+              className="mt-8 inline-flex items-center gap-2.5 rounded-full bg-background px-8 py-4 text-sm font-black uppercase tracking-widest text-white transition hover:bg-zinc-800"
             />
           </div>
         </section>

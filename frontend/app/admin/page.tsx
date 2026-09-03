@@ -99,7 +99,7 @@ function CompanySelectionPrompt({
               key={company.id}
               type="button"
               onClick={() => onSelect(company.id)}
-              className="flex w-full items-center gap-3 rounded-xl border border-white/[0.07] bg-[#111111] p-4 text-left transition hover:border-white/20"
+              className="flex w-full items-center gap-3 rounded-xl border border-white/[0.07] bg-surface p-4 text-left transition hover:border-white/20"
             >
               <IconStore className="h-4 w-4 shrink-0 text-zinc-500" />
               <span className="min-w-0">
@@ -455,7 +455,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
           title="Mi acceso"
           description="Lo que tu cuenta puede hacer en esta empresa."
         >
-          <div className="rounded-xl border border-white/[0.07] bg-[#111111] p-5 sm:p-6">
+          <div className="rounded-xl border border-white/[0.07] bg-surface p-5 sm:p-6">
             <div className="grid gap-6 sm:grid-cols-3">
               <div>
                 <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
@@ -536,7 +536,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
                 <Link
                   key={module.id}
                   href={module.href!}
-                  className="group flex items-start gap-3.5 rounded-xl border border-white/[0.07] bg-[#111111] p-5 transition hover:border-white/20"
+                  className="group flex items-start gap-3.5 rounded-xl border border-white/[0.07] bg-surface p-5 transition hover:border-white/20"
                 >
                   <span className="mt-0.5 rounded-lg border border-white/[0.06] bg-white/[0.03] p-2 text-zinc-400 transition group-hover:text-white">
                     <Icon />

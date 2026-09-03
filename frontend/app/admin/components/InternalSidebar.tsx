@@ -137,7 +137,7 @@ export function InternalSidebar({
   companyName?: string | null;
 }) {
   return (
-    <aside className="hidden w-[260px] shrink-0 border-r border-white/[0.06] bg-[#080808] lg:block">
+    <aside className="hidden w-[260px] shrink-0 border-r border-white/[0.06] bg-background lg:block">
       <div className="sticky top-0 h-screen">
         <InternalSidebarContent access={access} companyName={companyName} />
       </div>
@@ -166,7 +166,7 @@ export function MobileSidebar({
         onClick={onClose}
         className="absolute inset-0 h-full w-full bg-black/70"
       />
-      <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-white/10 bg-[#080808]">
+      <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-white/10 bg-background">
         <InternalSidebarContent
           access={access}
           companyName={companyName}

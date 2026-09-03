@@ -31,7 +31,7 @@ export default function Hero() {
   const primaryHref = page.hero_primary_cta_url || "/product";
 
   return (
-    <section className="relative overflow-hidden bg-[#080808]">
+    <section className="relative overflow-hidden bg-background">
       {/* Topographic texture */}
       <div className="topo-bg absolute inset-0 pointer-events-none" />
 
@@ -143,7 +143,7 @@ export default function Hero() {
               {/* Dog icon — white on dark */}
               {/*
                 LA SUPERFICIE MANDA, NO EL TEMA. Este hero es negro en los dos
-                temas —`bg-[#080808]` más abajo—, así que su logotipo es SIEMPRE
+                temas —`bg-background` más abajo—, así que su logotipo es SIEMPRE
                 la versión blanca. Si aquí se leyera el tema resuelto, el tema
                 claro pondría el logo negro sobre este fondo negro: el mismo
                 defecto que M12E vino a cerrar, reintroducido por otra puerta.
@@ -170,7 +170,7 @@ export default function Hero() {
                 número inventado, no.
               */}
               {policies.warranty_text ? (
-                <div className="absolute right-2 top-12 max-w-[11rem] rounded-2xl border border-white/10 bg-[#111] px-4 py-3 shadow-2xl sm:right-0">
+                <div className="absolute right-2 top-12 max-w-[11rem] rounded-2xl border border-white/10 bg-surface px-4 py-3 shadow-2xl sm:right-0">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Garantía</p>
                   <p className="font-display mt-0.5 text-sm font-black leading-tight text-white">
                     {policies.warranty_text}
@@ -179,7 +179,7 @@ export default function Hero() {
               ) : null}
 
               {/* Floating badge — bottom left */}
-              <div className="absolute bottom-14 left-2 rounded-2xl border border-white/10 bg-[#111] px-4 py-3 shadow-2xl sm:left-0">
+              <div className="absolute bottom-14 left-2 rounded-2xl border border-white/10 bg-surface px-4 py-3 shadow-2xl sm:left-0">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Baterías</p>
                 <p className="font-display text-xl font-black text-white">NASAN</p>
                 <p className="text-[9px] text-zinc-600">Certificadas ✓</p>

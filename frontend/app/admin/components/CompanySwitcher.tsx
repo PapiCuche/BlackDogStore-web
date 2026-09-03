@@ -73,7 +73,7 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
       {open && (
         <ul
           role="listbox"
-          className="absolute right-0 z-50 mt-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-white/10 bg-[#0b0b0b] p-1.5 shadow-2xl"
+          className="absolute right-0 z-50 mt-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-white/10 bg-background p-1.5 shadow-2xl"
         >
           {available.map((company) => {
             const isCurrent = current?.id === company.id;

@@ -33,7 +33,7 @@ export function DashboardHeader({
   isPlatformAdmin: boolean;
 }) {
   return (
-    <header className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-[#111111] px-6 py-7 sm:px-8">
+    <header className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-surface px-6 py-7 sm:px-8">
       {/* Brand texture, already part of the visual language (globals.css) */}
       <div
         aria-hidden="true"
@@ -111,7 +111,7 @@ export function SummaryStatCard({
   icon?: IconComponent;
 }) {
   return (
-    <div className="group rounded-xl border border-white/[0.07] bg-[#111111] p-5 transition hover:border-white/15">
+    <div className="group rounded-xl border border-white/[0.07] bg-surface p-5 transition hover:border-white/15">
       <div className="flex items-start justify-between gap-3">
         <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
           {label}
@@ -142,7 +142,7 @@ export function ChartCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col rounded-xl border border-white/[0.07] bg-[#111111] p-5 sm:p-6">
+    <div className="flex flex-col rounded-xl border border-white/[0.07] bg-surface p-5 sm:p-6">
       <div className="mb-5">
         <h3 className="text-sm font-semibold text-white">{title}</h3>
         {description ? (
@@ -180,7 +180,7 @@ export function AlertsPanel({
             ? "border-red-500/25 bg-red-500/[0.07]"
             : alert.level === "warning"
               ? "border-amber-400/20 bg-amber-400/[0.05]"
-              : "border-white/[0.07] bg-[#111111]";
+              : "border-white/[0.07] bg-surface";
         return (
           <div
             key={alert.code + alert.title}

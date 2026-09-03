@@ -27,7 +27,7 @@ export function Footer() {
   const logo = branding.logo_url;
 
   return (
-    <footer className="relative border-t border-white/[0.06] bg-[#080808]">
+    <footer className="relative border-t border-white/[0.06] bg-background">
       {/* Top CTA band */}
       <div className="relative overflow-hidden bg-white px-6 py-12 text-center topo-bg">
         <div className="relative z-10 mx-auto max-w-2xl">
@@ -39,11 +39,11 @@ export function Footer() {
               className="mx-auto mb-6 h-28 w-auto object-contain"
             />
           ) : storeName ? (
-            <p className="mx-auto mb-6 font-display text-3xl font-black uppercase tracking-tight text-[#080808]">
+            <p className="mx-auto mb-6 font-display text-3xl font-black uppercase tracking-tight text-background">
               {storeName}
             </p>
           ) : null}
-          <p className="font-display text-4xl font-black uppercase tracking-tight text-[#080808] sm:text-5xl">
+          <p className="font-display text-4xl font-black uppercase tracking-tight text-background sm:text-5xl">
             ¿Necesitas ayuda?
           </p>
           <p className="mt-3 text-sm text-zinc-600">
@@ -54,7 +54,7 @@ export function Footer() {
               href={contact.whatsapp_link}
               target="_blank"
               rel="noopener noreferrer"
-              className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-[#080808] px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:bg-zinc-800"
+              className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-background px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:bg-zinc-800"
             >
               {WHATSAPP_SVG}
               Escribir al WhatsApp
@@ -62,7 +62,7 @@ export function Footer() {
           ) : contact.email ? (
             <a
               href={`mailto:${contact.email}`}
-              className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-[#080808] px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:bg-zinc-800"
+              className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-background px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:bg-zinc-800"
             >
               Escríbenos
             </a>

@@ -129,7 +129,7 @@ export function NotificationBell({ slug }: { slug: string | null }) {
       </button>
 
       {open ? (
-        <div className="absolute right-0 z-50 mt-2 w-80 rounded-xl border border-white/[0.08] bg-[#0d0d0d] p-2 shadow-2xl">
+        <div className="absolute right-0 z-50 mt-2 w-80 rounded-xl border border-white/[0.08] bg-surface p-2 shadow-2xl">
           <div className="flex items-center justify-between px-2 py-1.5">
             <span className="text-xs font-semibold text-zinc-300">Notificaciones</span>
             <Link
