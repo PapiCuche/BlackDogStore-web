@@ -13266,6 +13266,9 @@ class Phase2dProvisioningTest(TestCase):
 #   3. The internal notification goes to the order's own company, or nowhere.
 
 from .company_settings import (  # noqa: E402
+    EMPTY_LOGO_VARIANTS,
+    LOGO_VARIANT_FIELDS,
+    NEUTRAL_LIGHT_THEME,
     NEUTRAL_THEME,
     build_identity_snapshot,
     build_whatsapp_link,
@@ -44863,3 +44866,172 @@ class M12EAssetUrlValidationTest(TestCase):
         self.row.light_background_color = 'url(evil)'
         with self.assertRaises(ValidationError):
             self.row.save()
+
+
+class M12EBrandingPayloadTest(TestCase):
+    """
+    M12E — el contrato de marca que viaja al escaparate.
+
+    Las variantes por contraste y el tema claro se verificaron a mano contra la
+    base de desarrollo. Eso comprueba que hoy funciona; no impide que mañana
+    deje de hacerlo. Lo que sigue son las invariantes que el frontend da por
+    ciertas al pintar, escritas donde puedan romperse.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.bare = _p3_company('m12e-bare', 'Empresa Sin Marca')
+        self.dressed = _p3_company('m12e-dressed', 'Empresa Con Marca')
+
+    # -- las variantes ----------------------------------------------------
+
+    def test_the_four_questions_are_always_answered(self):
+        """
+        Las claves son las PREGUNTAS que hace un componente, y las cuatro
+        existen siempre, configuradas o no. Un `logos` incompleto obligaría a
+        cada consumidor a comprobar la clave antes de leerla, y el que se
+        olvide escribe `undefined` dentro de un `src`.
+        """
+        logos = company_branding(self.bare).logos
+        self.assertEqual(
+            set(logos),
+            {
+                'primary_on_light', 'primary_on_dark',
+                'horizontal_on_light', 'horizontal_on_dark',
+            },
+        )
+        self.assertEqual(logos, EMPTY_LOGO_VARIANTS)
+
+    def test_no_variant_can_arrive_as_none(self):
+        """
+        `None` en un `src` de imagen escribe la cadena «null» y el navegador
+        pide esa URL al servidor. Vacío es la respuesta legítima de «no tengo
+        esta variante»; None sería una fuga del esquema.
+
+        La garantía vive en la COLUMNA, no en el `or ''` del constructor: éste
+        es un respaldo de un caso que la base ya impide. Se comprueba abajo
+        porque un respaldo indistinguible de su propia defensa no se puede
+        retirar nunca — nadie sabría cuál de los dos estaba sujetando.
+        """
+        from django.db import IntegrityError, transaction
+
+        for column in ('logo_url', *LOGO_VARIANT_FIELDS.values()):
+            with self.subTest(column=column):
+                with self.assertRaises(IntegrityError):
+                    with transaction.atomic():
+                        CompanySettings.objects.filter(
+                            company=self.bare,
+                        ).update(**{column: None})
+
+        for value in company_branding(self.bare).logos.values():
+            self.assertIsInstance(value, str)
+
+    def test_a_company_with_no_settings_row_still_has_branding(self):
+        """Un tenant anterior a esta fase no puede quedarse sin escaparate."""
+        CompanySettings.objects.filter(company=self.bare).delete()
+        self.bare.refresh_from_db()
+        branding = company_branding(self.bare)
+        self.assertEqual(branding.logos, EMPTY_LOGO_VARIANTS)
+        self.assertEqual(branding.light_colors, NEUTRAL_LIGHT_THEME)
+        self.assertEqual(branding.logo_url, '')
+
+    def test_one_tenants_variants_never_reach_another(self):
+        """
+        La variante sale de la fila del tenant y de ningún otro sitio. No hay
+        tabla de assets por slug ni condicional por empresa que pueda mezclar.
+        """
+        row = self.dressed.settings
+        row.logo_horizontal_on_dark_url = '/propio/h-oscuro.png'
+        row.save()
+        self.assertEqual(
+            company_branding(self.dressed).logos['horizontal_on_dark'],
+            '/propio/h-oscuro.png',
+        )
+        self.assertEqual(
+            company_branding(self.bare).logos['horizontal_on_dark'], '',
+        )
+
+    def test_the_legacy_logo_survives_the_new_variants(self):
+        """
+        Hay tenants que sólo tienen `logo_url`. Añadir variantes no puede
+        dejarlos sin logotipo: la fase nueva no rompe a quien no la usa.
+        """
+        row = self.bare.settings
+        row.logo_url = '/legado.png'
+        row.save()
+        branding = company_branding(self.bare)
+        self.assertEqual(branding.logo_url, '/legado.png')
+        self.assertEqual(branding.logos, EMPTY_LOGO_VARIANTS)
+
+    # -- el tema claro -----------------------------------------------------
+
+    def test_the_light_theme_falls_back_per_field(self):
+        """
+        POR CAMPO, no todo o nada: fijar el fondo no puede perder la superficie.
+
+        Ésta es la comprobación que atrapa un `or` mal asociado —
+        `(x if s else '') or NEUTRAL[k]` y `x if s else ('' or NEUTRAL[k])` se
+        leen igual y devuelven cosas distintas cuando el campo está vacío.
+        """
+        row = self.dressed.settings
+        row.light_background_color = '#FAFAFA'
+        row.light_surface_color = ''
+        row.save()
+        light = company_branding(self.dressed).light_colors
+        self.assertEqual(light['light_background_color'], '#FAFAFA')
+        self.assertEqual(
+            light['light_surface_color'],
+            NEUTRAL_LIGHT_THEME['light_surface_color'],
+        )
+
+    def test_the_neutral_light_theme_belongs_to_no_business(self):
+        """
+        El claro por defecto lo ve cualquier tenant que no configure el suyo.
+        Si fuese el del piloto, la marca del piloto sería el default de la
+        plataforma — la misma falta que la Fase 3 vino a cerrar, aplicada al
+        color en vez de al nombre.
+        """
+        blob = ' '.join(NEUTRAL_LIGHT_THEME.values()).upper()
+        for pilot_colour in ('#F5F3EE', '#EDEAE3', '#0A0A0A', '#C8A45D'):
+            self.assertNotIn(pilot_colour, blob)
+
+    def test_a_dark_palette_does_not_decide_the_light_one(self):
+        """
+        Son dos temas, no uno invertido. Un tenant con paleta oscura propia y
+        sin claro propio recibe el claro NEUTRO — no su fondo oscuro colocado
+        donde va el claro, que dejaría texto oscuro sobre fondo oscuro.
+        """
+        row = self.dressed.settings
+        row.background_color = '#0A0A0A'
+        row.surface_color = '#232323'
+        row.save()
+        light = company_branding(self.dressed).light_colors
+        self.assertEqual(light, NEUTRAL_LIGHT_THEME)
+
+    # -- el contrato con el frontend ---------------------------------------
+
+    def test_css_variables_carry_both_themes(self):
+        """
+        Las ocho viajan juntas. El frontend tiene una allowlist con estos mismos
+        nombres y descarta lo demás: emitir una sin la otra reproduce el
+        síntoma que esta fase ya tuvo — el backend la manda y la página no la ve.
+        """
+        variables = company_branding(self.bare).css_variables()
+        self.assertEqual(
+            set(variables),
+            {
+                '--brand-primary', '--brand-accent', '--brand-background',
+                '--brand-surface', '--brand-text', '--brand-border',
+                '--brand-light-background', '--brand-light-surface',
+            },
+        )
+
+    def test_the_payload_never_names_a_database_column(self):
+        """
+        Las claves de `logos` son preguntas —«horizontal, sobre oscuro»—, no
+        columnas. Renombrar `logo_on_dark_url` no puede obligar a tocar el
+        frontend, y por eso el mapa vive en el backend.
+        """
+        for question, column in LOGO_VARIANT_FIELDS.items():
+            self.assertNotEqual(question, column)
+            self.assertNotIn('_url', question)
