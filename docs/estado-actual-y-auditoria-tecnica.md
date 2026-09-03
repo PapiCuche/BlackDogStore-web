@@ -2419,3 +2419,71 @@ Preferencias por evento/canal (**PARCIAL**) · reintentos automáticos, sin
 planificador (**PROPUESTA**) · push, WhatsApp, SMS (**PROPUESTA**) · portal web de
 reparaciones del cliente (**PENDIENTE**) · Mobile (**PENDIENTE**) · comunicados
 internos, M12C (**PENDIENTE**) · evidencias, M12D (**PENDIENTE**).
+
+---
+
+## M12C — Comunicados internos
+
+**Estado: IMPLEMENTADO** para `IN_APP`. Migraciones **0062** (esquema) y **0063**
+(capability). Catálogo asignable: **39**.
+
+### Responsabilidades
+
+| Entidad | Qué es | Qué NO es |
+| --- | --- | --- |
+| `Announcement` | El documento: autor, texto completo, prioridad, estado | No es una bandeja |
+| `AnnouncementAudienceRule` | Una línea de «a quién», siempre con empresa | No es un JSON opaco |
+| `NotificationEvent` | Que el comunicado salió, **por empresa** | No es el documento |
+| `Notification` | La copia de un destinatario, con su `read_at` | No es el documento |
+
+`Notification.body` sigue en 400 caracteres. Es un preview; el texto vive en el
+`Announcement` al que la notificación apunta con `target_type='announcement'`.
+
+### Ciclo de vida
+
+```
+DRAFT ──publish──► PUBLISHED   (inmutable: ni texto, ni audiencia, ni borrado)
+  │
+  └──cancel──► CANCELLED       (borrador descartado; NO es recall)
+```
+
+Guardar un borrador diez veces produce diez guardados y **cero destinatarios**.
+
+### Las cinco audiencias
+
+| Tipo | Cómo resuelve | Nota |
+| --- | --- | --- |
+| `ALL_COMPANY` | membresías activas, usuarios activos, empresa activa | master excluido |
+| `BRANCH` | `has_branch_access()`, no `membership.branch_id` | quien trabaja en tres locales, trabaja en tres |
+| `ROLE` | `MembershipRoleAssignment` activa sobre `CompanyRole` real | funciona con roles personalizados, sin nombres hardcodeados |
+| `CAPABILITY` | `resolve_capabilities()` contra el catálogo real | rechaza códigos inexistentes |
+| `USER` | membresía activa en ESA empresa | ids cross-tenant rechazados |
+
+Una persona que cumple cuatro reglas recibe **un** aviso. La unión se toma en
+`resolve_audience()` y la constraint de M12B sigue detrás como garantía.
+
+`active_internal_users()` es ahora **el único sitio** que decide quién cuenta
+como personal: `resolve_internal_recipients()` de M12B se reescribió encima en
+lugar de duplicar las cuatro condiciones.
+
+### Superficies
+
+```
+/api/v1/internal/<slug>/communications/…    tenant · communications.manage
+/api/v1/internal/<slug>/announcements/<id>/ destinatario · SIN capability
+/api/v1/platform/announcements/…            master · is_superuser
+```
+
+La superficie platform está separada **porque** apunta a varias empresas.
+Esconder multiempresa bajo una ruta que promete un solo slug sería mentir en el
+propio path.
+
+### Deuda declarada
+
+Correo de comunicados (**PENDIENTE** — necesita cola y reintento) · programación
+diferida (**PROPUESTA**) · lista individual de lectores (**PROPUESTA**, no MVP:
+saber que once de cuarenta leyeron es gestión; saber cuáles once, por defecto, es
+vigilancia) · broadcast a clientes (**PROPUESTA** — exige consentimiento,
+unsubscribe y reglas de marketing) · push, WhatsApp, SMS (**PROPUESTA**) ·
+adjuntos (**PROPUESTA**) · M12D evidencias (**PENDIENTE**) · wallet
+(**PROPUESTA**).
