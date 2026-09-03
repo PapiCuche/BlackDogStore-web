@@ -27078,13 +27078,46 @@ class M7InventoryRegressionTest(M7InventoryBase):
         self.assertNotIn('BranchStock', code)
         self.assertNotIn('.save(', code)
 
-    def test_transfers_and_counts_are_NOT_exposed(self):
-        # Both are multi-step workflows in the domain; a single POST would be
-        # inventing a semantics the business does not have.
-        for resource in ('transfers', 'counts', 'inventory-counts'):
+    def test_counts_are_NOT_exposed(self):
+        """
+        Physical counts are still absent from v1, and the RULE is unchanged.
+
+        M7A wrote this covering transfers AND counts, with the right reason: both
+        are multi-step workflows in the domain, and a single POST would invent a
+        semantics the business does not have.
+
+        IP1B exposed TRANSFERS — as five endpoints, one per transition, calling
+        the same `inventory_services` functions the Web surface calls. That
+        honours the rule rather than breaking it: what M7A refused was flattening
+        a workflow into one call, not exposing it faithfully.
+
+        Counts have had no such surface built, so they stay out. The day somebody
+        adds one, this test fails and they have to say so here.
+        """
+        for resource in ('counts', 'inventory-counts'):
             self.assertEqual(
                 self.client.get(_m7_url('m7-shop', resource)).status_code, 404, resource,
             )
+
+    def test_transfers_are_exposed_as_a_WORKFLOW_not_a_single_post(self):
+        # The rule M7A was protecting, restated as what it actually requires:
+        # one endpoint per transition, so nothing can claim `received` for stock
+        # that never left.
+        from django.urls import reverse
+        for name in (
+            'v1-internal-transfers', 'v1-internal-transfer-detail',
+            'v1-internal-transfer-items', 'v1-internal-transfer-dispatch',
+            'v1-internal-transfer-receive', 'v1-internal-transfer-cancel',
+        ):
+            self.assertTrue(name)
+        self.assertTrue(
+            reverse('v1-internal-transfer-dispatch',
+                    kwargs={'company_slug': 'x', 'pk': 1})
+        )
+        # And there is NO route that sets a status directly.
+        import io as _io
+        urls = _io.open('store/v1_urls.py', encoding='utf-8').read()
+        self.assertNotIn('transfers/<int:pk>/status/', urls)
 
 
 # =============================================================================
@@ -40259,6 +40292,409 @@ class Ip1ParityManifestTest(TestCase):
         slugs = {slug for _name, slug, *_rest in PRESET_ROLES}
         self.assertNotIn('recepcion', slugs)
         self.assertNotIn('control-de-calidad', slugs)
+
+
+# ===========================================================================
+# IP1B — inter-branch transfers on the internal v1 surface
+# ===========================================================================
+
+from .models import StockTransfer as _Ip1Transfer  # noqa: E402
+
+
+def _ip1t_url(slug, tail=''):
+    return f'/api/v1/internal/{slug}/inventory/transfers/{tail}'
+
+
+class Ip1TransferBase(TestCase):
+    """One company, three branches, and a member who reaches only two of them."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Cadena', 'ip1-cadena', tax_id='20900093001')
+        self.other = _saas_company('Ajena', 'ip1-cadena-otra', tax_id='20900093002')
+        provision_company_access_defaults(self.company)
+        provision_company_access_defaults(self.other)
+
+        self.a = self.company.branches.order_by('pk').first()
+        self.b = _saas_branch(self.company, 'Sucursal B')
+        self.c = _saas_branch(self.company, 'Sucursal C')
+        self.foreign_branch = self.other.branches.order_by('pk').first()
+
+        self.product = _prod(self.company, 'Cable', 'cable-t', price='50.00')
+        self.foreign_product = _prod(self.other, 'Ajeno', 'ajeno-t', price='10.00')
+        _m7_stock(self.a, self.product, 10)
+
+        self.staff = _m7_user('ip1_almacen')
+        self.membership = Membership.objects.create(
+            user=self.staff, company=self.company, role='inventory', is_active=True,
+        )
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='inventario'),
+        )
+        cache.clear()
+        self.client = _m7_login('ip1_almacen')
+
+    def only_caps(self, *capabilities, slug='ip1t-exacto'):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(self.membership, _role(
+            self.company, f'Rol {slug}', capabilities=list(capabilities), slug=slug,
+        ))
+        cache.clear()
+        return _m7_login('ip1_almacen')
+
+    def draft(self, source=None, destination=None):
+        res = self.client.post(_ip1t_url('ip1-cadena'), {
+            'source_branch': (source or self.a).pk,
+            'destination_branch': (destination or self.b).pk,
+            'reason': 'Reposición',
+        }, format='json')
+        assert res.status_code == 201, res.data
+        return res.data['id']
+
+    def line(self, transfer_id, quantity=3, product=None):
+        return self.client.put(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/items/'),
+            {'product': (product or self.product).pk, 'quantity': quantity},
+            format='json',
+        )
+
+    def stock(self, branch):
+        row = BranchStock.objects.filter(branch=branch, product=self.product).first()
+        return row.quantity if row else 0
+
+
+class Ip1TransferWorkflowTest(Ip1TransferBase):
+    """Four states, and stock moves at exactly two of the transitions."""
+
+    def test_the_whole_document_over_http(self):
+        transfer_id = self.draft()
+        self.assertEqual(self.line(transfer_id).status_code, 200)
+
+        detail = self.client.get(_ip1t_url('ip1-cadena', f'{transfer_id}/'))
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.data['status'], 'draft')
+        self.assertEqual(detail.data['total_units'], 3)
+
+        dispatched = self.client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json',
+        )
+        self.assertEqual(dispatched.status_code, 200, dispatched.data)
+        self.assertEqual(dispatched.data['status'], 'in_transit')
+
+        received = self.client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/receive/'), {}, format='json',
+        )
+        self.assertEqual(received.status_code, 200, received.data)
+        self.assertEqual(received.data['status'], 'received')
+
+    def test_stock_moves_at_dispatch_and_at_receive_and_nowhere_else(self):
+        # THE REASON THE DOCUMENT EXISTS. Between the two, the units belong to
+        # neither shelf — a shop that has sent something is short of it before
+        # the other is long of it, and pretending otherwise makes one of the two
+        # counts wrong for as long as the van is on the road.
+        transfer_id = self.draft()
+        self.line(transfer_id, quantity=3)
+        self.assertEqual((self.stock(self.a), self.stock(self.b)), (10, 0))
+
+        self.client.post(_ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json')
+        self.assertEqual((self.stock(self.a), self.stock(self.b)), (7, 0))
+
+        self.client.post(_ip1t_url('ip1-cadena', f'{transfer_id}/receive/'), {}, format='json')
+        self.assertEqual((self.stock(self.a), self.stock(self.b)), (7, 3))
+
+    def test_a_zero_quantity_removes_the_line(self):
+        transfer_id = self.draft()
+        self.line(transfer_id, quantity=3)
+        res = self.line(transfer_id, quantity=0)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['total_units'], 0)
+
+    def test_a_negative_quantity_is_refused(self):
+        transfer_id = self.draft()
+        self.assertEqual(self.line(transfer_id, quantity=-1).status_code, 400)
+
+    def test_lines_cannot_be_edited_after_it_left(self):
+        # Editing what was sent, after it was sent, makes the paperwork disagree
+        # with the van.
+        transfer_id = self.draft()
+        self.line(transfer_id, quantity=3)
+        self.client.post(_ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json')
+        self.assertEqual(self.line(transfer_id, quantity=5).status_code, 400)
+
+    def test_dispatching_more_than_the_shelf_holds_is_409(self):
+        transfer_id = self.draft()
+        self.line(transfer_id, quantity=99)
+        res = self.client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json',
+        )
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.data['code'], 'insufficient_stock')
+        self.assertEqual(self.stock(self.a), 10)
+
+    def test_receiving_before_dispatching_is_refused(self):
+        transfer_id = self.draft()
+        self.line(transfer_id)
+        res = self.client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/receive/'), {}, format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.stock(self.b), 0)
+
+    def test_dispatching_twice_moves_the_shelf_once(self):
+        # `dispatch_transfer` is IDEMPOTENT by design — a second call returns
+        # the existing movements and changes nothing. Better than an error: a
+        # double tap on a phone, or a retry after a dropped response, is not an
+        # operator mistake and should not look like one.
+        transfer_id = self.draft()
+        self.line(transfer_id, quantity=3)
+        first = self.client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json',
+        )
+        again = self.client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json',
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(again.data['status'], 'in_transit')
+        self.assertEqual(self.stock(self.a), 7)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                transfer_id=transfer_id,
+                movement_type=StockMovement.TRANSFER_OUT,
+            ).count(),
+            1,
+        )
+
+    def test_receiving_twice_moves_the_shelf_once(self):
+        transfer_id = self.draft()
+        self.line(transfer_id, quantity=3)
+        self.client.post(_ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json')
+        self.client.post(_ip1t_url('ip1-cadena', f'{transfer_id}/receive/'), {}, format='json')
+        again = self.client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/receive/'), {}, format='json',
+        )
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(self.stock(self.b), 3)
+
+    def test_cancelling_a_draft_moves_nothing(self):
+        transfer_id = self.draft()
+        self.line(transfer_id, quantity=3)
+        res = self.client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/cancel/'), {}, format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['status'], 'cancelled')
+        self.assertEqual((self.stock(self.a), self.stock(self.b)), (10, 0))
+
+    def test_the_same_branch_twice_is_refused(self):
+        res = self.client.post(_ip1t_url('ip1-cadena'), {
+            'source_branch': self.a.pk, 'destination_branch': self.a.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_the_list_filters_by_status_and_refuses_an_invented_one(self):
+        transfer_id = self.draft()
+        self.line(transfer_id)
+        listed = self.client.get(_ip1t_url('ip1-cadena'), {'status': 'draft'})
+        self.assertEqual(listed.status_code, 200)
+        self.assertIn(transfer_id, [r['id'] for r in listed.data['results']])
+        self.assertEqual(
+            self.client.get(_ip1t_url('ip1-cadena'), {'status': 'inventado'}).status_code,
+            400,
+        )
+
+
+class Ip1TransferAuthorityTest(Ip1TransferBase):
+    """Seeing needs one end. Acting needs both. Neither is guessed."""
+
+    def restrict_to(self, *branches):
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        _M7BranchAccess.objects.filter(membership=self.membership).delete()
+        for branch in branches:
+            _M7BranchAccess.objects.create(membership=self.membership, branch=branch)
+        cache.clear()
+        return _m7_login('ip1_almacen')
+
+    def test_anonymous_reaches_nothing(self):
+        anon = APIClient()
+        self.assertIn(anon.get(_ip1t_url('ip1-cadena')).status_code, (401, 403))
+        self.assertIn(
+            anon.post(_ip1t_url('ip1-cadena'), {}, format='json').status_code,
+            (401, 403),
+        )
+
+    def test_a_foreign_tenant_is_404(self):
+        self.assertEqual(
+            self.client.get(_ip1t_url('ip1-cadena-otra')).status_code, 404,
+        )
+
+    def test_reading_needs_inventory_view(self):
+        client = self.only_caps('company.view', slug='ip1t-nada')
+        self.assertEqual(client.get(_ip1t_url('ip1-cadena')).status_code, 403)
+
+    def test_reading_does_not_grant_moving(self):
+        transfer_id = self.draft()
+        client = self.only_caps('company.view', 'inventory.view', slug='ip1t-lector')
+        self.assertEqual(client.get(_ip1t_url('ip1-cadena')).status_code, 200)
+        for tail in ('dispatch/', 'receive/', 'cancel/'):
+            res = client.post(
+                _ip1t_url('ip1-cadena', f'{transfer_id}/{tail}'), {}, format='json',
+            )
+            self.assertEqual(res.status_code, 403, tail)
+        self.assertEqual(
+            client.post(_ip1t_url('ip1-cadena'), {
+                'source_branch': self.a.pk, 'destination_branch': self.b.pk,
+            }, format='json').status_code,
+            403,
+        )
+
+    def test_the_sales_preset_cannot_move_stock(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='ventas'),
+        )
+        cache.clear()
+        client = _m7_login('ip1_almacen')
+        self.assertEqual(client.get(_ip1t_url('ip1-cadena')).status_code, 403)
+
+    def test_a_platform_master_operates_in_an_EXPLICIT_tenant(self):
+        master = _m7_user('ip1t_master')
+        master.is_superuser = True
+        master.is_staff = True
+        master.save(update_fields=['is_superuser', 'is_staff'])
+        cache.clear()
+        client = _m7_login('ip1t_master')
+        res = client.post(_ip1t_url('ip1-cadena'), {
+            'source_branch': self.a.pk, 'destination_branch': self.b.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_a_branch_of_another_company_is_404(self):
+        res = self.client.post(_ip1t_url('ip1-cadena'), {
+            'source_branch': self.a.pk,
+            'destination_branch': self.foreign_branch.pk,
+        }, format='json')
+        self.assertEqual(res.status_code, 404)
+        self.assertFalse(_Ip1Transfer.objects.exists())
+
+    def test_a_product_of_another_company_is_404(self):
+        transfer_id = self.draft()
+        res = self.line(transfer_id, product=self.foreign_product)
+        self.assertEqual(res.status_code, 404)
+
+    def test_seeing_needs_only_ONE_end(self):
+        # A manager who runs the destination must see what is coming, even if
+        # the origin is a shop they never enter.
+        transfer_id = self.draft(source=self.a, destination=self.b)
+        client = self.restrict_to(self.b)
+        self.assertEqual(
+            client.get(_ip1t_url('ip1-cadena', f'{transfer_id}/')).status_code, 200,
+        )
+
+    def test_acting_needs_BOTH_ends(self):
+        # Seeing is not acting. Somebody who can watch a transfer arrive is not
+        # thereby able to say it left.
+        transfer_id = self.draft(source=self.a, destination=self.b)
+        self.line(transfer_id, quantity=3)
+        client = self.restrict_to(self.b)
+        res = client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(self.stock(self.a), 10)
+
+    def test_a_transfer_touching_neither_of_my_branches_is_404(self):
+        # 404 and not 403: a 403 would confirm the document exists.
+        transfer_id = self.draft(source=self.a, destination=self.b)
+        client = self.restrict_to(self.c)
+        self.assertEqual(
+            client.get(_ip1t_url('ip1-cadena', f'{transfer_id}/')).status_code, 404,
+        )
+
+    def test_both_ends_restored_can_act_again(self):
+        transfer_id = self.draft(source=self.a, destination=self.b)
+        self.line(transfer_id, quantity=3)
+        client = self.restrict_to(self.a, self.b)
+        res = client.post(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+
+class Ip1TransferWebParityTest(Ip1TransferBase):
+    """The same document, whichever surface opened it."""
+
+    def _web(self):
+        client = APIClient()
+        client.force_authenticate(user=self.staff)
+        return client
+
+    def test_both_surfaces_call_the_same_domain_functions(self):
+        import ast, inspect, textwrap
+        from . import inventory_views, v1_transfer_views
+
+        def source(module):
+            return ast.unparse(ast.parse(textwrap.dedent(inspect.getsource(module))))
+
+        for module in (inventory_views, v1_transfer_views):
+            code = source(module)
+            for needle in (
+                'dispatch_transfer', 'receive_transfer', 'cancel_transfer',
+                'create_stock_transfer', 'set_transfer_item',
+            ):
+                self.assertIn(needle, code, f'{module.__name__}: {needle}')
+
+    def test_the_v1_surface_never_writes_stock_itself(self):
+        import inspect
+        from . import v1_transfer_views
+        code = inspect.getsource(v1_transfer_views)
+        for forbidden in (
+            'BranchStock.objects', 'create_stock_movement', 'quantity -',
+            'quantity +', 'transfer.status =',
+        ):
+            self.assertNotIn(forbidden, code, forbidden)
+
+    def test_the_v1_surface_holds_no_state_machine(self):
+        # The transitions live in `inventory_services`. A table here would be a
+        # second lifecycle nobody owns.
+        import inspect
+        from . import v1_transfer_views
+        code = inspect.getsource(v1_transfer_views)
+        for forbidden in ('TRANSITIONS', 'ALLOWED_STATES', 'STATUS_ORDER'):
+            self.assertNotIn(forbidden, code, forbidden)
+
+    def test_both_surfaces_serialize_a_transfer_the_same_way(self):
+        transfer_id = self.draft()
+        self.line(transfer_id, quantity=3)
+        cache.clear()
+
+        web = self._web().get(
+            f'/api/admin/inventory/transfers/{transfer_id}/',
+        ).json()
+        v1 = self.client.get(_ip1t_url('ip1-cadena', f'{transfer_id}/')).json()
+        self.assertEqual(web, v1)
+
+    def test_a_transfer_dispatched_from_v1_reads_the_same_on_web(self):
+        transfer_id = self.draft()
+        self.line(transfer_id, quantity=3)
+        self.client.post(_ip1t_url('ip1-cadena', f'{transfer_id}/dispatch/'), {}, format='json')
+        cache.clear()
+
+        web = self._web().get(f'/api/admin/inventory/transfers/{transfer_id}/').json()
+        self.assertEqual(web['status'], 'in_transit')
+        self.assertEqual(self.stock(self.a), 7)
+
+    def test_the_v1_surface_never_authorizes_on_a_role_name(self):
+        import inspect
+        import re
+        from . import v1_transfer_views
+        code = inspect.getsource(v1_transfer_views)
+        self.assertIn('require_capability', code)
+        for forbidden in (r"role\s*==\s*'", r'\.role\s*in\s*\(', 'ROLE_ADMIN'):
+            self.assertIsNone(re.search(forbidden, code), forbidden)
 
 
 # M12B — Centro de notificaciones
