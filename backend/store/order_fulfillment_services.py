@@ -20,6 +20,7 @@ status change *means* would be a business decision, not a refactor.
 """
 from django.db import transaction
 
+from .commerce_notifications import emit_fulfillment_changed
 from .models import AdminAuditLog, Order, UserProfile
 from .permissions import get_user_role
 
@@ -105,5 +106,11 @@ def change_fulfillment_status(
             },
             request=request,
         )
+
+        # M12B — inside the transaction, so the notice is as durable as the
+        # status change and disappears with it on a rollback. Emitted from the
+        # ONE place that actually moves a fulfillment status, so a future
+        # second caller gets the notification for free instead of forgetting it.
+        emit_fulfillment_changed(order, new_status)
 
     return order

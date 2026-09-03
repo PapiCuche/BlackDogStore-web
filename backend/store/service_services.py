@@ -41,6 +41,7 @@ from . import inventory_services, sequences
 from .models import (
     AdminAuditLog,
     BranchStock,
+    Notification,
     CompanySettings,
     Customer,
     Device,
@@ -555,6 +556,11 @@ def transition_repair_order(
         request=request,
         company=locked.company,
     )
+
+    # M12B — the customer follows the lifecycle, and the shop learns when an
+    # order becomes collectable. Both are decided from the status the order
+    # ACTUALLY reached, never from what the caller asked for.
+    _notify(_emit_status_changed, order=locked, to_status=to_status)
     return locked
 
 
@@ -634,6 +640,39 @@ def eligible_technicians(company):
 
 
 @transaction.atomic
+# ---------------------------------------------------------------------------
+# M12B — emisión de eventos de notificación
+# ---------------------------------------------------------------------------
+#
+# These run INSIDE the business transaction they belong to, on purpose: the
+# event is as durable as the change it describes, and a rollback takes both.
+# The e-mail attempt is scheduled by the notification layer with `on_commit`,
+# so it only happens if the change survived.
+#
+# NOTHING HERE MAY RAISE INTO THE DOMAIN. A repair that was delivered is
+# delivered whether or not anybody could be told, and a notification failure
+# aborting the transaction would make the notice more important than the work.
+
+
+def _notify(fn, *args, **kwargs):
+    """Emit, and never let the attempt break the operation that caused it."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception:  # noqa: BLE001 — see the section docstring
+        import logging
+        logging.getLogger(__name__).exception('no se pudo emitir la notificación')
+        return None
+
+
+def _customer_of(order):
+    """The customer row an order belongs to, or None."""
+    return getattr(order, 'customer', None)
+
+
+def _order_label(order) -> str:
+    return f'Orden {order.number}'
+
+
 def assign_technician(*, repair_order, technician, actor=None, request=None) -> TechnicianAssignment:
     """
     Make `technician` responsible for the order, closing whoever had it.
@@ -680,6 +719,14 @@ def assign_technician(*, repair_order, technician, actor=None, request=None) -> 
         metadata={'number': locked.number, 'technician_id': technician.pk},
         request=request,
         company=locked.company,
+    )
+
+    # M12B — the technician who now has it. Keyed on the ASSIGNMENT, so a
+    # reassignment back and forth produces one notice per assignment and a
+    # re-run of the same one produces none.
+    _notify(
+        _emit_assignment_created, order=locked, assignment=assignment,
+        technician=technician,
     )
     return assignment
 
@@ -1164,6 +1211,11 @@ def publish_quote(*, quote, actor=None, request=None) -> RepairQuote:
         request=request,
         company=locked_order.company,
     )
+
+    # M12B — the customer now has something to decide. Keyed on the quote AND
+    # its revision: republishing revision 2 must not notify twice, but a
+    # genuinely new revision is genuinely new news.
+    _notify(_emit_quote_available, order=locked_order, quote=locked_quote)
     return locked_quote
 
 
@@ -1355,6 +1407,14 @@ def record_quote_decision(
         },
         request=request,
         company=locked_order.company,
+    )
+
+    # M12B — the shop learns the answer. The customer is NOT notified: they
+    # just pressed the button, and telling somebody what they themselves did
+    # a second ago is noise. Their timeline keeps the decision.
+    _notify(
+        _emit_quote_decision, order=locked_order, quote=locked_quote,
+        approved=(record.decision == RepairQuoteDecision.DECISION_APPROVE),
     )
     return record
 
@@ -2697,3 +2757,156 @@ def _deliver_repair(
         company=locked.company,
     )
     return delivery
+
+
+# ---------------------------------------------------------------------------
+# M12B — los emisores concretos
+# ---------------------------------------------------------------------------
+#
+# THE TEXTS ARE WRITTEN HERE, FROM SAFE MATERIAL ONLY: the event, the
+# customer-visible status label, and the order number. Never from
+# `internal_notes`, a diagnosis, a QC note, a cost, a supplier or the
+# technician's name. A notification is a summary that says "go and look"; the
+# detail lives in its module, behind its own authorisation.
+
+
+def _emit_assignment_created(*, order, assignment, technician):
+    from . import notification_events as ev
+    from . import notification_services as notif
+
+    notif.emit(
+        company=order.company,
+        event_type=ev.SERVICE_ASSIGNMENT_CREATED,
+        # Keyed on the ASSIGNMENT row: a reassignment is a new row and new
+        # news; re-running the same assignment is neither.
+        event_key=ev.event_key(ev.SERVICE_ASSIGNMENT_CREATED, 'assignment', assignment.pk),
+        title='Nueva reparación asignada',
+        body=f'{_order_label(order)} · {order.branch.name}',
+        target_type='repair_order', target_id=order.pk,
+        users=[technician],
+        priority=Notification.Priority.ACTION,
+    )
+
+
+def _emit_quote_available(*, order, quote):
+    from . import notification_events as ev
+    from . import notification_services as notif
+
+    customer = _customer_of(order)
+    if customer is None:
+        return
+    notif.emit(
+        company=order.company,
+        event_type=ev.SERVICE_QUOTE_AVAILABLE,
+        # The revision is part of the identity: republishing revision 2 is a
+        # replay, but revision 3 is a different proposal.
+        event_key=ev.event_key(
+            ev.SERVICE_QUOTE_AVAILABLE, 'quote', quote.pk, quote.revision,
+        ),
+        title='Tienes una cotización pendiente de revisión',
+        body=f'{_order_label(order)} · revisa y aprueba o rechaza.',
+        target_type='repair_order', target_id=order.pk,
+        customers=[customer],
+        priority=Notification.Priority.ACTION,
+    )
+
+
+#: What the customer is told when the order reaches each state.
+#:
+#: ONLY THE STATES WORTH A MESSAGE. `diagnosing` and `quality_control` are real
+#: and visible in the timeline, but a notification for each would train people
+#: to ignore them. Anything absent here still moves the order; it just does not
+#: interrupt anybody.
+_CUSTOMER_STATUS_MESSAGES = {
+    RepairStatusCode.WAITING_PARTS: (
+        'Tu reparación está esperando un repuesto',
+        'Te avisaremos en cuanto podamos continuar.',
+    ),
+    RepairStatusCode.READY_FOR_PICKUP: (
+        'Tu equipo está listo para recoger',
+        'Puedes pasar a retirarlo cuando quieras.',
+    ),
+    RepairStatusCode.DELIVERED: (
+        'Tu equipo fue entregado',
+        'Gracias por confiar en nosotros.',
+    ),
+}
+
+
+def _emit_status_changed(*, order, to_status):
+    """
+    One occurrence, one event, however many audiences it concerns.
+
+    An order becoming collectable is a SINGLE thing that happened. The customer
+    should hear it and so should whoever can hand the device back — but two
+    events would mean two rows describing one moment, and the replay guard
+    would then only protect each of them from itself. `emit()` fans one event
+    out to both audiences, which is what the model was shaped for.
+    """
+    from . import notification_events as ev
+    from . import notification_services as notif
+
+    message = _CUSTOMER_STATUS_MESSAGES.get(to_status)
+    customer = _customer_of(order)
+    is_ready = to_status == RepairStatusCode.READY_FOR_PICKUP
+
+    if message is None and not is_ready:
+        return
+
+    event_type = (
+        ev.SERVICE_DELIVERED if to_status == RepairStatusCode.DELIVERED
+        else ev.SERVICE_READY_FOR_PICKUP if is_ready
+        else ev.SERVICE_STATUS_CHANGED
+    )
+
+    staff = []
+    if is_ready:
+        # Only the people who can actually complete the handover, and only in
+        # the branch holding the device.
+        staff = notif.resolve_internal_recipients(
+            order.company, capability='service.delivery.manage', branch=order.branch,
+        )
+
+    if is_ready:
+        title, body = 'Tu equipo está listo para recoger', 'Puedes pasar a retirarlo cuando quieras.'
+    else:
+        title, body = message
+
+    notif.emit(
+        company=order.company,
+        event_type=event_type,
+        # (order, status): an order that returns to `waiting_parts` twice says
+        # it once, because from the customer's side it is the same sentence and
+        # the repeat reads as a mistake.
+        event_key=ev.event_key(event_type, 'repair_order', order.pk, to_status),
+        title=title,
+        body=f'{body} {_order_label(order)}.',
+        target_type='repair_order', target_id=order.pk,
+        users=staff,
+        customers=[customer] if customer is not None else [],
+        priority=Notification.Priority.ACTION if is_ready else Notification.Priority.INFO,
+    )
+
+
+def _emit_quote_decision(*, order, quote, approved):
+    """The customer decided. The shop needs to know; the customer already does."""
+    from . import notification_events as ev
+    from . import notification_services as notif
+
+    event_type = ev.SERVICE_QUOTE_APPROVED if approved else ev.SERVICE_QUOTE_REJECTED
+    technician = order.assignments.filter(unassigned_at__isnull=True).first()
+    recipients = [technician.technician] if technician else []
+    if not recipients:
+        recipients = notif.resolve_internal_recipients(
+            order.company, capability='service.orders.manage', branch=order.branch,
+        )
+    notif.emit(
+        company=order.company,
+        event_type=event_type,
+        event_key=ev.event_key(event_type, 'quote', quote.pk, quote.revision),
+        title='Cotización aprobada' if approved else 'Cotización rechazada',
+        body=f'{_order_label(order)} · el cliente respondió.',
+        target_type='repair_order', target_id=order.pk,
+        users=recipients,
+        priority=Notification.Priority.ACTION,
+    )
