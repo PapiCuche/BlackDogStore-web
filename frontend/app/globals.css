@@ -101,6 +101,76 @@
   --color-muted: var(--muted);
   --color-primary: var(--primary);
   --color-accent: var(--accent);
+
+  /* ------------------------------------------------------------------ */
+  /* M12F — LA PALETA GRIS HEREDADA, REINTERPRETADA                      */
+  /*                                                                    */
+  /* Esta aplicación se escribió con UN tema, y ese tema era oscuro. Por */
+  /* eso hay 2.779 utilidades de color literales repartidas en 87        */
+  /* ficheros: `text-white` para el texto, `text-zinc-500` para el       */
+  /* secundario, `bg-white/[0.02]` para una superficie apenas elevada.   */
+  /*                                                                    */
+  /* No son colores arbitrarios: son ROLES escritos con el vocabulario   */
+  /* de un tema único. `white` no significaba blanco, significaba «el    */
+  /* color que se lee»; `zinc-500` no significaba ese gris concreto,     */
+  /* significaba «menos importante que el resto».                       */
+  /*                                                                    */
+  /* Redefinir los tokens de la paleta traduce ese vocabulario de una    */
+  /* vez, en un sitio, en vez de reescribir 2.779 clases a mano — que    */
+  /* sería 2.779 oportunidades de equivocarse y una revisión imposible.  */
+  /* Es una decisión de CLASIFICACIÓN, no un reemplazo automático: cada  */
+  /* nivel de abajo dice a qué rol corresponde y por qué.                */
+  /*                                                                    */
+  /* LAS EXCEPCIONES SE ARREGLAN A MANO. Un `text-white` sobre un badge  */
+  /* rojo tiene que seguir siendo blanco: ahí «white» sí significaba     */
+  /* blanco. Son cinco en todo el código y llevan su propio token.       */
+  /* ------------------------------------------------------------------ */
+
+  /* «El color que se lee» y «el fondo sobre el que se lee». */
+  --color-white: var(--foreground);
+  --color-black: var(--background);
+
+  /* Grados de énfasis. Todos miden >= 4.5:1 sobre fondo, superficie y
+     superficie elevada, en los tres escenarios que el test comprueba. */
+  --color-zinc-50: var(--foreground);
+  --color-zinc-100: color-mix(in srgb, var(--foreground) 96%, var(--background));
+  --color-zinc-200: color-mix(in srgb, var(--foreground) 92%, var(--background));
+  --color-zinc-300: color-mix(in srgb, var(--foreground) 86%, var(--background));
+  --color-zinc-400: color-mix(in srgb, var(--foreground) 78%, var(--background));
+  --color-zinc-500: var(--muted);
+  --color-zinc-600: color-mix(in srgb, var(--foreground) 68%, var(--background));
+  --color-zinc-700: color-mix(in srgb, var(--foreground) 65%, var(--background));
+  /* A partir de aquí dejan de ser texto y pasan a ser superficies. */
+  --color-zinc-800: var(--surface-2);
+  --color-zinc-900: var(--surface);
+  --color-zinc-950: var(--background);
+
+  /* Las otras escalas neutras que el código usa de vez en cuando. Mismo
+     razonamiento; se traducen para que no queden tres ficheros con el tema
+     puesto al revés. */
+  --color-neutral-100: var(--color-zinc-100);
+  --color-neutral-200: var(--color-zinc-200);
+  --color-neutral-300: var(--color-zinc-300);
+  --color-neutral-400: var(--color-zinc-400);
+  --color-neutral-500: var(--muted);
+  --color-neutral-600: var(--color-zinc-600);
+  --color-neutral-700: var(--color-zinc-700);
+  --color-neutral-800: var(--surface-2);
+  --color-neutral-900: var(--surface);
+  --color-neutral-950: var(--background);
+  --color-slate-300: var(--color-zinc-300);
+  --color-slate-400: var(--color-zinc-400);
+  --color-slate-500: var(--muted);
+  --color-slate-600: var(--color-zinc-600);
+  --color-stone-400: var(--color-zinc-400);
+  --color-stone-500: var(--muted);
+  --color-gray-400: var(--color-zinc-400);
+  --color-gray-500: var(--muted);
+
+  /* LA EXCEPCIÓN. Sobre un relleno saturado —un badge rojo, un botón
+     verde— el texto blanco es blanco en los dos temas, porque el fondo no
+     cambia con el tema. Cinco sitios en todo el código. */
+  --color-on-status: #ffffff;
   --font-sans: var(--font-body);
   --font-display: var(--font-display);
 }

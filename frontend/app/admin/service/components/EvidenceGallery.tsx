@@ -195,7 +195,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
             type="button"
             disabled={busy || !file || !canUploadHere}
             onClick={() => void upload()}
-            className="rounded-lg bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+            className="rounded-lg bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-on-status disabled:opacity-40"
           >
             Subir
           </button>
@@ -325,7 +325,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                             type="button"
                             disabled={busy || !reason.trim()}
                             onClick={() => void act(e.id, "void", { reason })}
-                            className="rounded bg-red-500/80 px-1.5 py-px text-[10px] text-white disabled:opacity-40"
+                            className="rounded bg-red-500/80 px-1.5 py-px text-[10px] text-on-status disabled:opacity-40"
                           >
                             Confirmar
                           </button>

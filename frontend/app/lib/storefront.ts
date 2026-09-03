@@ -24,6 +24,16 @@ export type StorefrontLogos = {
   primary_on_dark: string;
   horizontal_on_light: string;
   horizontal_on_dark: string;
+  /**
+   * M12F — el isotipo, recurso auxiliar autorizado por el manual.
+   *
+   * Existe como variante propia porque en 320 px un lockup horizontal no cabe
+   * junto al carrito, el tema y el menú — y la salida no es encogerlo por
+   * debajo de su mínimo ni aplastarlo, que son alteraciones prohibidas, sino
+   * usar la pieza que el manual ya diseñó para ese tamaño.
+   */
+  isotype_on_light: string;
+  isotype_on_dark: string;
 };
 
 export const EMPTY_LOGOS: StorefrontLogos = {
@@ -31,6 +41,49 @@ export const EMPTY_LOGOS: StorefrontLogos = {
   primary_on_dark: "",
   horizontal_on_light: "",
   horizontal_on_dark: "",
+  isotype_on_light: "",
+  isotype_on_dark: "",
+};
+
+/**
+ * M12F — contenido comercial del tenant, editable sin desplegar.
+ *
+ * Todo puede venir vacío, y vacío es una respuesta legítima: significa «este
+ * tenant no ha escrito esto» y el componente cae a un texto genérico de la
+ * plataforma. NUNCA al de otra empresa.
+ */
+export type StorefrontCampaign = {
+  slot: string;
+  badge: string;
+  title: string;
+  subtitle: string;
+  body: string;
+  image_url: string;
+  cta_label: string;
+  cta_url: string;
+  secondary_cta_label: string;
+  secondary_cta_url: string;
+  product: { slug: string; name: string } | null;
+};
+
+export type StorefrontPage = {
+  hero_eyebrow: string;
+  hero_title: string;
+  hero_subtitle: string;
+  hero_primary_cta_label: string;
+  hero_primary_cta_url: string;
+  hero_secondary_cta_label: string;
+  hero_secondary_cta_url: string;
+};
+
+export const EMPTY_PAGE: StorefrontPage = {
+  hero_eyebrow: "",
+  hero_title: "",
+  hero_subtitle: "",
+  hero_primary_cta_label: "",
+  hero_primary_cta_url: "",
+  hero_secondary_cta_label: "",
+  hero_secondary_cta_url: "",
 };
 
 export type StorefrontColors = {
@@ -82,6 +135,16 @@ export type StorefrontConfig = {
     terms_url: string;
     privacy_url: string;
   };
+  /** M12F — contenido estable de la portada. */
+  page: StorefrontPage;
+  /**
+   * M12F — campañas vigentes, indexadas por slot.
+   *
+   * Un diccionario y no una lista: la página pregunta «¿qué va en la promoción
+   * inferior?» y recibe una respuesta o nada. Sólo llega lo PUBLICADO y dentro
+   * de su ventana — un borrador no viaja hasta aquí, y una caducada tampoco.
+   */
+  campaigns: Record<string, StorefrontCampaign | undefined>;
 };
 
 /**
@@ -130,6 +193,9 @@ export const NEUTRAL_CONFIG: StorefrontConfig = {
     city: "",
   },
   policies: { warranty_text: "", warranty_url: "", terms_url: "", privacy_url: "" },
+  page: { ...EMPTY_PAGE },
+  // Sin campañas. Una plataforma sin tenant resuelto no anuncia nada de nadie.
+  campaigns: {},
 };
 
 /** Only `#RRGGBB` reaches a stylesheet. The backend validates; so does this. */
@@ -180,6 +246,10 @@ export async function fetchStorefrontConfig(): Promise<StorefrontConfig> {
       contact: { ...NEUTRAL_CONFIG.contact, ...(data.contact ?? {}) },
       policies: { ...NEUTRAL_CONFIG.policies, ...(data.policies ?? {}) },
       company: { ...NEUTRAL_CONFIG.company, ...(data.company ?? {}) },
+      // Mismo motivo que `logos`: un backend anterior a M12F no manda estas
+      // claves, y la portada tiene que renderizar igual.
+      page: { ...EMPTY_PAGE, ...(data.page ?? {}) },
+      campaigns: data.campaigns ?? {},
     };
   } catch {
     // The shop renders unbranded rather than not at all.

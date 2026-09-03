@@ -97,7 +97,7 @@ function Panel({ ctx }: { ctx: InternalContext }) {
             setSelected(null);
             setComposing(true);
           }}
-          className="rounded-lg bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
+          className="rounded-lg bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-on-status hover:bg-sky-500"
         >
           Nuevo comunicado
         </button>

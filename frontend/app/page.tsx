@@ -97,17 +97,61 @@ const REPAIR_SERVICES = [
   },
 ];
 
-const BRANDS_STRIP = [
-  "iPhone 17 Pro Max",
-  "iPhone 16 Pro",
-  "iPhone 16",
-  "iPhone 15 Pro",
-  "iPhone 15",
-  "iPhone 14 Pro",
-  "iPhone 14",
-  "iPhone 13",
-  "iPhone 12",
-];
+/**
+ * M12F — la tira sale del CATÁLOGO, no de una lista escrita a mano.
+ *
+ * Antes había aquí nueve modelos compilados encabezados por «iPhone 17 Pro
+ * Max»: el mismo defecto que la preventa, sólo que más silencioso. Una lista
+ * de modelos envejece sola y nadie despliega para actualizar una marquesina.
+ *
+ * Ahora son los productos que este tenant vende de verdad. Si no vende
+ * ninguno, la tira no se dibuja: una franja vacía girando en bucle no informa
+ * de nada.
+ */
+function marqueeItems(products: Product[]): string[] {
+  const names = Array.from(new Set(products.map((p) => p.name).filter(Boolean)));
+  return names.slice(0, 12);
+}
+
+/**
+ * Un destino de campaña puede ser interno o externo, y no son lo mismo.
+ *
+ * Una ruta del propio sitio va por `<Link>`: navegación de cliente, sin
+ * recargar. Una URL externa —o un `tel:` / `mailto:`— va por `<a>` con
+ * `rel="noopener noreferrer"`, porque abrir en otra pestaña sin eso deja al
+ * destino acceso a `window.opener`.
+ *
+ * El esquema ya lo validó el backend: sólo llegan aquí rutas internas, http(s),
+ * `tel:` y `mailto:`. Esto decide cómo NAVEGAR, no si el destino es seguro.
+ */
+function PromoLink({
+  href,
+  className,
+  children,
+}: {
+  href: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const internal = href.startsWith("/") && !href.startsWith("//");
+  if (internal) {
+    return (
+      <Link href={href} className={className}>
+        {children}
+      </Link>
+    );
+  }
+  const newTab = href.startsWith("http");
+  return (
+    <a
+      href={href}
+      className={className}
+      {...(newTab ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+    >
+      {children}
+    </a>
+  );
+}
 
 export default function Home() {
   // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
@@ -119,6 +163,11 @@ export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const marquee = marqueeItems(products);
+  // M12F — la promoción inferior es un DATO del tenant. Si no hay campaña
+  // vigente en este slot, la sección no se dibuja: mejor nada que la preventa
+  // del año pasado.
+  const bottomPromo = useStorefront().campaigns.home_bottom_promo;
 
   useEffect(() => {
     fetcher<Product[]>(apiUrl("/products?ordering=newest"))
@@ -128,7 +177,7 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#080808] text-white">
+    <div className="min-h-screen bg-background text-foreground">
       <Hero />
 
       {/* Pilares — reemplazan a las cuatro cifras que nadie podía respaldar */}
@@ -145,17 +194,25 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Scrolling marquee strip */}
-      <div className="overflow-hidden border-b border-white/[0.06] bg-[#0d0d0d] py-3">
-        <div className="flex animate-[marquee_25s_linear_infinite] gap-8 whitespace-nowrap">
-          {[...BRANDS_STRIP, ...BRANDS_STRIP, ...BRANDS_STRIP].map((brand, i) => (
-            <span key={i} className="flex items-center gap-8 text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-700">
-              {brand}
-              <span className="h-1 w-1 rounded-full bg-zinc-700" />
-            </span>
-          ))}
+      {/* Tira de modelos — del catálogo real, y sólo si hay catálogo. */}
+      {marquee.length > 0 ? (
+        <div
+          className="overflow-hidden border-b border-bd-border bg-surface py-3"
+          // Decorativa: repite nombres que ya están en la rejilla de abajo. Un
+          // lector de pantalla que la leyera tres veces seguidas no ganaría
+          // nada y perdería el hilo de la página.
+          aria-hidden="true"
+        >
+          <div className="flex animate-[marquee_25s_linear_infinite] gap-8 whitespace-nowrap">
+            {[...marquee, ...marquee, ...marquee].map((brand, i) => (
+              <span key={i} className="flex items-center gap-8 text-[10px] font-bold uppercase tracking-[0.3em] text-muted">
+                {brand}
+                <span className="h-1 w-1 rounded-full bg-muted" />
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <main className="mx-auto max-w-7xl px-6 lg:px-8">
 
@@ -345,49 +402,98 @@ export default function Home() {
           )}
         </section>
 
-        {/* Pre-sale / preventa section */}
-        <section className="mb-20 overflow-hidden rounded-3xl bg-white">
-          <div className="relative grid gap-0 lg:grid-cols-2">
-            {/* Left: text on white */}
-            <div className="relative overflow-hidden bg-[#080808] px-8 py-12 sm:px-12">
-              <div className="dot-grid absolute right-0 top-0 h-40 w-40 opacity-20 pointer-events-none" />
-              <span className="section-label text-zinc-500">Preventa</span>
-              <h2 className="font-display mt-3 text-5xl font-black uppercase leading-none tracking-tight text-white sm:text-6xl">
-                iPhone 17<br />Pro Max
-              </h2>
-              <p className="mt-4 text-sm leading-6 text-zinc-400">
-                Separa el tuyo con solo <strong className="text-white">$300</strong> de reserva.
-                Contacta ahora para asegurar tu pedido.
-              </p>
-              <a
-                href={whatsappLink ? `${whatsappLink}?text=${encodeURIComponent("Hola, quiero más información")}` : "#"}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-white px-7 py-3.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
-              >
-                Reservar ahora
-              </a>
-            </div>
+        {/*
+          M12F — LA PROMOCIÓN ES UN DATO, NO UN COMPONENTE.
 
-            {/* Right: white panel */}
-            <div className="flex flex-col items-center justify-center bg-white px-8 py-12 text-center sm:px-12">
-              <p className="font-display text-6xl font-black uppercase tracking-tight text-[#080808] sm:text-7xl">
-                PREVENTA
-              </p>
-              <div className="mt-2 rounded-full bg-[#080808] px-6 py-2">
-                <p className="font-display text-2xl font-black uppercase tracking-widest text-white">
-                  EXCLUSIVA
-                </p>
+          Aquí vivía un <h2> con «iPhone 17 Pro Max» dentro. Cambiar de campaña
+          exigía tocar este fichero y desplegar; no cambiarla dejaba una
+          preventa caducada en portada — el fallo peor, porque nadie despliega
+          para borrar algo que ya no existe.
+
+          Sin campaña vigente no se dibuja nada. El backend ya filtró por
+          empresa, estado y ventana temporal: si esto llega vacío es porque no
+          hay nada que anunciar, y una sección vacía sería peor que ninguna.
+
+          Todo el texto se pinta como TEXTO. No hay `dangerouslySetInnerHTML`
+          en ninguna parte: lo escribe personal del tenant desde un panel, no
+          el equipo que revisa este código.
+        */}
+        {bottomPromo ? (
+          <section className="mb-20 overflow-hidden rounded-3xl border border-bd-border">
+            <div className="grid gap-0 lg:grid-cols-2">
+              <div className="relative overflow-hidden bg-surface px-8 py-12 sm:px-12">
+                <div className="dot-grid pointer-events-none absolute right-0 top-0 h-40 w-40 opacity-20" />
+                {bottomPromo.badge ? (
+                  <span className="section-label text-muted">{bottomPromo.badge}</span>
+                ) : null}
+                <h2
+                  className="font-display mt-3 font-black uppercase leading-none tracking-tight text-foreground text-balance"
+                  style={{ fontSize: "clamp(2rem, 6vw, 3.75rem)" }}
+                >
+                  {bottomPromo.title}
+                </h2>
+                {bottomPromo.subtitle ? (
+                  <p className="mt-3 text-base font-semibold text-foreground/80 text-pretty">
+                    {bottomPromo.subtitle}
+                  </p>
+                ) : null}
+                {bottomPromo.body ? (
+                  <p className="mt-4 max-w-prose text-sm leading-6 text-muted text-pretty">
+                    {bottomPromo.body}
+                  </p>
+                ) : null}
+
+                <div className="mt-6 flex flex-wrap gap-3">
+                  {bottomPromo.cta_label && bottomPromo.cta_url ? (
+                    <PromoLink
+                      href={bottomPromo.cta_url}
+                      className="inline-flex min-h-11 items-center gap-2.5 rounded-full bg-foreground px-7 py-3.5 text-sm font-black uppercase tracking-widest text-background transition-colors hover:bg-foreground/85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    >
+                      {bottomPromo.cta_label}
+                    </PromoLink>
+                  ) : null}
+                  {bottomPromo.secondary_cta_label && bottomPromo.secondary_cta_url ? (
+                    <PromoLink
+                      href={bottomPromo.secondary_cta_url}
+                      className="inline-flex min-h-11 items-center gap-2.5 rounded-full border border-bd-border px-7 py-3.5 text-sm font-bold uppercase tracking-widest text-foreground transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    >
+                      {bottomPromo.secondary_cta_label}
+                    </PromoLink>
+                  ) : null}
+                </div>
               </div>
-              <p className="mt-6 text-xs uppercase tracking-[0.3em] text-zinc-400">
-                Disponible · 256GB · 512GB · 1TB
-              </p>
-              {storePhone ? (
-                <p className="mt-2 text-xs text-zinc-400">{storePhone}</p>
-              ) : null}
+
+              <div className="flex flex-col items-center justify-center bg-background px-8 py-12 text-center sm:px-12">
+                {bottomPromo.image_url ? (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src={bottomPromo.image_url}
+                    alt={bottomPromo.title}
+                    className="max-h-64 w-auto max-w-full object-contain"
+                    loading="lazy"
+                  />
+                ) : (
+                  <p
+                    className="font-display font-black uppercase tracking-tight text-foreground text-balance"
+                    style={{ fontSize: "clamp(2.5rem, 7vw, 4.5rem)" }}
+                  >
+                    {bottomPromo.badge || bottomPromo.title}
+                  </p>
+                )}
+                {bottomPromo.product ? (
+                  <Link
+                    href={`/product/${bottomPromo.product.slug}`}
+                    className="mt-6 text-xs uppercase tracking-[0.3em] text-muted underline underline-offset-4 transition-colors hover:text-foreground"
+                  >
+                    Ver ficha del producto
+                  </Link>
+                ) : storePhone ? (
+                  <p className="mt-6 text-xs text-muted">{storePhone}</p>
+                ) : null}
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        ) : null}
 
       </main>
     </div>

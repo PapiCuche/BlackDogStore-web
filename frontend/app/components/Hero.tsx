@@ -14,10 +14,21 @@ const REPAIR_HIGHLIGHTS = [
 export default function Hero() {
   // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
   const whatsappLink = useStorefront().contact.whatsapp_link;
-  // Phase 3: location and logo belong to the tenant. The marketing copy below
-  // is still the pilot's — a content system for per-tenant landing pages is a
-  // separate concern, recorded in docs/saas-multiempresa.md.
-  const { company, contact, policies } = useStorefront();
+  // M12F — el copy YA NO es del piloto. `page` viene de la fila de ESTA empresa;
+  // el texto aprobado del manual de Black Dog vive en la fila de Black Dog,
+  // escrito por una migración, igual que su identidad comercial desde la Fase 3.
+  // Vacío cae a lo genérico de la plataforma, NUNCA a lo de otra empresa.
+  const { company, contact, policies, page } = useStorefront();
+
+  const eyebrow =
+    page.hero_eyebrow || [company.name, contact.city].filter(Boolean).join(" · ");
+  // Los saltos de línea son composición del titular: quien escribe
+  // «Tu Apple, / con respaldo / especializado» decide el ritmo de lectura. Se
+  // parten y se pintan como líneas — nunca como marcado.
+  const titleLines = (page.hero_title || company.name || "").split("\n").filter(Boolean);
+  const subtitle = page.hero_subtitle;
+  const primaryLabel = page.hero_primary_cta_label || "Ver catálogo";
+  const primaryHref = page.hero_primary_cta_url || "/product";
 
   return (
     <section className="relative overflow-hidden bg-[#080808]">
@@ -54,28 +65,47 @@ export default function Hero() {
 
               La frase principal y el descriptor salen literalmente del manual.
             */}
-            <h1 className="font-display mt-5 text-6xl font-black uppercase leading-[0.92] tracking-tight text-white sm:text-7xl lg:text-8xl">
-              Tu Apple,<br />
-              <span className="text-zinc-300">con respaldo</span><br />
-              <span className="relative">
-                especializado
-                <span className="absolute -bottom-1 left-0 right-0 h-[5px] rounded-full bg-white opacity-80" />
-              </span>
+            {/*
+              `clamp()` en vez de tres saltos de breakpoint: el titular escala de
+              forma continua entre 320 y 1440 px, así que no hay un ancho donde
+              se quede grande justo antes de saltar. `text-balance` reparte las
+              líneas cuando el tenant escribe un titular de una sola línea larga.
+            */}
+            <h1
+              className="font-display mt-5 font-black uppercase leading-[0.92] tracking-tight text-foreground text-balance"
+              style={{ fontSize: "clamp(2.5rem, 9vw, 6rem)" }}
+            >
+              {titleLines.map((line, i) => (
+                <span key={i} className="block">
+                  {i === titleLines.length - 1 && titleLines.length > 1 ? (
+                    <span className="relative inline-block">
+                      {line}
+                      {/* El subrayado acompaña a la ÚLTIMA línea, sea cual sea:
+                          es composición, no una palabra concreta del piloto. */}
+                      <span
+                        aria-hidden="true"
+                        className="absolute -bottom-1 left-0 right-0 h-[5px] rounded-full bg-foreground opacity-80"
+                      />
+                    </span>
+                  ) : (
+                    line
+                  )}
+                </span>
+              ))}
             </h1>
 
-            <p className="mt-8 max-w-md text-base leading-7 text-zinc-400">
-              Compra, renueva o repara tu equipo Apple con asesoría
-              especializada y respaldo postventa.
-              {policies.warranty_text ? ` ${policies.warranty_text}` : ""}
+            <p className="mt-8 max-w-md text-base leading-7 text-muted text-pretty">
+              {subtitle}
+              {policies.warranty_text ? `${subtitle ? " " : ""}${policies.warranty_text}` : ""}
             </p>
 
             {/* CTA buttons */}
             <div className="mt-8 flex flex-wrap gap-3">
               <Link
-                href="/product"
-                className="inline-flex items-center gap-2 rounded-full bg-white px-7 py-3.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
+                href={primaryHref}
+                className="inline-flex min-h-11 items-center gap-2 rounded-full bg-foreground px-7 py-3.5 text-sm font-black uppercase tracking-widest text-background transition-colors hover:bg-foreground/85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
               >
-                Ver catálogo
+                {primaryLabel}
               </Link>
               <a
                 href={whatsappLink || "#"}

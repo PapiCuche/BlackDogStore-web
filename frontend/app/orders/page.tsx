@@ -80,7 +80,7 @@ export default function OrdersPage() {
               <p className="text-lg font-semibold text-white">No tienes pedidos aún</p>
               <p className="mt-1 text-sm text-slate-400">Tus compras aparecerán aquí.</p>
             </div>
-            <Link href="/product" className="rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600">
+            <Link href="/product" className="rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-on-status transition hover:bg-emerald-600">
               Explorar catálogo
             </Link>
           </div>

@@ -122,7 +122,7 @@ export function NotificationBell({ slug }: { slug: string | null }) {
         {/* `null` means "not loaded yet" and shows nothing. Rendering 0 while
             loading would state a fact the client does not have. */}
         {unread !== null && unread > 0 ? (
-          <span className="absolute -right-1 -top-1 min-w-[18px] rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-[18px] text-white">
+          <span className="absolute -right-1 -top-1 min-w-[18px] rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-[18px] text-on-status">
             {unread > 99 ? "99+" : unread}
           </span>
         ) : null}
