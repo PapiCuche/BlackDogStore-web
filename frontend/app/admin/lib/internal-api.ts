@@ -1435,3 +1435,144 @@ export function inventoryExportUrl(
   if (branchIds.length) qs.set("branches", branchIds.join(","));
   return `${API_BASE}/admin/inventory/export/?${qs}`;
 }
+
+// ---------------------------------------------------------------------------
+// M12F — contenido comercial del escaparate
+// ---------------------------------------------------------------------------
+
+export type StorefrontCampaignRow = {
+  id: number;
+  slot: string;
+  status: "draft" | "published" | "archived";
+  badge: string;
+  title: string;
+  subtitle: string;
+  body: string;
+  image_url: string;
+  cta_label: string;
+  cta_url: string;
+  secondary_cta_label: string;
+  secondary_cta_url: string;
+  priority: number;
+  starts_at: string | null;
+  ends_at: string | null;
+  published_at: string | null;
+  is_active: boolean;
+  product_id: number | null;
+  product: { slug: string; name: string } | null;
+  updated_at: string;
+};
+
+export type StorefrontSlot = { value: string; label: string };
+
+export type StorefrontCampaignList = {
+  company: { id: number; slug: string; name: string };
+  slots: StorefrontSlot[];
+  results: StorefrontCampaignRow[];
+};
+
+export type StorefrontPageContent = {
+  hero_eyebrow: string;
+  hero_title: string;
+  hero_subtitle: string;
+  hero_primary_cta_label: string;
+  hero_primary_cta_url: string;
+  hero_secondary_cta_label: string;
+  hero_secondary_cta_url: string;
+};
+
+/** Errores por campo, tal como los devuelve el backend. */
+export class ContentValidationError extends Error {
+  constructor(message: string, readonly errors: Record<string, string[]>) {
+    super(message);
+    this.name = "ContentValidationError";
+  }
+}
+
+function companyQuery(companyId?: number | null): string {
+  return companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+}
+
+async function handle<T>(res: Response, what: string): Promise<T> {
+  if (res.status === 403) {
+    throw new NoInternalAccessError(
+      await readDetail(res, `No tienes permisos sobre ${what}.`),
+    );
+  }
+  if (res.status === 404) throw new Error("Empresa no encontrada o sin acceso.");
+  if (res.status === 400) {
+    // Los mensajes por campo vienen del backend y se pintan bajo el campo al
+    // que pertenecen. Tragárselos dejaría a alguien mirando un formulario que
+    // no guarda sin decir por qué.
+    const data = await res.json().catch(() => ({}));
+    throw new ContentValidationError(
+      data.detail || "Datos inválidos.", data.errors || {},
+    );
+  }
+  if (!res.ok) throw new Error(await readDetail(res, `No se pudo cargar ${what}.`));
+  return (await res.json()) as T;
+}
+
+export async function fetchStorefrontCampaigns(
+  companyId?: number | null,
+): Promise<StorefrontCampaignList> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/campaigns/${companyQuery(companyId)}`,
+  );
+  return handle<StorefrontCampaignList>(res, "el escaparate");
+}
+
+export async function createStorefrontCampaign(
+  payload: Partial<StorefrontCampaignRow>, companyId?: number | null,
+): Promise<StorefrontCampaignRow> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/campaigns/${companyQuery(companyId)}`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return handle<StorefrontCampaignRow>(res, "el escaparate");
+}
+
+export async function updateStorefrontCampaign(
+  id: number, payload: Partial<StorefrontCampaignRow>, companyId?: number | null,
+): Promise<StorefrontCampaignRow> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/campaigns/${id}/${companyQuery(companyId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return handle<StorefrontCampaignRow>(res, "el escaparate");
+}
+
+/**
+ * Publicar y archivar son acciones CON NOMBRE, no efectos de guardar.
+ *
+ * Por eso son un endpoint aparte y no un `status` que se pueda colar en un
+ * PATCH: guardar un borrador tiene que dejarlo en borrador.
+ */
+export async function actOnStorefrontCampaign(
+  id: number, action: "publish" | "archive", companyId?: number | null,
+): Promise<StorefrontCampaignRow> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/campaigns/${id}/${action}/${companyQuery(companyId)}`,
+    { method: "POST" },
+  );
+  return handle<StorefrontCampaignRow>(res, "el escaparate");
+}
+
+export async function fetchStorefrontPage(
+  companyId?: number | null,
+): Promise<{ page: StorefrontPageContent }> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/page/${companyQuery(companyId)}`,
+  );
+  return handle<{ page: StorefrontPageContent }>(res, "la portada");
+}
+
+export async function updateStorefrontPage(
+  payload: Partial<StorefrontPageContent>, companyId?: number | null,
+): Promise<{ page: StorefrontPageContent }> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/page/${companyQuery(companyId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return handle<{ page: StorefrontPageContent }>(res, "la portada");
+}
