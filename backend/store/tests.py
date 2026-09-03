@@ -37962,3 +37962,788 @@ class G3TechnicianMigrationFreezeTest(TestCase):
         self.assertEqual(
             MembershipRoleAssignment.objects.filter(membership=membership).count(), 1,
         )
+
+
+# ===========================================================================
+# M12B — Centro de notificaciones
+# ===========================================================================
+#
+# THE FOUR PROPERTIES THIS SECTION DEFENDS:
+#
+#   UN EVENTO DE NEGOCIO NO ES UN EMAIL
+#   UN EMAIL FALLIDO NO REVIERTE EL NEGOCIO
+#   UN RETRY NO CREA DOS NOTIFICACIONES
+#   EMPRESA A NO RECIBE EVENTOS DE EMPRESA B
+#
+# ===========================================================================
+
+from .models import (  # noqa: E402
+    Notification as _Notif,
+    NotificationDelivery as _Delivery,
+    NotificationEvent as _Event,
+)
+from . import notification_events as _ev  # noqa: E402
+from . import notification_services as _notif  # noqa: E402
+
+
+def _m12b_customer(company, user=None, tag='m12b'):
+    from .models import Customer
+    return Customer.objects.create(
+        company=company, first_name='Cli', last_name=tag,
+        document_type='dni',
+        document_number=str(abs(hash(tag)) % 90000000 + 10000000),
+        email=f'{tag}@example.invalid', user=user,
+    )
+
+
+class M12BEventIdempotencyTest(TestCase):
+    """§80 1-5 — el evento, el destinatario y el canal, cada uno una vez."""
+
+    def setUp(self):
+        self.company = _saas_company('Notif SA', 'm12b-notif', tax_id='20780040001')
+        self.a = _saas_user('m12b_user_a')
+        self.b = _saas_user('m12b_user_b')
+
+    def _emit(self, key='k1', users=None):
+        return _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+            event_key=key, title='T', body='B',
+            users=users if users is not None else [self.a],
+        )
+
+    def test_1_an_event_is_recorded(self):
+        event = self._emit()
+        self.assertIsNotNone(event)
+        self.assertEqual(_Event.objects.count(), 1)
+        self.assertEqual(_Notif.objects.count(), 1)
+
+    def test_2_the_same_key_never_records_twice(self):
+        self._emit()
+        again = self._emit()
+        self.assertIsNone(again, 'un replay debe ser silencio, no un segundo evento')
+        self.assertEqual(_Event.objects.count(), 1)
+        self.assertEqual(_Notif.objects.count(), 1)
+
+    def test_3_two_recipients_get_two_inbox_items(self):
+        self._emit(users=[self.a, self.b])
+        self.assertEqual(_Notif.objects.count(), 2)
+        self.assertEqual(_Event.objects.count(), 1, 'un evento, dos avisos')
+
+    def test_4_one_person_matching_twice_gets_one_item(self):
+        """§72 — multirol no multiplica avisos."""
+        self._emit(users=[self.a, self.a])
+        self.assertEqual(_Notif.objects.count(), 1)
+
+    def test_4b_the_database_refuses_the_duplicate_even_bypassing_the_helper(self):
+        """La garantía real es la constraint, no el dedupe en Python."""
+        from django.db import IntegrityError as _IE
+        event = self._emit()
+        with self.assertRaises(_IE):
+            _Notif.objects.create(
+                event=event, company=self.company,
+                audience=_Notif.Audience.INTERNAL, user=self.a, title='dup',
+            )
+
+    def test_5_one_delivery_per_channel(self):
+        from django.db import IntegrityError as _IE
+        self._emit()
+        n = _Notif.objects.get()
+        _Delivery.objects.create(notification=n, channel=_Delivery.Channel.EMAIL)
+        with self.assertRaises(_IE):
+            _Delivery.objects.create(notification=n, channel=_Delivery.Channel.EMAIL)
+
+    def test_a_notification_must_have_exactly_one_recipient(self):
+        from django.db import IntegrityError as _IE
+        event = self._emit()
+        with self.assertRaises(_IE):
+            _Notif.objects.create(
+                event=event, company=self.company,
+                audience=_Notif.Audience.INTERNAL, title='sin destinatario',
+            )
+
+    def test_an_unknown_event_type_is_refused(self):
+        with self.assertRaises(ValueError):
+            _notif.emit(
+                company=self.company, event_type='inventado.no.existe',
+                event_key='x', title='T', users=[self.a],
+            )
+
+
+class M12BInboxTest(TestCase):
+    """§80 6-10 — leer, contar, paginar y ordenar."""
+
+    def setUp(self):
+        self.company = _saas_company('Inbox SA', 'm12b-inbox', tax_id='20780040002')
+        self.user = _saas_user('m12b_inbox_user')
+        for i in range(25):
+            _notif.emit(
+                company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+                event_key=f'inbox-{i}', title=f'Aviso {i}', users=[self.user],
+            )
+        self.inbox = _notif.inbox_for_user(self.user, self.company)
+
+    def test_6_marking_read_is_idempotent(self):
+        first = _notif.mark_read(self.inbox.filter(pk=self.inbox.first().pk))
+        stamped = self.inbox.first().read_at
+        second = _notif.mark_read(self.inbox.filter(pk=self.inbox.first().pk))
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0, 'ya leída: no se vuelve a marcar')
+        self.assertEqual(self.inbox.first().read_at, stamped, 'la marca no se mueve')
+
+    def test_7_read_all_touches_only_this_inbox(self):
+        other = _saas_user('m12b_other_inbox')
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+            event_key='ajena', title='Ajena', users=[other],
+        )
+        _notif.mark_read(self.inbox)
+        self.assertEqual(_notif.unread_count(self.inbox), 0)
+        self.assertEqual(
+            _notif.unread_count(_notif.inbox_for_user(other, self.company)), 1,
+        )
+
+    def test_8_unread_count_is_accurate(self):
+        self.assertEqual(_notif.unread_count(self.inbox), 25)
+        _notif.mark_read(self.inbox.filter(pk__in=[n.pk for n in self.inbox[:3]]))
+        self.assertEqual(_notif.unread_count(self.inbox), 22)
+
+    def test_10_ordering_is_newest_first(self):
+        rows = list(self.inbox.order_by('-created_at', '-id')[:3])
+        self.assertGreaterEqual(rows[0].pk, rows[1].pk)
+        self.assertGreaterEqual(rows[1].pk, rows[2].pk)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M12BInternalApiTest(TestCase):
+    """§43, §69 — la bandeja interna por HTTP."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('API SA', 'm12b-api', tax_id='20780040003')
+        provision_company_access_defaults(self.company)
+        self.user = _saas_user('m12b_api_user')
+        Membership.objects.create(
+            user=self.user, company=self.company, role='staff', is_active=True,
+        )
+        self.other = _saas_user('m12b_api_other')
+        Membership.objects.create(
+            user=self.other, company=self.company, role='staff', is_active=True,
+        )
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+            event_key='api-mine', title='Mía', users=[self.user],
+        )
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+            event_key='api-theirs', title='Ajena', users=[self.other],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _url(self, tail='', slug=None):
+        return f'/api/v1/internal/{slug or self.company.slug}/notifications/{tail}'
+
+    def test_the_inbox_lists_only_the_callers_own(self):
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        titles = [r['title'] for r in res.json()['results']]
+        self.assertEqual(titles, ['Mía'])
+
+    def test_unread_count_endpoint(self):
+        self.assertEqual(self.client.get(self._url('unread-count/')).json()['unread'], 1)
+
+    def test_marking_read_updates_the_count(self):
+        pk = self.client.get(self._url()).json()['results'][0]['id']
+        res = self.client.post(self._url(f'{pk}/read/'))
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNotNone(res.json()['read_at'])
+        self.assertEqual(self.client.get(self._url('unread-count/')).json()['unread'], 0)
+
+    def test_read_all(self):
+        res = self.client.post(self._url('read-all/'))
+        self.assertEqual(res.json()['marked'], 1)
+
+    def test_cannot_mark_someone_elses_notification(self):
+        theirs = _Notif.objects.get(user=self.other)
+        res = self.client.post(self._url(f'{theirs.pk}/read/'))
+        self.assertEqual(res.status_code, 404, 'ajena: indistinguible de inexistente')
+        theirs.refresh_from_db()
+        self.assertIsNone(theirs.read_at)
+
+    def test_cannot_read_another_companys_inbox(self):
+        other_co = _saas_company('Ajena API', 'm12b-ajena', tax_id='20780040004')
+        res = self.client.get(self._url(slug=other_co.slug))
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_payload_carries_no_internals(self):
+        row = self.client.get(self._url()).json()['results'][0]
+        for leaked in ('event', 'payload', 'user', 'customer', 'company'):
+            self.assertNotIn(leaked, row, leaked)
+
+    def test_unread_filter(self):
+        pk = self.client.get(self._url()).json()['results'][0]['id']
+        self.client.post(self._url(f'{pk}/read/'))
+        self.assertEqual(len(self.client.get(self._url('?unread=true')).json()['results']), 0)
+        self.assertEqual(len(self.client.get(self._url()).json()['results']), 1)
+
+
+class M12BRecipientResolutionTest(TestCase):
+    """§84 — quién recibe, resuelto por capacidad y sucursal."""
+
+    def setUp(self):
+        self.company = _saas_company('Resolver SA', 'm12b-res', tax_id='20780040005')
+        provision_company_access_defaults(self.company)
+        self.branch_a = self.company.branches.first()
+        from .models import Branch
+        self.branch_b = Branch.objects.create(company=self.company, name='Sucursal B')
+        self.tech_role = self.company.roles.get(slug='servicio-tecnico')
+
+    def _staff(self, username, *, role=None, active=True, branches=None):
+        user = _saas_user(username)
+        user.is_active = active
+        user.save(update_fields=['is_active'])
+        m = Membership.objects.create(
+            user=user, company=self.company, role='staff', is_active=True,
+        )
+        if role is not None:
+            MembershipRoleAssignment.objects.create(membership=m, role=role)
+        if branches is not None:
+            m.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+            m.save(update_fields=['branch_access_mode'])
+            from .models import MembershipBranchAccess
+            for b in branches:
+                MembershipBranchAccess.objects.create(membership=m, branch=b)
+        return user, m
+
+    def _resolve(self, capability, branch=None):
+        return _notif.resolve_internal_recipients(
+            self.company, capability=capability, branch=branch,
+        )
+
+    def test_45_someone_with_the_capability_is_a_recipient(self):
+        user, _ = self._staff('m12b_has_cap', role=self.tech_role)
+        self.assertIn(user, self._resolve('service.delivery.manage'))
+
+    def test_46_someone_without_it_is_not(self):
+        user, _ = self._staff('m12b_no_cap')
+        self.assertNotIn(user, self._resolve('service.delivery.manage'))
+
+    def test_43_an_inactive_user_is_not(self):
+        user, _ = self._staff('m12b_inactive', role=self.tech_role, active=False)
+        self.assertNotIn(user, self._resolve('service.delivery.manage'))
+
+    def test_an_inactive_membership_is_not(self):
+        user, m = self._staff('m12b_inactive_m', role=self.tech_role)
+        m.is_active = False
+        m.save(update_fields=['is_active'])
+        self.assertNotIn(user, self._resolve('service.delivery.manage'))
+
+    def test_44_branch_scope_excludes_the_wrong_branch(self):
+        user, _ = self._staff(
+            'm12b_branch_b', role=self.tech_role, branches=[self.branch_b],
+        )
+        self.assertNotIn(user, self._resolve('service.delivery.manage', branch=self.branch_a))
+        self.assertIn(user, self._resolve('service.delivery.manage', branch=self.branch_b))
+
+    def test_47_multirole_yields_one_entry(self):
+        user, m = self._staff('m12b_multi', role=self.tech_role)
+        MembershipRoleAssignment.objects.create(
+            membership=m, role=self.company.roles.get(slug='ventas'),
+        )
+        found = self._resolve('service.delivery.manage')
+        self.assertEqual(found.count(user), 1)
+
+    def test_48_the_platform_master_is_never_an_automatic_recipient(self):
+        """
+        §34 — la distinción que evita un inbox con todo el SaaS.
+
+        `resolve_capabilities()` devuelve TODAS las capacidades al superusuario
+        en TODAS las empresas, así que una consulta ingenua de "quién tiene esta
+        capacidad" le entrega cada evento de cada tenant de la plataforma. Poder
+        actuar en todas partes no es querer enterarse de todo.
+        """
+        master = _saas_user('m12b_master', is_superuser=True)
+        Membership.objects.create(
+            user=master, company=self.company, role='staff', is_active=True,
+        )
+        self.assertTrue(has_capability(master, self.company, 'service.delivery.manage'))
+        self.assertNotIn(master, self._resolve('service.delivery.manage'))
+
+    def test_it_never_reaches_another_company(self):
+        other = _saas_company('Otra res', 'm12b-otra-res', tax_id='20780040006')
+        provision_company_access_defaults(other)
+        outsider = _saas_user('m12b_outsider')
+        m = Membership.objects.create(
+            user=outsider, company=other, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(
+            membership=m, role=other.roles.get(slug='servicio-tecnico'),
+        )
+        self.assertNotIn(outsider, self._resolve('service.delivery.manage'))
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M12BServiceEventsTest(TestCase):
+    """§81 — el ciclo de la reparación, con textos seguros para el cliente."""
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        self.company = _saas_company('Servicio SA', 'm12b-serv', tax_id='20780041001')
+        provision_company_access_defaults(self.company)
+        self.branch = self.company.branches.first()
+        self.tech_role = self.company.roles.get(slug='servicio-tecnico')
+
+        self.tech = _saas_user('m12b_tech')
+        m = Membership.objects.create(
+            user=self.tech, company=self.company, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(membership=m, role=self.tech_role)
+
+        self.customer_user = _saas_user('m12b_cliente')
+        self.customer = _m12b_customer(self.company, self.customer_user, 'm12bserv')
+        from .models import Device
+        self.device = Device.objects.create(
+            company=self.company, customer=self.customer, brand='Apple', model='iPhone',
+        )
+        from . import service_services
+        self.svc = service_services
+        self.order = service_services.create_repair_order(
+            company=self.company, branch=self.branch, customer=self.customer,
+            device=self.device, reported_issue='No enciende.', actor=self.tech,
+        )
+
+    def _events(self, event_type=None):
+        qs = _Event.objects.filter(company=self.company)
+        return qs.filter(event_type=event_type) if event_type else qs
+
+    def test_12_assignment_notifies_the_assigned_technician(self):
+        self.svc.assign_technician(repair_order=self.order, technician=self.tech)
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_ASSIGNMENT_CREATED)
+        self.assertEqual(note.user_id, self.tech.pk)
+        self.assertEqual(note.audience, _Notif.Audience.INTERNAL)
+        self.assertEqual(note.target_type, 'repair_order')
+        self.assertEqual(note.target_id, self.order.pk)
+
+    def test_re_running_the_same_assignment_does_not_notify_twice(self):
+        self.svc.assign_technician(repair_order=self.order, technician=self.tech)
+        self.svc.assign_technician(repair_order=self.order, technician=self.tech)
+        self.assertEqual(self._events(_ev.SERVICE_ASSIGNMENT_CREATED).count(), 1)
+
+    def test_22_the_notification_never_carries_internal_notes(self):
+        """§27, §50 — el resumen no puede convertirse en una fuga."""
+        self.order.internal_notes = 'PMIC con consumo de 1.2A, coste interno 180'
+        self.order.save(update_fields=['internal_notes'])
+        self.svc.assign_technician(repair_order=self.order, technician=self.tech)
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_ASSIGNMENT_CREATED)
+        blob = f'{note.title} {note.body}'.lower()
+        for leaked in ('pmic', '1.2a', 'coste', '180'):
+            self.assertNotIn(leaked, blob, leaked)
+
+    def test_18_ready_for_pickup_reaches_the_customer(self):
+        self._advance_to_ready()
+        note = _Notif.objects.filter(
+            customer=self.customer, event__event_type=_ev.SERVICE_READY_FOR_PICKUP,
+        ).first()
+        self.assertIsNotNone(note)
+        self.assertIn('listo para recoger', note.title.lower())
+
+    def test_19_ready_for_pickup_also_reaches_delivery_staff_of_that_branch(self):
+        self._advance_to_ready()
+        staff_notes = _Notif.objects.filter(
+            event__event_type=_ev.SERVICE_READY_FOR_PICKUP,
+            audience=_Notif.Audience.INTERNAL,
+        )
+        self.assertTrue(staff_notes.exists())
+        for note in staff_notes:
+            self.assertIsNotNone(note.user_id)
+
+    def test_one_event_serves_both_audiences_without_duplicating_itself(self):
+        self._advance_to_ready()
+        self.assertEqual(self._events(_ev.SERVICE_READY_FOR_PICKUP).count(), 1)
+
+    def _advance_to_ready(self):
+        """Lleva la orden hasta READY_FOR_PICKUP por el camino del dominio."""
+        from .models import RepairStatusCode
+        self.order.status = RepairStatusCode.QUALITY_CONTROL
+        self.order.save(update_fields=['status'])
+        from . import service_services
+        service_services._emit_status_changed(
+            order=self.order, to_status=RepairStatusCode.READY_FOR_PICKUP,
+        )
+
+    def test_the_same_status_twice_tells_the_customer_once(self):
+        from .models import RepairStatusCode
+        for _ in range(3):
+            self.svc._emit_status_changed(
+                order=self.order, to_status=RepairStatusCode.WAITING_PARTS,
+            )
+        self.assertEqual(
+            _Notif.objects.filter(customer=self.customer).count(), 1,
+        )
+
+    def test_17_waiting_parts_says_nothing_about_supplier_or_cost(self):
+        from .models import RepairStatusCode
+        self.svc._emit_status_changed(
+            order=self.order, to_status=RepairStatusCode.WAITING_PARTS,
+        )
+        note = _Notif.objects.get(customer=self.customer)
+        blob = f'{note.title} {note.body}'.lower()
+        for leaked in ('proveedor', 'stock', 'coste', 'costo', 'margen', 's/'):
+            self.assertNotIn(leaked, blob, leaked)
+
+    def test_a_silent_status_notifies_nobody(self):
+        """No todo estado interrumpe: diagnosticar no es noticia."""
+        from .models import RepairStatusCode
+        self.svc._emit_status_changed(
+            order=self.order, to_status=RepairStatusCode.DIAGNOSING,
+        )
+        self.assertEqual(_Notif.objects.filter(customer=self.customer).count(), 0)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M12BCommerceEventsTest(TestCase):
+    """§82 — comercio, sin alterar el pago ni duplicar su correo."""
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        self.company = _pilot_company()
+        self.user = _saas_user('m12b_buyer')
+        self.customer = _m12b_customer(self.company, self.user, 'm12bcom')
+        self.product = _seeded(Product.objects.create(
+            company=self.company, name='M12B Prod', slug='m12b-prod',
+            price=Decimal('100.00'), inventory=10,
+        ))
+        self.session_key = 'm12b-cart'
+        self.order = Order.objects.create(
+            company=self.company, customer=self.customer,
+            customer_email='m12bcom@example.invalid', total=Decimal('100.00'),
+            cart_session_key=self.session_key, status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=1, price=self.product.price,
+        )
+        CartItem.objects.create(
+            session_key=self.session_key, product=self.product, quantity=1,
+        )
+        self.attempt = _pay_attempt(
+            self.order, transaction_id='tx-m12b-0001', order_number='on-m12b-0001',
+        )
+        self.client = APIClient()
+
+    def _pay(self):
+        return _post_izipay_ipn(self.client, self.order, attempt=self.attempt)
+
+    def test_23_payment_confirmed_creates_one_inbox_item(self):
+        self._pay()
+        notes = _Notif.objects.filter(
+            customer=self.customer, event__event_type=_ev.COMMERCE_PAYMENT_CONFIRMED,
+        )
+        self.assertEqual(notes.count(), 1)
+
+    def test_24_an_ipn_replay_never_duplicates_the_notification(self):
+        for _ in range(10):
+            self._pay()
+        self.assertEqual(
+            _Event.objects.filter(event_type=_ev.COMMERCE_PAYMENT_CONFIRMED).count(), 1,
+        )
+        self.assertEqual(_Notif.objects.filter(customer=self.customer).count(), 1)
+
+    def test_25_the_confirmation_email_is_still_sent_exactly_once(self):
+        """
+        §35 — la propiedad que M12B no puede romper.
+
+        `email_services` ya manda el correo de confirmación con su recibo y su
+        idempotencia. `commerce.payment.confirmed` NO es email-worthy justo por
+        esto: aporta el registro in-app y nada más.
+        """
+        with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
+            for _ in range(5):
+                self._pay()
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.confirmation_email_sent_at)
+        stamped = self.order.confirmation_email_sent_at
+        with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
+            self._pay()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.confirmation_email_sent_at, stamped)
+
+    def test_26_stock_still_decrements_once(self):
+        for _ in range(5):
+            self._pay()
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 9)
+
+    def test_27_the_cart_is_still_cleared_once(self):
+        self._pay()
+        self.assertEqual(
+            CartItem.objects.filter(session_key=self.session_key).count(), 0,
+        )
+
+    def test_a_rejected_payment_notifies_nobody(self):
+        _post_izipay_ipn(self.client, self.order, attempt=self.attempt, code='A02')
+        self.assertEqual(_Notif.objects.count(), 0)
+
+    def test_a_forged_notification_notifies_nobody(self):
+        _post_izipay_ipn(
+            self.client, self.order, attempt=self.attempt,
+            signature='ZmFsc2E=',
+        )
+        self.assertEqual(_Event.objects.count(), 0)
+
+    def test_32_a_guest_order_invents_no_inbox_recipient(self):
+        """§42 — sin cuenta no hay bandeja, y no se fabrica un usuario."""
+        guest = Order.objects.create(
+            company=self.company, customer=None,
+            customer_email='invitado@example.invalid', total=Decimal('50.00'),
+            status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(
+            order=guest, product=self.product, quantity=1, price=self.product.price,
+        )
+        attempt = _pay_attempt(
+            guest, transaction_id='tx-m12b-guest', order_number='on-m12b-guest',
+        )
+        before_users = User.objects.count()
+        _post_izipay_ipn(self.client, guest, attempt=attempt)
+        guest.refresh_from_db()
+        self.assertEqual(guest.status, Order.Status.PAID, 'el pago sí se procesa')
+        self.assertEqual(User.objects.count(), before_users, 'no se inventa usuario')
+        self.assertEqual(_Notif.objects.filter(target_id=guest.pk).count(), 0)
+
+    def test_28_fulfillment_ready_notifies_the_customer(self):
+        from . import order_fulfillment_services as fulfil
+        self._pay()
+        fulfil.change_fulfillment_status(
+            order=self.order, company=self.company,
+            new_status=Order.FulfillmentStatus.READY_FOR_PICKUP, actor=self.user,
+        )
+        note = _Notif.objects.filter(
+            event__event_type=_ev.COMMERCE_FULFILLMENT_READY,
+        ).first()
+        self.assertIsNotNone(note)
+        self.assertEqual(note.customer_id, self.customer.pk)
+
+    def test_29_shipped_promises_no_tracking_it_does_not_have(self):
+        from . import order_fulfillment_services as fulfil
+        self._pay()
+        for status_value in (Order.FulfillmentStatus.SHIPPED,):
+            fulfil.change_fulfillment_status(
+                order=self.order, company=self.company,
+                new_status=status_value, actor=self.user,
+            )
+        note = _Notif.objects.filter(
+            event__event_type=_ev.COMMERCE_FULFILLMENT_SHIPPED,
+        ).first()
+        self.assertIsNotNone(note)
+        blob = f'{note.title} {note.body}'.lower()
+        for invented in ('tracking', 'guía', 'courier', 'seguimiento'):
+            self.assertNotIn(invented, blob, invented)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M12BCustomerApiTest(TestCase):
+    """§85 — la bandeja del cliente, y todo lo que no puede alcanzar."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Cli SA', 'm12b-cli', tax_id='20780042001')
+        provision_company_access_defaults(self.company)
+        self.user = _saas_user('m12b_cli_user')
+        self.customer = _m12b_customer(self.company, self.user, 'm12bcliA')
+        self.other_user = _saas_user('m12b_cli_other')
+        self.other_customer = _m12b_customer(self.company, self.other_user, 'm12bcliB')
+
+        _notif.emit(
+            company=self.company, event_type=_ev.COMMERCE_PAYMENT_CONFIRMED,
+            event_key='cli-mine', title='Mía', customers=[self.customer],
+        )
+        _notif.emit(
+            company=self.company, event_type=_ev.COMMERCE_PAYMENT_CONFIRMED,
+            event_key='cli-theirs', title='Ajena', customers=[self.other_customer],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _url(self, tail='', slug=None):
+        return f'/api/v1/customer/{slug or self.company.slug}/notifications/{tail}'
+
+    def test_49_a_customer_sees_only_their_own(self):
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([r['title'] for r in res.json()['results']], ['Mía'])
+
+    def test_50_cannot_mark_another_customers_notification(self):
+        theirs = _Notif.objects.get(customer=self.other_customer)
+        self.assertEqual(self.client.post(self._url(f'{theirs.pk}/read/')).status_code, 404)
+        theirs.refresh_from_db()
+        self.assertIsNone(theirs.read_at)
+
+    def test_51_cross_tenant_is_404(self):
+        other_co = _saas_company('Ajena cli', 'm12b-ajena-cli', tax_id='20780042002')
+        self.assertEqual(self.client.get(self._url(slug=other_co.slug)).status_code, 404)
+
+    def test_52_the_customer_payload_carries_no_internal_fields(self):
+        row = self.client.get(self._url()).json()['results'][0]
+        for leaked in ('event', 'payload', 'user', 'customer', 'company', 'audience'):
+            self.assertNotIn(leaked, row, leaked)
+
+    def test_53_54_55_read_marking_and_count(self):
+        self.assertEqual(self.client.get(self._url('unread-count/')).json()['unread'], 1)
+        pk = self.client.get(self._url()).json()['results'][0]['id']
+        self.assertEqual(self.client.post(self._url(f'{pk}/read/')).status_code, 200)
+        self.assertEqual(self.client.get(self._url('unread-count/')).json()['unread'], 0)
+        self.assertEqual(self.client.post(self._url('read-all/')).json()['marked'], 0)
+
+    def test_the_customer_surface_never_shows_internal_notifications(self):
+        """§44 — las dos superficies no se tocan."""
+        staff = _saas_user('m12b_cli_staff')
+        Membership.objects.create(
+            user=staff, company=self.company, role='staff', is_active=True,
+        )
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ASSIGNMENT_CREATED,
+            event_key='cli-internal', title='Interna', users=[staff],
+        )
+        titles = [r['title'] for r in self.client.get(self._url()).json()['results']]
+        self.assertNotIn('Interna', titles)
+
+    def test_a_user_who_is_not_a_customer_here_gets_nothing(self):
+        stranger = _saas_user('m12b_stranger')
+        c = APIClient()
+        c.force_authenticate(user=stranger)
+        self.assertEqual(c.get(self._url()).status_code, 404)
+
+
+class M12BEmailDeliveryTest(TestCase):
+    """§83 — el correo es un canal, no el registro."""
+
+    def setUp(self):
+        mail.outbox = []
+        self.company = _saas_company('Mail SA', 'm12b-mail', tax_id='20780043001')
+        self.user = _saas_user('m12b_mail_user')
+        self.user.email = 'destino@example.invalid'
+        self.user.save(update_fields=['email'])
+
+    def _emit_email_worthy(self, users=None, key='mail-1'):
+        """
+        Emit and let the post-commit work actually happen.
+
+        `TestCase` wraps every test in a transaction it never commits, so
+        `on_commit` callbacks would simply never run — the e-mail path would
+        look inert and every assertion about it would pass for the wrong
+        reason. `captureOnCommitCallbacks(execute=True)` runs exactly what a
+        real commit would have run, which is the behaviour under test.
+        """
+        with self.captureOnCommitCallbacks(execute=True):
+            return _notif.emit(
+                company=self.company, event_type=_ev.SERVICE_READY_FOR_PICKUP,
+                event_key=key, title='Listo para recoger',
+                body='Puedes pasar a retirarlo.',
+                users=users if users is not None else [self.user],
+            )
+
+    def test_33_email_only_goes_out_after_commit(self):
+        """
+        La frontera que impide avisar de algo que no ocurrió.
+
+        Se emite SIN ejecutar los callbacks: el aviso in-app ya existe y el
+        correo todavía no ha salido. Sólo al ejecutarlos —lo que un commit real
+        hace— aparece en la bandeja de salida.
+        """
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            _notif.emit(
+                company=self.company, event_type=_ev.SERVICE_READY_FOR_PICKUP,
+                event_key='mail-boundary', title='Listo para recoger',
+                body='Puedes pasar a retirarlo.', users=[self.user],
+            )
+            self.assertEqual(_Notif.objects.count(), 1, 'el registro ya es durable')
+        self.assertEqual(len(mail.outbox), 0, 'sin commit no sale correo')
+
+        for callback in callbacks:
+            callback()
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_34_a_rollback_takes_the_event_and_the_email_with_it(self):
+        from django.db import transaction as _tx
+
+        class _Boom(Exception):
+            pass
+
+        try:
+            with self.captureOnCommitCallbacks(execute=True):
+                with _tx.atomic():
+                    _notif.emit(
+                        company=self.company,
+                        event_type=_ev.SERVICE_READY_FOR_PICKUP,
+                        event_key='mail-rollback', title='Listo',
+                        body='...', users=[self.user],
+                    )
+                    raise _Boom
+        except _Boom:
+            pass
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(_Event.objects.count(), 0, 'el evento no sobrevive al rollback')
+
+    def test_35_36_an_smtp_failure_records_but_never_reverts(self):
+        with patch('django.core.mail.EmailMultiAlternatives.send',
+                   side_effect=RuntimeError('smtp caído')):
+            self._emit_email_worthy()
+        self.assertEqual(_Notif.objects.count(), 1, 'el aviso in-app sobrevive')
+        delivery = _Delivery.objects.get()
+        self.assertEqual(delivery.status, _Delivery.Status.FAILED)
+        self.assertIn('RuntimeError', delivery.failure_reason)
+
+    def test_the_failure_reason_never_contains_a_traceback(self):
+        with patch('django.core.mail.EmailMultiAlternatives.send',
+                   side_effect=RuntimeError('smtp caído')):
+            self._emit_email_worthy()
+        reason = _Delivery.objects.get().failure_reason
+        for leaked in ('Traceback', 'File "', 'line '):
+            self.assertNotIn(leaked, reason, leaked)
+
+    def test_37_a_retry_updates_the_attempt_instead_of_sending_twice(self):
+        with patch('django.core.mail.EmailMultiAlternatives.send',
+                   side_effect=RuntimeError('smtp caído')):
+            self._emit_email_worthy()
+        delivery = _Delivery.objects.get()
+        mail.outbox = []
+        _notif.retry_failed_delivery(delivery)
+        delivery.refresh_from_db()
+        self.assertEqual(delivery.status, _Delivery.Status.SENT)
+        self.assertEqual(_Delivery.objects.count(), 1, 'una fila por canal')
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_retrying_a_sent_delivery_sends_nothing(self):
+        self._emit_email_worthy()
+        delivery = _Delivery.objects.get()
+        mail.outbox = []
+        _notif.retry_failed_delivery(delivery)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_a_recipient_without_an_address_is_skipped_not_failed(self):
+        silent = _saas_user('m12b_no_email')
+        silent.email = ''
+        silent.save(update_fields=['email'])
+        self._emit_email_worthy(users=[silent])
+        self.assertEqual(_Delivery.objects.get().status, _Delivery.Status.SKIPPED)
+
+    def test_38_39_the_email_carries_tenant_identity_and_escapes_it(self):
+        """§52 — el nombre de la empresa es dato del tenant y llega al HTML."""
+        self.company.name = '<script>alert(1)</script> Taller'
+        self.company.save(update_fields=['name'])
+        self._emit_email_worthy()
+        message = mail.outbox[0]
+        html = message.alternatives[0][0]
+        self.assertIn('&lt;script&gt;', html)
+        self.assertNotIn('<script>alert', html)
+
+    def test_a_non_email_worthy_event_sends_nothing(self):
+        """§26 — in-app es granular; el correo interrumpe y se reserva."""
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_STATUS_CHANGED,
+            event_key='mail-silent', title='Cambio', users=[self.user],
+        )
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(_Notif.objects.count(), 1, 'el registro in-app sí existe')
