@@ -295,6 +295,19 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('service.payments.manage', 'service', 'Cobro del servicio',
          'Registrar y reversar pagos recibidos por una reparación.',
          STATUS_ACTIVE),
+
+    # --- communications (M12C) ---
+    #
+    # ONE capability, not two. Composing and publishing a message to the
+    # company is an authority; READING one's own inbox is not, and never was:
+    # M12B's inbox endpoints ask for no capability at all because a person is
+    # always entitled to the notices addressed to them. A `communications.view`
+    # added for symmetry would be a permission that grants nothing, appear in
+    # every role editor, and eventually be withheld from somebody by a shop
+    # that assumed it meant something.
+    _cap('communications.manage', 'communications', 'Comunicados internos',
+         'Redactar y publicar comunicados internos para el personal.',
+         STATUS_ACTIVE),
 )
 
 CAPABILITIES: dict[str, Capability] = {c.code: c for c in CAPABILITY_LIST}

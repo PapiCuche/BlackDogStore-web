@@ -17,6 +17,15 @@ from .v1_customer_views import (
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
 )
+from .announcement_views import (
+    InternalAnnouncementReadView,
+    PlatformAnnouncementDetailView, PlatformAnnouncementListView,
+    PlatformAnnouncementPreviewView, PlatformAnnouncementPublishView,
+    PlatformAnnouncementStatsView,
+    TenantAnnouncementCancelView, TenantAnnouncementDetailView,
+    TenantAnnouncementListView, TenantAnnouncementPreviewView,
+    TenantAnnouncementPublishView, TenantAnnouncementStatsView,
+)
 from .notification_views import (
     CustomerNotificationListView,
     CustomerNotificationReadAllView,
@@ -451,6 +460,64 @@ urlpatterns = [
         'customer/<slug:company_slug>/notifications/<int:pk>/read/',
         CustomerNotificationReadView.as_view(), name='v1-customer-notifications-read',
     ),
+
+    # --- M12C — comunicados internos ---
+    #
+    # DOS SUPERFICIES, y la URL dice cuál es cuál. `/internal/<slug>/` opera
+    # dentro de una empresa; `/platform/` existe precisamente porque el master
+    # apunta a varias, y esconder eso bajo una ruta que promete un solo slug
+    # sería mentir en el propio path.
+    path(
+        'internal/<slug:company_slug>/communications/',
+        TenantAnnouncementListView.as_view(), name='v1-internal-communications',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/',
+        TenantAnnouncementDetailView.as_view(),
+        name='v1-internal-communications-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/preview/',
+        TenantAnnouncementPreviewView.as_view(),
+        name='v1-internal-communications-preview',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/publish/',
+        TenantAnnouncementPublishView.as_view(),
+        name='v1-internal-communications-publish',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/cancel/',
+        TenantAnnouncementCancelView.as_view(),
+        name='v1-internal-communications-cancel',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/stats/',
+        TenantAnnouncementStatsView.as_view(),
+        name='v1-internal-communications-stats',
+    ),
+    # Lo que abre un DESTINATARIO desde su bandeja. Sin capability: leer un
+    # mensaje dirigido a ti no es una autoridad.
+    path(
+        'internal/<slug:company_slug>/announcements/<int:pk>/',
+        InternalAnnouncementReadView.as_view(), name='v1-internal-announcement',
+    ),
+
+    path('platform/announcements/', PlatformAnnouncementListView.as_view(),
+         name='v1-platform-announcements'),
+    path('platform/announcements/<int:pk>/',
+         PlatformAnnouncementDetailView.as_view(),
+         name='v1-platform-announcement-detail'),
+    path('platform/announcements/<int:pk>/preview/',
+         PlatformAnnouncementPreviewView.as_view(),
+         name='v1-platform-announcement-preview'),
+    path('platform/announcements/<int:pk>/publish/',
+         PlatformAnnouncementPublishView.as_view(),
+         name='v1-platform-announcement-publish'),
+    path('platform/announcements/<int:pk>/stats/',
+         PlatformAnnouncementStatsView.as_view(),
+         name='v1-platform-announcement-stats'),
+
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),
     path('auth/logout/', V1LogoutView.as_view(), name='v1-auth-logout'),
