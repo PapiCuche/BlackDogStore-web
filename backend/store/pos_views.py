@@ -35,7 +35,7 @@ from rest_framework.views import APIView
 from decimal import Decimal
 
 from . import inventory_forecasting as forecasting
-from . import inventory_services, pos_services
+from . import inventory_services, pos_payloads, pos_services
 from .models import (
     AdminAuditLog,
     Order,
@@ -106,19 +106,11 @@ def _stock_row(branch, product):
     return inventory_services.branch_quantity(branch, product)
 
 
-def _product_payload(product, branch, *, barcode=None):
-    primary = (
-        barcode
-        or product.barcodes.filter(is_active=True, is_primary=True).first()
-        or product.barcodes.filter(is_active=True).first()
-    )
-    return {
-        'id': product.pk,
-        'name': product.name,
-        'price': str(product.price),
-        'available': _stock_row(branch, product),
-        'barcode': primary.code if primary else '',
-    }
+# IP1 — the SHAPE moved to `pos_payloads` so the internal v1 till returns the
+# same bytes as this one. This name stays because the file reads better with it,
+# and because a diff that only moves a call site is easier to review than one
+# that also renames forty usages.
+_product_payload = pos_payloads.product_payload
 
 
 class AdminPosContextView(APIView):
@@ -138,44 +130,20 @@ class AdminPosContextView(APIView):
             return error
 
         branches = list(visible_branches(request.user, company).filter(is_active=True))
-        default = None
-        configured = company.default_inventory_branch
-        if configured is not None and any(b.pk == configured.pk for b in branches):
-            default = configured.pk
-        elif len(branches) == 1:
-            default = branches[0].pk
-        # With several branches and no authorised default, the till asks. It
-        # does NOT pick one: selling from the wrong shop moves real units.
-
-        return Response({
-            'company': {'id': company.pk, 'name': company.name},
-            'branches': [{'id': b.pk, 'name': b.name} for b in branches],
-            'default_branch': default,
-            'payment_methods': [
-                {'value': v, 'label': l}
-                for v, l in PaymentMethod.choices
-                # The gateway method belongs to the online channel; a
-                # counter cannot pick it.
-                if v != PaymentMethod.ONLINE
-            ],
-            'can_manage_customers': has_capability(
+        return Response(pos_payloads.context_payload(
+            company, branches,
+            default_branch=pos_payloads.default_branch_for(company, branches),
+            actor=request.user,
+            can_manage_customers=has_capability(
                 request.user, company, 'service.customers.manage',
             ),
-            # The UI asks once, at open, rather than guessing per action. A
-            # control that appears and then 403s is worse than one that is not
-            # offered.
-            'can_assign_seller': has_capability(request.user, company, CAP_ASSIGN_SELLER),
-            'can_apply_discount': has_capability(request.user, company, CAP_DISCOUNTS),
-            'can_view_commissions': has_capability(
+            can_assign_seller=has_capability(request.user, company, CAP_ASSIGN_SELLER),
+            can_apply_discount=has_capability(request.user, company, CAP_DISCOUNTS),
+            can_view_commissions=has_capability(
                 request.user, company, CAP_COMMISSIONS_VIEW,
             ),
-            'seller': {
-                'id': request.user.pk,
-                'username': request.user.get_username(),
-                'name': pos_services.seller_display_name(request.user),
-            },
-            'sellers': self._sellers(request, company),
-        })
+            sellers=self._sellers(request, company),
+        ))
 
     def _sellers(self, request, company):
         """
@@ -352,47 +320,14 @@ class AdminPosSaleView(APIView):
                 payload['available_elsewhere'] = other
             return Response(payload, status=status.HTTP_409_CONFLICT)
 
-        commission = getattr(order, 'sales_commission', None)
         return Response(
-            {
-                'order_id': order.pk,
-                'created': created,
-                'subtotal': str(order.total + order.discount_amount),
-                'discount': str(order.discount_amount),
-                'discount_source': order.discount_source,
-                'discount_reason': order.discount_reason,
-                'total': str(order.total),
-                'paid_at': order.paid_at,
-                'payment_method': order.payment_method,
-                'amount_received': (
-                    str(order.amount_received) if order.amount_received is not None else None
+            pos_payloads.sale_payload(
+                order, branch,
+                created=created,
+                may_see_commission=has_capability(
+                    request.user, company, CAP_COMMISSIONS_VIEW,
                 ),
-                'change_amount': (
-                    str(order.change_amount) if order.change_amount is not None else None
-                ),
-                'payment_reference': order.payment_reference,
-                'branch': {'id': branch.pk, 'name': branch.name},
-                'seller': order.seller_name_snapshot,
-                'customer': order.customer_name,
-                # Only to someone allowed to see earnings. A cashier does not
-                # need to know what the sale paid a colleague.
-                'commission': (
-                    str(commission.amount)
-                    if commission and has_capability(
-                        request.user, company, CAP_COMMISSIONS_VIEW,
-                    )
-                    else None
-                ),
-                'items': [
-                    {
-                        'product': i.product_id,
-                        'name': i.product.name,
-                        'quantity': i.quantity,
-                        'price': str(i.price),
-                    }
-                    for i in order.items.select_related('product').all()
-                ],
-            },
+            ),
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
@@ -417,19 +352,7 @@ class AdminPosSaleView(APIView):
             return []
 
         others = visible_branches(request.user, company).exclude(pk=branch.pk)
-        rows = (
-            inventory_services.branch_stock_queryset(others)
-            .filter(product_id__in=product_ids, quantity__gt=0)
-            .select_related('branch', 'product')[:10]
-        )
-        return [
-            {
-                'branch': r.branch.name,
-                'product': r.product.name,
-                'quantity': r.quantity,
-            }
-            for r in rows
-        ]
+        return pos_payloads.other_branches_with_stock(others, product_ids)
 
 
 class AdminProductBarcodeView(APIView):
@@ -649,50 +572,12 @@ class AdminPosPreviewView(APIView):
         except pos_services.PosValidationError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        seller = priced['seller']
-        may_see_commission = has_capability(request.user, company, CAP_COMMISSIONS_VIEW)
-        return Response({
-            'subtotal': str(priced['subtotal']),
-            'discount': str(priced['discount_amount']),
-            'discount_source': priced['discount']['source'],
-            'coupon_code': priced['discount']['coupon_code'],
-            # What fired on its own, so the till can name it on screen rather
-            # than showing an unexplained reduction.
-            'promotions': [
-                {
-                    'id': a['promotion'].pk,
-                    'name': a['promotion'].name,
-                    'applications': a['applications'],
-                    'regular_amount': str(a['regular_amount']),
-                    'discount_amount': str(a['discount_amount']),
-                }
-                for a in priced['promotions']['applied']
-            ],
-            'total': str(priced['total']),
-            'seller': {
-                'id': seller.pk if seller else None,
-                'name': pos_services.seller_display_name(seller),
-            },
-            'customer': (
-                {'id': priced['customer'].pk, 'name': priced['customer'].display_name}
-                if priced['customer'] else None
+        return Response(pos_payloads.preview_payload(
+            priced,
+            may_see_commission=has_capability(
+                request.user, company, CAP_COMMISSIONS_VIEW,
             ),
-            'commission': (
-                {
-                    'rate_percent': str(priced['commission']['rate']),
-                    'base_amount': str(priced['commission']['base']),
-                    'amount': str(priced['commission']['amount']),
-                }
-                if may_see_commission else None
-            ),
-            'lines': [
-                {
-                    'product': p.pk, 'name': p.name,
-                    'quantity': q, 'price': str(u),
-                }
-                for p, q, u in priced['lines']
-            ],
-        })
+        ))
 
 
 class AdminCommissionSettingsView(APIView):

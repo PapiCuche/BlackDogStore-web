@@ -63,6 +63,13 @@ from .v1_service_views import (
     V1ServiceOrderListView,
     V1ServiceOrderTransitionView,
 )
+from .v1_pos_views import (
+    V1PosContextView,
+    V1PosPreviewView,
+    V1PosProductLookupView,
+    V1PosProductSearchView,
+    V1PosSaleView,
+)
 from .v1_inventory_views import (
     V1InventoryAdjustmentView, V1InventoryMovementsView,
     V1InventoryStockView, V1InventorySummaryView,
@@ -153,6 +160,31 @@ urlpatterns = [
         V1InternalOrderFulfillmentView.as_view(), name='v1-internal-order-fulfillment',
     ),
     # INTERNAL inventory. Tenant-scoped AND branch-scoped.
+    # ── IP1A — the counter till, for native clients ──────────────────────────
+    # Five routes, matching the five the Web till uses and not one more. They
+    # call `pos_services` — the same functions `/api/admin/pos/*` calls — and
+    # shape their answers with `pos_payloads`, which both surfaces share, so the
+    # two cannot drift apart by a renamed key.
+    path(
+        'internal/<slug:company_slug>/sales/pos/context/',
+        V1PosContextView.as_view(), name='v1-internal-pos-context',
+    ),
+    path(
+        'internal/<slug:company_slug>/sales/pos/products/search/',
+        V1PosProductSearchView.as_view(), name='v1-internal-pos-search',
+    ),
+    path(
+        'internal/<slug:company_slug>/sales/pos/products/lookup/',
+        V1PosProductLookupView.as_view(), name='v1-internal-pos-lookup',
+    ),
+    path(
+        'internal/<slug:company_slug>/sales/pos/preview/',
+        V1PosPreviewView.as_view(), name='v1-internal-pos-preview',
+    ),
+    path(
+        'internal/<slug:company_slug>/sales/pos/sales/',
+        V1PosSaleView.as_view(), name='v1-internal-pos-sale',
+    ),
     path(
         'internal/<slug:company_slug>/inventory/summary/',
         V1InventorySummaryView.as_view(), name='v1-internal-inventory-summary',
