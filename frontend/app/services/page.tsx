@@ -16,10 +16,10 @@ const services = [
     num: "01",
     title: "Cambio de Pantalla",
     description:
-      "Pantallas OLED/LCD con calibración de color, brillo y True Tone. No aparece el mensaje de pieza reparada. Instalación sin burbujas ni marcos desalineados.",
+      "Pantallas OLED/LCD con calibración de color y brillo. Revisamos el equipo, explicamos el diagnóstico y confirmamos el costo antes de reparar.",
     devices: ["iPhone", "iPad"],
     time: "2–3 horas",
-    highlight: "No pierde True Tone",
+    highlight: "Costo confirmado antes",
   },
   {
     num: "02",
@@ -34,10 +34,10 @@ const services = [
     num: "03",
     title: "Cambio de Tapa Trasera",
     description:
-      "Tecnología láser para un cambio preciso y seguro. Los cambios no muestran el mensaje de pieza reparada. Tu iPhone lucirá impecable nuevamente.",
+      "Cambio de tapa trasera con acabado cuidado. Te explicamos el alcance del trabajo y el costo antes de empezar.",
     devices: ["iPhone"],
     time: "2–3 horas",
-    highlight: "Tecnología láser",
+    highlight: "Alcance explicado",
   },
   {
     num: "04",
@@ -103,8 +103,8 @@ const faqs = [
     a: "Trabajamos con baterías Nasan, que llegan con certificado de autenticidad de Nasan Technology. Antes de cada reparación te indicamos qué repuesto se usará y en qué condiciones.",
   },
   {
-    q: "¿Aparece el mensaje de 'pieza reparada'?",
-    a: "No. Nuestros cambios de pantalla, tapa trasera y batería no muestran el mensaje de pieza reparada en el iPhone.",
+    q: "¿Qué me explican antes de reparar?",
+    a: "Revisamos tu equipo, te explicamos el diagnóstico y confirmamos el costo antes de reparar. Si algo cambia durante el trabajo, te consultamos primero.",
   },
   {
     q: "¿Tienen garantía los servicios?",

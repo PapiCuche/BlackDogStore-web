@@ -55,7 +55,7 @@ const PILLARS = [
 const REPAIR_SERVICES = [
   {
     title: "Cambio de Pantalla",
-    desc: "OLED/LCD con calibración de True Tone. No aparece mensaje de pieza reparada.",
+    desc: "Pantallas OLED/LCD con calibración de color y brillo. Te confirmamos el costo antes de reparar.",
     badge: "Más solicitado",
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -77,8 +77,8 @@ const REPAIR_SERVICES = [
   },
   {
     title: "Tapa Trasera",
-    desc: "Tecnología láser para cambio preciso y seguro. Sin rastro de reparación.",
-    badge: "Tecnología láser",
+    desc: "Cambio de tapa trasera con acabado cuidado. Revisamos el equipo y explicamos el alcance.",
+    badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4h16v16H4zM9 9h6v6H9z" />
@@ -276,10 +276,10 @@ export default function Home() {
             {/* Right: guarantee cards */}
             <div className="grid grid-cols-2 gap-4">
               {[
-                { label: "Tecnología Láser", sub: "Para tapa trasera", num: "01" },
-                { label: "Baterías Nasan", sub: "Certificadas", num: "02" },
-                { label: "True Tone", sub: "No se pierde", num: "03" },
-                { label: "Sin Pieza\nReparada", sub: "Mensaje no aparece", num: "04" },
+                { label: "Diagnóstico", sub: "Antes de reparar", num: "01" },
+                { label: "Baterías Nasan", sub: "Con certificado", num: "02" },
+                { label: "Costo confirmado", sub: "Antes de empezar", num: "03" },
+                { label: "Explicación\nclara", sub: "Del diagnóstico", num: "04" },
               ].map((card) => (
                 <div
                   key={card.num}
