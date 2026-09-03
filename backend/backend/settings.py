@@ -164,6 +164,57 @@ DATABASES = {
     'default': env.db_url('DATABASE_URL', default=f'sqlite:///{BASE_DIR / "db.sqlite3"}')
 }
 
+# ---------------------------------------------------------------------------
+# M12D — evidencias fotográficas
+# ---------------------------------------------------------------------------
+#
+# Neutrales a propósito. Ninguno nombra a Cloudflare: el backend se elige por su
+# rol —"s3" o "filesystem"—, no por su proveedor, y el día que el proveedor
+# cambie sólo cambia el valor de las variables de entorno.
+#
+# Las credenciales viven ÚNICAMENTE en el entorno. No en el repositorio, no en
+# el frontend, no en la base de datos y no en un log.
+EVIDENCE_STORAGE_BACKEND = env('EVIDENCE_STORAGE_BACKEND', default='filesystem')
+EVIDENCE_STORAGE_BUCKET = env('EVIDENCE_STORAGE_BUCKET', default='')
+EVIDENCE_STORAGE_ENDPOINT_URL = env('EVIDENCE_STORAGE_ENDPOINT_URL', default='')
+EVIDENCE_STORAGE_ACCESS_KEY_ID = env('EVIDENCE_STORAGE_ACCESS_KEY_ID', default='')
+EVIDENCE_STORAGE_SECRET_ACCESS_KEY = env(
+    'EVIDENCE_STORAGE_SECRET_ACCESS_KEY', default=''
+)
+EVIDENCE_STORAGE_REGION = env('EVIDENCE_STORAGE_REGION', default='auto')
+#: Corto a propósito. Una URL firmada es una llave temporal; cuanto más dura,
+#: más se parece a un enlace público que alguien puede reenviar.
+EVIDENCE_STORAGE_URL_TTL_SECONDS = env.int(
+    'EVIDENCE_STORAGE_URL_TTL_SECONDS', default=300
+)
+
+#: Lo que se acepta RECIBIR, antes de decodificar nada. Distinto de lo que se
+#: acaba almacenando: una foto de 20 MB es legítima y termina pesando 200 KB.
+SERVICE_EVIDENCE_MAX_UPLOAD_BYTES = env.int(
+    'SERVICE_EVIDENCE_MAX_UPLOAD_BYTES', default=25 * 1024 * 1024
+)
+#: El lado mayor de lo que se guarda. Suficiente para ver un golpe o una
+#: rayadura; muy por debajo de los 4032 px que entrega un móvil actual, que no
+#: aportan nada a mirar el estado de un equipo en una pantalla.
+SERVICE_EVIDENCE_MAX_EDGE = env.int('SERVICE_EVIDENCE_MAX_EDGE', default=1600)
+SERVICE_EVIDENCE_IMAGE_QUALITY = env.int('SERVICE_EVIDENCE_IMAGE_QUALITY', default=75)
+#: El piso. Por debajo la compresión empieza a borrar justamente el detalle que
+#: la foto existía para demostrar.
+SERVICE_EVIDENCE_MIN_QUALITY = env.int('SERVICE_EVIDENCE_MIN_QUALITY', default=60)
+#: Un OBJETIVO, no una garantía: si llegar exige destruir la evidencia, se
+#: conserva la imagen más pesada.
+SERVICE_EVIDENCE_TARGET_BYTES = env.int(
+    'SERVICE_EVIDENCE_TARGET_BYTES', default=1_000_000
+)
+SERVICE_EVIDENCE_MAX_COMPRESSION_ATTEMPTS = env.int(
+    'SERVICE_EVIDENCE_MAX_COMPRESSION_ATTEMPTS', default=6
+)
+#: Contra la bomba de descompresión: un PNG de 20 KB puede declarar 30.000 px de
+#: lado y pedir varios GB al decodificarse. El límite de bytes no lo ve venir.
+SERVICE_EVIDENCE_MAX_PIXELS = env.int(
+    'SERVICE_EVIDENCE_MAX_PIXELS', default=60_000_000
+)
+
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},

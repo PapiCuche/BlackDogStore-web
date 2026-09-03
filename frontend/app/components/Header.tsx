@@ -65,11 +65,30 @@ export function Header() {
     <header className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#080808]/95 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3">
 
-        {/* Logo — the tenant's, or its name in type when it has no logo yet.
-            Never a placeholder image belonging to another business. */}
-        <Link href="/" className="group flex items-center gap-3 shrink-0">
+        {/*
+          Logo — el del tenant, o su nombre en tipografía si aún no tiene uno.
+          Nunca un placeholder que pertenezca a otro negocio.
+
+          ÁREA DE PROTECCIÓN. El manual de marca de la tienda piloto define X
+          como la altura de la palabra STORE y prohíbe que texto, borde o icono
+          invadan esa zona. Aquí se traduce a un `pr-` que separa el logo del
+          resto de la cabecera; el `gap-3` de antes dejaba el nombre pegado.
+
+          REDUCCIÓN MÍNIMA. Estaba a 40 px de alto. Un lockup vertical a ese
+          tamaño pierde exactamente lo que el manual dice que hay que preservar
+          —bigotes, puntos, el trazo del símbolo—, que es la razón por la que
+          los mínimos existen. Sube a 48/56 px.
+
+          DEUDA DECLARADA: la configuración del tenant expone UN `logo_url`, y
+          el manual prescribe la variante HORIZONTAL para cabeceras con 220 px
+          de ancho mínimo. Un `logo_horizontal_url` es el campo que falta, y
+          añadirlo es un cambio de esquema del SaaS que esta fase no hace por su
+          cuenta. Mientras tanto se sirve el logo que el tenant configuró, con
+          espacio suficiente para que se lea.
+        */}
+        <Link href="/" className="group flex items-center gap-4 pr-2 shrink-0">
           {branding.logo_url ? (
-            <div className="relative h-10 shrink-0">
+            <div className="relative h-12 shrink-0 sm:h-14">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={branding.logo_url}

@@ -29,17 +29,33 @@ const CATALOG_SECTIONS = [
   { label: "Audífonos", slug: "audifonos", icon: "🎵" },
 ];
 
-const STATS = [
-  { stat: "5,000+", label: "Dispositivos reparados" },
-  { stat: "6 meses", label: "Garantía garantizada" },
-  { stat: "100%", label: "Repuestos originales" },
-  { stat: "0 soles", label: "Diagnóstico" },
+/*
+  LOS CUATRO NÚMEROS QUE HABÍA AQUÍ NO ERAN COMPROBABLES.
+
+    "5,000+ Dispositivos reparados"  — nadie los ha contado
+    "6 meses Garantía garantizada"   — el manual marca la política de garantía
+                                       como PENDIENTE de redactar
+    "100% Repuestos originales"      — se contradecía con la propia tarjeta de
+                                       batería, que ofrece una marca de terceros
+    "0 soles Diagnóstico"            — la política de servicio técnico también
+                                       está pendiente
+
+  Se sustituyen por los pilares que el manual SÍ define y que además son
+  verificables mirando la tienda: especialización, respaldo, transparencia y
+  experiencia. Una cifra inventada es peor que ninguna cifra, porque es la que
+  un cliente cita cuando reclama.
+*/
+const PILLARS = [
+  { title: "Especialización", label: "Productos y equipos Apple" },
+  { title: "Respaldo", label: "Condiciones claras y postventa" },
+  { title: "Transparencia", label: "Estado, procedencia y entrega" },
+  { title: "Experiencia", label: "Atención antes, durante y después" },
 ];
 
 const REPAIR_SERVICES = [
   {
     title: "Cambio de Pantalla",
-    desc: "OLED/LCD con calibración de True Tone. No aparece mensaje de pieza reparada.",
+    desc: "Pantallas OLED/LCD con calibración de color y brillo. Te confirmamos el costo antes de reparar.",
     badge: "Más solicitado",
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -49,8 +65,10 @@ const REPAIR_SERVICES = [
   },
   {
     title: "Cambio de Batería",
-    desc: "Baterías originales Nasan certificadas. Recupera la autonomía de tu iPhone.",
-    badge: "Cert. Nasan",
+    // "Originales" y una marca de terceros en la misma frase se contradicen:
+    // una batería Nasan es de Nasan, no original de Apple. Se dice lo que es.
+    desc: "Baterías Nasan. Recupera la autonomía de tu iPhone.",
+    badge: "Nasan",
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h2a2 2 0 002-2V8a2 2 0 00-2-2h-2M3 8h14v12H3V8zM9 4h6v4H9V4z" />
@@ -59,8 +77,8 @@ const REPAIR_SERVICES = [
   },
   {
     title: "Tapa Trasera",
-    desc: "Tecnología láser para cambio preciso y seguro. Sin rastro de reparación.",
-    badge: "Tecnología láser",
+    desc: "Cambio de tapa trasera con acabado cuidado. Revisamos el equipo y explicamos el alcance.",
+    badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4h16v16H4zM9 9h6v6H9z" />
@@ -113,15 +131,15 @@ export default function Home() {
     <div className="min-h-screen bg-[#080808] text-white">
       <Hero />
 
-      {/* Stats bar */}
+      {/* Pilares — reemplazan a las cuatro cifras que nadie podía respaldar */}
       <section className="border-y border-white/[0.06] bg-[#111]">
         <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-white/[0.06] lg:grid-cols-4">
-          {STATS.map((item) => (
-            <div key={item.label} className="px-8 py-8 text-center">
-              <p className="font-display text-4xl font-black tracking-tight text-white lg:text-5xl">
-                {item.stat}
+          {PILLARS.map((item) => (
+            <div key={item.title} className="px-6 py-8 text-center sm:px-8">
+              <p className="font-display text-xl font-black uppercase tracking-tight text-white lg:text-2xl">
+                {item.title}
               </p>
-              <p className="mt-1.5 text-xs uppercase tracking-widest text-zinc-500">{item.label}</p>
+              <p className="mt-1.5 text-xs leading-5 text-zinc-500">{item.label}</p>
             </div>
           ))}
         </div>
@@ -176,7 +194,12 @@ export default function Home() {
             <div>
               <span className="section-label">Reparaciones</span>
               <h2 className="font-display mt-2 text-5xl font-black uppercase leading-none tracking-tight text-white sm:text-6xl">
-                Servicio<br />Técnico Apple
+                {/*
+                  "Servicio Técnico Apple" se lee como servicio oficial de
+                  Apple. El manual lo prohíbe sin acreditación vigente y da la
+                  forma correcta: especializado EN equipos Apple.
+                */}
+                Servicio Técnico<br />Especializado
               </h2>
             </div>
             <a href="/services" className="text-sm font-bold uppercase tracking-widest text-zinc-400 transition hover:text-white">
@@ -227,8 +250,9 @@ export default function Home() {
                 ¿Tu iPhone<br />No Funciona?
               </h2>
               <p className="mt-5 max-w-md text-base leading-7 text-zinc-400">
-                En {storeName} ofrecemos servicio técnico especializado en productos Apple.
-                Diagnóstico gratuito y reparaciones con garantía.
+                En {storeName} ofrecemos servicio técnico especializado en
+                equipos Apple, con diagnóstico previo y condiciones claras
+                antes de empezar.
               </p>
               <div className="mt-8 flex flex-wrap gap-3">
                 <a
@@ -238,7 +262,7 @@ export default function Home() {
                   <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
                   </svg>
-                  Diagnóstico Gratis
+                  Consultar por WhatsApp
                 </a>
                 <a
                   href="/services"
@@ -252,10 +276,10 @@ export default function Home() {
             {/* Right: guarantee cards */}
             <div className="grid grid-cols-2 gap-4">
               {[
-                { label: "Tecnología Láser", sub: "Para tapa trasera", num: "01" },
-                { label: "Baterías Nasan", sub: "Certificadas", num: "02" },
-                { label: "True Tone", sub: "No se pierde", num: "03" },
-                { label: "Sin Pieza\nReparada", sub: "Mensaje no aparece", num: "04" },
+                { label: "Diagnóstico", sub: "Antes de reparar", num: "01" },
+                { label: "Baterías Nasan", sub: "Con certificado", num: "02" },
+                { label: "Costo confirmado", sub: "Antes de empezar", num: "03" },
+                { label: "Explicación\nclara", sub: "Del diagnóstico", num: "04" },
               ].map((card) => (
                 <div
                   key={card.num}

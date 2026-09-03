@@ -6207,3 +6207,126 @@ class AnnouncementAudienceRule(models.Model):
 
     def __str__(self):
         return f'{self.kind}@{self.company_id} (#{self.announcement_id})'
+
+
+# ---------------------------------------------------------------------------
+# M12D — Evidencias fotográficas
+# ---------------------------------------------------------------------------
+
+
+class RepairEvidence(models.Model):
+    """
+    Una fotografía del estado de un equipo, en un momento del ciclo.
+
+    LA FILA NO ES LA FOTO. Aquí viven los metadatos, la clave del objeto y el
+    hash; los píxeles viven en un bucket privado. No hay `FileField`, no hay
+    `ImageField` y no hay `BinaryField`: seis tests estructurales de este
+    proyecto fallan si alguno aparece, y la razón está escrita desde M9 — una
+    columna base64 sería una decisión de almacenamiento tomada por accidente.
+
+    APPEND-ONLY. Nada se reemplaza. Corregir una evidencia es anularla y subir
+    otra, porque una foto que puede cambiar por debajo deja de ser prueba de
+    nada. Tampoco hay borrado físico desde la API: `voided_at` retira la
+    evidencia de circulación y conserva el hecho de que existió.
+
+    LA ETAPA NO ES UN ESTADO. Subir una foto no mueve `RepairOrder.status` ni
+    lo mira: una evidencia DESCRIBE algo que pasó, no lo hace avanzar. Y se
+    declara explícitamente en vez de deducirse de la hora, porque «antes» y
+    «después» de una reparación no son dos momentos del reloj sino dos cosas
+    distintas que alguien decidió fotografiar.
+    """
+
+    class Stage(models.TextChoices):
+        INTAKE = 'intake', 'Ingreso'
+        DIAGNOSIS = 'diagnosis', 'Diagnóstico'
+        REPAIR_BEFORE = 'repair_before', 'Antes de reparar'
+        REPAIR_DURING = 'repair_during', 'Durante la reparación'
+        REPAIR_AFTER = 'repair_after', 'Después de reparar'
+        QUALITY = 'quality', 'Control de calidad'
+        DELIVERY = 'delivery', 'Entrega'
+        OTHER = 'other', 'Otra'
+
+    class Visibility(models.TextChoices):
+        INTERNAL = 'internal', 'Interna'
+        CUSTOMER = 'customer', 'Visible para el cliente'
+
+    #: Explícita, y comprobada contra la orden al escribir. Derivarla siempre de
+    #: `repair_order.company` sería correcto y haría imposible filtrar por
+    #: empresa sin un JOIN en cada consulta de un módulo que lista fotos.
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='repair_evidence',
+    )
+    repair_order = models.ForeignKey(
+        'RepairOrder', on_delete=models.CASCADE, related_name='evidence',
+    )
+
+    stage = models.CharField(max_length=20, choices=Stage.choices, db_index=True)
+    #: SIEMPRE interna al nacer. Que una foto llegue al cliente es una decisión
+    #: que alguien toma, no un efecto secundario de subirla.
+    visibility = models.CharField(
+        max_length=16, choices=Visibility.choices, default=Visibility.INTERNAL,
+        db_index=True,
+    )
+
+    #: La dirección del objeto. NO es una autorización: conocerla no permite
+    #: descargarlo, porque el bucket es privado y cada acceso se comprueba.
+    storage_key = models.CharField(max_length=300, unique=True)
+    mime_type = models.CharField(max_length=40)
+    byte_size = models.PositiveIntegerField()
+    #: De los bytes FINALES, los que están en el bucket. Un hash del archivo que
+    #: subió el técnico describiría algo que este sistema descarta.
+    sha256 = models.CharField(max_length=64, db_index=True)
+    width = models.PositiveIntegerField()
+    height = models.PositiveIntegerField()
+
+    #: Del upload original, y sólo para reconocer un reintento. NUNCA para
+    #: deduplicar entre empresas: que dos talleres suban la misma foto no es
+    #: asunto de ninguno de los dos, y responder «ya existe» lo delataría.
+    source_sha256 = models.CharField(max_length=64, blank=True)
+    source_byte_size = models.PositiveIntegerField(default=0)
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='uploaded_evidence',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    voided_at = models.DateTimeField(null=True, blank=True)
+    voided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='voided_evidence',
+    )
+    void_reason = models.CharField(max_length=300, blank=True)
+
+    idempotency_key = models.CharField(max_length=120, blank=True)
+    request_fingerprint = models.CharField(max_length=64, blank=True)
+
+    class Meta:
+        ordering = ['stage', 'created_at']
+        indexes = [
+            models.Index(fields=['company', 'repair_order', 'stage']),
+            models.Index(fields=['repair_order', 'visibility', 'voided_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'idempotency_key'],
+                condition=~models.Q(idempotency_key=''),
+                name='unique_evidence_idempotency_per_company',
+            ),
+            models.CheckConstraint(
+                # Anular es un acto con autor y motivo. Una fila con fecha de
+                # anulación y sin explicación es un borrado disfrazado.
+                condition=(
+                    models.Q(voided_at__isnull=True)
+                    | models.Q(voided_at__isnull=False, void_reason__gt='')
+                ),
+                name='evidence_void_has_a_reason',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.stage} #{self.pk} (orden {self.repair_order_id})'
+
+    @property
+    def is_voided(self) -> bool:
+        return self.voided_at is not None

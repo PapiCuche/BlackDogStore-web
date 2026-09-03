@@ -31,6 +31,27 @@ django-cors-headers==4.9.0
 # the day someone adds an upload is not the day to discover this was stale.
 Pillow==12.3.0
 
+# M12D — decodificación HEIC/HEIF.
+#
+# Un iPhone con "Alta eficiencia" activado —el ajuste por defecto— entrega
+# HEIC, y Pillow no lo lee sin este plugin. Sin él la fase obligaría a cada
+# técnico a cambiar Ajustes → Cámara → Formatos antes de fotografiar un equipo,
+# que es exactamente el tipo de requisito que la gente olvida justo cuando el
+# equipo ya está abierto sobre la mesa.
+#
+# Se usa SÓLO para DECODIFICAR entradas. El objeto que se almacena es siempre
+# WebP normalizado, así que nada aguas abajo depende de este paquete.
+pillow-heif==1.6.0
+
+# M12D — almacenamiento privado compatible con S3 (Cloudflare R2 en producción).
+#
+# NO se importan al arrancar. `store/evidence_storage.py` los carga sólo cuando
+# el backend seleccionado es S3, de modo que un desarrollo o una suite de tests
+# sin estas dependencias sigue funcionando con FileSystemStorage. El dominio
+# conoce una abstracción; R2 es infraestructura.
+django-storages==1.14.6
+boto3==1.43.87
+
 # WSGI server for production (replaces runserver)
 gunicorn==26.0.0
 

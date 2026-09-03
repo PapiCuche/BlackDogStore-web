@@ -96,7 +96,7 @@ function CatalogContent() {
             Catálogo<br />de Productos
           </h1>
           <p className="mt-4 max-w-lg text-base text-zinc-500">
-            Equipos Apple originales, accesorios y repuestos con garantía. Envío a todo el Perú.
+            Equipos Apple, accesorios y repuestos con condiciones claras. Envío a todo el Perú.
           </p>
         </div>
       </section>

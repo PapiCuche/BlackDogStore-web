@@ -2487,3 +2487,82 @@ vigilancia) · broadcast a clientes (**PROPUESTA** — exige consentimiento,
 unsubscribe y reglas de marketing) · push, WhatsApp, SMS (**PROPUESTA**) ·
 adjuntos (**PROPUESTA**) · M12D evidencias (**PENDIENTE**) · wallet
 (**PROPUESTA**).
+
+---
+
+## M12D — Evidencias fotográficas
+
+**Estado: IMPLEMENTADO** para web interna. Migración **0064**.
+
+### Capas
+
+```
+EvidenceImageProcessor   normaliza y comprime      (evidence_images.py)
+EvidenceStorage          guarda, abre, firma, borra (evidence_storage.py)
+evidence_services        el dominio                 (evidence_services.py)
+evidence_views           las dos superficies        (evidence_views.py)
+```
+
+El dominio conoce cuatro verbos. No sabe que detrás hay Cloudflare.
+
+### Storage por entorno
+
+| Entorno | Backend | Cómo se sirve |
+| --- | --- | --- |
+| Producción | S3-compatible (Cloudflare R2), bucket **privado** | URL firmada, TTL 300 s |
+| Desarrollo | `FileSystemStorage`, sin `base_url` | streaming autenticado |
+| Tests | directorio temporal | streaming autenticado, **cero red** |
+
+`boto3` y `django-storages` se importan **perezosamente**. Importarlos arriba
+haría que `manage.py test` fallara en cualquier máquina sin ellos — que hoy es
+el caso. Y si se pide `s3` sin poder construirlo, falla ruidosamente: una
+configuración que dice «usa R2» y escribe en disco local en silencio parecería
+funcionar hasta que alguien buscara una evidencia que nunca salió del contenedor.
+
+### Formatos
+
+| Entrada | Aceptada | Nota |
+| --- | :---: | --- |
+| JPEG, PNG, WebP | sí | Pillow 12.3.0 |
+| HEIC / HEIF | sí | `pillow-heif==1.6.0`, sólo decodificación |
+| SVG, PDF, ZIP, vídeo, binarios | **no** | superficie de ataque mínima |
+
+Salida **siempre** `image/webp`. Ni el `Content-Type` ni la extensión deciden
+nada: sólo si el decodificador consigue abrirlo.
+
+### Settings
+
+`SERVICE_EVIDENCE_MAX_UPLOAD_BYTES` 25 MB · `MAX_EDGE` 1600 · `IMAGE_QUALITY` 75
+· `MIN_QUALITY` 60 · `TARGET_BYTES` 1 MB · `MAX_COMPRESSION_ATTEMPTS` 6 ·
+`MAX_PIXELS` 60 M.
+
+Ninguno nombra a Black Dog Store, y el de píxeles existe por una razón concreta:
+un PNG de 20 KB puede declarar 30.000 de lado y pedir varios GB al decodificarse.
+El límite de bytes no lo ve venir.
+
+### Privacidad verificada
+
+| Comprobación | Resultado |
+| --- | --- |
+| EXIF tras procesar | 5 tags → **0** |
+| GPS | eliminado |
+| `b'iPhone'` / `b'Apple'` en los bytes finales | ausentes |
+| Orientación EXIF 6 | aplicada: 900×600 → 600×900 |
+| `Cache-Control` del contenido | `private, no-store` |
+| Serializador cliente | allowlist de 5 campos |
+
+Lo de la metadata se pregunta a los **bytes**, no a la API de Pillow: un
+decodificador puede exponer una vista limpia de un archivo que aún lleva la
+cadena dentro, y lo que se sube a un bucket son los bytes.
+
+### Deuda declarada
+
+Original forense (**PROPUESTA** — exige política propia de integridad y
+retención) · vídeo (**PROPUESTA**) · adjuntos generales (**PROPUESTA**) · firma
+digital (**PENDIENTE**) · evidencia de garantía (**PENDIENTE**, el dominio no
+existe) · retención y borrado definitivo (**PENDIENTE**) · limpieza de huérfanos
+en segundo plano (**PROPUESTA**, sin Celery) · upload directo a R2
+(**PROPUESTA**) · galería web del cliente (**PENDIENTE**, el portal no existe) ·
+Mobile (**PENDIENTE**, no auditado en esta fase) · avisos por foto
+(**PROPUESTA**, deliberadamente no implementados: una notificación por imagen
+subida sería ruido).

@@ -6,7 +6,7 @@ import { ServicesCta } from "./ServicesCta";
 // which tenant owns this host. The description is still the pilot's service copy
 // — per-tenant landing content is tracked in docs/saas-multiempresa.md.
 export const metadata: Metadata = {
-  title: "Servicio Técnico Apple",
+  title: "Servicio técnico especializado en equipos Apple",
   description:
     "Reparación de iPhone: cambio de pantalla, batería, tapa trasera y glass. Diagnóstico gratuito.",
 };
@@ -16,16 +16,16 @@ const services = [
     num: "01",
     title: "Cambio de Pantalla",
     description:
-      "Pantallas OLED/LCD originales con calibración de color, brillo y True Tone. No aparece el mensaje de pieza reparada. Instalación sin burbujas ni marcos desalineados.",
+      "Pantallas OLED/LCD con calibración de color y brillo. Revisamos el equipo, explicamos el diagnóstico y confirmamos el costo antes de reparar.",
     devices: ["iPhone", "iPad"],
     time: "2–3 horas",
-    highlight: "No pierde True Tone",
+    highlight: "Costo confirmado antes",
   },
   {
     num: "02",
     title: "Cambio de Batería",
     description:
-      "Baterías originales Nasan certificadas. Restaura la autonomía de tu iPhone al 100%. Certificado de autenticidad incluido.",
+      "Baterías Nasan con certificado de autenticidad. Recupera la autonomía de tu iPhone.",
     devices: ["iPhone", "iPad", "MacBook"],
     time: "1–2 horas",
     highlight: "Baterías Nasan ✓",
@@ -34,10 +34,10 @@ const services = [
     num: "03",
     title: "Cambio de Tapa Trasera",
     description:
-      "Tecnología láser para un cambio preciso y seguro. Los cambios no muestran el mensaje de pieza reparada. Tu iPhone lucirá impecable nuevamente.",
+      "Cambio de tapa trasera con acabado cuidado. Te explicamos el alcance del trabajo y el costo antes de empezar.",
     devices: ["iPhone"],
     time: "2–3 horas",
-    highlight: "Tecnología láser",
+    highlight: "Alcance explicado",
   },
   {
     num: "04",
@@ -89,7 +89,7 @@ const services = [
 const stats = [
   { stat: "5,000+", label: "Dispositivos reparados" },
   { stat: "6 meses", label: "Garantía en reparaciones" },
-  { stat: "100%", label: "Repuestos originales" },
+  { stat: "Nasan", label: "Baterías con certificado" },
   { stat: "S/ 0", label: "Diagnóstico" },
 ];
 
@@ -99,12 +99,12 @@ const faqs = [
     a: "Los cambios de batería y pantalla se realizan el mismo día, en 1–3 horas. Reparaciones más complejas como daño por líquidos pueden tomar 24–72 horas.",
   },
   {
-    q: "¿Los repuestos son originales?",
-    a: "Sí. Trabajamos con repuestos originales Apple y baterías Nasan certificadas. Contamos con certificado de autenticidad Nasan Technology.",
+    q: "¿Qué repuestos utilizan?",
+    a: "Trabajamos con baterías Nasan, que llegan con certificado de autenticidad de Nasan Technology. Antes de cada reparación te indicamos qué repuesto se usará y en qué condiciones.",
   },
   {
-    q: "¿Aparece el mensaje de 'pieza reparada'?",
-    a: "No. Nuestros cambios de pantalla, tapa trasera y batería no muestran el mensaje de pieza reparada en el iPhone.",
+    q: "¿Qué me explican antes de reparar?",
+    a: "Revisamos tu equipo, te explicamos el diagnóstico y confirmamos el costo antes de reparar. Si algo cambia durante el trabajo, te consultamos primero.",
   },
   {
     q: "¿Tienen garantía los servicios?",
@@ -133,8 +133,8 @@ export default function ServicesPage() {
             <span className="text-zinc-500">Como Antes?</span>
           </h1>
           <p className="mt-6 max-w-xl text-lg leading-7 text-zinc-400">
-            Técnicos especializados en productos Apple. Repuestos originales,
-            diagnóstico gratuito y garantía de 6 meses en cada servicio.
+            Técnicos especializados en equipos Apple. Te decimos qué repuesto
+            se usa y en qué condiciones antes de empezar.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <ServicesCta
@@ -229,7 +229,7 @@ export default function ServicesPage() {
               <p className="mt-4 text-sm leading-6 text-zinc-500">
                 Esta tienda cuenta con el certificado de autenticidad de{" "}
                 <strong className="text-white">Nasan Technology</strong> — empresa oficial de
-                baterías para iPhone. Garantizamos que usamos baterías 100% originales en cada servicio.
+                baterías para iPhone, con certificado de autenticidad de Nasan Technology.
               </p>
               <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-4 py-2">
                 <span className="h-2 w-2 rounded-full bg-white" />
@@ -242,7 +242,7 @@ export default function ServicesPage() {
               <div className="grid grid-cols-2 gap-4">
                 {[
                   { label: "6 Meses", sub: "De garantía" },
-                  { label: "100%", sub: "Original" },
+                  { label: "Nasan", sub: "Certificada" },
                   { label: "Certificado", sub: "Nasan Technology" },
                   { label: "Sin msg", sub: "Pieza reparada" },
                 ].map((item) => (

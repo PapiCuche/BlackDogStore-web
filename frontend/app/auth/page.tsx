@@ -157,9 +157,9 @@ export default function AuthPage() {
 
           {/* Trust row */}
           <div className="relative flex flex-wrap gap-6 text-xs text-zinc-700">
-            <span>✓ Garantía 6 meses</span>
+            <span>✓ Servicio especializado</span>
             <span>✓ Envío a todo Perú</span>
-            <span>✓ Repuestos originales</span>
+            <span>✓ Condiciones claras</span>
           </div>
         </div>
 

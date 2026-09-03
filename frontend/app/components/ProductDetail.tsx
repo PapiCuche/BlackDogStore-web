@@ -309,10 +309,17 @@ export default function ProductDetail({ product }: { product: Product }) {
               )}
             </div>
 
-            {/* Trust badges */}
+            {/*
+              "Repuesto original Apple" afirmaba procedencia de fábrica en TODA
+              ficha, incluidas las de accesorios y equipos seminuevos. Y el
+              plazo de garantía estaba compilado mientras la política que lo
+              respalda sigue pendiente de redactar.
+
+              Queda lo que es cierto de cualquier producto de esta tienda; el
+              plazo sale de la configuración del tenant o no se muestra.
+            */}
             <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-zinc-600">
-              <span>✓ Repuesto original Apple</span>
-              <span>✓ Garantía de 6 meses</span>
+              <span>✓ Equipo verificado antes de la entrega</span>
               <span>✓ Envío a todo Perú</span>
               <span>✓ Pago seguro</span>
             </div>
