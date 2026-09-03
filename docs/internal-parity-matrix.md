@@ -30,32 +30,45 @@ lo que decide si una función se construye o se clasifica PENDIENTE.
 
 **Estado:** `IMPLEMENTADO` · `PARCIAL` · `PENDIENTE` · `PROPUESTA` · `OBSOLETO`.
 
+**EL TIPO DESCRIBE EL PRESENTE, NO LA HISTORIA.** Una fila que era B y ya se
+integró en Mobile es A, y hay que cambiarla el día del merge. Dejarla en B
+porque «nació» B convierte la tabla en un diario en vez de un inventario, y la
+siguiente ola planifica contra una foto vieja. Un test lo verifica: ver
+`Ip1ParityManifestTest`.
+
+**LAS REFERENCIAS SON SÍMBOLOS, NO LÍNEAS.** Este documento citaba
+`archivo.py:123`. Cinco de esas citas apuntaban a una línea en blanco, al
+docstring de otra clase, o más allá del final del archivo — no porque nadie
+mirara, sino porque un número de línea envejece con cada edición que ocurre por
+encima de él. Un símbolo sobrevive al refactor y además se puede verificar
+automáticamente, y eso es lo que hace el guard.
+
 ---
 
 ## VENTAS
 
 | Función | Backend | Web | V1 | Mobile | Capability | TIPO |
 |---|---|---|---|---|---|---|
-| POS — contexto | `pos_views.py:135` | `/admin/sales/pos` | **`sales/pos/context/`** | ✅ (IP1A) | `sales.pos.use` | **B** |
-| POS — buscar producto | `pos_views.py:253` | ✅ | **`sales/pos/products/search/`** | ✅ (IP1A) | `sales.pos.use` | **B** |
-| POS — leer código | `pos_views.py:210` | ✅ | **`sales/pos/products/lookup/`** | ✅ (IP1A) | `sales.pos.use` | **B** |
-| POS — previsualizar | `pos_services.build_pos_sale:658` | ✅ | **`sales/pos/preview/`** | PARCIAL (IP1A) | `sales.pos.use` | **B** |
-| **POS — registrar venta** | **`pos_services.create_pos_sale:768`** | ✅ | **`sales/pos/sales/`** | ✅ (IP1A) | `sales.pos.use` | **B** |
-| POS — asignar vendedor | `pos_services.resolve_pos_seller:554` | ✅ | ✅ (dentro de la venta) | pendiente | `sales.pos.assign_seller` | **B** |
-| POS — descuento manual | `pos_services.resolve_discount:292` | ✅ | ✅ (dentro de la venta) | pendiente | `sales.discounts.apply` | **B** |
-| POS — cupón | `pos_services.resolve_discount:329` | ✅ | ✅ (dentro de la venta) | pendiente | — (ninguna, por diseño) | **B** |
-| POS — promoción automática | `promotion_services.py:119` | ✅ | ✅ (la calcula el servidor) | pendiente | — (automática) | **B** |
-| POS — comisión | `pos_services.calculate_commission:419` | ✅ | ✅ (la devuelve la venta) | pendiente | `sales.commissions.view` para verla | **B** |
-| POS — combos sugeridos | `promotion_services.py:182` | ✅ | PENDIENTE | PENDIENTE | `sales.pos.use` | **C** |
-| Pedidos — listar / abrir | `v1_internal_views.py:143` | ✅ | ✅ | ✅ | `sales.orders.view` | **A** |
-| Pedidos — fulfillment | `order_fulfillment_services.py:68` | ✅ | ✅ | ✅ | `sales.orders.manage` | **A** |
-| Notas de venta | `sales_note_services.py:55` | ✅ | PENDIENTE | PENDIENTE | `sales.notes.manage` | **C** |
-| Comisiones — informe | `sales_analytics_views.py:512` | ✅ | PENDIENTE | PENDIENTE | `sales.commissions.view` | **C** |
-| Comisiones — tarifas | `pos_views.py:711` | ✅ | PENDIENTE | PENDIENTE | `sales.commissions.manage` | **C** |
-| Analytics de ventas | `sales_analytics_views.py:148` | ✅ | PENDIENTE | PENDIENTE | `sales.analytics.view` | **C** |
-| Promociones — CRUD | `promotion_views.py:91` | ✅ (update solo archiva) | PENDIENTE | PENDIENTE | `sales.promotions.*` | **C** |
-| Cupones | `promotion_views.py:417` | ✅ | PENDIENTE | PENDIENTE | `sales.promotions.*` | **C** |
-| Códigos de barras — gestionar | `pos_views.py:465` | **ninguna página lo llama** | PENDIENTE | PENDIENTE | `products.manage` | **D** |
+| POS — contexto | `pos_views.AdminPosContextView` | `/admin/sales/pos` | `sales/pos/context/` | ✅ (IP1A) | `sales.pos.use` | **A** |
+| POS — buscar producto | `pos_views.AdminPosSearchView` | ✅ | `sales/pos/products/search/` | ✅ (IP1A) | `sales.pos.use` | **A** |
+| POS — leer código | `pos_views.AdminPosLookupView` | ✅ | `sales/pos/products/lookup/` | ✅ (IP1A) | `sales.pos.use` | **A** |
+| POS — previsualizar | `pos_services.build_pos_sale` | ✅ | `sales/pos/preview/` | PARCIAL — el endpoint está integrado; la pantalla no lo llama antes de cobrar | `sales.pos.use` | **B** |
+| **POS — registrar venta** | `pos_services.create_pos_sale` | ✅ | `sales/pos/sales/` | ✅ (IP1A) | `sales.pos.use` | **A** |
+| POS — asignar vendedor | `pos_services.resolve_pos_seller` | ✅ | ✅ campo `seller` en preview y venta | PENDIENTE — el transporte lo soporta; no hay control en pantalla | `sales.pos.assign_seller` | **B** |
+| POS — descuento manual | `pos_services.resolve_discount` | ✅ | ✅ campos `manual_discount_type` · `manual_discount_value` · `discount_reason` | PENDIENTE — ídem | `sales.discounts.apply` | **B** |
+| POS — cupón | `pos_services.resolve_discount` | ✅ | ✅ campo `coupon_code` | PENDIENTE — ídem | — (ninguna, por diseño) | **B** |
+| POS — promoción automática | `promotion_services.evaluate` | ✅ | ✅ la calcula el servidor y la devuelve en `promotions[]` | PENDIENTE — no se muestran | — (automática) | **B** |
+| POS — comisión | `pos_services.calculate_commission` | ✅ | ✅ campo `commission`, nulo sin capability | PENDIENTE — no se muestra | `sales.commissions.view` para verla | **B** |
+| POS — combos sugeridos | `promotion_services.combo_availability` | `promotion_views.AdminPosCombosView` | PENDIENTE | PENDIENTE | `sales.pos.use` | **C** |
+| Pedidos — listar / abrir | `v1_internal_views.V1InternalOrderListView` | ✅ | ✅ | ✅ | `sales.orders.view` | **A** |
+| Pedidos — fulfillment | `order_fulfillment_services.change_fulfillment_status` | ✅ | ✅ | ✅ | `sales.orders.manage` | **A** |
+| Notas de venta | `sales_note_services.get_or_create_sales_note` | ✅ | PENDIENTE | PENDIENTE | `sales.notes.manage` | **C** |
+| Comisiones — informe | `sales_analytics_views.AdminCommissionsView` | ✅ | PENDIENTE | PENDIENTE | `sales.commissions.view` | **C** |
+| Comisiones — tarifas | `pos_views.AdminCommissionSettingsView` | ✅ | PENDIENTE | PENDIENTE | `sales.commissions.manage` | **C** |
+| Analytics de ventas | `sales_analytics_views.AdminSalesDashboardView` | ✅ | PENDIENTE | PENDIENTE | `sales.analytics.view` | **C** |
+| Promociones — CRUD | `promotion_views.AdminPromotionListView` | ✅ (update solo archiva) | PENDIENTE | PENDIENTE | `sales.promotions.*` | **C** |
+| Cupones | `promotion_views.AdminCouponView` | ✅ | PENDIENTE | PENDIENTE | `sales.promotions.*` | **C** |
+| Códigos de barras — gestionar | `pos_views.AdminProductBarcodeView` | **ninguna página lo llama** | PENDIENTE | PENDIENTE | `products.manage` | **D** |
 | Anulación / devolución POS | **no existe** | — | — | — | — | **E** |
 | Arqueo / sesión de caja | **no existe** | — | — | — | — | **E** |
 
@@ -63,34 +76,53 @@ lo que decide si una función se construye o se clasifica PENDIENTE.
 
 | Función | Backend | Web | V1 | Mobile | Capability | TIPO |
 |---|---|---|---|---|---|---|
-| Resumen | `inventory_services.py:1262` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
-| Stock por sucursal | `inventory_services.py:1108` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
-| Kardex / movimientos | `inventory_services.py:1318` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
-| Entrada / salida manual | `inventory_services.apply_manual_stock_movement:312` | ✅ | ✅ `inventory/adjustments/` | ✅ | `inventory.adjust` | **A** |
-| Transferencia — crear | `inventory_services.create_stock_transfer:612` | `/admin/inventory/transfers` | **`inventory/transfers/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
-| Transferencia — líneas | `inventory_services.set_transfer_item:638` | ✅ | **`inventory/transfers/<id>/items/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
-| Transferencia — despachar | `inventory_services.dispatch_transfer:673` | ✅ | **`inventory/transfers/<id>/dispatch/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
-| Transferencia — recibir | `inventory_services.receive_transfer:761` | ✅ | **`inventory/transfers/<id>/receive/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
-| Transferencia — cancelar | `inventory_services.cancel_transfer:833` | ✅ | **`inventory/transfers/<id>/cancel/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
-| Recuento — crear | `inventory_services.create_inventory_count:884` | `/admin/inventory/counts` | PENDIENTE | PENDIENTE | ídem | **C** |
-| Recuento — contar | `inventory_services.set_count_item:901` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
-| Recuento — aprobar | `inventory_services.approve_inventory_count:947` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
-| Recuento — cancelar | `inventory_services.cancel_inventory_count:1050` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
-| Reposición | `inventory_services.py:1153` | ✅ | PENDIENTE | PENDIENTE | `inventory.reports` | **C** |
-| Reportes (8 funciones) | `inventory_services.py:1135-1424` | ✅ | PENDIENTE | PENDIENTE | `inventory.reports` | **C** |
-| Importación Excel | `stock_import_services.py` | ✅ | PENDIENTE | PENDIENTE | `inventory.adjust` | **C** |
-| Exportación | `inventory_views.py` | ✅ | PENDIENTE | PENDIENTE | `inventory.reports` | **C** |
+| Resumen | `inventory_services.get_inventory_summary` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
+| Stock por sucursal | `inventory_services.branch_stock_queryset` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
+| Kardex / movimientos | `inventory_services.get_stock_card` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
+| Entrada / salida manual | `inventory_services.apply_manual_stock_movement` | ✅ | ✅ `inventory/adjustments/` | ✅ | `inventory.adjust` | **A** |
+| Transferencia — crear | `inventory_services.create_stock_transfer` | `/admin/inventory/transfers` | `inventory/transfers/` | ✅ (IP1B) | `inventory.adjust` | **A** |
+| Transferencia — líneas | `inventory_services.set_transfer_item` | ✅ | `inventory/transfers/<id>/items/` | ✅ (IP1B) | `inventory.adjust` | **A** |
+| Transferencia — despachar | `inventory_services.dispatch_transfer` | ✅ | `inventory/transfers/<id>/dispatch/` | ✅ (IP1B) | `inventory.adjust` | **A** |
+| Transferencia — recibir | `inventory_services.receive_transfer` | ✅ | `inventory/transfers/<id>/receive/` | ✅ (IP1B) | `inventory.adjust` | **A** |
+| Transferencia — cancelar | `inventory_services.cancel_transfer` | ✅ | `inventory/transfers/<id>/cancel/` | ✅ (IP1B) | `inventory.adjust` | **A** |
+| Recuento — crear | `inventory_services.create_inventory_count` | `/admin/inventory/counts` | PENDIENTE | PENDIENTE | `inventory.adjust` | **C** |
+| Recuento — contar | `inventory_services.set_count_item` | ✅ | PENDIENTE | PENDIENTE | `inventory.adjust` | **C** |
+| Recuento — aprobar | `inventory_services.approve_inventory_count` | ✅ | PENDIENTE | PENDIENTE | `inventory.adjust` | **C** |
+| Recuento — cancelar | `inventory_services.cancel_inventory_count` | ✅ | PENDIENTE | PENDIENTE | `inventory.adjust` | **C** |
+| Reposición | `inventory_services.get_replenishment_rows` | ✅ | PENDIENTE | PENDIENTE | `inventory.reports` | **C** |
+| Reportes (8 funciones) | `inventory_services.get_low_stock_rows` y siete más | ✅ | PENDIENTE | PENDIENTE | `inventory.reports` | **C** |
+| Importación Excel | `stock_import_services.apply_stock` | ✅ | PENDIENTE | PENDIENTE | `inventory.adjust` | **C** |
+| Exportación | `inventory_views.AdminProductStockCardView` y export | ✅ | PENDIENTE | PENDIENTE | `inventory.reports` | **C** |
 | Serial / IMEI | **no existe** | — | — | — | — | **E** |
 
 ## PRODUCTOS · CLIENTES
 
 | Función | Backend | Web | V1 | Mobile | Capability | TIPO |
 |---|---|---|---|---|---|---|
-| Producto — búsqueda interna | `pos_views.py:253` | ✅ | **`sales/pos/products/search/`** | pendiente | `sales.pos.use` | **B** |
-| Producto — CRUD | `admin_views.AdminProduct*` | `/admin/products` | PENDIENTE | PENDIENTE | `products.manage` | **C** |
-| Producto — importación | `import_services.py` | ✅ | PENDIENTE | PENDIENTE | `products.manage` | **C** |
-| Categorías | `admin_views` | ✅ | PENDIENTE | PENDIENTE | `products.manage` | **C** |
-| Clientes — CRUD interno | `customer_services.py` | `/admin/customers` | PENDIENTE | PENDIENTE | `service.customers.*` | **C** |
+| Catálogo — búsqueda para inventario | **no existe** — ver la nota de abajo | — | — | — | — | **E** |
+| Producto — CRUD | `admin_views.AdminProductListView` | `/admin/products` | PENDIENTE | PENDIENTE | `products.manage` | **C** |
+| Producto — importación | `import_services.apply_products` | ✅ | PENDIENTE | PENDIENTE | `products.manage` | **C** |
+| Categorías | `admin_views.AdminCategoryListView` | ✅ | PENDIENTE | PENDIENTE | `products.manage` | **C** |
+| Clientes — CRUD interno | `customer_services.resolve_customer` | `/admin/customers` | PENDIENTE | PENDIENTE | `service.customers.*` | **C** |
+
+### La fila que decía dos cosas a la vez
+
+Hasta H4 había aquí una fila «Producto — búsqueda interna» que citaba el MISMO
+símbolo backend y la MISMA ruta v1 que «POS — buscar producto», y decía Mobile
+*pendiente* mientras la otra decía ✅. Era la misma función descrita dos veces
+con dos respuestas distintas, y la contradicción llevaba una ola entera ahí.
+
+Se auditó: **es la misma función.** `sales/pos/products/search/` está detrás de
+`sales.pos.use`, la capability de la caja.
+
+Lo que se borró al deduplicar era, sin embargo, una pregunta legítima, así que
+ahora está dicha en voz alta como lo que es: **no existe una búsqueda de
+catálogo para quien no vende.** Un miembro con `inventory.view` y sin
+`sales.pos.use` no tiene ninguna ruta v1 para buscar un producto por nombre.
+Recorre el stock de su sucursal —`inventory/stock/?search=`— y eso alcanza para
+inventariar, porque un artículo sin stock en la sucursal no se cuenta ni se
+transfiere; pero no es una búsqueda de catálogo, y llamarla así sería maquillar.
+El día que haga falta una de verdad, se construye; hoy es **E**, no C.
 
 ## SERVICIO TÉCNICO (M8–M12B — regresión)
 
@@ -247,3 +279,59 @@ entera con lo que ella misma devuelve**.
 
 Ninguna se simuló. Una operación que no existe no recibe un mock: recibe la
 palabra PENDIENTE.
+
+
+---
+
+## H4 — LO QUE ESTABA MAL
+
+Auditoría de este documento contra el código, antes de escribir una línea de
+IP2. Cuatro clases de defecto, todas encontradas leyendo, ninguna cosmética.
+
+### 1. Nueve filas decían B con Mobile ya integrado
+
+IP1 cerró cuatro operaciones de POS y las cinco de transferencias, y las nueve
+se quedaron marcadas **B** — «falta Mobile» — con un ✅ en la columna Mobile de
+la misma fila. La tabla se contradecía a sí misma línea por línea.
+
+No es una errata. La siguiente ola planifica contra esta tabla: una B rancia le
+pide a alguien que construya lo que ya existe, y quien la lea de buena fe
+gastará el día averiguando por qué ya funciona. Ahora son **A**, y un test lo
+comprueba en cada ejecución.
+
+### 2. Cinco citas apuntaban a ninguna parte
+
+Las referencias tenían forma `archivo.py:123`. Verificadas una por una contra el
+código:
+
+| Cita | Qué hay realmente en esa línea | Dónde está de verdad |
+|---|---|---|
+| `pos_views.py:210` | línea en blanco | `AdminPosLookupView` (168) |
+| `pos_views.py:253` | docstring de `AdminPosSaleView` | `AdminPosSearchView` (211) |
+| `pos_views.py:465` | línea en blanco | `AdminProductBarcodeView` (358) |
+| `pos_views.py:711` | **más allá del final del archivo** | `AdminCommissionSettingsView` (583) |
+| `pos_views.py:135` | dentro de un método, no la clase | `AdminPosContextView` (116) |
+
+Nadie mintió: un número de línea envejece con cada edición que ocurre por encima
+de él, y `pos_views.py` creció. Por eso las citas ahora son **símbolos**, que
+sobreviven al refactor y —lo que importa más— se pueden verificar solos.
+
+### 3. Una fila describía la misma función dos veces, con dos respuestas
+
+«Producto — búsqueda interna» y «POS — buscar producto» citaban el mismo símbolo
+y la misma ruta v1, y decían cosas opuestas sobre Mobile. Ver la nota en
+PRODUCTOS · CLIENTES: es la misma función, y lo que quedaba sin decir —que no
+hay búsqueda de catálogo para quien no vende— ahora está dicho como **E**.
+
+### 4. La capability de los recuentos decía «ídem»
+
+Las cuatro filas de recuento heredaban la capability de la fila de arriba con un
+«ídem». Auditado en `inventory_views`: leer un recuento exige `inventory.view` y
+todo lo demás `inventory.adjust`. Ahora está escrito.
+
+### El guard
+
+`Ip1ParityManifestTest` pasó de 5 tests a 8. Los tres nuevos comprueban que cada
+símbolo citado existe, que no vuelven los números de línea, y que la columna TIPO
+describe el presente. Cada uno se probó plantando el defecto que existe para
+atrapar y viéndolo fallar.
