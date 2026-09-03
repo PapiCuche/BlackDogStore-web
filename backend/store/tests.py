@@ -40812,6 +40812,37 @@ class M121SeededAdminFunctionalTest(TestCase):
         )
 
 
+class M121RecipientDedupeTest(TestCase):
+    """
+    The in-memory dedupe, pinned directly.
+
+    A retirada proof showed that removing `_unique` left the suite green: the
+    partial UNIQUE constraint absorbed the second insert inside its savepoint
+    and the caller never noticed. The constraint IS the guarantee and that is
+    the right design — but it meant nothing was exercising the helper, only the
+    thing behind it. A defence no test can tell apart from its own backstop is
+    a defence nobody would notice disappearing.
+    """
+
+    class _Fake:
+        def __init__(self, pk):
+            self.pk = pk
+
+    def test_the_same_recipient_twice_is_collapsed_before_the_database(self):
+        from . import notification_services as notif
+        a, b, again = self._Fake(1), self._Fake(2), self._Fake(1)
+        self.assertEqual(notif._unique([a, b, again]), [a, b])
+
+    def test_none_is_not_a_recipient(self):
+        from . import notification_services as notif
+        self.assertEqual(notif._unique([None, None]), [])
+
+    def test_order_is_preserved(self):
+        from . import notification_services as notif
+        items = [self._Fake(3), self._Fake(1), self._Fake(2)]
+        self.assertEqual([x.pk for x in notif._unique(items)], [3, 1, 2])
+
+
 class M121PaymentEventTest(M12BPaymentBase):
     """
     §9–§13, §44 — the payment ledger did not exist when the notification centre
@@ -40867,6 +40898,30 @@ class M121PaymentEventTest(M12BPaymentBase):
             _Event.objects.filter(
                 event_type=_ev.SERVICE_PAYMENT_RECORDED,
             ).count(), 1,
+        )
+
+    def test_the_key_alone_would_stop_a_second_event(self):
+        """
+        The replay test above passes for a reason that is NOT this one.
+
+        `_record_service_payment` answers a repeated idempotency key by
+        returning the existing row BEFORE it reaches the emitter, so on that
+        path the event key is never consulted. It is the second line of a
+        defence whose first line never lets it be reached — which means nothing
+        was checking that the key is built from the ledger row at all. Calling
+        the emitter directly is the only way to ask it.
+        """
+        payment = self.pay('100.00')
+        before = _Event.objects.filter(
+            event_type=_ev.SERVICE_PAYMENT_RECORDED,
+        ).count()
+        _m8_service._emit_payment_recorded(order=self.order, payment=payment)
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(),
+            before,
+            'la clave del evento no describe la fila del libro',
         )
 
     def test_two_genuine_payments_produce_two_events(self):

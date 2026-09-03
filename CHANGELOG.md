@@ -9,6 +9,103 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12B.1 — Reconciliación con el libro de pagos y paridad de presets
+
+**Estado: IMPLEMENTADO.** Migraciones **0060** (renumerada) y **0061**.
+
+### El defecto que nueve migraciones compartían
+
+Todas amplían `Administrador` identificándolo así:
+
+```python
+previous_admin_preset = frozenset(ASSIGNABLE_CAPABILITY_CODES) - set(NEW)
+```
+
+Esa expresión es **correcta en el tiempo y falsa fuera de él**.
+
+En un **upgrade** acierta: cuando 0033 corrió de verdad, el catálogo importado
+era el de esa release, así que `vivo - NEW` describía la forma anterior.
+
+En una **instalación desde cero** todas corren hoy, contra el catálogo de hoy.
+0017 siembra 18 códigos con un literal congelado; 0033 pregunta si el rol tiene
+los 37 que el catálogo actual menos uno describe. Tiene 18. No coincide. Ni con
+0035, 0037, 0040, 0045, 0050, 0053 ni 0059.
+
+Comprobado paso a paso sobre base limpia: **18 tras 0017, 18 tras 0059**. Nueve
+grants, nueve no-ops silenciosos. El número llevaba ahí desde el principio,
+impreso en cada migración: «capacidad otorgada a **0** rol(es) administrador».
+
+> Una migración no reconstruye el pasado consultando el catálogo del futuro.
+> El seed lo sabía en 0017. Los grants lo olvidaron.
+
+### Congelado para identificar, vivo para apuntar
+
+Las dos mitades de la pregunta tienen respuestas distintas, y confundirlas **es**
+el defecto:
+
+| Pregunta | Fuente |
+| --- | --- |
+| Qué **era** el rol | literal congelado en la propia migración |
+| Qué **significa** el rol | catálogo vivo — lo mismo que usa provisioning |
+
+Por eso los dos caminos convergen por construcción y no por suerte.
+
+### El Supervisor era otro problema con el mismo síntoma
+
+`_SERVICE_SUPERVISOR_CAPS` listaba `service.orders.manage` dos veces: heredada de
+`_TECHNICIAN_CAPS` y añadida otra vez. 0054 guardó quince elementos que describían
+catorce capacidades; provisioning deduplicaba al escribir y guardaba catorce.
+
+**Misma autoridad, números distintos.** Nada se comportaba mal, así que nada se
+encontró hasta comparar los conteos. Una capability repetida no es más autoridad:
+es un bug de representación.
+
+### El número, recalculado
+
+**18/38**, no 18/37. PR #19 añadió `service.payments.manage` al catálogo.
+
+| Preset | Fresh install | Provisioning | Iguales |
+| --- | ---: | ---: | :---: |
+| Administrador | 38 | 38 | sí |
+| Ventas | 14 | 14 | sí |
+| Inventario | 6 | 6 | sí |
+| Servicio Técnico | 12 | 12 | sí |
+| Supervisor Técnico | 14 | 14 | sí |
+
+Un rol que el tenant personalizó —recortado, ampliado o renombrado— se queda
+como está. Pertenece al taller, no a la plataforma.
+
+### Los eventos que el libro de pagos se ganó
+
+`service.payment.recorded` va al **cliente**: el resumen que ya puede consultar
+expone `paid` y `outstanding`, así que decirle lo recibido y lo que queda no
+revela nada que el endpoint no respondería. No lleva medio, ni referencia, ni
+cajero, ni nota — lo que ese resumen retiene a propósito.
+
+`service.payment.reversed` es **interno**, y eso es el hallazgo, no una omisión.
+Un reverso significa «esta fila se escribió mal»; la función que lo hace lo dice
+con esas palabras. No existe frase para el cliente que sea a la vez verdadera y
+útil: «tu pago fue reembolsado» mentiría sobre dinero que quizá nunca se movió, y
+algo más vago alarma sin informar.
+
+### El grafo
+
+Dos ramas reclamaron el número 0058. Un prefijo duplicado es legal —la identidad
+de una migración es su nombre más sus dependencias— pero **dos hojas no lo son**:
+
+```
+0057 → 0058 pagos → 0059 capacidad de cobro → 0060 notificaciones → 0061 paridad
+```
+
+### Decisión técnica
+
+**La evolución de un preset es hacia adelante y consciente de su historia.** Una
+migración futura que necesite reconocer el estado anterior debe usar un conjunto
+congelado, nunca `catálogo vivo − nuevas`. Y un preset estándar no puede contener
+la misma capability más de una vez.
+
+---
+
 ## M12B — Centro de notificaciones multiempresa
 
 **Estado: IMPLEMENTADO** para in-app y correo. Migración **0058**.
