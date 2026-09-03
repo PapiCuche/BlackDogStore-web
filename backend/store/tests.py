@@ -44703,3 +44703,71 @@ class M12DPilotPaletteTest(TestCase):
         import re
         for field, value in self.module._BRAND_V3_THEME.items():
             self.assertRegex(value, r'^#[0-9A-Fa-f]{6}$', field)
+
+
+class M12DPilotLogoTest(TestCase):
+    """§DECISIÓN 2 — el asset oficial, enlazado; el compromiso, declarado."""
+
+    def setUp(self):
+        self.module = importlib.import_module('store.migrations.0066_pilot_logo')
+        self.pilot = Company.objects.get(slug=self.module.PILOT_SLUG)
+        self.row = CompanySettings.objects.get(company=self.pilot)
+
+    def _apps(self):
+        outer = self
+
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                outer.assertEqual(app_label, 'store')
+                return {'Company': Company, 'CompanySettings': CompanySettings}[model_name]
+        return _Apps()
+
+    def test_the_pilot_points_at_its_official_logo(self):
+        self.assertEqual(self.row.logo_url, self.module.PILOT_LOGO_URL)
+
+    def test_the_url_is_relative_so_a_host_change_does_not_break_it(self):
+        self.assertTrue(self.module.PILOT_LOGO_URL.startswith('/'))
+        for absolute in ('http://', 'https://', 'localhost'):
+            self.assertNotIn(absolute, self.module.PILOT_LOGO_URL)
+
+    def test_a_tenant_that_already_uploaded_a_logo_keeps_it(self):
+        self.row.logo_url = '/assets/branding/el-mio.png'
+        self.row.save(update_fields=['logo_url'])
+        self.module.point_at_the_official_logo(self._apps(), None)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.logo_url, '/assets/branding/el-mio.png')
+
+    def test_no_other_company_gets_the_pilot_logo(self):
+        other = _saas_company('Sin Logo', 'm12d-sinlogo', tax_id='20780080001')
+        provision_company_access_defaults(other)
+        row = CompanySettings.objects.get(company=other)
+        self.assertNotEqual(row.logo_url, self.module.PILOT_LOGO_URL)
+
+    def test_it_is_safe_when_the_pilot_does_not_exist(self):
+        slug = self.module.PILOT_SLUG
+        self.module.PILOT_SLUG = 'no-existe'
+        try:
+            self.module.point_at_the_official_logo(self._apps(), None)
+        finally:
+            self.module.PILOT_SLUG = slug
+
+    def test_running_it_twice_changes_nothing(self):
+        self.module.point_at_the_official_logo(self._apps(), None)
+        self.row.refresh_from_db()
+        first = self.row.logo_url
+        self.module.point_at_the_official_logo(self._apps(), None)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.logo_url, first)
+
+    def test_the_visual_compromise_is_written_down_not_silent(self):
+        """
+        La configuración expone UN `logo_url` y el manual pide la variante
+        horizontal para cabeceras. Usar la vertical ahí queda por debajo de su
+        mínimo de reducción — un compromiso real, y lo que no puede ser es
+        tácito: quien lea esta migración tiene que enterarse.
+        """
+        import inspect
+        doc = inspect.getdoc(self.module) or ''
+        self.assertIn('logo_horizontal_url', doc)
+        self.assertIn('CABECERA', doc)
