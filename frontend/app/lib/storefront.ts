@@ -19,6 +19,20 @@
 
 import { API_BASE } from "./api";
 
+export type StorefrontLogos = {
+  primary_on_light: string;
+  primary_on_dark: string;
+  horizontal_on_light: string;
+  horizontal_on_dark: string;
+};
+
+export const EMPTY_LOGOS: StorefrontLogos = {
+  primary_on_light: "",
+  primary_on_dark: "",
+  horizontal_on_light: "",
+  horizontal_on_dark: "",
+};
+
 export type StorefrontColors = {
   primary_color: string;
   accent_color: string;
@@ -36,7 +50,17 @@ export type StorefrontConfig = {
     tax_id: string;
   };
   branding: {
+    /** Legado. Sigue existiendo: hay tenants que sólo tienen éste. */
     logo_url: string;
+    /**
+     * M12E — variantes por contraste.
+     *
+     * Las claves son PREGUNTAS que hace un componente («horizontal, sobre
+     * oscuro»), no nombres de columna. Cadena vacía significa «no tengo esa
+     * variante», y es una respuesta legítima: quien la consume cae al nombre de
+     * la empresa antes que dibujar un logo ilegible.
+     */
+    logos: StorefrontLogos;
     colors: StorefrontColors;
     /** `{"--brand-primary": "#FFFFFF", ...}` — already validated server-side. */
     css_variables: Record<string, string>;
@@ -70,6 +94,7 @@ export const NEUTRAL_CONFIG: StorefrontConfig = {
   company: { name: "", slug: "", legal_name: "", tax_id: "" },
   branding: {
     logo_url: "",
+    logos: { ...EMPTY_LOGOS },
     colors: {
       primary_color: "#FFFFFF",
       accent_color: "#A1A1AA",
@@ -79,8 +104,14 @@ export const NEUTRAL_CONFIG: StorefrontConfig = {
       border_color: "#262626",
     },
     css_variables: {
+      // Esta lista es la ALLOWLIST de `brandingStyle()`: una variable que no
+      // esté aquí se descarta antes de llegar al atributo `style`. Añadir un
+      // token al backend sin añadirlo aquí produce exactamente el síntoma que
+      // tuvo M12E — el backend lo manda y la página no lo ve.
       "--brand-primary": "#FFFFFF",
       "--brand-accent": "#A1A1AA",
+      "--brand-light-background": "#FFFFFF",
+      "--brand-light-surface": "#F4F4F5",
       "--brand-background": "#0A0A0A",
       "--brand-surface": "#141414",
       "--brand-text": "#FAFAFA",
@@ -137,7 +168,15 @@ export async function fetchStorefrontConfig(): Promise<StorefrontConfig> {
     return {
       ...NEUTRAL_CONFIG,
       ...data,
-      branding: { ...NEUTRAL_CONFIG.branding, ...(data.branding ?? {}) },
+      branding: {
+        ...NEUTRAL_CONFIG.branding,
+        ...(data.branding ?? {}),
+        // Un nivel más de mezcla: si el backend manda `logos` parcial —o no lo
+        // manda porque es una versión anterior— las claves que falten quedan
+        // vacías en vez de `undefined`, y `undefined` es lo que rompe un
+        // `logos.horizontal_on_dark` aguas abajo.
+        logos: { ...EMPTY_LOGOS, ...(data.branding?.logos ?? {}) },
+      },
       contact: { ...NEUTRAL_CONFIG.contact, ...(data.contact ?? {}) },
       policies: { ...NEUTRAL_CONFIG.policies, ...(data.policies ?? {}) },
       company: { ...NEUTRAL_CONFIG.company, ...(data.company ?? {}) },
