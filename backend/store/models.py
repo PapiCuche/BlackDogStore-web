@@ -6024,3 +6024,186 @@ class NotificationDelivery(models.Model):
     def __str__(self):
         return f'{self.channel}:{self.status} (#{self.notification_id})'
 
+
+
+# ---------------------------------------------------------------------------
+# M12C — Comunicados internos
+# ---------------------------------------------------------------------------
+#
+# A COMMUNIQUÉ IS NOT A CHAT, and it is not a notification either.
+#
+#   Announcement    the document somebody wrote
+#   Notification    the copy that landed in one person's inbox
+#
+# M12B built a durable inbox and M12C composes into it. What M12B cannot hold
+# is the document itself: a `Notification` says "an aviso, for a recipient". It
+# does not remember who wrote the message, which audience was chosen, when it
+# went out, or what the body said beyond the 400 characters it keeps as a
+# preview. Storing those on the notification would mean storing them once per
+# recipient, and a thousand copies of a paragraph is a thousand chances for it
+# to disagree with itself.
+#
+# THE FULL TEXT LIVES HERE. `Notification.body` stays a preview and is NOT
+# widened to hold documents — that field exists so a bell can render a line.
+
+
+class Announcement(models.Model):
+    """
+    A deliberate internal message, composed by a person.
+
+    PUBLISHED IS IMMUTABLE. Before publication everything is editable; after
+    it, nothing is. A wrong communiqué is corrected by a NEW communiqué, the
+    way a correction works on paper — because the alternative is that what
+    somebody read yesterday can be made to have said something else today, and
+    an inbox that can be rewritten behind you is worse than no record at all.
+
+    `CANCELLED` means a draft was thrown away before it went out. It does NOT
+    mean recall, unsend or delete: those do not exist here, and naming a state
+    after them would promise something the platform cannot do.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Borrador'
+        PUBLISHED = 'published', 'Publicado'
+        CANCELLED = 'cancelled', 'Descartado'
+
+    #: The company on whose behalf this was written, or NULL when the platform
+    #: master wrote it. NULL here means "authored by the platform" and NEVER
+    #: "addressed to everybody" — the audience lives in the rules below, and a
+    #: missing tenant is not a broadcast.
+    source_company = models.ForeignKey(
+        'Company', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='authored_announcements',
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='authored_announcements',
+    )
+
+    title = models.CharField(max_length=140)
+    #: The whole text. Longer than `Notification.body` on purpose: that one is
+    #: a preview, this one is the document.
+    body = models.TextField(max_length=4000)
+    priority = models.CharField(
+        max_length=16, choices=Notification.Priority.choices,
+        default=Notification.Priority.INFO,
+    )
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.DRAFT,
+        db_index=True,
+    )
+
+    published_at = models.DateTimeField(null=True, blank=True)
+    #: Frozen at publication. Counting rows later would answer a different
+    #: question every day, because memberships change and the denominator of
+    #: "how many have read it" must not move under the numerator.
+    recipient_count = models.PositiveIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['source_company', 'status', '-created_at']),
+            models.Index(fields=['status', '-published_at']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                # A published row must carry its timestamp and a draft must not:
+                # `published_at` is what every later read treats as the moment
+                # the audience froze, so it may not be absent or invented.
+                condition=(
+                    models.Q(status='published', published_at__isnull=False)
+                    | ~models.Q(status='published') & models.Q(published_at__isnull=True)
+                ),
+                name='announcement_published_has_a_timestamp',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.title} ({self.status})'
+
+    @property
+    def is_editable(self) -> bool:
+        return self.status == self.Status.DRAFT
+
+
+class AnnouncementAudienceRule(models.Model):
+    """
+    One line of "who should get this", and it always names a company.
+
+    NOT A JSON BLOB. The audience decides who reads an internal message, so it
+    is queried, validated and audited; a dict in a text column can hold a
+    branch id belonging to another tenant and nothing would notice until it
+    did. Every rule is a row, every row has a tenant, and every foreign key is
+    checked against it.
+    """
+
+    class Kind(models.TextChoices):
+        ALL_COMPANY = 'all_company', 'Toda la empresa'
+        BRANCH = 'branch', 'Sucursal'
+        ROLE = 'role', 'Rol'
+        CAPABILITY = 'capability', 'Capacidad'
+        USER = 'user', 'Personas'
+
+    announcement = models.ForeignKey(
+        Announcement, on_delete=models.CASCADE, related_name='audience_rules',
+    )
+    #: NOT NULL, always. Even a platform-wide communiqué is stored as one rule
+    #: per company: there is no such thing here as a rule whose tenant has to
+    #: be guessed at read time.
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='announcement_rules',
+    )
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+
+    branch = models.ForeignKey(
+        'Branch', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='announcement_rules',
+    )
+    role = models.ForeignKey(
+        'CompanyRole', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='announcement_rules',
+    )
+    capability_code = models.CharField(max_length=64, blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='announcement_rules',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['announcement', 'company']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                # Each kind carries exactly its own target and nothing else. A
+                # BRANCH rule with a role attached is not a rule anybody wrote
+                # on purpose; it is a bug that would resolve to a silently
+                # different audience.
+                condition=(
+                    models.Q(kind='all_company', branch__isnull=True,
+                             role__isnull=True, capability_code='',
+                             user__isnull=True)
+                    | models.Q(kind='branch', branch__isnull=False,
+                               role__isnull=True, capability_code='',
+                               user__isnull=True)
+                    | models.Q(kind='role', role__isnull=False,
+                               branch__isnull=True, capability_code='',
+                               user__isnull=True)
+                    | (models.Q(kind='capability', capability_code__gt='')
+                       & models.Q(branch__isnull=True, role__isnull=True,
+                                  user__isnull=True))
+                    | models.Q(kind='user', user__isnull=False,
+                               branch__isnull=True, role__isnull=True,
+                               capability_code='')
+                ),
+                name='audience_rule_matches_its_kind',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.kind}@{self.company_id} (#{self.announcement_id})'

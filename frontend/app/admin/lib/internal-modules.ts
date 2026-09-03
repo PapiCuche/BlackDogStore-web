@@ -385,6 +385,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    id: "admin.communications",
+    group: "administration",
+    label: "Comunicados",
+    description: "Mensajes internos para el personal de la empresa.",
+    // CON `href`, y ese es el punto. En M12B se envió una consola sin él y
+    // quedó inalcanzable: registrada, descrita y sin forma de llegar.
+    href: "/admin/communications",
+    requiredCapabilities: ["communications.manage"],
+    status: "implemented",
+  },
+  {
     id: "admin.settings",
     group: "administration",
     label: "Configuración",

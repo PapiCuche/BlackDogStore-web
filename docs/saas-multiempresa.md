@@ -4468,3 +4468,35 @@ No que todo rol histórico se reescriba. Que **un preset de plataforma intacto**
 converja al mismo default por los tres caminos —fresh install, upgrade histórico
 y provisioning de tenant nuevo—. Una personalización del tenant rompe esa
 convergencia **a propósito**, y la migración no está autorizada a deshacerla.
+
+---
+
+## Comunicados: cuatro decisiones que no se renegocian
+
+### 1. `Announcement` es el documento; `Notification`, la copia
+
+Comparten bandeja y no comparten origen. Una notificación automática nace de un
+cambio de negocio; un comunicado nace de que alguien lo escribió. `source`
+distingue las dos sin duplicar la infraestructura, y **no hay una segunda
+bandeja**: `AnnouncementInbox` no existe y no debe existir.
+
+### 2. La audiencia se congela al publicar
+
+Las reglas se resuelven **una vez**, a filas, y esas filas son el registro.
+Volver a resolver al leer reescribiría la historia cada mañana: el empleado
+nuevo parecería haber recibido el mensaje del año pasado, y aquel para quien se
+escribió desaparecería de él el día que cambió de puesto.
+
+Un preview es informativo y puede quedar obsoleto entre que se calcula y se
+pulsa el botón. Por eso `publish` **vuelve a resolver** en vez de confiar en él.
+
+### 3. Global siempre es explícito
+
+La ausencia de tenant significa «lo escribió la plataforma», jamás «va a todos».
+Para alcanzar toda la plataforma hay que escribir `ALL_ACTIVE_COMPANIES`. Una
+lista vacía es un error; una empresa nula no es un broadcast.
+
+### 4. Publicado es inmutable
+
+No hay editar, retirar ni borrar. Una corrección es un comunicado nuevo. Una
+bandeja que puede reescribirse a tu espalda es peor que no tener registro.

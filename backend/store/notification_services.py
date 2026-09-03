@@ -35,7 +35,8 @@ from django.utils import timezone
 
 from . import notification_events as events
 from .models import (
-    Company, Membership, Notification, NotificationDelivery, NotificationEvent,
+    AnnouncementAudienceRule, Company, Membership, MembershipRoleAssignment,
+    Notification, NotificationDelivery, NotificationEvent,
 )
 from .tenancy import has_branch_access, resolve_capabilities
 
@@ -69,23 +70,107 @@ def resolve_internal_recipients(company, *, capability, branch=None):
     master deliberately sends, and there they opt in.
     """
     recipients = []
-    memberships = (
-        Membership.objects
-        .filter(company=company, is_active=True, company__is_active=True)
-        .select_related('user')
-    )
-    for membership in memberships:
-        user = membership.user
-        if user is None or not user.is_active:
-            continue
-        if user.is_superuser:
-            continue
+    for user in active_internal_users(company):
         if capability not in resolve_capabilities(user, company):
             continue
         if branch is not None and not has_branch_access(user, branch):
             continue
         recipients.append(user)
     return recipients
+
+
+def active_internal_users(company):
+    """
+    Everybody who currently works at `company`, master excluded.
+
+    THE ONE PLACE THAT DECIDES WHO COUNTS AS STAFF. M12B answered it inside
+    `resolve_internal_recipients`; M12C needs the same answer for five more
+    kinds of audience, and a second copy of these four conditions is a second
+    place for "active" to quietly come to mean something different.
+
+    The master exclusion travels with it, deliberately. A superuser holds every
+    capability in every company, so any audience expressed as a query over
+    capabilities would sweep them into every tenant's staff list. In M12C they
+    SEND; they are not swept in as a side effect of being able to.
+    """
+    return [
+        m.user for m in (
+            Membership.objects
+            .filter(company=company, is_active=True, company__is_active=True)
+            .select_related('user')
+        )
+        if m.user is not None and m.user.is_active and not m.user.is_superuser
+    ]
+
+
+def resolve_audience(company, rules):
+    """
+    Turn audience RULES into the people who will actually be written to.
+
+    Called ONCE, at publication. The result becomes `Notification` rows and
+    those rows are the snapshot: somebody who loses the role tomorrow keeps
+    the message, and somebody who gains it tomorrow never had it. Re-resolving
+    on read would rewrite the past every morning.
+
+    A person matched by four rules at once is one recipient. The union is taken
+    here and the database constraint is still the guarantee behind it.
+    """
+    from .capabilities import is_valid_capability
+
+    staff = active_internal_users(company)
+    if not staff:
+        return []
+
+    chosen, seen = [], set()
+
+    def take(user):
+        if user.pk not in seen:
+            seen.add(user.pk)
+            chosen.append(user)
+
+    for rule in rules:
+        kind = rule.kind
+        if kind == AnnouncementAudienceRule.Kind.ALL_COMPANY:
+            for user in staff:
+                take(user)
+        elif kind == AnnouncementAudienceRule.Kind.BRANCH:
+            branch = rule.branch
+            # The real branch-access authority, not `membership.branch_id`.
+            # A person with access to three shops works in three shops.
+            if branch is None or branch.company_id != company.pk:
+                continue
+            for user in staff:
+                if has_branch_access(user, branch):
+                    take(user)
+        elif kind == AnnouncementAudienceRule.Kind.ROLE:
+            role = rule.role
+            if role is None or role.company_id != company.pk:
+                continue
+            holders = set(
+                MembershipRoleAssignment.objects
+                .filter(role=role, is_active=True,
+                        membership__company=company, membership__is_active=True)
+                .values_list('membership__user_id', flat=True)
+            )
+            for user in staff:
+                if user.pk in holders:
+                    take(user)
+        elif kind == AnnouncementAudienceRule.Kind.CAPABILITY:
+            code = rule.capability_code
+            if not code or not is_valid_capability(code):
+                continue
+            for user in staff:
+                if code in resolve_capabilities(user, company):
+                    take(user)
+        elif kind == AnnouncementAudienceRule.Kind.USER:
+            target = rule.user
+            if target is None:
+                continue
+            for user in staff:
+                if user.pk == target.pk:
+                    take(user)
+
+    return chosen
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +190,7 @@ def emit(
     customers=(),
     priority=Notification.Priority.INFO,
     payload=None,
+    source=Notification.Source.SYSTEM,
 ):
     """
     Record that something happened and materialise one notice per recipient.
@@ -135,12 +221,12 @@ def emit(
     for user in _unique(users):
         made.append(_materialise(
             event, company, Notification.Audience.INTERNAL, title, body,
-            priority, target_type, target_id, user=user,
+            priority, target_type, target_id, user=user, source=source,
         ))
     for customer in _unique(customers):
         made.append(_materialise(
             event, company, Notification.Audience.CUSTOMER, title, body,
-            priority, target_type, target_id, customer=customer,
+            priority, target_type, target_id, customer=customer, source=source,
         ))
 
     if event_type in events.EMAIL_WORTHY_EVENTS:
@@ -168,12 +254,16 @@ def _unique(items):
 
 
 def _materialise(event, company, audience, title, body, priority,
-                 target_type, target_id, *, user=None, customer=None):
+                 target_type, target_id, *, user=None, customer=None,
+                 source=Notification.Source.SYSTEM):
     try:
         with transaction.atomic():
             return Notification.objects.create(
                 event=event, company=company, audience=audience,
-                user=user, customer=customer,
+                user=user, customer=customer, source=source,
+                # `body` is TRUNCATED, not widened. This field is a preview a
+                # bell renders in one line; M12C's full text lives on the
+                # `Announcement` the notification points at.
                 title=title[:140], body=body[:400], priority=priority,
                 target_type=target_type, target_id=target_id,
             )

@@ -28,6 +28,7 @@ type Notification = {
   title: string;
   body: string;
   priority: string;
+  source?: string;
   target_type: string;
   target_id: number | null;
   read_at: string | null;
@@ -45,7 +46,16 @@ export function targetHref(n: Pick<Notification, "target_type" | "target_id">) {
   if (!n.target_id) return null;
   if (n.target_type === "repair_order") return `/admin/service/orders/${n.target_id}`;
   if (n.target_type === "order") return `/admin/orders`;
+  // M12C. La bandeja sigue siendo UNA. Un comunicado no estrena badge ni
+  // buzón propio: llega como cualquier otra notificación y su `target_type`
+  // decide a dónde lleva.
+  if (n.target_type === "announcement") return `/admin/communications/${n.target_id}`;
   return null;
+}
+
+/** Etiqueta visible cuando el aviso lo escribió una persona, no un evento. */
+export function sourceLabel(n: Pick<Notification, "source">) {
+  return n.source === "announcement" ? "Comunicado" : null;
 }
 
 export function NotificationBell({ slug }: { slug: string | null }) {
@@ -141,6 +151,11 @@ export function NotificationBell({ slug }: { slug: string | null }) {
                 const href = targetHref(n);
                 const inner = (
                   <div className={`rounded-lg px-2 py-2 ${n.read_at ? "opacity-60" : "bg-white/[0.03]"}`}>
+                    {sourceLabel(n) ? (
+                      <span className="mb-0.5 inline-block rounded bg-sky-500/15 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-sky-300">
+                        {sourceLabel(n)}
+                      </span>
+                    ) : null}
                     <p className="text-xs font-medium text-zinc-200">{n.title}</p>
                     {n.body ? <p className="mt-0.5 text-[11px] text-zinc-500">{n.body}</p> : null}
                   </div>

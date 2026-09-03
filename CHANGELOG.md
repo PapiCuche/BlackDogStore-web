@@ -9,6 +9,122 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12C — Comunicados internos multiempresa
+
+**Estado: IMPLEMENTADO** para in-app. Migraciones **0062** y **0063**.
+
+### Dos cosas que comparten bandeja y no comparten origen
+
+```
+CAMBIO DE NEGOCIO                 PERSONA REDACTA
+      ↓                                 ↓
+NotificationEvent                  Announcement
+      ↓                                 ↓  publish
+Notification(source=SYSTEM)        NotificationEvent por empresa
+                                        ↓
+                                   Notification(source=ANNOUNCEMENT)
+```
+
+**Announcement es el documento. Notification es la copia del destinatario.**
+
+Una `Notification` dice «un aviso, para alguien». No recuerda quién lo escribió,
+qué audiencia se eligió, cuándo salió, ni el texto más allá de los 400 caracteres
+que guarda como preview. Ponerlo ahí sería guardarlo una vez por destinatario, y
+mil copias de un párrafo son mil ocasiones de que se contradigan.
+
+`Notification.body` **no se ensanchó**. Ese campo existe para que una campana
+pinte una línea; el texto completo vive en el `Announcement` al que apunta.
+
+### La audiencia se congela al publicar
+
+Es la regla que más fácil se rompe sin notarlo, porque la implementación
+equivocada —resolver el rol al leer— funciona perfecto el primer día y va
+reescribiendo la historia a partir del segundo.
+
+```
+Reglas de audiencia → resolver → dedupe → filas Notification
+                                              ↑
+                                     esto ES el registro
+```
+
+> **Un cambio de rol mañana no reescribe un mensaje de ayer.**
+
+Quien pierde el rol conserva el comunicado. Quien lo gana después nunca lo tuvo.
+Un empleado nuevo no recibe lo que salió antes de llegar. Y el denominador de
+«cuántos lo leyeron» no se mueve bajo el numerador, porque `recipient_count` se
+congela al publicar en vez de contarse cada vez.
+
+### Publicado es inmutable
+
+Antes de publicar todo se edita; después, nada. No hay retirar ni deshacer: una
+corrección es un comunicado nuevo, como en papel. `CANCELLED` significa
+únicamente que un borrador se tiró antes de salir — nombrar un estado «recall»
+prometería algo que la plataforma no puede hacer.
+
+### Global siempre explícito
+
+```
+companies: []      → 400
+companies ausente  → 400
+company = NULL     → «lo escribió la plataforma», NUNCA «va a todos»
+companies: "ALL_ACTIVE_COMPANIES"  → el único camino
+```
+
+La ausencia de tenant no es un broadcast. Es el default peligroso que este
+proyecto no puede permitirse, y está probado que se rechaza en las tres formas.
+
+### Un evento por empresa
+
+`NotificationEvent.company` es NOT NULL, así que un comunicado multiempresa que
+compartiera un evento pondría los avisos de dos tenants detrás de una misma fila:
+
+```
+Announcement #42
+  ├─ Company A → communications.announcement.published:announcement:42:<A>
+  └─ Company B → communications.announcement.published:announcement:42:<B>
+```
+
+Clave derivada del documento y del tenant. Ni timestamp, ni uuid del cliente:
+un reintento debe caer en la misma clave o no es un reintento.
+
+### El master envía; no recibe
+
+Se mantiene la regla de M12B. Un superusuario tiene todas las capacidades en
+todas las empresas, así que cualquier audiencia expresada como consulta lo
+arrastraría a cada tenant. **Poder publicar en todos no es recibirlo todo.**
+
+### Una capability, no dos
+
+`communications.manage` — **ACTIVE**. Redactar y publicar es una autoridad; leer
+la propia bandeja no lo es y nunca lo fue. No se creó `communications.view` por
+simetría: sería un permiso que no concede nada, aparecería en todo editor de
+roles y acabaría siendo retirado a alguien por un taller que supuso que
+significaba algo.
+
+Por defecto sólo la tiene `Administrador`. Ventas cobra y recibe equipos,
+Inventario cuenta stock, los presets técnicos trabajan el banco: ninguno necesita
+dirigirse al personal, y un taller que quiera que uno lo haga se la concede.
+
+### La migración, escrita como M12B.1 concluyó
+
+`0063` es el primer grant posterior a esa subfase, y **usa un literal congelado**
+de las 38 capacidades de la release anterior — no `catálogo vivo − nuevas`.
+
+Dónde dispara no es donde uno diría: en instalación desde cero nunca corre su
+grant, porque `0061` apunta al catálogo vivo y el admin ya trae las 39. Donde sí
+actúa es en un **upgrade**. Dos caminos, un destino — y ambos probados, no sólo
+el cómodo.
+
+Catálogo asignable medido: **39**.
+
+### Correo: PENDIENTE, a propósito
+
+M12C es in-app. M12B tiene reintento manual y ningún planificador, y un
+comunicado global podría convertirse en miles de SMTP sin infraestructura
+detrás. No se crean filas `NotificationDelivery` para comunicados.
+
+---
+
 ## M12B.1 — Reconciliación con el libro de pagos y paridad de presets
 
 **Estado: IMPLEMENTADO.** Migraciones **0060** (renumerada) y **0061**.

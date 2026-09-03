@@ -45,6 +45,11 @@ COMMERCE_FULFILLMENT_SHIPPED = 'commerce.fulfillment.shipped'
 COMMERCE_FULFILLMENT_DELIVERED = 'commerce.fulfillment.delivered'
 COMMERCE_ORDER_CANCELLED = 'commerce.order.cancelled'
 
+# M12C. The only event a PERSON causes directly rather than a business change.
+# It lives in the same catalogue as the rest because the inbox is the same
+# inbox: what differs is the origin, and `Notification.source` records that.
+COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED = 'communications.announcement.published'
+
 ALL_EVENT_TYPES = frozenset({
     SERVICE_ORDER_CREATED,
     SERVICE_ASSIGNMENT_CREATED,
@@ -61,6 +66,7 @@ ALL_EVENT_TYPES = frozenset({
     COMMERCE_FULFILLMENT_SHIPPED,
     COMMERCE_FULFILLMENT_DELIVERED,
     COMMERCE_ORDER_CANCELLED,
+    COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED,
 })
 
 # WHICH EVENTS EARN AN E-MAIL.
