@@ -4529,3 +4529,67 @@ no.**
 Y hay una categoría peor que la cifra sin respaldo: la afirmación que el manual
 de marca **prohíbe**. `title: "Servicio Técnico Apple"` se lee como servicio
 oficial de Apple, y estaba en la metadata que indexa un buscador.
+
+## El contenido comercial es dato del tenant, no código — M12F
+
+Hasta M12F la portada llevaba compilado el nombre de un teléfono. La regla que
+esto establece es corta:
+
+```
+CAMPAÑA COMERCIAL = DATO DEL TENANT
+```
+
+y tiene tres consecuencias que no se renegocian.
+
+**No es un CMS.** No hay HTML, ni Markdown, ni CSS, ni componentes editables
+desde el panel. Hay CAMPOS. Quien edita escribe un título y un texto; no decide
+cómo se pinta. Un editor que acepta marcado es un editor que acepta `<script>`,
+y esto lo rellena personal del tenant, no el equipo que audita el código.
+
+**La caducidad es el punto, no una comodidad.** `ends_at` existe para que la
+preventa del año pasado desaparezca sola. Sin él volveríamos al defecto que la
+fase cerró, sólo que con el texto en la base de datos en vez de en un `<h2>`.
+
+**Guardar no publica.** Son dos acciones con nombres distintos y endpoints
+distintos, precisamente para que el estado no pueda colarse en un `PATCH` de
+contenido. Escribir un borrador y anunciarlo al público no son el mismo gesto.
+
+### Dónde vive cada cosa
+
+```
+CompanySettings          identidad y políticas   — quién eres
+StorefrontPageSettings   contenido permanente    — qué ofreces
+StorefrontCampaign       contenido temporal      — qué anuncias hoy
+```
+
+La tentación es meterlo todo en `CompanySettings`. No: el RUC y un titular de
+portada cambian con frecuencias distintas, los edita gente distinta y fallan de
+formas distintas.
+
+### La autoridad se reutilizó
+
+`company.manage`, la misma que ya gobierna la configuración de la empresa. Crear
+una capacidad nueva habría exigido una migración de presets congelados —la clase
+de cambio que M12B.1 dedicó una fase entera a reparar— a cambio de una
+distinción que hoy no separa a nadie de nadie.
+
+Queda anotado el día que sí la separe: un taller que quiera que su encargado de
+marketing publique campañas **sin** poder cambiar el RUC de la empresa. Ese día
+`storefront.content.manage` tendrá un motivo. Hoy no lo tiene.
+
+### El vocabulario de un tema único
+
+Esta aplicación se escribió cuando sólo había tema oscuro, y eso dejó 2.779
+utilidades de color literales repartidas en 87 ficheros. No eran colores
+arbitrarios: eran ROLES escritos con el vocabulario de aquel momento. `white`
+no significaba blanco, significaba «el color que se lee».
+
+La traducción se hizo redefiniendo los tokens de la paleta, en un sitio, en vez
+de reescribir 2.779 clases. Lo que justifica hacerlo así es que se puede MEDIR:
+84 comprobaciones de contraste resuelven los tokens contra dos temas y dos
+paletas y fallan si un nivel de énfasis deja de leerse.
+
+Las excepciones van a mano y llevan su motivo escrito: texto blanco sobre
+relleno saturado —donde el fondo no cambia con el tema, así que el texto tampoco
+puede— y el verde oficial de WhatsApp, que es identidad de un tercero y no una
+decisión de tema nuestra.
