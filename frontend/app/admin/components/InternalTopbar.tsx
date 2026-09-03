@@ -22,6 +22,8 @@ import { IconBranch, IconMenu, IconShield } from "./icons";
 import type { InternalDashboard } from "../lib/internal-api";
 import { roleLabel, type AuthUser } from "../../lib/auth";
 
+import { NotificationBell } from "./NotificationBell";
+
 type Props = {
   user: AuthUser;
   dashboard: InternalDashboard | null;
@@ -97,6 +99,9 @@ export function InternalTopbar({
         </div>
 
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+          {/* M12B — la bandeja usa SIEMPRE la empresa resuelta ahora, nunca un
+              id recordado: un slug guardado sería una autorización guardada. */}
+          <NotificationBell slug={dashboard?.company?.slug ?? null} />
           {isMaster && (
             <span
               title="Administrador de plataforma (User.is_superuser)"
