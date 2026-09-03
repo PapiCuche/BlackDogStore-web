@@ -198,6 +198,8 @@ LOGO_VARIANT_FIELDS = {
     'primary_on_dark': 'logo_on_dark_url',
     'horizontal_on_light': 'logo_horizontal_on_light_url',
     'horizontal_on_dark': 'logo_horizontal_on_dark_url',
+    'isotype_on_light': 'logo_isotype_on_light_url',
+    'isotype_on_dark': 'logo_isotype_on_dark_url',
 }
 
 EMPTY_LOGO_VARIANTS = {key: '' for key in LOGO_VARIANT_FIELDS}
