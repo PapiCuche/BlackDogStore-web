@@ -11,7 +11,56 @@ información que no esté respaldada por código o commits.
 
 ## M12E — Sistema visual adaptativo: contraste, tema y responsive
 
-**Estado: IMPLEMENTADO.** Migraciones **0067**–**0070**.
+**Estado: IMPLEMENTADO.** Migraciones **0067**–**0071**.
+
+### La regresión que atrapó la suite completa
+
+Ampliar `logo_url` de `URLField` a `CharField` era **necesario** —estas rutas las
+sirve el frontend, y una URL absoluta rompe el logo al cambiar de host— pero se
+llevó por delante **toda** la validación del campo. `javascript:alert(1)` pasó a
+ser un valor aceptable en una columna cuyo contenido acaba en el `src` de una
+imagen.
+
+`validate_asset_url` (migración **0071**): una ruta del propio sitio, o una URL
+`http(s)`. Nada más. Entre los casos de prueba está `//evil.example/logo.png`,
+que **parece** una ruta —empieza por `/`— y es una URL absoluta de protocolo
+relativo.
+
+La otra mitad importa igual: los siete campos se añadieron a
+`CompanySettings.clean()`. `save()` no llama a `full_clean()`, así que un
+validador colgado del campo protege un serializador y un formulario de admin **y
+nada más** — que es exactamente cómo una ruta relativa llegó a la base en
+silencio en M12D.
+
+### Contraste: tres fallos medidos
+
+| | ratio | |
+| --- | --- | --- |
+| Texto secundario, tema claro | 4.27:1 fondo · 3.94:1 superficie | por debajo de AA |
+| Color interactivo, tema claro | 2.12:1 | ilegible |
+| `--muted` = acento, tema oscuro | 8.41:1 | pasa AA, **incumple el manual** |
+
+Los dos primeros los introdujo esta misma fase. El segundo es el grave:
+`--primary` pinta enlaces, anillos de foco y marcas de selección, y el dorado del
+piloto rinde 8.41:1 sobre su negro y 2.12:1 sobre su crema. **El mismo color,
+legible en un tema e ilegible en el otro.** Ahora se oscurece conservando el
+tono, igual que `--foreground` se deriva en vez de configurarse.
+
+El tercero no es accesibilidad sino marca: `--muted` era `--brand-accent`, así
+que el dorado pintaba **todo** el texto secundario — hoy la cabecera entera,
+mañana la web entera conforme migren más componentes a tokens. El manual lo
+quiere en torno al **3–5 %**. Se deriva del texto, y el acento recibe su propio
+token `--accent` para usarlo a propósito.
+
+`contrast.test.ts` **lee** `globals.css`, resuelve las variables y calcula. No
+congela valores: un ajuste futuro se vuelve a medir solo.
+
+### Movimiento reducido
+
+La marquesina giraba 25 s en bucle y no paraba nunca. Para quien tiene un
+trastorno vestibular, un movimiento periférico continuo que no puede detener
+provoca mareo, no molestia estética. Con `prefers-reduced-motion` queda quieta —
+sin esconderse, porque ocultarla castigaría a quien pidió calma.
 
 ### El defecto que abre la fase
 
