@@ -16,6 +16,16 @@ from .v1_customer_views import (
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
 )
+from .notification_views import (
+    CustomerNotificationListView,
+    CustomerNotificationReadAllView,
+    CustomerNotificationReadView,
+    CustomerUnreadCountView,
+    InternalNotificationListView,
+    InternalNotificationReadAllView,
+    InternalNotificationReadView,
+    InternalUnreadCountView,
+)
 from .v1_service_views import (
     V1ServiceContextView,
     V1ServiceDiagnosticDetailView,
@@ -303,6 +313,45 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/delivery/',
         V1ServiceDeliveryView.as_view(), name='v1-internal-service-delivery',
+    ),
+    # --- M12B — centro de notificaciones ---
+    #
+    # Dos superficies separadas a propósito: el personal lee su bandeja
+    # interna, el cliente la suya, y ninguna ruta decide el queryset mirando
+    # si quien pregunta es staff.
+    path(
+        'internal/<slug:company_slug>/notifications/',
+        InternalNotificationListView.as_view(), name='v1-internal-notifications',
+    ),
+    path(
+        'internal/<slug:company_slug>/notifications/unread-count/',
+        InternalUnreadCountView.as_view(), name='v1-internal-notifications-unread',
+    ),
+    path(
+        'internal/<slug:company_slug>/notifications/read-all/',
+        InternalNotificationReadAllView.as_view(),
+        name='v1-internal-notifications-read-all',
+    ),
+    path(
+        'internal/<slug:company_slug>/notifications/<int:pk>/read/',
+        InternalNotificationReadView.as_view(), name='v1-internal-notifications-read',
+    ),
+    path(
+        'customer/<slug:company_slug>/notifications/',
+        CustomerNotificationListView.as_view(), name='v1-customer-notifications',
+    ),
+    path(
+        'customer/<slug:company_slug>/notifications/unread-count/',
+        CustomerUnreadCountView.as_view(), name='v1-customer-notifications-unread',
+    ),
+    path(
+        'customer/<slug:company_slug>/notifications/read-all/',
+        CustomerNotificationReadAllView.as_view(),
+        name='v1-customer-notifications-read-all',
+    ),
+    path(
+        'customer/<slug:company_slug>/notifications/<int:pk>/read/',
+        CustomerNotificationReadView.as_view(), name='v1-customer-notifications-read',
     ),
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),
