@@ -25,6 +25,17 @@ SERVICE_QUOTE_APPROVED = 'service.quote.approved'
 SERVICE_QUOTE_REJECTED = 'service.quote.rejected'
 SERVICE_READY_FOR_PICKUP = 'service.ready_for_pickup'
 SERVICE_DELIVERED = 'service.delivered'
+# M12B.1 — the payment ledger did not exist when this registry was written.
+#
+# `recorded` reaches the customer; `reversed` deliberately does NOT. A reversal
+# means "this row was written in error" — a till keyed 500 instead of 50 — and
+# the code that performs it says so in as many words. Whether cash went back
+# over a counter is between the shop and the person standing at it, so there is
+# no sentence a customer could be sent that is both informative and true.
+# "Tu pago fue reembolsado" would be the lie; a vaguer wording would alarm
+# without informing. The balance they can already read stays authoritative.
+SERVICE_PAYMENT_RECORDED = 'service.payment.recorded'
+SERVICE_PAYMENT_REVERSED = 'service.payment.reversed'
 
 # --- comercio --------------------------------------------------------------
 
@@ -43,6 +54,8 @@ ALL_EVENT_TYPES = frozenset({
     SERVICE_QUOTE_REJECTED,
     SERVICE_READY_FOR_PICKUP,
     SERVICE_DELIVERED,
+    SERVICE_PAYMENT_RECORDED,
+    SERVICE_PAYMENT_REVERSED,
     COMMERCE_PAYMENT_CONFIRMED,
     COMMERCE_FULFILLMENT_READY,
     COMMERCE_FULFILLMENT_SHIPPED,

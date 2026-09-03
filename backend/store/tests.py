@@ -40380,3 +40380,578 @@ class M12BEmailDeliveryTest(TestCase):
         )
         self.assertEqual(len(mail.outbox), 0)
         self.assertEqual(_Notif.objects.count(), 1, 'el registro in-app sí existe')
+
+
+# ---------------------------------------------------------------------------
+# M12B.1 — paridad de presets estándar
+# ---------------------------------------------------------------------------
+
+
+class M121PresetStructureTest(TestCase):
+    """
+    §22 — a capability listed twice is not more authority. It is a bug.
+
+    The supervisor preset carried `service.orders.manage` twice for an entire
+    phase and nothing misbehaved: both paths granted the same fourteen
+    capabilities, one of them just counted to fifteen. That is the failure mode
+    worth a structural test — the kind that produces no symptom, only a wrong
+    number in a report somebody eventually trusts.
+    """
+
+    def test_no_standard_preset_lists_a_capability_twice(self):
+        from .company_provisioning import PRESET_ROLES
+        offenders = {}
+        for name, _slug, _desc, caps in PRESET_ROLES:
+            if len(caps) != len(set(caps)):
+                seen, dupes = set(), []
+                for code in caps:
+                    if code in seen:
+                        dupes.append(code)
+                    seen.add(code)
+                offenders[name] = dupes
+        self.assertEqual(
+            offenders, {},
+            'un preset lista la misma capability mas de una vez: '
+            f'{offenders}',
+        )
+
+    def test_every_preset_code_is_a_real_assignable_capability(self):
+        from .company_provisioning import PRESET_ROLES
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        catalogue = frozenset(ASSIGNABLE_CAPABILITY_CODES)
+        for name, _slug, _desc, caps in PRESET_ROLES:
+            unknown = sorted(frozenset(caps) - catalogue)
+            self.assertEqual(unknown, [], f'{name} referencia codigos inexistentes')
+
+    def test_administrador_means_the_whole_assignable_catalogue(self):
+        """
+        §18. The preset is a definition, not a list somebody maintains: if this
+        ever has to be updated by hand when a capability ships, the definition
+        has quietly become a copy.
+        """
+        from .company_provisioning import PRESET_ROLES
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        admin = next(c for n, _s, _d, c in PRESET_ROLES if n == 'Administrador')
+        self.assertEqual(frozenset(admin), frozenset(ASSIGNABLE_CAPABILITY_CODES))
+
+    def test_the_supervisor_is_the_technician_plus_supervision(self):
+        """
+        §21 — the fix must not have removed the capability, only the repetition.
+        `service.orders.manage` is the difference that defines the role, and it
+        is still there; it just arrives once, from the technician preset.
+        """
+        from .company_provisioning import (
+            _SERVICE_SUPERVISOR_CAPS, _TECHNICIAN_CAPS,
+        )
+        self.assertIn('service.orders.manage', _TECHNICIAN_CAPS)
+        self.assertIn('service.orders.manage', _SERVICE_SUPERVISOR_CAPS)
+        self.assertEqual(
+            len(_SERVICE_SUPERVISOR_CAPS), len(set(_SERVICE_SUPERVISOR_CAPS)),
+        )
+        self.assertTrue(frozenset(_TECHNICIAN_CAPS) < frozenset(_SERVICE_SUPERVISOR_CAPS))
+
+
+class M121PresetParityTest(TestCase):
+    """
+    §23, §24 — an untouched platform preset must converge to the same default
+    whether it arrived through migration history or through provisioning today.
+
+    Parity is NOT "every historical role gets rewritten". It is that the two
+    ways of producing a STANDARD preset agree. A tenant customisation breaks
+    that convergence deliberately, and is tested separately below.
+    """
+
+    #: The pilot tenant that migration history seeds on every install.
+    SEEDED_SLUG = 'black-dog-store'
+
+    STANDARD = (
+        'Administrador', 'Ventas', 'Inventario',
+        'Servicio Técnico', 'Supervisor Técnico',
+    )
+
+    def setUp(self):
+        self.seeded = Company.objects.filter(slug=self.SEEDED_SLUG).first()
+        self.provisioned = _saas_company(
+            'Paridad SA', 'm121-paridad', tax_id='20780041001',
+        )
+        provision_company_access_defaults(self.provisioned)
+
+    def _caps(self, company, name):
+        role = CompanyRole.objects.filter(company=company, name=name).first()
+        return frozenset(role.capabilities or []) if role else None
+
+    def test_the_five_standard_presets_agree_on_both_paths(self):
+        self.assertIsNotNone(self.seeded, 'la instalacion no sembro el tenant piloto')
+        divergent = {}
+        for name in self.STANDARD:
+            a = self._caps(self.seeded, name)
+            b = self._caps(self.provisioned, name)
+            if a != b:
+                divergent[name] = {
+                    'falta_en_fresh_install': sorted((b or set()) - (a or set())),
+                    'sobra_en_fresh_install': sorted((a or set()) - (b or set())),
+                }
+        self.assertEqual(
+            divergent, {},
+            'un preset estandar difiere entre fresh install y provisioning',
+        )
+
+    def test_the_seeded_administrador_holds_the_whole_catalogue(self):
+        """
+        §14 — the number, recalculated rather than quoted. Before M12B.1 this
+        was 18 of 38: the seed froze eighteen and every later grant compared
+        against the live catalogue, so none of them ever recognised it.
+        """
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        self.assertEqual(
+            self._caps(self.seeded, 'Administrador'),
+            frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+
+    def test_no_role_anywhere_stores_a_repeated_capability(self):
+        offenders = []
+        for role in CompanyRole.objects.all():
+            stored = list(role.capabilities or [])
+            if len(stored) != len(set(stored)):
+                offenders.append((role.company_id, role.name))
+        self.assertEqual(offenders, [], 'hay roles con capacidades repetidas')
+
+    def test_the_repaired_administrador_can_actually_do_the_new_things(self):
+        """
+        §26 — counts are not the point. These two are the capabilities the
+        fresh-install admin was missing that M12 and PR #19 shipped, and the
+        second one did not exist when the divergence was first reported.
+        """
+        caps = self._caps(self.seeded, 'Administrador')
+        self.assertIn('service.delivery.manage', caps)
+        self.assertIn('service.payments.manage', caps)
+
+
+class M121RepairSafetyTest(TestCase):
+    """
+    §20, §28, §29 — the repair may complete a platform preset and must never
+    overrule a tenant.
+
+    A role the shop edited belongs to the shop. If a shape is indistinguishable
+    from a legitimate customisation the conservative answer is to leave it
+    alone, and every case below that ends in "unchanged" is that answer being
+    enforced rather than assumed.
+    """
+
+    def setUp(self):
+        self.module = importlib.import_module(
+            'store.migrations.0061_standard_preset_parity'
+        )
+        self.company = _saas_company(
+            'Custom SA', 'm121-custom', tax_id='20780041002',
+        )
+
+    def _apps(self):
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                self.assertEqual(app_label, 'store')
+                return {'CompanyRole': CompanyRole}[model_name]
+        return _Apps()
+
+    def _role(self, *, name, slug, description, caps):
+        return CompanyRole.objects.create(
+            company=self.company, name=name, slug=slug,
+            description=description, capabilities=sorted(caps),
+        )
+
+    def _run(self):
+        self.module.repair(self._apps(), None)
+
+    def _seed_shape(self):
+        return set(self.module._FRESH_INSTALL_ADMIN)
+
+    def test_an_untouched_seeded_administrador_is_completed(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0],
+            caps=self._seed_shape(),
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(
+            frozenset(role.capabilities), frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+
+    def test_an_administrador_with_one_capability_removed_is_left_alone(self):
+        """
+        The tenant took something away on purpose. Handing it back because the
+        role shares a name would silently re-grant authority somebody chose to
+        withhold — the exact failure this discriminator exists to prevent.
+        """
+        caps = self._seed_shape() - {'settings.manage'}
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0], caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_an_administrador_with_an_extra_capability_is_left_alone(self):
+        caps = self._seed_shape() | {'sales.pos.use'}
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0], caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_a_renamed_administrador_is_left_alone(self):
+        caps = self._seed_shape()
+        role = self._role(
+            name='Administración General', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0], caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_an_administrador_with_a_custom_slug_is_left_alone(self):
+        caps = self._seed_shape()
+        role = self._role(
+            name='Administrador', slug='admin-de-la-casa',
+            description=self.module.ADMIN_DESCRIPTIONS[0], caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_an_administrador_with_a_rewritten_description_is_left_alone(self):
+        caps = self._seed_shape()
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description='El jefe.', caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_both_historical_descriptions_are_recognised(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        for i, description in enumerate(self.module.ADMIN_DESCRIPTIONS):
+            other = _saas_company(
+                f'Desc {i}', f'm121-desc-{i}', tax_id=f'2078004200{i}',
+            )
+            role = CompanyRole.objects.create(
+                company=other, name='Administrador', slug='administrador',
+                description=description, capabilities=sorted(self._seed_shape()),
+            )
+            self._run()
+            role.refresh_from_db()
+            self.assertEqual(
+                frozenset(role.capabilities),
+                frozenset(ASSIGNABLE_CAPABILITY_CODES),
+                f'la descripcion historica #{i} no fue reconocida',
+            )
+
+    def test_a_customised_supervisor_keeps_its_duplicate_authority_intact(self):
+        """
+        Deduplication applies to every role, customised or not, BECAUSE it takes
+        nothing away. The set the tenant chose survives byte for byte; only the
+        repetition goes.
+        """
+        caps = ['service.orders.manage', 'service.orders.manage', 'company.view']
+        role = CompanyRole.objects.create(
+            company=self.company, name='Supervisor de la casa',
+            slug='supervisor-casa', description='Hecho por el taller.',
+            capabilities=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(len(role.capabilities), len(set(role.capabilities)))
+        self.assertEqual(
+            frozenset(role.capabilities),
+            {'service.orders.manage', 'company.view'},
+        )
+
+    def test_running_the_repair_twice_changes_nothing_the_second_time(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0],
+            caps=self._seed_shape(),
+        )
+        self._run()
+        role.refresh_from_db()
+        first = list(role.capabilities)
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(list(role.capabilities), first)
+        self.assertEqual(frozenset(first), frozenset(ASSIGNABLE_CAPABILITY_CODES))
+
+    def test_the_previous_shape_is_frozen_not_imported(self):
+        """
+        §30, §48 — the whole defect in one assertion. The set this migration
+        uses to RECOGNISE the past is a literal in its own source; if somebody
+        later 'simplifies' it into a live import, history starts being
+        reconstructed with the code of the future again.
+        """
+        import ast, inspect
+        tree = ast.parse(inspect.getsource(self.module))
+
+        # Asked of the SYNTAX, not of the text. The module docstring quotes the
+        # broken pattern in order to explain it, so a substring scan would
+        # match its own explanation — which is how a check ends up policing
+        # prose instead of code.
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == 'repair':
+                break
+            names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            names |= {a.name for n in ast.walk(node)
+                      if isinstance(n, ast.ImportFrom) for a in n.names}
+            self.assertNotIn(
+                'ASSIGNABLE_CAPABILITY_CODES', names,
+                'la forma historica se esta reconstruyendo con el catalogo vivo',
+            )
+
+        assigned = [
+            t.id for node in tree.body if isinstance(node, ast.Assign)
+            for t in node.targets if isinstance(t, ast.Name)
+        ]
+        self.assertIn('_FRESH_INSTALL_ADMIN', assigned)
+        self.assertIsInstance(self.module._FRESH_INSTALL_ADMIN, frozenset)
+        self.assertEqual(len(self.module._FRESH_INSTALL_ADMIN), 18)
+
+
+class M121SeededAdminFunctionalTest(TestCase):
+    """
+    §27, §45 — the fix has to do something, not just count differently.
+
+    The finding this closes was NOT "a number is small". It was that on a fresh
+    install the standard `Administrador` never received `service.delivery.manage`
+    and therefore was never resolved as a recipient of `ready_for_pickup` — the
+    role that is supposed to hold every authority in the company was silently
+    absent from the one notification that tells the shop a device can go home.
+    """
+
+    SEEDED_SLUG = 'black-dog-store'
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        self.company = Company.objects.get(slug=self.SEEDED_SLUG)
+        self.branch = self.company.branches.first()
+        self.admin_role = CompanyRole.objects.get(
+            company=self.company, slug='administrador',
+        )
+
+        self.admin = _saas_user('m121_seeded_admin')
+        membership = Membership.objects.create(
+            user=self.admin, company=self.company, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(
+            membership=membership, role=self.admin_role,
+        )
+        self.membership = membership
+
+    def test_the_seeded_admin_resolves_as_a_delivery_recipient(self):
+        recipients = _notif.resolve_internal_recipients(
+            self.company, capability='service.delivery.manage', branch=self.branch,
+        )
+        self.assertIn(
+            self.admin, recipients,
+            'el Administrador estandar de una instalacion desde cero sigue sin '
+            'ser destinatario de ready_for_pickup',
+        )
+
+    def test_and_also_for_the_payment_capability_that_pr_19_added(self):
+        recipients = _notif.resolve_internal_recipients(
+            self.company, capability='service.payments.manage', branch=self.branch,
+        )
+        self.assertIn(self.admin, recipients)
+
+    def test_branch_scope_still_applies_to_the_repaired_admin(self):
+        """
+        Completing the preset restores AUTHORITY. It must not quietly widen
+        WHERE that authority reaches — the two axes stay separate.
+        """
+        from .models import Branch, MembershipBranchAccess
+        other = Branch.objects.create(company=self.company, name='Sucursal M121')
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.create(
+            membership=self.membership, branch=other,
+        )
+        self.assertNotIn(
+            self.admin,
+            _notif.resolve_internal_recipients(
+                self.company, capability='service.delivery.manage',
+                branch=self.branch,
+            ),
+        )
+        self.assertIn(
+            self.admin,
+            _notif.resolve_internal_recipients(
+                self.company, capability='service.delivery.manage', branch=other,
+            ),
+        )
+
+    def test_the_seeded_supervisor_matches_the_provisioned_one(self):
+        """§46 — parity asserted on the sets, not on their lengths."""
+        other = _saas_company('Sup Paridad', 'm121-sup', tax_id='20780041009')
+        provision_company_access_defaults(other)
+        seeded = CompanyRole.objects.get(
+            company=self.company, name='Supervisor Técnico',
+        )
+        provisioned = CompanyRole.objects.get(
+            company=other, name='Supervisor Técnico',
+        )
+        self.assertEqual(
+            frozenset(seeded.capabilities), frozenset(provisioned.capabilities),
+        )
+        self.assertEqual(
+            len(seeded.capabilities), len(set(seeded.capabilities)),
+        )
+
+
+class M121PaymentEventTest(M12BPaymentBase):
+    """
+    §9–§13, §44 — the payment ledger did not exist when the notification centre
+    was designed. These are the events it earns, and the one it does not.
+
+    Built on M12B's own fixture rather than a second one: a notification test
+    that sets the ledger up differently from the ledger's tests is testing a
+    situation the ledger never produces.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        mail.outbox = []
+        self.quoted()
+        _Notif.objects.all().delete()
+        _Event.objects.all().delete()
+
+    def _customer_of_order(self):
+        return self.order.customer
+
+    # --- registro de pago -------------------------------------------------
+
+    def test_a_recorded_payment_notifies_the_customer(self):
+        self.pay('100.00')
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_PAYMENT_RECORDED)
+        self.assertEqual(note.customer_id, self._customer_of_order().pk)
+        self.assertEqual(note.audience, _Notif.Audience.CUSTOMER)
+        self.assertEqual(note.target_type, 'repair_order')
+        self.assertEqual(note.target_id, self.order.pk)
+
+    def test_the_notice_carries_only_what_the_summary_already_exposes(self):
+        """
+        §10. The customer endpoint answers `paid` and `outstanding`. It refuses
+        method, reference, cashier and note — so this must refuse them too, or
+        the notification becomes a wider disclosure than the API it mirrors.
+        """
+        self.pay('100.00', reference='VOUCHER-SECRETO-991', notes='Nota interna.')
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_PAYMENT_RECORDED)
+        haystack = f'{note.title} {note.body}'
+        self.assertIn('100.00', haystack)
+        self.assertIn('350.00', haystack, 'debe decir el saldo pendiente')
+        for leak in ('VOUCHER-SECRETO-991', 'Nota interna', self.staff.username):
+            self.assertNotIn(leak, haystack)
+        self.assertEqual(note.event.payload, {})
+
+    def test_a_replayed_payment_produces_one_event(self):
+        """§13 — the key describes the ledger row, not the request."""
+        first = self.pay('100.00', idempotency_key='till-1')
+        second = self.pay('100.00', idempotency_key='till-1')
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 1,
+        )
+
+    def test_two_genuine_payments_produce_two_events(self):
+        self.pay('100.00', idempotency_key='till-a')
+        self.pay('50.00', idempotency_key='till-b')
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 2,
+        )
+
+    def test_a_rejected_payment_leaves_no_event(self):
+        """
+        §44. The emitter runs inside the transaction, so a payment that never
+        becomes a row can never become a notice. Overpayment is the cheapest
+        rule to trip and it rolls the whole thing back.
+        """
+        with self.assertRaises(Exception):
+            self.pay('999999.00')
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 0,
+        )
+        self.assertEqual(
+            _Notif.objects.filter(
+                event__event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 0,
+        )
+
+    def test_no_email_is_sent_for_a_counter_payment(self):
+        """The customer is standing right there."""
+        with self.captureOnCommitCallbacks(execute=True):
+            self.pay('100.00')
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(
+            _Notif.objects.filter(
+                event__event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 1,
+        )
+
+    # --- reverso ----------------------------------------------------------
+
+    def test_a_reversal_never_reaches_the_customer(self):
+        """
+        §11. A reversal is an accounting correction, not a refund — the function
+        that performs it says so. There is no true customer-facing sentence, so
+        there is no customer-facing notice.
+        """
+        payment = self.pay('100.00')
+        _Notif.objects.all().delete()
+        _Event.objects.all().delete()
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        self.assertEqual(
+            _Notif.objects.filter(audience=_Notif.Audience.CUSTOMER).count(), 0,
+        )
+
+    def test_a_reversal_notifies_whoever_answers_for_the_till(self):
+        payment = self.pay('100.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_PAYMENT_REVERSED)
+        self.assertEqual(note.audience, _Notif.Audience.INTERNAL)
+        self.assertEqual(note.user_id, self.staff.pk)
+
+    def test_the_reversal_wording_never_promises_a_refund(self):
+        payment = self.pay('100.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_PAYMENT_REVERSED)
+        haystack = f'{note.title} {note.body}'.lower()
+        for lie in ('reembols', 'devolv', 'devuel', 'refund'):
+            self.assertNotIn(lie, haystack)
+
+    def test_reversing_twice_produces_one_event(self):
+        payment = self.pay('100.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_REVERSED,
+            ).count(), 1,
+        )
+
+    def test_no_new_capability_was_invented(self):
+        """§31 — M12B.1 creates no capability. It uses the ones PR #19 shipped."""
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        self.assertIn('service.payments.manage', ASSIGNABLE_CAPABILITY_CODES)
+        self.assertNotIn('communications.manage', ASSIGNABLE_CAPABILITY_CODES)
+        self.assertNotIn('notifications.manage', ASSIGNABLE_CAPABILITY_CODES)

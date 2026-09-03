@@ -224,10 +224,18 @@ _TECHNICIAN_CAPS = (
 #
 # `inventory.adjust` is also withheld. A supervisor approves the repair that
 # spends a part; correcting the shelf is the inventory role's job.
+# M12B.1 — `service.orders.manage` is NOT re-listed here, and that is the fix
+# rather than an omission. `_TECHNICIAN_CAPS` has held it since M8; adding it
+# again produced a tuple of 15 elements describing 14 capabilities, and the
+# migration path stored the duplicate verbatim while provisioning deduplicated
+# it. The two paths granted identical AUTHORITY and reported different numbers,
+# which is the worst way to be wrong: nothing misbehaves, so nothing gets found
+# until somebody compares counts.
+#
+# A duplicated capability is not more authority. It is a representation bug.
 _SERVICE_SUPERVISOR_CAPS = _TECHNICIAN_CAPS + (
     'reports.view',
     'service.customers.manage',
-    'service.orders.manage',
 )
 
 # (name, slug, description, capabilities)

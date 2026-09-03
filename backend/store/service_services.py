@@ -3113,6 +3113,7 @@ def _record_service_payment(
         request=request,
         company=locked.company,
     )
+    _notify(_emit_payment_recorded, order=locked, payment=payment)
     return payment
 
 
@@ -3159,6 +3160,7 @@ def reverse_service_payment(
             request=request,
             company=locked.company,
         )
+        _notify(_emit_payment_reversed, order=locked.repair_order, payment=locked)
         return locked
 
 
@@ -3331,6 +3333,94 @@ def _emit_quote_decision(*, order, quote, approved):
         event_key=ev.event_key(event_type, 'quote', quote.pk, quote.revision),
         title='Cotización aprobada' if approved else 'Cotización rechazada',
         body=f'{_order_label(order)} · el cliente respondió.',
+        target_type='repair_order', target_id=order.pk,
+        users=recipients,
+        priority=Notification.Priority.ACTION,
+    )
+
+
+def _emit_payment_recorded(*, order, payment):
+    """
+    M12B.1 — the customer, because the money is theirs and they can already
+    read the number.
+
+    `V1CustomerRepairPaymentSummaryView` exposes `paid` and `outstanding` to the
+    person who owns the repair, so a notice saying what was received and what is
+    left reveals nothing the endpoint would not answer if asked. What it does
+    NOT carry is anything from the row that the summary withholds on purpose:
+    no method, no reference, no cashier, no note. Those are the shop's
+    bookkeeping, and a notification is not a back door into it.
+
+    NOT email-worthy, deliberately. The customer is standing at the counter as
+    this fires.
+    """
+    from . import notification_events as ev
+    from . import notification_services as notif
+
+    customer = getattr(order, 'customer', None)
+    if customer is None:
+        return None
+
+    summary = service_payment_summary(order)
+    return notif.emit(
+        company=order.company,
+        event_type=ev.SERVICE_PAYMENT_RECORDED,
+        # From the ledger row, never from the request. Two tills replaying one
+        # idempotency key produce ONE payment and therefore one event; a second
+        # genuine payment is a different row and says so.
+        event_key=ev.event_key(
+            ev.SERVICE_PAYMENT_RECORDED, 'repair_payment', payment.pk,
+        ),
+        title='Pago registrado',
+        body=(
+            f'Recibimos {payment.currency} {payment.amount}. '
+            f'Saldo pendiente: {summary["currency"]} {summary["outstanding"]}. '
+            f'{_order_label(order)}.'
+        ),
+        target_type='repair_order', target_id=order.pk,
+        customers=[customer],
+    )
+
+
+def _emit_payment_reversed(*, order, payment):
+    """
+    INTERNAL ONLY, and that is the finding rather than an omission.
+
+    A reversal says "this row was written in error" — a till keyed 500 instead
+    of 50, or booked the money against the wrong repair. It is an accounting
+    correction and `reverse_service_payment` says so itself. There is no
+    customer-facing sentence that is both true and useful: "tu pago fue
+    reembolsado" would be a lie about money that may never have moved, and
+    anything vaguer alarms without informing. The balance the customer can
+    already read stays authoritative, and it is already correct.
+
+    The audience is whoever answers for the till in that branch — the holders
+    of `service.payments.manage`, a capability that already exists. M12B.1
+    creates none.
+    """
+    from . import notification_events as ev
+    from . import notification_services as notif
+
+    if order is None:
+        return None
+
+    recipients = notif.resolve_internal_recipients(
+        order.company, capability='service.payments.manage', branch=order.branch,
+    )
+    if not recipients:
+        return None
+
+    return notif.emit(
+        company=order.company,
+        event_type=ev.SERVICE_PAYMENT_REVERSED,
+        event_key=ev.event_key(
+            ev.SERVICE_PAYMENT_REVERSED, 'repair_payment', payment.pk,
+        ),
+        title='Pago revertido',
+        body=(
+            f'Se anuló un cobro de {payment.currency} {payment.amount}. '
+            f'{_order_label(order)}.'
+        ),
         target_type='repair_order', target_id=order.pk,
         users=recipients,
         priority=Notification.Priority.ACTION,
