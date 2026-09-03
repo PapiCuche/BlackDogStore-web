@@ -112,6 +112,43 @@ class V1TransferSurfaceMixin(V1InternalSurfaceMixin):
             raise NotFound('No encontrado.')
         return transfer
 
+    def resolve_product(self, company, data):
+        """
+        The article, named EITHER way this surface already names one.
+
+        `product_slug` is how the rest of the v1 internal inventory identifies
+        an article: `/inventory/stock/` returns a slug and no id, and
+        `/inventory/adjustments/` takes a slug, so a native client that has read
+        a shelf has a slug in its hand and nothing else. Requiring a numeric pk
+        here would have made this endpoint unreachable from the very list it is
+        meant to be used with — and reachable only by a client that had gone to
+        `/api/admin/`, which native clients must never do.
+
+        `product` (the pk) keeps working because the Web console speaks it and a
+        contract that is already merged does not get taken away. Both are
+        scoped to the company, so an article of another tenant is not found
+        here, exactly as it is not found anywhere else on this surface.
+        """
+        raw_slug = data.get('product_slug')
+        raw_pk = data.get('product')
+        if raw_slug in (None, '') and raw_pk in (None, ''):
+            raise NotFound('Producto no encontrado en esta empresa.')
+
+        products = Product.objects.filter(company=company)
+        if raw_slug not in (None, ''):
+            product = products.filter(slug=raw_slug).first()
+        else:
+            # A pk that is not a number is not found rather than a 500. Django
+            # raises ValueError on `filter(pk='abc')`, and an unparseable id is
+            # a client mistake, not a server fault.
+            try:
+                product = products.filter(pk=int(raw_pk)).first()
+            except (TypeError, ValueError):
+                product = None
+        if product is None:
+            raise NotFound('Producto no encontrado en esta empresa.')
+        return product
+
     def require_both_ends(self, transfer):
         """
         403 unless the caller reaches BOTH shops.
@@ -261,6 +298,9 @@ class V1TransferItemsView(V1TransferSurfaceMixin, APIView):
     """
     PUT — set the quantity of ONE product on a DRAFT.
 
+    The article may be named by `product_slug` — how the rest of this surface
+    names one — or by `product`, the pk the Web console speaks.
+
     A quantity of zero removes the line, which is how a line is deleted: there
     is no separate DELETE, because "how many of this go" and "this does not go"
     are the same question asked twice.
@@ -276,7 +316,6 @@ class V1TransferItemsView(V1TransferSurfaceMixin, APIView):
         transfer = self.scoped_transfer(company, pk)
         self.require_both_ends(transfer)
 
-        raw_product = request.data.get('product')
         raw_quantity = request.data.get('quantity')
         try:
             quantity = int(raw_quantity)
@@ -290,11 +329,7 @@ class V1TransferItemsView(V1TransferSurfaceMixin, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Scoped to the company: a product of another tenant is not found here,
-        # exactly as it is not found anywhere else on this surface.
-        product = Product.objects.filter(company=company, pk=raw_product).first()
-        if product is None:
-            raise NotFound('Producto no encontrado en esta empresa.')
+        product = self.resolve_product(company, request.data)
 
         try:
             set_transfer_item(transfer, product=product, quantity=quantity)

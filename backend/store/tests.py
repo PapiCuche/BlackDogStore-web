@@ -40695,3 +40695,117 @@ class Ip1TransferWebParityTest(Ip1TransferBase):
         self.assertIn('require_capability', code)
         for forbidden in (r"role\s*==\s*'", r'\.role\s*in\s*\(', 'ROLE_ADMIN'):
             self.assertIsNone(re.search(forbidden, code), forbidden)
+
+
+class Ip1TransferItemBySlugTest(Ip1TransferBase):
+    """
+    Naming the article the way this surface already names one.
+
+    `/inventory/stock/` returns a slug and no product id, and
+    `/inventory/adjustments/` takes a slug. A native client that has read a
+    shelf therefore has a slug in its hand and nothing else, so requiring a
+    numeric pk here made this endpoint unreachable from the very list it exists
+    to be used with — reachable only by a client that had been to `/api/admin/`,
+    which native clients must never do.
+
+    The pk keeps working: the Web console speaks it, and a merged contract does
+    not get taken away.
+    """
+
+    def line_by_slug(self, transfer_id, slug, quantity=3):
+        return self.client.put(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/items/'),
+            {'product_slug': slug, 'quantity': quantity},
+            format='json',
+        )
+
+    def test_a_line_can_be_put_on_by_slug(self):
+        transfer_id = self.draft()
+        res = self.line_by_slug(transfer_id, self.product.slug)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['total_units'], 3)
+        self.assertEqual(res.data['items'][0]['product'], self.product.pk)
+
+    def test_the_pk_still_works(self):
+        # The Web console's language. Adding a second way to name a product does
+        # not remove the first.
+        transfer_id = self.draft()
+        res = self.line(transfer_id, quantity=2)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['total_units'], 2)
+
+    def test_the_two_namings_reach_the_same_row(self):
+        # Not two lines for one article: the second call SETS the quantity of a
+        # line the first one created, whichever name was used.
+        transfer_id = self.draft()
+        self.line_by_slug(transfer_id, self.product.slug, quantity=3)
+        res = self.line(transfer_id, quantity=5)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(len(res.data['items']), 1)
+        self.assertEqual(res.data['total_units'], 5)
+
+    def test_zero_by_slug_removes_the_line(self):
+        transfer_id = self.draft()
+        self.line_by_slug(transfer_id, self.product.slug, quantity=3)
+        res = self.line_by_slug(transfer_id, self.product.slug, quantity=0)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['total_units'], 0)
+
+    def test_another_tenants_slug_is_not_found(self):
+        # THE GATE THAT MATTERS. A slug is guessable in a way a pk is not, so
+        # the company scope is the whole defence: naming another tenant's
+        # article must not put it on this company's document.
+        transfer_id = self.draft()
+        res = self.line_by_slug(transfer_id, self.foreign_product.slug)
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(
+            StockTransfer.objects.get(pk=transfer_id).items.count(), 0,
+        )
+
+    def test_a_slug_nobody_owns_is_not_found(self):
+        transfer_id = self.draft()
+        self.assertEqual(
+            self.line_by_slug(transfer_id, 'no-existe-en-ningun-lado').status_code, 404,
+        )
+
+    def test_naming_no_product_at_all_is_not_found(self):
+        transfer_id = self.draft()
+        res = self.client.put(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/items/'),
+            {'quantity': 3}, format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_a_pk_that_is_not_a_number_is_not_found_rather_than_a_crash(self):
+        # `filter(pk='abc')` raises ValueError in Django. An unparseable id is a
+        # client mistake, and a 500 would report it as a server fault.
+        transfer_id = self.draft()
+        res = self.client.put(
+            _ip1t_url('ip1-cadena', f'{transfer_id}/items/'),
+            {'product': 'abc', 'quantity': 3}, format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_slug_path_is_still_gated_on_the_capability(self):
+        # A new way to NAME an article is not a new way IN. `inventory.view`
+        # alone reads; writing a line takes `inventory.adjust`.
+        transfer_id = self.draft()
+        self.client = self.only_caps(
+            'company.view', 'inventory.view', slug='ip1t-slug-lector',
+        )
+        self.assertEqual(
+            self.line_by_slug(transfer_id, self.product.slug).status_code, 403,
+        )
+
+    def test_the_slug_path_still_needs_access_to_both_ends(self):
+        # Seeing is not acting, whichever name the article is given. This member
+        # keeps `inventory.adjust` and loses the origin shop.
+        transfer_id = self.draft()
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        _M7BranchAccess.objects.filter(membership=self.membership).delete()
+        _M7BranchAccess.objects.create(membership=self.membership, branch=self.b)
+        cache.clear()
+        self.client = _m7_login('ip1_almacen')
+        res = self.line_by_slug(transfer_id, self.product.slug)
+        self.assertEqual(res.status_code, 403, res.data)
