@@ -9,6 +9,157 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12E — Sistema visual adaptativo: contraste, tema y responsive
+
+**Estado: IMPLEMENTADO.** Migraciones **0067**–**0071**.
+
+### La regresión que atrapó la suite completa
+
+Ampliar `logo_url` de `URLField` a `CharField` era **necesario** —estas rutas las
+sirve el frontend, y una URL absoluta rompe el logo al cambiar de host— pero se
+llevó por delante **toda** la validación del campo. `javascript:alert(1)` pasó a
+ser un valor aceptable en una columna cuyo contenido acaba en el `src` de una
+imagen.
+
+`validate_asset_url` (migración **0071**): una ruta del propio sitio, o una URL
+`http(s)`. Nada más. Entre los casos de prueba está `//evil.example/logo.png`,
+que **parece** una ruta —empieza por `/`— y es una URL absoluta de protocolo
+relativo.
+
+La otra mitad importa igual: los siete campos se añadieron a
+`CompanySettings.clean()`. `save()` no llama a `full_clean()`, así que un
+validador colgado del campo protege un serializador y un formulario de admin **y
+nada más** — que es exactamente cómo una ruta relativa llegó a la base en
+silencio en M12D.
+
+### Contraste: tres fallos medidos
+
+| | ratio | |
+| --- | --- | --- |
+| Texto secundario, tema claro | 4.27:1 fondo · 3.94:1 superficie | por debajo de AA |
+| Color interactivo, tema claro | 2.12:1 | ilegible |
+| `--muted` = acento, tema oscuro | 8.41:1 | pasa AA, **incumple el manual** |
+
+Los dos primeros los introdujo esta misma fase. El segundo es el grave:
+`--primary` pinta enlaces, anillos de foco y marcas de selección, y el dorado del
+piloto rinde 8.41:1 sobre su negro y 2.12:1 sobre su crema. **El mismo color,
+legible en un tema e ilegible en el otro.** Ahora se oscurece conservando el
+tono, igual que `--foreground` se deriva en vez de configurarse.
+
+El tercero no es accesibilidad sino marca: `--muted` era `--brand-accent`, así
+que el dorado pintaba **todo** el texto secundario — hoy la cabecera entera,
+mañana la web entera conforme migren más componentes a tokens. El manual lo
+quiere en torno al **3–5 %**. Se deriva del texto, y el acento recibe su propio
+token `--accent` para usarlo a propósito.
+
+`contrast.test.ts` **lee** `globals.css`, resuelve las variables y calcula. No
+congela valores: un ajuste futuro se vuelve a medir solo.
+
+### Movimiento reducido
+
+La marquesina giraba 25 s en bucle y no paraba nunca. Para quien tiene un
+trastorno vestibular, un movimiento periférico continuo que no puede detener
+provoca mareo, no molestia estética. Con `prefers-reduced-motion` queda quieta —
+sin esconderse, porque ocultarla castigaría a quien pidió calma.
+
+### El defecto que abre la fase
+
+```
+logo negro + cabecera negra = logo invisible
+```
+
+**No se arregla haciéndolo más grande**, y no se arregla con `filter: invert(1)`:
+invertir el logotipo de un tenant arbitrario produce basura con la misma
+confianza con la que produciría un acierto — no sabemos su geometría ni sus
+colores. La versión blanca de una marca es una decisión de **su** manual.
+
+### Las cuatro variantes estaban en el manual
+
+No se redibujó nada. Las cuatro composiciones vivían dentro del PPTX en sus dos
+versiones cromáticas; se extrajeron y se convirtieron de escala de grises con
+alfa a RGBA conservando el canal píxel a píxel. Cambio de formato, no de diseño.
+
+Buscarlas ahí es lo que evitó inventarlas: el lockup horizontal no existía como
+archivo, y componerlo juntando el isotipo y el logotipo habría sido **reordenar**
+— una de las seis alteraciones que la diapositiva 23 prohíbe.
+
+### `BrandLogo`: un solo sitio decide
+
+```
+placement: header → horizontal   (diapositiva 17)
+           hero   → vertical
+surface:   dark   → variante blanca
+           light  → variante negra
+```
+
+**La superficie manda, no el tema.** El hero es negro en los dos temas, así que
+su logotipo es siempre el blanco. Si leyera el tema resuelto, el tema claro
+pondría el logo negro sobre ese fondo negro — el mismo defecto por otra puerta.
+
+Sin `if (slug === "black-dog-store")` en ningún componente compartido.
+
+**El fallback prefiere no dibujar.** Sobre oscuro, si no hay variante de
+contraste no se usa `logo_url`: puede tener cualquier contraste, y el nombre de
+la empresa siempre se lee.
+
+**El nombre no se duplica.** El lockup ya contiene «BLACK DOG STORE»; escribirlo
+al lado lo mete dentro de su propia área de protección.
+
+### Tres modos, una estrategia
+
+```
+Automático · Claro · Oscuro
+```
+
+`data-theme` en `<html>` y nada más. Mezclar una clase y un atributo produce
+estados donde uno dice claro y el otro oscuro, y gana el orden de las reglas.
+
+**Sin flash**: la preferencia se resuelve en un script del `<head>`, antes del
+primer paint. Leerla en un `useEffect` es pintar con el tema equivocado y
+corregir — el parpadeo blanco al recargar en oscuro.
+
+**Automático reacciona en vivo.** Sin el listener sólo sería «automático la
+próxima vez que recargues».
+
+**El defecto por defecto es `system`**, no el tema del piloto, y la clave es
+`ui-theme`: este frontend sirve a cualquier tenant.
+
+### Las dos paletas
+
+Los seis campos que ya existían **describen el oscuro** — se diseñaron cuando el
+storefront tenía un tema. Reutilizarlos tal cual es lo que hace que M12E no rompa
+la configuración de nadie.
+
+Dos campos nuevos, no seis: texto y borde se **derivan** del fondo con contraste
+garantizado, y `primary`/`accent` son identidad y valen en los dos temas.
+
+| | Piloto | Empresa nueva |
+| --- | --- | --- |
+| fondo claro | `#F5F3EE` | `#FFFFFF` |
+| superficie clara | `#EDEAE3` | `#F4F4F5` |
+
+El claro neutro no pertenece a ningún negocio, que es lo que impide que la marca
+de una tienda sea el default de todas.
+
+### Y un defecto propio, corregido
+
+`logo_url` era `URLField` y en **0066** escribí una ruta relativa. `save()` no
+llama a `full_clean()`, así que persistía y era el siguiente formulario de
+configuración el que fallaba, sobre un campo que nadie había tocado. Las rutas
+relativas son lo correcto —una URL absoluta rompe el logo al cambiar de host—
+así que el tipo era el equivocado.
+
+### Cabecera
+
+Breakpoint de `sm` a `lg`: a 640 px no caben logo horizontal (mínimo 220 px),
+navegación, carrito, selector de tema y sesión. Treinta colores compilados
+sustituidos por tokens semánticos — es lo que hace que cambie de tema de verdad.
+
+`pt-16` retirado del layout: el header es `sticky`, participa en el flujo y ya
+ocupa su alto; el padding lo contaba dos veces y dejaba una franja vacía.
+
+---
+
 ## M12D — Evidencias fotográficas privadas + auditoría visual del piloto
 
 **Estado: IMPLEMENTADO** para web interna. Migración **0064**.

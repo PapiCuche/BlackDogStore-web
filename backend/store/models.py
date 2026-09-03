@@ -2235,6 +2235,40 @@ class InventoryCountItem(models.Model):
 # SaaS Phase 3 — company configuration and branding
 # ---------------------------------------------------------------------------
 
+def validate_asset_url(value):
+    """
+    Una ruta del propio sitio, o una URL absoluta http(s). Nada más.
+
+    M12E amplió `logo_url` de `URLField` a `CharField` porque estas rutas son
+    SERVIDAS POR EL FRONTEND —`/assets/branding/logo.png`— y un `URLField` las
+    rechaza: una URL absoluta convertiría un cambio de host en un logo roto.
+
+    Pero ampliar el tipo se llevó por delante toda la validación, y eso fue una
+    regresión de seguridad que la suite atrapó: el valor acaba en el `src` de una
+    imagen, así que `javascript:` y `data:` tienen que seguir siendo imposibles.
+    Un esquema que el navegador pueda interpretar como código no es una ruta de
+    logotipo por mucho que quepa en una columna de texto.
+
+    Vacío se acepta: significa «no tengo esta variante».
+    """
+    import re
+
+    from django.core.exceptions import ValidationError
+
+    if not value:
+        return
+    text = str(value).strip()
+    # Relativa del propio sitio. `//` queda fuera a propósito: `//evil.example`
+    # es una URL absoluta de protocolo relativo disfrazada de ruta.
+    if text.startswith('/') and not text.startswith('//'):
+        return
+    if re.match(r'^https?://[^\s]+$', text, re.IGNORECASE):
+        return
+    raise ValidationError(
+        'Usa una ruta del sitio que empiece por «/» o una URL http(s).'
+    )
+
+
 def validate_hex_color(value):
     """
     Accept `#RRGGBB` and nothing else.
@@ -2350,7 +2384,66 @@ class CompanySettings(models.Model):
     # Six colours, each mapping to exactly one CSS custom property the storefront
     # already consumes. A seventh with no component reading it would be a field
     # nobody fills and nobody notices is empty.
-    logo_url = models.URLField(max_length=500, blank=True)
+    # M12E — `CharField`, no `URLField`, y el cambio corrige un defecto real.
+    #
+    # Estas rutas son SERVIDAS POR EL FRONTEND: `/assets/branding/logo.png`. Una
+    # URL absoluta convertiría un cambio de host —desarrollo, staging,
+    # producción— en un logo roto, así que lo correcto es relativo. Pero un
+    # `URLField` rechaza exactamente eso: `save()` no llama a `full_clean()`, de
+    # modo que el valor persistía y era el siguiente formulario de configuración
+    # el que fallaba, sobre un campo que nadie había tocado.
+    #
+    # Ampliar a `CharField` no rompe a nadie: una URL absoluta sigue cabiendo.
+    logo_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
+    # --- M12E — variantes por contraste -----------------------------------
+    #
+    # DEJÓ DE SER DEUDA TEÓRICA. Un logo negro sobre una cabecera negra es
+    # invisible, y eso no se arregla haciéndolo más grande: se arregla con la
+    # versión cromática que el manual del tenant autorice.
+    #
+    # CUATRO CAMPOS, NO UNO CON LÓGICA. El componente pregunta «horizontal,
+    # sobre oscuro» y recibe una URL o nada. No invierte, no recolorea y no
+    # adivina: no sabemos la geometría ni los colores del logo de un tenant
+    # arbitrario, y un `filter: invert(1)` sobre un logotipo ajeno produce
+    # basura con la misma confianza con la que produciría un acierto.
+    #
+    # Vacío es una respuesta válida y significa «no tengo esta variante». El
+    # consumidor cae al nombre de la empresa antes que dibujar algo ilegible.
+    logo_on_light_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_on_dark_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_horizontal_on_light_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_horizontal_on_dark_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
+    # --- M12E — tema claro ------------------------------------------------
+    #
+    # Los seis campos de arriba se diseñaron cuando el storefront tenía UN tema,
+    # y describen el OSCURO. Fingir que ya resuelven claro/oscuro sería quedarse
+    # con un tema claro que hereda un fondo negro.
+    #
+    # DOS CAMPOS, NO SEIS. El texto y el borde de un tema claro se derivan del
+    # fondo con contraste garantizado; `primary` y `accent` son identidad y
+    # valen en los dos temas. Añadir seis columnas de las que cuatro nadie
+    # rellenaría sería ancho de esquema por simetría.
+    #
+    # Vacíos significa «no tengo tema claro propio», y entonces se usa un claro
+    # NEUTRO de plataforma — nunca el de otra empresa.
+    light_background_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
+    light_surface_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
     primary_color = models.CharField(
         max_length=7, blank=True, validators=[validate_hex_color],
     )
@@ -2473,6 +2566,17 @@ class CompanySettings(models.Model):
             ('border_color', validate_hex_color),
             ('timezone', validate_timezone_name),
             ('whatsapp_number', validate_whatsapp_number),
+            # M12E. Faltaban aquí, y ésa es la razón de que una ruta inválida
+            # escrita por una migración de datos llegara a la base sin que nada
+            # se quejara: un validador colgado del campo protege un serializador
+            # y un formulario de admin, no una escritura por código.
+            ('logo_url', validate_asset_url),
+            ('logo_on_light_url', validate_asset_url),
+            ('logo_on_dark_url', validate_asset_url),
+            ('logo_horizontal_on_light_url', validate_asset_url),
+            ('logo_horizontal_on_dark_url', validate_asset_url),
+            ('light_background_color', validate_hex_color),
+            ('light_surface_color', validate_hex_color),
         ):
             try:
                 validator(getattr(self, field))

@@ -4,6 +4,7 @@ import "./globals.css";
 import { Header } from "./components/Header";
 import { Footer } from "./components/Footer";
 import { StorefrontProvider } from "./components/StorefrontProvider";
+import { ThemeProvider, THEME_INIT_SCRIPT } from "./components/ThemeProvider";
 import { brandingStyle, fetchStorefrontConfig } from "./lib/storefront";
 
 const inter = Inter({
@@ -78,11 +79,34 @@ export default async function RootLayout({
       lang="es"
       className={`${inter.variable} ${unbounded.variable} h-full antialiased`}
       style={theme}
+      // El script de abajo escribe `data-theme` y `style.colorScheme` antes de
+      // que React hidrate, así que el servidor y el cliente difieren aquí a
+      // propósito. Sin esto, React avisa de un desajuste que no es un error.
+      suppressHydrationWarning
     >
+      <head>
+        {/*
+          ANTES DEL PRIMER PAINT. Resolver el tema en un `useEffect` significa
+          pintar una vez con el equivocado y corregir después: es el parpadeo
+          blanco que se ve al recargar en oscuro.
+
+          Único `dangerouslySetInnerHTML` del proyecto, y es legítimo porque el
+          contenido es una constante del código — no llega por la red ni lo
+          escribe una persona.
+        */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="min-h-full bg-background text-foreground font-sans">
+        <ThemeProvider>
         <StorefrontProvider config={config}>
           <Header />
-          <div className="pt-16">{children}</div>
+          {/*
+            SIN `pt-16`. El header es `sticky`, no `fixed`: participa en el
+            flujo y ya ocupa su propio alto. El padding lo compensaba una
+            segunda vez y dejaba una franja vacía —negra en tema oscuro— entre
+            la cabecera y el hero.
+          */}
+          <div>{children}</div>
           <Footer />
 
         {/* WhatsApp floating button — only when this tenant published a number.
@@ -102,6 +126,7 @@ export default async function RootLayout({
           </a>
         ) : null}
         </StorefrontProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BrandLogo } from "../components/BrandLogo";
 import { useStorefront } from "../components/StorefrontProvider";
 import { useRouter } from "next/navigation";
 import { login, logout, getCurrentUser, register, AuthUser } from "../lib/auth";
@@ -9,7 +10,7 @@ import { DevQuickLogin } from "./components/DevQuickLogin";
 export default function AuthPage() {
   // The storefront this visitor arrived at. The ACCOUNT they log into is
   // global — one identity across every shop — but this page is the shop's.
-  const { company, branding, contact } = useStorefront();
+  const { contact } = useStorefront();
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -123,19 +124,17 @@ export default function AuthPage() {
               belongs to the shop the customer came to, even though the ACCOUNT
               behind it is global; see store/emails.py for the other half of
               that distinction. */}
+          {/* Panel oscuro fijo: la superficie no sigue al tema, así que el
+              logotipo tampoco. El nombre en tipografía sólo aparece si no hay
+              variante — el lockup ya lo contiene. */}
           <div className="relative flex items-center gap-3">
-            {branding.logo_url ? (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img
-                src={branding.logo_url}
-                alt={company.name}
-                className="h-10 w-auto object-contain"
-              />
-            ) : null}
+            <BrandLogo
+              placement="header"
+              surface="dark"
+              className="h-11 w-auto object-contain"
+              wordmarkClassName="font-display text-lg font-black uppercase tracking-tight text-white"
+            />
             <div>
-              <span className="block font-display text-lg font-black uppercase tracking-tight text-white">
-                {company.name}
-              </span>
               {contact.city ? (
                 <span className="block text-[9px] font-semibold uppercase tracking-[0.3em] text-zinc-600">
                   {contact.city}
@@ -169,17 +168,12 @@ export default function AuthPage() {
 
             {/* Mobile logo */}
             <div className="mb-8 flex items-center gap-3 lg:hidden">
-              {branding.logo_url ? (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img
-                  src={branding.logo_url}
-                  alt={company.name}
-                  className="h-8 w-auto object-contain"
-                />
-              ) : null}
-              <span className="font-display text-base font-black uppercase tracking-tight text-white">
-                {company.name}
-              </span>
+              <BrandLogo
+                placement="header"
+                surface="dark"
+                className="h-10 w-auto object-contain"
+                wordmarkClassName="font-display text-base font-black uppercase tracking-tight text-white"
+              />
             </div>
 
             <div className="mb-8">

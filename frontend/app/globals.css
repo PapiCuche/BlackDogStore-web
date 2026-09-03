@@ -25,15 +25,71 @@
   --brand-text: #fafafa;
   --brand-border: #262626;
 
+  /* M12E — claro NEUTRO de plataforma. No pertenece a ningún negocio: un
+     tenant sin tema claro propio usa esto, nunca el de otra empresa. */
+  --brand-light-background: #ffffff;
+  --brand-light-surface: #f4f4f5;
+
+  /* ------------------------------------------------------------------ */
+  /* TEMA CLARO — el estado por defecto de `:root`.                       */
+  /*                                                                     */
+  /* `data-theme` lo escribe un script en el <head> ANTES del primer      */
+  /* paint, así que en la práctica nunca se ve este bloque sin decidir.   */
+  /* Está aquí como base para que un navegador sin JavaScript reciba algo */
+  /* legible en vez de texto claro sobre fondo claro.                     */
+  /* ------------------------------------------------------------------ */
+  --background: var(--brand-light-background, #ffffff);
+  --surface: var(--brand-light-surface, #f4f4f5);
+  /* El texto y el borde se DERIVAN del fondo con contraste garantizado, en
+     vez de ser dos columnas más que alguien tiene que rellenar bien. Un
+     tenant que eligiera mal su texto claro produciría una página ilegible
+     que ningún validador de hex detectaría. */
+  --foreground: #0a0a0a;
+  --surface-2: color-mix(in srgb, var(--surface) 92%, #0a0a0a);
+  --border: color-mix(in srgb, var(--surface) 78%, #0a0a0a);
+  /* 64%, no 55%: al 55% este gris rinde 4.27:1 sobre el fondo del piloto y
+     3.94:1 sobre su superficie — por debajo del 4.5:1 que pide AA para texto
+     normal. Medido, no estimado. */
+  --muted: color-mix(in srgb, #0a0a0a 64%, var(--background));
+  /* IDENTIDAD, PERO LEGIBLE.
+     El acento de una marca se elige contra SU fondo. El dorado del piloto rinde
+     8.41:1 sobre negro y 2.12:1 sobre su crema: el mismo color, legible en un
+     tema e ilegible en el otro. `--primary` es lo que pinta enlaces, anillos de
+     foco y marcas de selección, así que aquí se OSCURECE conservando el tono —
+     igual que `--foreground` se deriva en vez de configurarse. Al 50% da 4.90:1
+     en el peor de los tres fondos del piloto y 5.59:1 en el neutro.
+     El acento PURO sigue disponible en `--accent` para rellenos decorativos,
+     donde el umbral de texto no aplica. */
+  --primary: color-mix(in srgb, var(--brand-accent, #18181b) 50%, #0a0a0a);
+  --accent: var(--brand-accent, #a1a1aa);
+}
+
+/* ------------------------------------------------------------------- */
+/* TEMA OSCURO — los seis campos que el tenant ya configuraba.           */
+/*                                                                      */
+/* Estos campos se diseñaron cuando el storefront tenía UN tema, y ese   */
+/* tema era oscuro. Reutilizarlos aquí es lo que hace que M12E no rompa  */
+/* la configuración de nadie: lo que un taller ya eligió sigue siendo su */
+/* tema oscuro, exactamente igual que antes.                            */
+/* ------------------------------------------------------------------- */
+:root[data-theme="dark"] {
   --background: var(--brand-background, #0a0a0a);
   --foreground: var(--brand-text, #fafafa);
   --surface: var(--brand-surface, #141414);
-  /* Derived from the surface rather than configurable: a seventh colour picker
-     for "the slightly lighter panel" is a field nobody fills correctly. */
   --surface-2: color-mix(in srgb, var(--surface) 88%, var(--foreground));
   --border: var(--brand-border, #262626);
-  --muted: var(--brand-accent, #a1a1aa);
+  /* EL DORADO NO ES EL GRIS.
+     Aquí `--muted` era `--brand-accent`, así que el acento de la marca pintaba
+     TODO el texto secundario. El manual del piloto lo quiere en torno al 3–5 %
+     de la superficie; ser el color del texto secundario es el extremo opuesto,
+     y empeora conforme más componentes migran a tokens. Se deriva del texto,
+     que es lo que un gris secundario es: 70% da 4.92:1 en el peor fondo del
+     piloto. */
+  --muted: color-mix(in srgb, var(--foreground) 70%, var(--background));
   --primary: var(--brand-primary, #ffffff);
+  /* El acento recupera su papel: un token propio, para usarlo a propósito y
+     poco, en vez de llegar a la página por ser el gris de todo. */
+  --accent: var(--brand-accent, #a1a1aa);
 }
 
 @theme inline {
@@ -44,6 +100,7 @@
   --color-bd-border: var(--border);
   --color-muted: var(--muted);
   --color-primary: var(--primary);
+  --color-accent: var(--accent);
   --font-sans: var(--font-body);
   --font-display: var(--font-display);
 }
@@ -113,4 +170,32 @@ img { display: block; max-width: 100%; }
 /* Smooth transitions globally */
 *, *::before, *::after {
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* -------------------------------------------------------------------- */
+/* MOVIMIENTO REDUCIDO                                                    */
+/*                                                                       */
+/* La tira de productos se desplaza 25 s en bucle y no para nunca. Para   */
+/* quien tiene un trastorno vestibular, un movimiento periférico continuo */
+/* que no puede detener no es una molestia estética: provoca mareo y      */
+/* náusea. El sistema operativo ya recoge esa preferencia — sólo hay que  */
+/* respetarla.                                                            */
+/*                                                                       */
+/* No se ESCONDE el contenido: la tira sigue ahí y sigue leyéndose, sólo  */
+/* deja de moverse sola. Ocultarla castigaría a quien pidió calma.        */
+/* -------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* La marquesina queda quieta en su posición inicial en vez de saltar al
+     final del recorrido, que es donde la dejaría una animación de 0.01 ms. */
+  .animate-\[marquee_25s_linear_infinite\] {
+    animation: none !important;
+    transform: translateX(0);
+  }
 }

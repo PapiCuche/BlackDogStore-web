@@ -190,18 +190,61 @@ def company_identity(company) -> CompanyIdentity:
 # Branding
 # ---------------------------------------------------------------------------
 
+#: Qué campo del modelo responde a cada pregunta que hace un componente.
+#: La clave es la PREGUNTA —«horizontal, sobre oscuro»—, no el nombre de la
+#: columna, para que renombrar una columna no obligue a tocar el frontend.
+LOGO_VARIANT_FIELDS = {
+    'primary_on_light': 'logo_on_light_url',
+    'primary_on_dark': 'logo_on_dark_url',
+    'horizontal_on_light': 'logo_horizontal_on_light_url',
+    'horizontal_on_dark': 'logo_horizontal_on_dark_url',
+}
+
+EMPTY_LOGO_VARIANTS = {key: '' for key in LOGO_VARIANT_FIELDS}
+
+#: M12E — el claro NEUTRO de la plataforma. No pertenece a ningún negocio: un
+#: tenant sin tema claro propio usa esto, nunca el de otra empresa.
+NEUTRAL_LIGHT_THEME = {
+    'light_background_color': '#FFFFFF',
+    'light_surface_color': '#F4F4F5',
+}
+
+
 @dataclass(frozen=True)
 class CompanyBranding:
+    #: Legado. El único que existía, y sigue existiendo: hay tenants que sólo
+    #: tienen éste y no deben quedarse sin logo por una fase de branding.
     logo_url: str = ''
+    #: M12E — variantes por contraste. Vacío significa «no tengo esta
+    #: variante», y es una respuesta legítima: el consumidor cae al nombre de la
+    #: empresa antes que dibujar un logo ilegible.
+    logos: dict = field(default_factory=lambda: dict(EMPTY_LOGO_VARIANTS))
     colors: dict = field(default_factory=lambda: dict(NEUTRAL_THEME))
+    #: M12E — las dos superficies del tema claro. El resto se deriva.
+    light_colors: dict = field(
+        default_factory=lambda: dict(NEUTRAL_LIGHT_THEME)
+    )
 
     def css_variables(self) -> dict:
         """`{'--brand-primary': '#FFFFFF', ...}` — already validated hex."""
-        return {
+        variables = {
             THEME_CSS_VARIABLES[key]: value
             for key, value in self.colors.items()
             if key in THEME_CSS_VARIABLES
         }
+        # M12E — las del tema claro viajan con el prefijo `--brand-light-`, y
+        # el CSS elige cuál lee según `data-theme`. Un solo juego de variables
+        # obligaría a reescribirlas al cambiar de tema desde JavaScript, que es
+        # justo el parpadeo que el script del `<head>` evita.
+        variables.update({
+            '--brand-light-background': self.light_colors.get(
+                'light_background_color', '#FFFFFF',
+            ),
+            '--brand-light-surface': self.light_colors.get(
+                'light_surface_color', '#F4F4F5',
+            ),
+        })
+        return variables
 
 
 def company_branding(company) -> CompanyBranding:
@@ -222,7 +265,19 @@ def company_branding(company) -> CompanyBranding:
                 colors[key] = value
     return CompanyBranding(
         logo_url=(s.logo_url if s is not None else '') or '',
+        logos={
+            key: (getattr(s, field_name, '') or '') if s is not None else ''
+            for key, field_name in LOGO_VARIANT_FIELDS.items()
+        },
         colors=colors,
+        light_colors={
+            # Por campo, no todo o nada: un tenant que sólo fija el fondo claro
+            # conserva la superficie neutra en vez de perder el tema entero.
+            key: (
+                (getattr(s, key, '') or '') if s is not None else ''
+            ) or NEUTRAL_LIGHT_THEME[key]
+            for key in NEUTRAL_LIGHT_THEME
+        },
     )
 
 

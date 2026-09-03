@@ -13266,6 +13266,9 @@ class Phase2dProvisioningTest(TestCase):
 #   3. The internal notification goes to the order's own company, or nowhere.
 
 from .company_settings import (  # noqa: E402
+    EMPTY_LOGO_VARIANTS,
+    LOGO_VARIANT_FIELDS,
+    NEUTRAL_LIGHT_THEME,
     NEUTRAL_THEME,
     build_identity_snapshot,
     build_whatsapp_link,
@@ -13477,11 +13480,22 @@ class Phase3IdentityFallbackTest(TestCase):
         self.assertEqual(branding.logo_url, '')
 
     def test_css_variable_names_are_fixed(self):
+        """
+        La lista es un CONTRATO, no una instantánea: el frontend tiene una
+        allowlist con estos mismos nombres y descarta cualquier otro antes de
+        llegar al atributo `style`. Añadir una variable al backend sin añadirla
+        allí produce el síntoma exacto que tuvo M12E — el backend la manda y la
+        página no la ve.
+
+        Las dos de tema claro se suman en M12E, a propósito y con su contraparte
+        en `app/lib/storefront.ts`.
+        """
         branding = company_branding(self.bare)
         self.assertEqual(
             set(branding.css_variables()),
             {'--brand-primary', '--brand-accent', '--brand-background',
-             '--brand-surface', '--brand-text', '--brand-border'},
+             '--brand-surface', '--brand-text', '--brand-border',
+             '--brand-light-background', '--brand-light-surface'},
         )
 
 
@@ -44771,3 +44785,253 @@ class M12DPilotLogoTest(TestCase):
         doc = inspect.getdoc(self.module) or ''
         self.assertIn('logo_horizontal_url', doc)
         self.assertIn('CABECERA', doc)
+
+
+class M12EAssetUrlValidationTest(TestCase):
+    """
+    M12E — la regresión que la suite completa atrapó, y su defensa.
+
+    Ampliar `logo_url` de `URLField` a `CharField` era necesario —estas rutas
+    las sirve el frontend, y una URL absoluta rompe el logo al cambiar de host—
+    pero se llevó por delante TODA la validación. El valor acaba en el `src` de
+    una imagen: un esquema que el navegador pueda interpretar no es una ruta de
+    logotipo por mucho que quepa en una columna de texto.
+    """
+
+    def setUp(self):
+        self.company = _saas_company('Assets SA', 'm12e-assets', tax_id='20780090001')
+        self.row, _ = CompanySettings.objects.get_or_create(company=self.company)
+
+    def _set(self, field, value):
+        from django.core.exceptions import ValidationError
+        setattr(self.row, field, value)
+        try:
+            self.row.save(update_fields=[field])
+            return None
+        except ValidationError as exc:
+            return exc
+
+    FIELDS = (
+        'logo_url', 'logo_on_light_url', 'logo_on_dark_url',
+        'logo_horizontal_on_light_url', 'logo_horizontal_on_dark_url',
+    )
+
+    def test_a_site_relative_path_is_accepted(self):
+        """Lo que M12E necesitaba y un `URLField` rechazaba."""
+        for field in self.FIELDS:
+            self.assertIsNone(
+                self._set(field, '/assets/branding/logo.png'), field,
+            )
+
+    def test_an_absolute_https_url_is_still_accepted(self):
+        """Ampliar el tipo no puede romper a quien ya guardaba una URL."""
+        self.assertIsNone(self._set('logo_url', 'https://cdn.example/logo.png'))
+
+    def test_javascript_scheme_is_refused(self):
+        for field in self.FIELDS:
+            self.assertIsNotNone(self._set(field, 'javascript:alert(1)'), field)
+
+    def test_data_scheme_is_refused(self):
+        self.assertIsNotNone(
+            self._set('logo_url', 'data:text/html;base64,PHNjcmlwdD4='),
+        )
+
+    def test_a_protocol_relative_url_is_refused(self):
+        """
+        `//evil.example/logo.png` PARECE una ruta del sitio y es una URL
+        absoluta de protocolo relativo. Empieza por «/», así que un filtro
+        ingenuo la deja pasar.
+        """
+        self.assertIsNotNone(self._set('logo_url', '//evil.example/logo.png'))
+
+    def test_empty_is_accepted(self):
+        """Vacío significa «no tengo esta variante», y es legítimo."""
+        for field in self.FIELDS:
+            self.assertIsNone(self._set(field, ''), field)
+
+    def test_the_validator_runs_on_save_not_only_in_a_form(self):
+        """
+        `full_clean()` no lo llama `save()`, así que un validador colgado del
+        campo protege un serializador y un formulario de admin y nada más. Ésa
+        es exactamente la razón de que una ruta escrita por una migración de
+        datos llegara a la base sin comprobarse.
+        """
+        from django.core.exceptions import ValidationError
+        self.row.logo_url = 'javascript:alert(1)'
+        with self.assertRaises(ValidationError):
+            self.row.save()
+
+    def test_the_light_colours_are_validated_too(self):
+        from django.core.exceptions import ValidationError
+        self.row.light_background_color = 'url(evil)'
+        with self.assertRaises(ValidationError):
+            self.row.save()
+
+
+class M12EBrandingPayloadTest(TestCase):
+    """
+    M12E — el contrato de marca que viaja al escaparate.
+
+    Las variantes por contraste y el tema claro se verificaron a mano contra la
+    base de desarrollo. Eso comprueba que hoy funciona; no impide que mañana
+    deje de hacerlo. Lo que sigue son las invariantes que el frontend da por
+    ciertas al pintar, escritas donde puedan romperse.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.bare = _p3_company('m12e-bare', 'Empresa Sin Marca')
+        self.dressed = _p3_company('m12e-dressed', 'Empresa Con Marca')
+
+    # -- las variantes ----------------------------------------------------
+
+    def test_the_four_questions_are_always_answered(self):
+        """
+        Las claves son las PREGUNTAS que hace un componente, y las cuatro
+        existen siempre, configuradas o no. Un `logos` incompleto obligaría a
+        cada consumidor a comprobar la clave antes de leerla, y el que se
+        olvide escribe `undefined` dentro de un `src`.
+        """
+        logos = company_branding(self.bare).logos
+        self.assertEqual(
+            set(logos),
+            {
+                'primary_on_light', 'primary_on_dark',
+                'horizontal_on_light', 'horizontal_on_dark',
+            },
+        )
+        self.assertEqual(logos, EMPTY_LOGO_VARIANTS)
+
+    def test_no_variant_can_arrive_as_none(self):
+        """
+        `None` en un `src` de imagen escribe la cadena «null» y el navegador
+        pide esa URL al servidor. Vacío es la respuesta legítima de «no tengo
+        esta variante»; None sería una fuga del esquema.
+
+        La garantía vive en la COLUMNA, no en el `or ''` del constructor: éste
+        es un respaldo de un caso que la base ya impide. Se comprueba abajo
+        porque un respaldo indistinguible de su propia defensa no se puede
+        retirar nunca — nadie sabría cuál de los dos estaba sujetando.
+        """
+        from django.db import IntegrityError, transaction
+
+        for column in ('logo_url', *LOGO_VARIANT_FIELDS.values()):
+            with self.subTest(column=column):
+                with self.assertRaises(IntegrityError):
+                    with transaction.atomic():
+                        CompanySettings.objects.filter(
+                            company=self.bare,
+                        ).update(**{column: None})
+
+        for value in company_branding(self.bare).logos.values():
+            self.assertIsInstance(value, str)
+
+    def test_a_company_with_no_settings_row_still_has_branding(self):
+        """Un tenant anterior a esta fase no puede quedarse sin escaparate."""
+        CompanySettings.objects.filter(company=self.bare).delete()
+        self.bare.refresh_from_db()
+        branding = company_branding(self.bare)
+        self.assertEqual(branding.logos, EMPTY_LOGO_VARIANTS)
+        self.assertEqual(branding.light_colors, NEUTRAL_LIGHT_THEME)
+        self.assertEqual(branding.logo_url, '')
+
+    def test_one_tenants_variants_never_reach_another(self):
+        """
+        La variante sale de la fila del tenant y de ningún otro sitio. No hay
+        tabla de assets por slug ni condicional por empresa que pueda mezclar.
+        """
+        row = self.dressed.settings
+        row.logo_horizontal_on_dark_url = '/propio/h-oscuro.png'
+        row.save()
+        self.assertEqual(
+            company_branding(self.dressed).logos['horizontal_on_dark'],
+            '/propio/h-oscuro.png',
+        )
+        self.assertEqual(
+            company_branding(self.bare).logos['horizontal_on_dark'], '',
+        )
+
+    def test_the_legacy_logo_survives_the_new_variants(self):
+        """
+        Hay tenants que sólo tienen `logo_url`. Añadir variantes no puede
+        dejarlos sin logotipo: la fase nueva no rompe a quien no la usa.
+        """
+        row = self.bare.settings
+        row.logo_url = '/legado.png'
+        row.save()
+        branding = company_branding(self.bare)
+        self.assertEqual(branding.logo_url, '/legado.png')
+        self.assertEqual(branding.logos, EMPTY_LOGO_VARIANTS)
+
+    # -- el tema claro -----------------------------------------------------
+
+    def test_the_light_theme_falls_back_per_field(self):
+        """
+        POR CAMPO, no todo o nada: fijar el fondo no puede perder la superficie.
+
+        Ésta es la comprobación que atrapa un `or` mal asociado —
+        `(x if s else '') or NEUTRAL[k]` y `x if s else ('' or NEUTRAL[k])` se
+        leen igual y devuelven cosas distintas cuando el campo está vacío.
+        """
+        row = self.dressed.settings
+        row.light_background_color = '#FAFAFA'
+        row.light_surface_color = ''
+        row.save()
+        light = company_branding(self.dressed).light_colors
+        self.assertEqual(light['light_background_color'], '#FAFAFA')
+        self.assertEqual(
+            light['light_surface_color'],
+            NEUTRAL_LIGHT_THEME['light_surface_color'],
+        )
+
+    def test_the_neutral_light_theme_belongs_to_no_business(self):
+        """
+        El claro por defecto lo ve cualquier tenant que no configure el suyo.
+        Si fuese el del piloto, la marca del piloto sería el default de la
+        plataforma — la misma falta que la Fase 3 vino a cerrar, aplicada al
+        color en vez de al nombre.
+        """
+        blob = ' '.join(NEUTRAL_LIGHT_THEME.values()).upper()
+        for pilot_colour in ('#F5F3EE', '#EDEAE3', '#0A0A0A', '#C8A45D'):
+            self.assertNotIn(pilot_colour, blob)
+
+    def test_a_dark_palette_does_not_decide_the_light_one(self):
+        """
+        Son dos temas, no uno invertido. Un tenant con paleta oscura propia y
+        sin claro propio recibe el claro NEUTRO — no su fondo oscuro colocado
+        donde va el claro, que dejaría texto oscuro sobre fondo oscuro.
+        """
+        row = self.dressed.settings
+        row.background_color = '#0A0A0A'
+        row.surface_color = '#232323'
+        row.save()
+        light = company_branding(self.dressed).light_colors
+        self.assertEqual(light, NEUTRAL_LIGHT_THEME)
+
+    # -- el contrato con el frontend ---------------------------------------
+
+    def test_css_variables_carry_both_themes(self):
+        """
+        Las ocho viajan juntas. El frontend tiene una allowlist con estos mismos
+        nombres y descarta lo demás: emitir una sin la otra reproduce el
+        síntoma que esta fase ya tuvo — el backend la manda y la página no la ve.
+        """
+        variables = company_branding(self.bare).css_variables()
+        self.assertEqual(
+            set(variables),
+            {
+                '--brand-primary', '--brand-accent', '--brand-background',
+                '--brand-surface', '--brand-text', '--brand-border',
+                '--brand-light-background', '--brand-light-surface',
+            },
+        )
+
+    def test_the_payload_never_names_a_database_column(self):
+        """
+        Las claves de `logos` son preguntas —«horizontal, sobre oscuro»—, no
+        columnas. Renombrar `logo_on_dark_url` no puede obligar a tocar el
+        frontend, y por eso el mapa vive en el backend.
+        """
+        for question, column in LOGO_VARIANT_FIELDS.items():
+            self.assertNotEqual(question, column)
+            self.assertNotIn('_url', question)

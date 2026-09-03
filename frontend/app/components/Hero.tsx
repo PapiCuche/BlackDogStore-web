@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useStorefront } from "./StorefrontProvider";
+import { BrandLogo } from "./BrandLogo";
 
 const REPAIR_HIGHLIGHTS = [
   { icon: "📱", label: "Cambio de Pantalla" },
@@ -16,7 +17,7 @@ export default function Hero() {
   // Phase 3: location and logo belong to the tenant. The marketing copy below
   // is still the pilot's — a content system for per-tenant landing pages is a
   // separate concern, recorded in docs/saas-multiempresa.md.
-  const { company, branding, contact, policies } = useStorefront();
+  const { company, contact, policies } = useStorefront();
 
   return (
     <section className="relative overflow-hidden bg-[#080808]">
@@ -110,18 +111,23 @@ export default function Hero() {
               <div className="absolute inset-20 rounded-full border border-white/[0.03]" />
 
               {/* Dog icon — white on dark */}
-              {branding.logo_url ? (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img
-                  src={branding.logo_url}
-                  alt={company.name}
-                  className="relative z-10 h-64 w-64 object-contain drop-shadow-[0_8px_48px_rgba(255,255,255,0.1)] sm:h-80 sm:w-80"
-                />
-              ) : (
-                <span className="relative z-10 font-display text-5xl font-black uppercase tracking-tight text-white/90">
-                  {company.name}
-                </span>
-              )}
+              {/*
+                LA SUPERFICIE MANDA, NO EL TEMA. Este hero es negro en los dos
+                temas —`bg-[#080808]` más abajo—, así que su logotipo es SIEMPRE
+                la versión blanca. Si aquí se leyera el tema resuelto, el tema
+                claro pondría el logo negro sobre este fondo negro: el mismo
+                defecto que M12E vino a cerrar, reintroducido por otra puerta.
+
+                Composición VERTICAL: el manual la asigna a piezas principales,
+                y aquí se dibuja a 256-320 px, muy por encima de sus 140 px de
+                ancho mínimo.
+              */}
+              <BrandLogo
+                placement="hero"
+                surface="dark"
+                className="relative z-10 h-64 w-64 object-contain drop-shadow-[0_8px_48px_rgba(255,255,255,0.1)] sm:h-80 sm:w-80"
+                wordmarkClassName="relative z-10 font-display text-5xl font-black uppercase tracking-tight text-white/90"
+              />
 
               {/*
                 El plazo de garantía viene de la configuración del tenant, no
