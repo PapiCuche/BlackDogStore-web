@@ -4430,3 +4430,41 @@ python manage.py seed_demo_users --purge
 propósito `UserProfile.role` **y** `Membership + CompanyRole + assignment`,
 porque los endpoints comerciales aún autorizan por el primero y las APIs SaaS por
 el segundo. Es un síntoma de la transición, no la arquitectura final.
+
+---
+
+## Evolución de presets: hacia adelante y consciente de su historia
+
+**Regla, fijada en M12B.1 y respaldada por test estructural.**
+
+Una migración que necesite reconocer el estado ANTERIOR de un preset debe
+compararlo contra un conjunto **congelado en su propio archivo**:
+
+```python
+# BIEN — literal en la migración
+PREVIOUS_ADMIN = frozenset({'company.view', 'company.manage', ...})
+
+# MAL — reconstruye el pasado con el catálogo del futuro
+from store.capabilities import ASSIGNABLE_CAPABILITY_CODES
+PREVIOUS_ADMIN = frozenset(ASSIGNABLE_CAPABILITY_CODES) - set(NEW)
+```
+
+La segunda forma **acierta en un upgrade y falla en una instalación desde cero**,
+y falla en silencio: la migración corre, imprime que otorgó la capacidad a cero
+roles, y sigue. Nueve migraciones lo hicieron durante nueve fases.
+
+Lo que sí puede leerse vivo es el **destino**: `Administrador` está definido como
+todo el catálogo asignable de la release, así que apuntar al catálogo vivo es lo
+que hace converger la migración con `provision_company_access_defaults` por
+construcción. Congelado para identificar, vivo para apuntar.
+
+**Un preset estándar no puede contener la misma capability dos veces.** No es más
+autoridad: es un conteo falso que rompe cualquier comparación exacta y hace
+divergir el camino de migración del de provisioning. Hay un test que lo impide.
+
+### Qué significa paridad
+
+No que todo rol histórico se reescriba. Que **un preset de plataforma intacto**
+converja al mismo default por los tres caminos —fresh install, upgrade histórico
+y provisioning de tenant nuevo—. Una personalización del tenant rompe esa
+convergencia **a propósito**, y la migración no está autorizada a deshacerla.

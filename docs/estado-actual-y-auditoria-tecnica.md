@@ -2257,3 +2257,165 @@ falla con `Number of calls: 0`. Esa es la demostración de que la baseline sirve
    de una fila, y `CASCADE` la borra si alguien elimina y recrea la membresía.
    Solo alcanzable desde el admin de Django.
 7. **`MembershipAdmin`** es el único admin hermano sin `has_delete_permission`.
+
+
+## M12B — Centro de notificaciones
+
+**Estado: IMPLEMENTADO** para `IN_APP` y `EMAIL`. Migración **0058**.
+
+### Por qué tres tablas y no una
+
+```
+NotificationEvent      algo ocurrió
+Notification           alguien debe saberlo
+NotificationDelivery   intentamos avisarle por un canal
+```
+
+Una sola tabla con un booleano `email_enviado` se rompe con el segundo
+destinatario, el segundo canal o el primer reintento — y se rompe en silencio.
+
+`IN_APP` no tiene fila de entrega: la `Notification` **es** la entrega in-app, y
+una fila diciendo «escribimos con éxito la fila a la que estamos unidos» sería
+una tautología con un índice encima.
+
+### Idempotencia en tres capas
+
+| Capa | Constraint |
+| --- | --- |
+| Evento | `event_key` UNIQUE, derivado de la entidad |
+| Destinatario | `UNIQUE(event, user)` · `UNIQUE(event, customer)` |
+| Canal | `UNIQUE(notification, channel)` |
+
+Más una `CheckConstraint`: exactamente un destinatario. Ninguno significa que no
+es de nadie; ambos, que dos superficies la reclamarían.
+
+### Eventos implementados
+
+| Evento | Origen real | Audiencia |
+| --- | --- | --- |
+| `service.assignment.created` | `assign_technician()` | técnico asignado |
+| `service.quote.available` | `publish_quote()` | cliente |
+| `service.quote.approved/rejected` | `record_quote_decision()` | técnico o gestión |
+| `service.ready_for_pickup` | transición real | cliente **y** personal de entrega de esa sucursal |
+| `service.delivered` | transición real | cliente |
+| `service.status.changed` | transición real | cliente (sólo estados con mensaje) |
+| `commerce.payment.confirmed` | IPN verificado | cliente |
+| `commerce.fulfillment.ready/shipped/delivered` | `change_fulfillment_status()` | cliente |
+| `commerce.order.cancelled` | `change_fulfillment_status()` | cliente |
+
+Todos respaldados por una transición que ya existía. No se inventó ningún
+estado, y `wallet.*` no aparece porque el módulo no existe.
+
+### El master de plataforma no es destinatario automático
+
+`resolve_capabilities()` devuelve todas las capacidades al superusuario en todas
+las empresas. Una consulta de «quién tiene esta capacidad» le entregaría cada
+evento de cada tenant. **Autorizar y direccionar son preguntas distintas**, y la
+resolución de destinatarios lo excluye a propósito.
+
+### El correo de confirmación no se duplicó
+
+`commerce.payment.confirmed` no está en `EMAIL_WORTHY_EVENTS`: `email_services`
+ya lo envía con su recibo y su idempotencia. M12B aporta el registro in-app.
+
+### Deuda declarada
+
+Preferencias por evento/canal (**PARCIAL**) · reintentos automáticos (existe
+`retry_failed_delivery`, sin planificador — **PROPUESTA**) · push, WhatsApp, SMS
+(**PROPUESTA**) · portal web de reparaciones del cliente (**PENDIENTE**) ·
+Mobile (**PENDIENTE**) · `Administrador 18/37` en instalación desde cero
+(**PENDIENTE PREEXISTENTE**, no ampliado por esta fase).
+
+
+---
+
+## M12B.1 — Paridad de presets e integración con el libro de pagos
+
+**Estado: IMPLEMENTADO.** Migraciones **0060** (renumerada desde 0058) y **0061**.
+
+### Auditoría de migraciones que amplían presets
+
+| Migración | Preset | Discriminador | ¿Segura en fresh install? |
+| --- | --- | --- | --- |
+| 0017 seed | todos | literal congelado | **SAFE** (siembra, no compara) |
+| 0033 customer | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0035 commercial | Administrador + Ventas | vivo (admin) / congelado (ventas) | **UNSAFE** para admin |
+| 0037 commission | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0037 service | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0040 diagnostic | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0040 promotion | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0045 repair | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0047 technician | Servicio Técnico | literal congelado | **SAFE** |
+| 0050 quality | Admin + Técnico | vivo (admin) / congelado (técnico) | **UNSAFE** para admin |
+| 0053 delivery | Admin + Técnico | vivo (admin) / congelado (técnico) | **UNSAFE** para admin |
+| 0054 supervisor | Ventas + Supervisor | congelado (compara) / vivo (crea) | **SAFE** |
+| 0057 legacy tech | asignaciones | congelado | NO APLICA |
+| 0059 payment | Admin + Ventas | vivo (admin) / congelado (ventas) | **UNSAFE** para admin |
+| **0061 paridad** | Administrador | **congelado** | **SAFE** |
+
+El patrón se ve de un vistazo: **todo discriminador congelado funciona; todo
+discriminador vivo falla**, y sólo el de `Administrador` es vivo. Ventas,
+Inventario, Servicio Técnico y Supervisor Técnico ya tenían paridad correcta
+antes de esta subfase — el defecto era de un solo preset.
+
+### Reconstrucción empírica de la forma histórica
+
+Base limpia, migración a migración:
+
+```
+tras 0017 → Administrador = 18
+tras 0033 → 18      tras 0045 → 18
+tras 0035 → 18      tras 0050 → 18
+tras 0037 → 18      tras 0053 → 18
+tras 0040 → 18      tras 0059 → 18
+```
+
+Una sola forma que reparar, y es determinista: exactamente el `_ALL_ASSIGNABLE`
+de 0017. No hay formas intermedias porque ningún grant llegó nunca a producir una.
+
+### El discriminador de 0061
+
+Cuatro campos en conjunción, el patrón que 0053 estableció: `slug`, `name`, una
+de las descripciones que **la propia plataforma** escribió (dos variantes
+históricas), e igualdad **exacta** de conjunto.
+
+Un tenant tendría que haber elegido el slug de la plataforma, su nombre, una de
+sus dos frases literales y precisamente esos dieciocho códigos —ni diecisiete ni
+diecinueve— para ser confundido con un preset intacto.
+
+**Limitación declarada:** un `Administrador` del que un taller quitó una capacidad
+y luego añadió otra distinta, quedando en dieciocho, sería indistinguible. Se
+acepta el riesgo con el criterio conservador: la conjunción exige igualdad exacta
+del conjunto, no del tamaño.
+
+### Camino de upgrade, verificado con datos inyectados
+
+| Rol | Antes | Después | Resultado |
+| --- | ---: | ---: | --- |
+| Administrador sembrado | 18 | 38 | completado |
+| Administrador intacto (otro tenant) | 18 | 38 | completado |
+| Administrador recortado | 17 | 17 | **intacto** |
+| Administrador ampliado | 19 | 19 | **intacto** |
+| Rol renombrado | 18 | 18 | **intacto** |
+| Supervisor con duplicado | 15 | 14 | dedup, misma autoridad |
+
+El duplicado se inyectó por SQL crudo a propósito: `CompanyRole.save()` normaliza,
+así que la única forma de que llegara a la base es la que realmente ocurrió — una
+migración escribiendo por el modelo histórico, que no lleva ese `save()`.
+
+### Eventos del libro de pagos
+
+| Evento | Audiencia | Correo | Por qué |
+| --- | --- | --- | --- |
+| `service.payment.recorded` | cliente | no | El resumen ya le expone `paid` y `outstanding`; está en el mostrador |
+| `service.payment.reversed` | **interno** (`service.payments.manage`) | no | Un reverso es corrección contable, no reembolso |
+
+Clave de idempotencia desde `RepairPayment.id`, nunca del request. **Ninguna
+capability nueva:** M12B.1 usa las que PR #19 trajo.
+
+### Deuda que sigue abierta
+
+Preferencias por evento/canal (**PARCIAL**) · reintentos automáticos, sin
+planificador (**PROPUESTA**) · push, WhatsApp, SMS (**PROPUESTA**) · portal web de
+reparaciones del cliente (**PENDIENTE**) · Mobile (**PENDIENTE**) · comunicados
+internos, M12C (**PENDIENTE**) · evidencias, M12D (**PENDIENTE**).

@@ -28,6 +28,7 @@ from .tenancy import (
 )
 from .permissions import get_user_role
 from .email_services import send_order_emails_after_payment
+from .commerce_notifications import emit_payment_confirmed
 from .serializers import (
     CategorySerializer,
     ProductSerializer,
@@ -544,6 +545,18 @@ class IzipayNotificationView(APIView):
                     session_key=order.cart_session_key,
                     product__company=order.company_id,
                 ).delete()
+
+            # M12B — the notification event, recorded INSIDE this transaction
+            # so it is exactly as durable as the payment it describes. A
+            # replayed IPN produces the same key and therefore no second
+            # notice — the same property the sale exits already have.
+            #
+            # NO SECOND E-MAIL. `commerce.payment.confirmed` is not in
+            # EMAIL_WORTHY_EVENTS precisely because `email_services` already
+            # sends the confirmation, with its receipt and its tenant identity,
+            # exactly once. This adds the in-app record and nothing else;
+            # notifications must not become a way to mail people twice.
+            emit_payment_confirmed(order)
 
             _order_pk = order.pk
             transaction.on_commit(lambda: send_order_emails_after_payment(_order_pk))

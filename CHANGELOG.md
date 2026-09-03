@@ -9,6 +9,199 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12B.1 — Reconciliación con el libro de pagos y paridad de presets
+
+**Estado: IMPLEMENTADO.** Migraciones **0060** (renumerada) y **0061**.
+
+### El defecto que nueve migraciones compartían
+
+Todas amplían `Administrador` identificándolo así:
+
+```python
+previous_admin_preset = frozenset(ASSIGNABLE_CAPABILITY_CODES) - set(NEW)
+```
+
+Esa expresión es **correcta en el tiempo y falsa fuera de él**.
+
+En un **upgrade** acierta: cuando 0033 corrió de verdad, el catálogo importado
+era el de esa release, así que `vivo - NEW` describía la forma anterior.
+
+En una **instalación desde cero** todas corren hoy, contra el catálogo de hoy.
+0017 siembra 18 códigos con un literal congelado; 0033 pregunta si el rol tiene
+los 37 que el catálogo actual menos uno describe. Tiene 18. No coincide. Ni con
+0035, 0037, 0040, 0045, 0050, 0053 ni 0059.
+
+Comprobado paso a paso sobre base limpia: **18 tras 0017, 18 tras 0059**. Nueve
+grants, nueve no-ops silenciosos. El número llevaba ahí desde el principio,
+impreso en cada migración: «capacidad otorgada a **0** rol(es) administrador».
+
+> Una migración no reconstruye el pasado consultando el catálogo del futuro.
+> El seed lo sabía en 0017. Los grants lo olvidaron.
+
+### Congelado para identificar, vivo para apuntar
+
+Las dos mitades de la pregunta tienen respuestas distintas, y confundirlas **es**
+el defecto:
+
+| Pregunta | Fuente |
+| --- | --- |
+| Qué **era** el rol | literal congelado en la propia migración |
+| Qué **significa** el rol | catálogo vivo — lo mismo que usa provisioning |
+
+Por eso los dos caminos convergen por construcción y no por suerte.
+
+### El Supervisor era otro problema con el mismo síntoma
+
+`_SERVICE_SUPERVISOR_CAPS` listaba `service.orders.manage` dos veces: heredada de
+`_TECHNICIAN_CAPS` y añadida otra vez. 0054 guardó quince elementos que describían
+catorce capacidades; provisioning deduplicaba al escribir y guardaba catorce.
+
+**Misma autoridad, números distintos.** Nada se comportaba mal, así que nada se
+encontró hasta comparar los conteos. Una capability repetida no es más autoridad:
+es un bug de representación.
+
+### El número, recalculado
+
+**18/38**, no 18/37. PR #19 añadió `service.payments.manage` al catálogo.
+
+| Preset | Fresh install | Provisioning | Iguales |
+| --- | ---: | ---: | :---: |
+| Administrador | 38 | 38 | sí |
+| Ventas | 14 | 14 | sí |
+| Inventario | 6 | 6 | sí |
+| Servicio Técnico | 12 | 12 | sí |
+| Supervisor Técnico | 14 | 14 | sí |
+
+Un rol que el tenant personalizó —recortado, ampliado o renombrado— se queda
+como está. Pertenece al taller, no a la plataforma.
+
+### Los eventos que el libro de pagos se ganó
+
+`service.payment.recorded` va al **cliente**: el resumen que ya puede consultar
+expone `paid` y `outstanding`, así que decirle lo recibido y lo que queda no
+revela nada que el endpoint no respondería. No lleva medio, ni referencia, ni
+cajero, ni nota — lo que ese resumen retiene a propósito.
+
+`service.payment.reversed` es **interno**, y eso es el hallazgo, no una omisión.
+Un reverso significa «esta fila se escribió mal»; la función que lo hace lo dice
+con esas palabras. No existe frase para el cliente que sea a la vez verdadera y
+útil: «tu pago fue reembolsado» mentiría sobre dinero que quizá nunca se movió, y
+algo más vago alarma sin informar.
+
+### El grafo
+
+Dos ramas reclamaron el número 0058. Un prefijo duplicado es legal —la identidad
+de una migración es su nombre más sus dependencias— pero **dos hojas no lo son**:
+
+```
+0057 → 0058 pagos → 0059 capacidad de cobro → 0060 notificaciones → 0061 paridad
+```
+
+### Decisión técnica
+
+**La evolución de un preset es hacia adelante y consciente de su historia.** Una
+migración futura que necesite reconocer el estado anterior debe usar un conjunto
+congelado, nunca `catálogo vivo − nuevas`. Y un preset estándar no puede contener
+la misma capability más de una vez.
+
+---
+
+## M12B — Centro de notificaciones multiempresa
+
+**Estado: IMPLEMENTADO** para in-app y correo. Migración **0058**.
+
+### Cuatro cosas que no son la misma cosa
+
+```
+algo ocurrió        → NotificationEvent
+alguien debe saberlo → Notification
+intentamos avisarle  → NotificationDelivery
+lo leyó              → Notification.read_at
+```
+
+La tentación es una tabla con un booleano `email_enviado`. Se rompe en cuanto
+aparece un segundo destinatario, un segundo canal o un reintento — y se rompe
+en silencio: se descubre cuando alguien recibe cinco copias del mismo mensaje
+porque un webhook se repitió.
+
+**In-app es el registro durable.** Una fila `Notification` **es** la
+notificación; el correo es un intento de entrega contra ella. Un SMTP caído no
+puede hacer desaparecer el hecho de que la cotización está lista.
+
+### Tres capas de idempotencia
+
+| Capa | Garantía |
+| --- | --- |
+| Evento | `event_key` único, derivado de la **entidad** y nunca de la petición |
+| Destinatario | `UNIQUE(event, user)` y `UNIQUE(event, customer)` |
+| Canal | `UNIQUE(notification, channel)` |
+
+Diez IPN repetidos son diez peticiones sobre **un** pago, así que la clave
+describe el pago. Quien cumple dos reglas de destinatario a la vez —el técnico
+que además es personal de entrega de esa sucursal— recibe **un** aviso, y lo
+decide la base de datos.
+
+### La frontera de la transacción
+
+```
+BEGIN
+  el cambio de negocio
+  el evento y sus avisos      ← durables, dentro
+COMMIT
+  on_commit: intentar correo  ← fuera, porque sale del proceso
+```
+
+Un rollback se lleva el evento, así que nadie se entera de algo que no pasó. Y
+un fallo de SMTP ya no puede revertir nada, porque a esas alturas no queda nada
+que revertir.
+
+### El master no recibe todo el SaaS
+
+`resolve_capabilities()` devuelve **todas** las capacidades al superusuario en
+**todas** las empresas, así que una consulta ingenua de «quién tiene esta
+capacidad» le entrega cada evento de cada tenant. Poder actuar en todas partes
+no es querer enterarse de todo: la resolución de destinatarios lo excluye
+explícitamente. Autorizar y direccionar son preguntas distintas.
+
+### El correo de confirmación sigue siendo uno
+
+`commerce.payment.confirmed` **no** es email-worthy, a propósito:
+`email_services` ya envía la confirmación con su recibo, su identidad de tenant
+y su propia idempotencia. M12B aporta el registro in-app y nada más. Convertir
+las notificaciones en una segunda vía de correo habría duplicado cada
+confirmación de la plataforma.
+
+Tampoco todos los eventos merecen correo. In-app es granular; el correo
+interrumpe, así que se reserva para lo accionable. Un cliente que recibe un
+mail por cada transición interna deja de leerlos, que es peor que no enviarlos.
+
+### Nada de lo que se dice puede filtrar
+
+Los textos se escriben desde el evento, la etiqueta de estado visible al cliente
+y el número de orden. Nunca desde `internal_notes`, un diagnóstico, una nota de
+calidad, un coste, un proveedor ni el nombre del técnico. Y «enviado» no promete
+un número de seguimiento que este proyecto no tiene.
+
+### Una notificación no concede autorización
+
+Lleva `target_type` / `target_id`, nunca una URL. El cliente construye la ruta y
+el destino vuelve a comprobar empresa, capacidad y propiedad. Quien perdió el
+acceso ayer puede conservar el aviso de la semana pasada y seguirá siendo
+rechazado en la puerta.
+
+### Dos superficies que no se tocan
+
+`/internal/` y `/customer/` nacen acotadas a su audiencia. Ningún endpoint elige
+el queryset mirando si quien pregunta es staff.
+
+### Lo que NO se hizo
+
+Sin capacidades RBAC nuevas — leer la propia bandeja no necesita permiso, y el
+defecto conocido de `Administrador 18/37` no se amplía. Sin Celery, sin
+WebSocket, sin push, sin WhatsApp, sin comunicados manuales, sin wallet.
+
+---
+
 ## M12A — Acceso real del técnico y «Mis reparaciones»
 
 **Estado: IMPLEMENTADO.** Migración **0057**.
