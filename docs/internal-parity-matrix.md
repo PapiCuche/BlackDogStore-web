@@ -36,11 +36,11 @@ lo que decide si una función se construye o se clasifica PENDIENTE.
 
 | Función | Backend | Web | V1 | Mobile | Capability | TIPO |
 |---|---|---|---|---|---|---|
-| POS — contexto | `pos_views.py:135` | `/admin/sales/pos` | **`sales/pos/context/`** | pendiente | `sales.pos.use` | **B** |
-| POS — buscar producto | `pos_views.py:253` | ✅ | **`sales/pos/products/search/`** | pendiente | `sales.pos.use` | **B** |
-| POS — leer código | `pos_views.py:210` | ✅ | **`sales/pos/products/lookup/`** | pendiente | `sales.pos.use` | **B** |
-| POS — previsualizar | `pos_services.build_pos_sale:658` | ✅ | **`sales/pos/preview/`** | pendiente | `sales.pos.use` | **B** |
-| **POS — registrar venta** | **`pos_services.create_pos_sale:768`** | ✅ | **`sales/pos/sales/`** | pendiente | `sales.pos.use` | **B** |
+| POS — contexto | `pos_views.py:135` | `/admin/sales/pos` | **`sales/pos/context/`** | ✅ (IP1A) | `sales.pos.use` | **B** |
+| POS — buscar producto | `pos_views.py:253` | ✅ | **`sales/pos/products/search/`** | ✅ (IP1A) | `sales.pos.use` | **B** |
+| POS — leer código | `pos_views.py:210` | ✅ | **`sales/pos/products/lookup/`** | ✅ (IP1A) | `sales.pos.use` | **B** |
+| POS — previsualizar | `pos_services.build_pos_sale:658` | ✅ | **`sales/pos/preview/`** | PARCIAL (IP1A) | `sales.pos.use` | **B** |
+| **POS — registrar venta** | **`pos_services.create_pos_sale:768`** | ✅ | **`sales/pos/sales/`** | ✅ (IP1A) | `sales.pos.use` | **B** |
 | POS — asignar vendedor | `pos_services.resolve_pos_seller:554` | ✅ | ✅ (dentro de la venta) | pendiente | `sales.pos.assign_seller` | **B** |
 | POS — descuento manual | `pos_services.resolve_discount:292` | ✅ | ✅ (dentro de la venta) | pendiente | `sales.discounts.apply` | **B** |
 | POS — cupón | `pos_services.resolve_discount:329` | ✅ | ✅ (dentro de la venta) | pendiente | — (ninguna, por diseño) | **B** |
@@ -67,11 +67,11 @@ lo que decide si una función se construye o se clasifica PENDIENTE.
 | Stock por sucursal | `inventory_services.py:1108` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
 | Kardex / movimientos | `inventory_services.py:1318` | ✅ | ✅ | ✅ | `inventory.view` | **A** |
 | Entrada / salida manual | `inventory_services.apply_manual_stock_movement:312` | ✅ | ✅ `inventory/adjustments/` | ✅ | `inventory.adjust` | **A** |
-| Transferencia — crear | `inventory_services.create_stock_transfer:612` | `/admin/inventory/transfers` | **`inventory/transfers/`** | pendiente | `inventory.adjust` | **B** |
-| Transferencia — líneas | `inventory_services.set_transfer_item:638` | ✅ | **`inventory/transfers/<id>/items/`** | pendiente | `inventory.adjust` | **B** |
-| Transferencia — despachar | `inventory_services.dispatch_transfer:673` | ✅ | **`inventory/transfers/<id>/dispatch/`** | pendiente | `inventory.adjust` | **B** |
-| Transferencia — recibir | `inventory_services.receive_transfer:761` | ✅ | **`inventory/transfers/<id>/receive/`** | pendiente | `inventory.adjust` | **B** |
-| Transferencia — cancelar | `inventory_services.cancel_transfer:833` | ✅ | **`inventory/transfers/<id>/cancel/`** | pendiente | `inventory.adjust` | **B** |
+| Transferencia — crear | `inventory_services.create_stock_transfer:612` | `/admin/inventory/transfers` | **`inventory/transfers/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
+| Transferencia — líneas | `inventory_services.set_transfer_item:638` | ✅ | **`inventory/transfers/<id>/items/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
+| Transferencia — despachar | `inventory_services.dispatch_transfer:673` | ✅ | **`inventory/transfers/<id>/dispatch/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
+| Transferencia — recibir | `inventory_services.receive_transfer:761` | ✅ | **`inventory/transfers/<id>/receive/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
+| Transferencia — cancelar | `inventory_services.cancel_transfer:833` | ✅ | **`inventory/transfers/<id>/cancel/`** | ✅ (IP1B) | `inventory.adjust` | **B** |
 | Recuento — crear | `inventory_services.create_inventory_count:884` | `/admin/inventory/counts` | PENDIENTE | PENDIENTE | ídem | **C** |
 | Recuento — contar | `inventory_services.set_count_item:901` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
 | Recuento — aprobar | `inventory_services.approve_inventory_count:947` | ✅ | PENDIENTE | PENDIENTE | ídem | **C** |
@@ -195,3 +195,55 @@ dejaría uno de los dos recuentos mal mientras la furgoneta está en la carreter
 devuelve el mismo estado y no vuelve a mover nada. Mejor que un error — un
 doble toque en un teléfono, o un reintento tras una respuesta perdida, no es un
 fallo del operador y no debe parecerlo.
+
+
+---
+
+## CIERRE DE IP1
+
+Las cuatro entregas que la tabla decidió, más una quinta que la tabla no podía
+prever porque solo aparece al construir.
+
+| # | PR | Repo | Merge |
+|---|---|---|---|
+| 1 | #21 · v1 POS interno | web | `d484e3e` |
+| 2 | #20 · Mobile POS | mobile | `670b666` |
+| 3 | #22 · v1 transferencias | web | `b38ec26` |
+| 4 | #23 · `product_slug` en las líneas | web | `8a1e581` |
+| 5 | #21 · Mobile transferencias | mobile | `7d43b17` |
+
+### El hueco que solo se ve construyendo
+
+El PR #22 expuso `PUT .../transfers/<id>/items/` pidiendo un **pk** de producto,
+copiando la consola Web. Ningún cliente nativo puede conseguir uno honestamente:
+
+| Ruta | Cómo nombra un artículo |
+|---|---|
+| `GET .../inventory/stock/` | `product_slug` — **ningún id** |
+| `POST .../inventory/adjustments/` | `product_slug` |
+| `PUT .../transfers/<id>/items/` (antes) | `product` (pk) |
+
+La ruta quedaba inalcanzable **desde la propia lista con la que se usa**, y
+alcanzable solo por un cliente que hubiera pasado por `/api/admin/` — que es
+justo lo que un cliente nativo no debe hacer. El PR #23 acepta `product_slug`
+sin quitar el pk.
+
+**La lección no es el campo.** Una ruta puede pasar sus tests, su smoke y su
+revisión y aun así no ser utilizable por el cliente para el que se escribió,
+porque los tests la llaman con datos que el cliente no tiene. La prueba de que
+una superficie está completa no es que responda, es que **se pueda recorrer
+entera con lo que ella misma devuelve**.
+
+### Lo que NO se construyó, y por qué
+
+| Función | Motivo |
+|---|---|
+| Recuentos de inventario | Existe en Backend y Web, **sin ruta v1** — TIPO C, va a IP2 |
+| Recepción parcial de una transferencia | **No existe el dominio** — TIPO E |
+| Reversar una transferencia despachada | **No existe** — anular es solo para borradores |
+| Anulación / devolución de venta | **No existe en el backend** — prohibido en Mobile |
+| Arqueo / sesión de caja | **No existe** — TIPO E |
+| Presets `Recepción` y `Control de Calidad` | Solo PROPUESTA, por decisión explícita |
+
+Ninguna se simuló. Una operación que no existe no recibe un mock: recibe la
+palabra PENDIENTE.
