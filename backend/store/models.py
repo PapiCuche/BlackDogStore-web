@@ -5592,3 +5592,247 @@ class RepairDelivery(models.Model):
         from django.core.exceptions import ValidationError
 
         raise ValidationError('Una entrega no se puede borrar.')
+
+
+# ---------------------------------------------------------------------------
+# M12B — Centro de notificaciones
+# ---------------------------------------------------------------------------
+#
+# FOUR THINGS THAT ARE NOT THE SAME THING, and the reason there are three
+# tables instead of one:
+#
+#   something happened          → NotificationEvent
+#   somebody should know        → Notification
+#   we tried to tell them       → NotificationDelivery
+#   they read it                → Notification.read_at
+#
+# The temptation is one table with a `sent_email` boolean. It collapses the
+# moment a second recipient appears, or a second channel, or a retry — and the
+# collapse is silent: you discover it when somebody gets five copies of the
+# same message because a webhook was replayed.
+#
+# IN-APP IS THE DURABLE RECORD. A `Notification` row IS the notification. Email
+# is a delivery attempt against it, and an SMTP outage must not make the event
+# vanish — the quote is still available whether or not the mail server was up.
+
+
+class NotificationEvent(models.Model):
+    """
+    Something happened in the business, recorded once.
+
+    NOT a message. It has no title, no recipient and no channel: those are
+    decisions made ABOUT it, downstream. Keeping them apart is what lets one
+    event fan out to a technician and a customer without either of them
+    inventing a second event.
+
+    `event_key` IS THE IDEMPOTENCY. It is derived from the ENTITY the event is
+    about, never from the request that noticed it. A payment webhook replayed
+    ten times, a quote published twice by a double-click, a delivery recorded
+    with the same idempotency key — all produce the same key, and the unique
+    constraint turns the second attempt into a no-op instead of a second inbox
+    item. Keys are built server-side; nothing a client sends reaches them.
+
+    `payload` IS DELIBERATELY THIN. Enough to render a one-line summary and
+    nothing more. It is not an audit log and not a cache of the entity: the
+    real record lives in its own module behind its own authorisation, and a
+    notification that carried the diagnosis would be a way to read the
+    diagnosis without permission.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name='notification_events',
+    )
+    event_type = models.CharField(max_length=64, db_index=True)
+
+    # Server-derived, entity-shaped. See NOTIFICATION_EVENTS.
+    event_key = models.CharField(max_length=200, unique=True)
+
+    # What the event is about, so a notification can link to it without
+    # storing a URL somebody could point anywhere.
+    target_type = models.CharField(max_length=32, blank=True)
+    target_id = models.PositiveIntegerField(null=True, blank=True)
+
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['company', 'event_type', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.event_type} ({self.event_key})'
+
+
+class Notification(models.Model):
+    """
+    ONE notice for ONE recipient.
+
+    Fifteen recipients means fifteen rows, not one row holding a list. A list
+    cannot be marked read by one person, cannot be counted per user, and cannot
+    be scoped by the queries that make an inbox fast.
+
+    TWO AUDIENCES THAT NEVER MIX. `user` is staff; `customer` is the buyer. The
+    constraint below enforces exactly one, because a row with neither belongs
+    to nobody and a row with both would be read by whichever surface asked
+    first. They are served by different APIs on purpose — a single endpoint
+    that switched queryset on `is_staff` is precisely the shape this project
+    keeps refusing.
+    """
+
+    class Audience(models.TextChoices):
+        INTERNAL = 'internal', 'Interno'
+        CUSTOMER = 'customer', 'Cliente'
+
+    class Priority(models.TextChoices):
+        INFO = 'info', 'Informativa'
+        ACTION = 'action', 'Requiere acción'
+        WARNING = 'warning', 'Advertencia'
+        CRITICAL = 'critical', 'Crítica'
+
+    class Source(models.TextChoices):
+        # M12B emits only SYSTEM. ANNOUNCEMENT exists so M12C can add composed
+        # messages without a migration that rewrites every existing row — the
+        # column is one character of schema now and a data migration later.
+        SYSTEM = 'system', 'Evento del sistema'
+        ANNOUNCEMENT = 'announcement', 'Comunicado'
+
+    event = models.ForeignKey(
+        NotificationEvent, on_delete=models.CASCADE, related_name='notifications',
+        null=True, blank=True,
+    )
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name='notifications',
+    )
+    audience = models.CharField(
+        max_length=16, choices=Audience.choices, db_index=True,
+    )
+    source = models.CharField(
+        max_length=16, choices=Source.choices, default=Source.SYSTEM,
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.CASCADE, related_name='notifications',
+    )
+    customer = models.ForeignKey(
+        'store.Customer', null=True, blank=True,
+        on_delete=models.CASCADE, related_name='notifications',
+    )
+
+    title = models.CharField(max_length=140)
+    body = models.CharField(max_length=400, blank=True)
+    priority = models.CharField(
+        max_length=16, choices=Priority.choices, default=Priority.INFO,
+    )
+
+    # Structured, never a URL. The frontend builds the route; the destination
+    # re-checks authority. A notification is an intention to navigate, not a
+    # grant.
+    target_type = models.CharField(max_length=32, blank=True)
+    target_id = models.PositiveIntegerField(null=True, blank=True)
+
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            # Exactly one recipient. Neither means nobody is told; both means
+            # two surfaces would each think it is theirs.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(user__isnull=False, customer__isnull=True)
+                    | models.Q(user__isnull=True, customer__isnull=False)
+                ),
+                name='notification_has_exactly_one_recipient',
+            ),
+            # THE DEDUPE THAT MATTERS. One person can match a recipient rule
+            # twice — a technician who is also the branch's delivery staff —
+            # and must still get one notice. The database decides that, not a
+            # `.exists()` before a `.create()`.
+            models.UniqueConstraint(
+                fields=['event', 'user'],
+                condition=models.Q(user__isnull=False, event__isnull=False),
+                name='unique_notification_per_event_and_user',
+            ),
+            models.UniqueConstraint(
+                fields=['event', 'customer'],
+                condition=models.Q(customer__isnull=False, event__isnull=False),
+                name='unique_notification_per_event_and_customer',
+            ),
+        ]
+        indexes = [
+            # The inbox query and the badge query, in that order.
+            models.Index(fields=['company', 'user', 'read_at', '-created_at'],
+                         name='notif_internal_inbox_idx'),
+            models.Index(fields=['company', 'customer', 'read_at', '-created_at'],
+                         name='notif_customer_inbox_idx'),
+        ]
+
+    def __str__(self):
+        who = self.user_id or f'customer:{self.customer_id}'
+        return f'{self.title} → {who}'
+
+
+class NotificationDelivery(models.Model):
+    """
+    One attempt to carry one notification through one channel.
+
+    Separate from the notification because delivery FAILS and notifications do
+    not. An SMTP timeout is a fact about the mail server, not about whether the
+    customer should know their quote is ready — and recording it on the
+    notification itself would make "did this happen" and "did the email go out"
+    the same question.
+
+    NO CHANNEL ROW FOR IN-APP. The `Notification` row IS the in-app delivery;
+    a row saying "we successfully wrote the row we are attached to" would be a
+    tautology with an index on it.
+    """
+
+    class Channel(models.TextChoices):
+        EMAIL = 'email', 'Correo'
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pendiente'
+        SENT = 'sent', 'Enviada'
+        FAILED = 'failed', 'Fallida'
+        # Nothing was wrong; there was simply nowhere to send it — a customer
+        # with no e-mail, a company with no notification address configured.
+        # Distinct from FAILED so a retry pass does not chase them forever.
+        SKIPPED = 'skipped', 'Omitida'
+
+    notification = models.ForeignKey(
+        Notification, on_delete=models.CASCADE, related_name='deliveries',
+    )
+    channel = models.CharField(max_length=16, choices=Channel.choices)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True,
+    )
+
+    attempt_count = models.PositiveIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    # A short reason, never a traceback: those quote the request, and the
+    # request can carry credentials.
+    failure_reason = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            # A retry updates this row; it never inserts a second one. Two rows
+            # for one channel is how somebody gets the same e-mail twice.
+            models.UniqueConstraint(
+                fields=['notification', 'channel'],
+                name='unique_delivery_per_notification_channel',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['status', 'channel']),
+        ]
+
+    def __str__(self):
+        return f'{self.channel}:{self.status} (#{self.notification_id})'
