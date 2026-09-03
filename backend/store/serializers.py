@@ -1120,8 +1120,14 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             'website_url', 'facebook_url', 'instagram_url',
             'legal_address', 'city', 'country_code',
             # branding
-            'logo_url', 'primary_color', 'accent_color', 'background_color',
+            'logo_url',
+            # M12E — variantes por contraste. Aditivas: `logo_url` sigue.
+            'logo_on_light_url', 'logo_on_dark_url',
+            'logo_horizontal_on_light_url', 'logo_horizontal_on_dark_url',
+            'primary_color', 'accent_color', 'background_color',
             'surface_color', 'text_color', 'border_color',
+            # M12E — tema claro
+            'light_background_color', 'light_surface_color',
             # business
             'timezone', 'currency',
             # policies

@@ -2350,7 +2350,56 @@ class CompanySettings(models.Model):
     # Six colours, each mapping to exactly one CSS custom property the storefront
     # already consumes. A seventh with no component reading it would be a field
     # nobody fills and nobody notices is empty.
-    logo_url = models.URLField(max_length=500, blank=True)
+    # M12E — `CharField`, no `URLField`, y el cambio corrige un defecto real.
+    #
+    # Estas rutas son SERVIDAS POR EL FRONTEND: `/assets/branding/logo.png`. Una
+    # URL absoluta convertiría un cambio de host —desarrollo, staging,
+    # producción— en un logo roto, así que lo correcto es relativo. Pero un
+    # `URLField` rechaza exactamente eso: `save()` no llama a `full_clean()`, de
+    # modo que el valor persistía y era el siguiente formulario de configuración
+    # el que fallaba, sobre un campo que nadie había tocado.
+    #
+    # Ampliar a `CharField` no rompe a nadie: una URL absoluta sigue cabiendo.
+    logo_url = models.CharField(max_length=500, blank=True)
+
+    # --- M12E — variantes por contraste -----------------------------------
+    #
+    # DEJÓ DE SER DEUDA TEÓRICA. Un logo negro sobre una cabecera negra es
+    # invisible, y eso no se arregla haciéndolo más grande: se arregla con la
+    # versión cromática que el manual del tenant autorice.
+    #
+    # CUATRO CAMPOS, NO UNO CON LÓGICA. El componente pregunta «horizontal,
+    # sobre oscuro» y recibe una URL o nada. No invierte, no recolorea y no
+    # adivina: no sabemos la geometría ni los colores del logo de un tenant
+    # arbitrario, y un `filter: invert(1)` sobre un logotipo ajeno produce
+    # basura con la misma confianza con la que produciría un acierto.
+    #
+    # Vacío es una respuesta válida y significa «no tengo esta variante». El
+    # consumidor cae al nombre de la empresa antes que dibujar algo ilegible.
+    logo_on_light_url = models.CharField(max_length=500, blank=True)
+    logo_on_dark_url = models.CharField(max_length=500, blank=True)
+    logo_horizontal_on_light_url = models.CharField(max_length=500, blank=True)
+    logo_horizontal_on_dark_url = models.CharField(max_length=500, blank=True)
+
+    # --- M12E — tema claro ------------------------------------------------
+    #
+    # Los seis campos de arriba se diseñaron cuando el storefront tenía UN tema,
+    # y describen el OSCURO. Fingir que ya resuelven claro/oscuro sería quedarse
+    # con un tema claro que hereda un fondo negro.
+    #
+    # DOS CAMPOS, NO SEIS. El texto y el borde de un tema claro se derivan del
+    # fondo con contraste garantizado; `primary` y `accent` son identidad y
+    # valen en los dos temas. Añadir seis columnas de las que cuatro nadie
+    # rellenaría sería ancho de esquema por simetría.
+    #
+    # Vacíos significa «no tengo tema claro propio», y entonces se usa un claro
+    # NEUTRO de plataforma — nunca el de otra empresa.
+    light_background_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
+    light_surface_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
     primary_color = models.CharField(
         max_length=7, blank=True, validators=[validate_hex_color],
     )

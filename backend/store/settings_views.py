@@ -99,8 +99,15 @@ def build_storefront_config_payload(company) -> dict:
             'tax_id': identity.tax_id,
         },
         'branding': {
+            # Legado, y se queda: hay tenants que sólo tienen éste.
             'logo_url': branding.logo_url,
+            # M12E — aditivo. Las claves son PREGUNTAS que hace un componente
+            # («horizontal, sobre oscuro»), no nombres de columna. Vacío
+            # significa «no tengo esa variante», y quien lo consume cae al
+            # nombre de la empresa antes que dibujar un logo ilegible.
+            'logos': branding.logos,
             'colors': branding.colors,
+            'light_colors': branding.light_colors,
             'css_variables': branding.css_variables(),
         },
         'contact': {
