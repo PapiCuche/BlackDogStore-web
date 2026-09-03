@@ -39596,3 +39596,666 @@ class M12BConcurrencyTest(TransactionTestCase):
         self.assertEqual(
             AdminAuditLog.objects.filter(action='service_payment_recorded').count(), 1,
         )
+
+
+# ===========================================================================
+# IP1A — the counter till on the internal v1 surface
+# ===========================================================================
+
+from . import pos_payloads as _ip1_payloads  # noqa: E402
+from . import pos_services as _ip1_pos  # noqa: E402
+
+
+def _ip1_url(slug, tail):
+    return f'/api/v1/internal/{slug}/sales/pos/{tail}'
+
+
+class Ip1PosBase(TestCase):
+    """
+    Two companies, two branches in the first, and a till that may sell.
+
+    The second company and the second branch are load-bearing: almost every
+    assertion below would pass against a single-tenant, single-shop
+    implementation and fail the moment a sale is supposed to stay inside the
+    shop that made it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Tienda', 'ip1-tienda', tax_id='20900095001')
+        self.other = _saas_company('Ajena', 'ip1-ajena', tax_id='20900095002')
+        provision_company_access_defaults(self.company)
+        provision_company_access_defaults(self.other)
+
+        self.branch_a = self.company.branches.order_by('pk').first()
+        self.branch_b = _saas_branch(self.company, 'Sucursal Norte')
+        self.foreign_branch = self.other.branches.order_by('pk').first()
+
+        self.cable = _prod(self.company, 'Cable USB-C', 'cable-usbc', price='50.00')
+        self.case = _prod(self.company, 'Funda', 'funda', price='30.00')
+        self.foreign_product = _prod(self.other, 'Ajeno', 'ajeno-ip1', price='90.00')
+        _m7_stock(self.branch_a, self.cable, 10)
+        _m7_stock(self.branch_a, self.case, 10)
+        _m7_stock(self.branch_b, self.cable, 3)
+
+        self.staff = _m7_user('ip1_caja')
+        self.membership = Membership.objects.create(
+            user=self.staff, company=self.company, role='sales', is_active=True,
+        )
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='ventas'),
+        )
+        cache.clear()
+        self.client = _m7_login('ip1_caja')
+
+    # -- helpers -----------------------------------------------------------
+
+    def only_caps(self, *capabilities, slug='ip1-exacto', username='ip1_caja'):
+        """EXACTLY these capabilities. Every prior assignment goes first."""
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(self.membership, _role(
+            self.company, f'Rol {slug}', capabilities=list(capabilities), slug=slug,
+        ))
+        cache.clear()
+        return _m7_login(username)
+
+    def sale_body(self, **over):
+        body = {
+            'branch': self.branch_a.pk,
+            'items': [{'product': self.cable.pk, 'quantity': 2}],
+            'payment_method': 'cash',
+            'amount_received': '100.00',
+            'idempotency_key': 'ip1-sale-000001',
+            'terms_confirmed': True,
+        }
+        body.update(over)
+        return body
+
+    def stock(self, product=None, branch=None):
+        return BranchStock.objects.get(
+            branch=branch or self.branch_a, product=product or self.cable,
+        ).quantity
+
+
+class Ip1PosContractTest(Ip1PosBase):
+    """The contract, exercised over HTTP."""
+
+    def test_the_context_names_the_branches_this_till_may_sell_from(self):
+        res = self.client.get(_ip1_url('ip1-tienda', 'context/'))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['company']['id'], self.company.pk)
+        self.assertEqual(
+            sorted(b['id'] for b in res.data['branches']),
+            sorted([self.branch_a.pk, self.branch_b.pk]),
+        )
+
+    def test_the_context_never_offers_the_online_payment_method(self):
+        # The gateway method belongs to the storefront. A counter cannot pick it.
+        res = self.client.get(_ip1_url('ip1-tienda', 'context/'))
+        self.assertNotIn(
+            'online', [m['value'] for m in res.data['payment_methods']],
+        )
+
+    def test_searching_returns_the_price_and_the_stock_of_THIS_branch(self):
+        res = self.client.get(
+            _ip1_url('ip1-tienda', 'products/search/'),
+            {'q': 'Cable', 'branch': self.branch_a.pk},
+        )
+        self.assertEqual(res.status_code, 200)
+        row = next(r for r in res.data['results'] if r['id'] == self.cable.pk)
+        self.assertEqual(row['price'], '50.00')
+        self.assertEqual(row['available'], 10)
+
+        other = self.client.get(
+            _ip1_url('ip1-tienda', 'products/search/'),
+            {'q': 'Cable', 'branch': self.branch_b.pk},
+        )
+        self.assertEqual(
+            next(r for r in other.data['results'] if r['id'] == self.cable.pk)['available'],
+            3,
+        )
+
+    def test_a_one_character_search_returns_nothing_rather_than_the_catalogue(self):
+        res = self.client.get(
+            _ip1_url('ip1-tienda', 'products/search/'),
+            {'q': 'C', 'branch': self.branch_a.pk},
+        )
+        self.assertEqual(res.data['results'], [])
+
+    def test_search_never_crosses_into_another_company(self):
+        res = self.client.get(
+            _ip1_url('ip1-tienda', 'products/search/'),
+            {'q': 'Ajeno', 'branch': self.branch_a.pk},
+        )
+        self.assertEqual(res.data['results'], [])
+
+    def test_the_preview_prices_the_basket_and_writes_nothing(self):
+        before = self.stock()
+        res = self.client.post(_ip1_url('ip1-tienda', 'preview/'), {
+            'branch': self.branch_a.pk,
+            'items': [{'product': self.cable.pk, 'quantity': 2}],
+        }, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['total'], '100.00')
+        self.assertEqual(self.stock(), before)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_a_preview_does_not_spend_an_idempotency_key(self):
+        # A preview that consumed a key would make the sale after it a "retry"
+        # and hand back the preview's own answer forever.
+        self.client.post(_ip1_url('ip1-tienda', 'preview/'), {
+            'branch': self.branch_a.pk,
+            'items': [{'product': self.cable.pk, 'quantity': 2}],
+            'idempotency_key': 'ip1-sale-000001',
+        }, format='json')
+        res = self.client.post(
+            _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_the_sale_charges_the_server_price_and_moves_the_shelf(self):
+        res = self.client.post(
+            _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['total'], '100.00')
+        self.assertTrue(res.data['created'])
+        self.assertEqual(self.stock(), 8)
+        movement = StockMovement.objects.filter(
+            branch=self.branch_a, product=self.cable,
+        ).order_by('-pk').first()
+        self.assertIsNotNone(movement)
+        self.assertEqual(movement.quantity, 2)
+
+    def test_a_price_in_the_body_changes_nothing(self):
+        # A till is TOLD what to charge; it is never asked.
+        res = self.client.post(_ip1_url('ip1-tienda', 'sales/'), self.sale_body(
+            items=[{'product': self.cable.pk, 'quantity': 2, 'price': '1.00'}],
+            total='1.00', subtotal='1.00', discount='99.00',
+        ), format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['total'], '100.00')
+        self.assertEqual(res.data['discount'], '0.00')
+
+    def test_consent_is_required(self):
+        res = self.client.post(
+            _ip1_url('ip1-tienda', 'sales/'),
+            self.sale_body(terms_confirmed=False), format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_too_little_cash_is_refused_before_the_shelf_is_touched(self):
+        # The order of refusals is the domain's and both surfaces inherit it:
+        # a till that cannot pay for the basket never gets as far as moving it.
+        res = self.client.post(_ip1_url('ip1-tienda', 'sales/'), self.sale_body(
+            amount_received='10.00',
+        ), format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.stock(), 10)
+
+    def test_a_short_idempotency_key_is_refused_rather_than_repaired(self):
+        res = self.client.post(
+            _ip1_url('ip1-tienda', 'sales/'),
+            self.sale_body(idempotency_key='short'), format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_selling_more_than_the_shelf_holds_is_409_and_moves_nothing(self):
+        # Enough cash to clear the till check, so the request actually reaches
+        # the shelf. With too little the domain refuses on the CASH first — 400,
+        # not 409 — which is correct and is a different test.
+        res = self.client.post(_ip1_url('ip1-tienda', 'sales/'), self.sale_body(
+            items=[{'product': self.cable.pk, 'quantity': 99}],
+            amount_received='5000.00',
+        ), format='json')
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.data['code'], 'insufficient_stock')
+        self.assertEqual(self.stock(), 10)
+        self.assertEqual(Order.objects.count(), 0)
+
+
+class Ip1PosIdempotencyTest(Ip1PosBase):
+    """A double tap is one sale."""
+
+    def test_the_same_key_and_basket_returns_the_same_order(self):
+        first = self.client.post(
+            _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+        )
+        second = self.client.post(
+            _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data['order_id'], second.data['order_id'])
+        self.assertFalse(second.data['created'])
+        self.assertEqual(Order.objects.count(), 1)
+
+    def test_a_replay_does_not_move_the_shelf_twice(self):
+        for _ in range(3):
+            self.client.post(
+                _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+            )
+        self.assertEqual(self.stock(), 8)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                branch=self.branch_a, product=self.cable,
+            ).count(),
+            1,
+        )
+
+    def test_a_replay_pays_no_second_commission(self):
+        for _ in range(2):
+            self.client.post(
+                _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+            )
+        self.assertLessEqual(SalesCommission.objects.count(), 1)
+
+    def test_the_same_key_with_a_DIFFERENT_basket_is_409(self):
+        self.client.post(
+            _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+        )
+        res = self.client.post(_ip1_url('ip1-tienda', 'sales/'), self.sale_body(
+            items=[{'product': self.case.pk, 'quantity': 1}],
+        ), format='json')
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.data['code'], 'idempotency_conflict')
+        self.assertIn('existing_order', res.data)
+        self.assertEqual(Order.objects.count(), 1)
+
+
+class Ip1PosAuthorityTest(Ip1PosBase):
+    """Tenant, branch and capability — all decided by the server."""
+
+    def test_anonymous_reaches_nothing(self):
+        anon = APIClient()
+        for tail, method in [
+            ('context/', 'get'), ('products/search/', 'get'),
+            ('products/lookup/', 'get'), ('preview/', 'post'), ('sales/', 'post'),
+        ]:
+            res = getattr(anon, method)(_ip1_url('ip1-tienda', tail), {}, format='json')
+            self.assertIn(res.status_code, (401, 403), tail)
+
+    def test_a_foreign_tenant_is_404_not_403(self):
+        # A 403 would confirm the company exists and let somebody map the
+        # platform by trying slugs.
+        for tail in ('context/', 'products/search/'):
+            res = self.client.get(_ip1_url('ip1-ajena', tail))
+            self.assertEqual(res.status_code, 404, tail)
+        res = self.client.post(
+            _ip1_url('ip1-ajena', 'sales/'), self.sale_body(), format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_a_customer_reaches_nothing(self):
+        buyer = _m7_user('ip1_cliente')
+        client = _m7_login('ip1_cliente')
+        res = client.get(_ip1_url('ip1-tienda', 'context/'))
+        self.assertEqual(res.status_code, 404)
+        void = buyer
+
+    def test_without_pos_use_every_route_is_403(self):
+        client = self.only_caps('sales.orders.view', slug='ip1-sin-caja')
+        for tail, method in [
+            ('context/', 'get'), ('products/search/', 'get'),
+            ('preview/', 'post'), ('sales/', 'post'),
+        ]:
+            res = getattr(client, method)(_ip1_url('ip1-tienda', tail), {}, format='json')
+            self.assertEqual(res.status_code, 403, tail)
+
+    def test_a_custom_role_holding_only_pos_use_can_sell(self):
+        # A tenant can build a till-only role, and it works.
+        client = self.only_caps('company.view', 'sales.pos.use', slug='ip1-solo-caja')
+        res = client.post(
+            _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_the_technician_preset_cannot_open_the_till(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='servicio-tecnico'),
+        )
+        cache.clear()
+        client = _m7_login('ip1_caja')
+        self.assertEqual(
+            client.get(_ip1_url('ip1-tienda', 'context/')).status_code, 403,
+        )
+
+    def test_the_inventory_preset_cannot_open_the_till(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='inventario'),
+        )
+        cache.clear()
+        client = _m7_login('ip1_caja')
+        self.assertEqual(
+            client.get(_ip1_url('ip1-tienda', 'context/')).status_code, 403,
+        )
+
+    def test_a_platform_master_sells_in_an_EXPLICIT_tenant(self):
+        master = _m7_user('ip1_master')
+        master.is_superuser = True
+        master.is_staff = True
+        master.save(update_fields=['is_superuser', 'is_staff'])
+        cache.clear()
+        client = _m7_login('ip1_master')
+        res = client.post(
+            _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertFalse(
+            Membership.objects.filter(user=master, company=self.company).exists()
+        )
+
+    def test_a_branch_outside_the_members_access_is_refused(self):
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        _M7BranchAccess.objects.create(membership=self.membership, branch=self.branch_a)
+        cache.clear()
+        client = _m7_login('ip1_caja')
+
+        ok = client.post(
+            _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+        )
+        self.assertEqual(ok.status_code, 201, ok.data)
+
+        refused = client.post(_ip1_url('ip1-tienda', 'sales/'), self.sale_body(
+            branch=self.branch_b.pk, idempotency_key='ip1-sale-000002',
+        ), format='json')
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(self.stock(branch=self.branch_b), 3)
+
+    def test_a_branch_of_another_company_is_refused(self):
+        res = self.client.post(_ip1_url('ip1-tienda', 'sales/'), self.sale_body(
+            branch=self.foreign_branch.pk,
+        ), format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_a_product_of_another_company_is_refused(self):
+        res = self.client.post(_ip1_url('ip1-tienda', 'sales/'), self.sale_body(
+            items=[{'product': self.foreign_product.pk, 'quantity': 1}],
+        ), format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_a_barcode_of_another_company_answers_like_one_that_does_not_exist(self):
+        code = ProductBarcode.objects.create(
+            company=self.other, product=self.foreign_product,
+            code='7501234567890', is_active=True,
+        )
+        res = self.client.get(_ip1_url('ip1-tienda', 'products/lookup/'), {
+            'code': code.code, 'branch': self.branch_a.pk,
+        })
+        self.assertEqual(res.status_code, 404)
+
+
+class Ip1PosSellerAndDiscountTest(Ip1PosBase):
+    """Two separate permissions, and neither is implied by the till."""
+
+    def test_ventas_may_sell_but_not_reassign_or_discount(self):
+        # Measured against the resolver, not assumed: the Ventas preset holds
+        # `sales.pos.use` and neither of the other two.
+        res = self.client.get(_ip1_url('ip1-tienda', 'context/'))
+        self.assertTrue(res.data['can_assign_seller'] is False)
+        self.assertTrue(res.data['can_apply_discount'] is False)
+        self.assertEqual(res.data['sellers'], [])
+
+    def test_a_seller_in_the_body_is_ignored_without_the_capability(self):
+        colleague = _m7_user('ip1_colega')
+        Membership.objects.create(
+            user=colleague, company=self.company, role='sales', is_active=True,
+        )
+        res = self.client.post(
+            _ip1_url('ip1-tienda', 'sales/'),
+            self.sale_body(seller=colleague.pk), format='json',
+        )
+        # The domain refuses rather than silently crediting the operator: a sale
+        # quietly attributed to the wrong person is a commission dispute.
+        self.assertIn(res.status_code, (201, 403))
+        if res.status_code == 201:
+            order = Order.objects.get(pk=res.data['order_id'])
+            self.assertEqual(order.seller_id, self.staff.pk)
+
+    def test_a_manual_discount_is_ignored_or_refused_without_the_capability(self):
+        res = self.client.post(_ip1_url('ip1-tienda', 'sales/'), self.sale_body(
+            manual_discount_type='amount', manual_discount_value='40.00',
+            discount_reason='porque sí',
+        ), format='json')
+        self.assertIn(res.status_code, (201, 400, 403))
+        if res.status_code == 201:
+            self.assertEqual(res.data['discount'], '0.00')
+            self.assertEqual(res.data['total'], '100.00')
+
+    def test_an_admin_may_reassign_and_discount(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='administrador'),
+        )
+        cache.clear()
+        client = _m7_login('ip1_caja')
+        res = client.get(_ip1_url('ip1-tienda', 'context/'))
+        self.assertTrue(res.data['can_assign_seller'])
+        self.assertTrue(res.data['can_apply_discount'])
+
+    def test_a_cashier_is_not_told_the_commission(self):
+        res = self.client.post(
+            _ip1_url('ip1-tienda', 'sales/'), self.sale_body(), format='json',
+        )
+        self.assertIsNone(res.data['commission'])
+
+
+class Ip1PosWebParityTest(Ip1PosBase):
+    """
+    THE SAME BUSINESS RESULT, and the same bytes.
+
+    The two surfaces authenticate differently — a cookie and a slugless path on
+    one side, a Bearer token and a tenant slug on the other — and that is the
+    ONLY difference either is allowed to have. Same domain function, same
+    payload builder, so the same sale produces the same order, the same stock
+    and the same response body.
+    """
+
+    def _web_client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.staff)
+        return client
+
+    def test_the_context_payload_is_byte_identical(self):
+        cache.clear()
+        web = self._web_client().get('/api/admin/pos/context/').json()
+        v1 = self.client.get(_ip1_url('ip1-tienda', 'context/')).json()
+        self.assertEqual(web, v1)
+
+    def test_the_preview_payload_is_byte_identical(self):
+        body = {
+            'branch': self.branch_a.pk,
+            'items': [{'product': self.cable.pk, 'quantity': 2}],
+        }
+        cache.clear()
+        web = self._web_client().post(
+            '/api/admin/pos/preview/', body, format='json',
+        ).json()
+        v1 = self.client.post(
+            _ip1_url('ip1-tienda', 'preview/'), body, format='json',
+        ).json()
+        self.assertEqual(web, v1)
+
+    def test_the_same_sale_produces_the_same_result_on_both_surfaces(self):
+        web = self._web_client().post('/api/admin/pos/sales/', {
+            'branch': self.branch_a.pk,
+            'items': [{'product': self.cable.pk, 'quantity': 2}],
+            'payment_method': 'cash', 'amount_received': '100.00',
+            'idempotency_key': 'ip1-web-00000001', 'terms_confirmed': True,
+        }, format='json').json()
+
+        v1 = self.client.post(_ip1_url('ip1-tienda', 'sales/'), self.sale_body(
+            idempotency_key='ip1-v1-000000001',
+        ), format='json').json()
+
+        # Two different orders — they are two sales — but every business figure
+        # matches, and so does every key.
+        self.assertNotEqual(web['order_id'], v1['order_id'])
+        self.assertEqual(sorted(web), sorted(v1))
+        for field in (
+            'subtotal', 'discount', 'discount_source', 'total', 'payment_method',
+            'amount_received', 'change_amount', 'seller', 'commission', 'items',
+        ):
+            self.assertEqual(web[field], v1[field], field)
+
+        # And the shelf moved twice, once per sale.
+        self.assertEqual(self.stock(), 6)
+
+    def test_both_surfaces_call_the_same_domain_function(self):
+        import ast, inspect, textwrap
+        from . import pos_views, v1_pos_views
+
+        def calls(module, class_name):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(module)))
+            node = next(
+                n for n in ast.walk(tree)
+                if isinstance(n, ast.ClassDef) and n.name == class_name
+            )
+            return ast.unparse(node)
+
+        for cls, needle in [
+            ('AdminPosSaleView', 'pos_services.create_pos_sale'),
+            ('AdminPosPreviewView', 'pos_services.build_pos_sale'),
+        ]:
+            self.assertIn(needle, calls(pos_views, cls), cls)
+        for cls, needle in [
+            ('V1PosSaleView', 'pos_services.create_pos_sale'),
+            ('V1PosPreviewView', 'pos_services.build_pos_sale'),
+        ]:
+            self.assertIn(needle, calls(v1_pos_views, cls), cls)
+
+    def test_neither_surface_shapes_its_own_payload(self):
+        # The shaping lives in `pos_payloads`, once. A surface that built its
+        # own dict would be one renamed key away from telling a phone something
+        # different from a browser.
+        import inspect
+        from . import pos_views, v1_pos_views
+        for module in (pos_views, v1_pos_views):
+            source = inspect.getsource(module)
+            self.assertIn('pos_payloads.', source, module.__name__)
+
+    def test_the_v1_view_never_writes_stock_or_prices_anything_itself(self):
+        import inspect
+        from . import v1_pos_views
+        source = inspect.getsource(v1_pos_views)
+        for forbidden in (
+            'BranchStock.objects', 'create_stock_movement', 'quantity -',
+            'Decimal(', 'order.total =', 'SalesCommission(',
+        ):
+            self.assertNotIn(forbidden, source, forbidden)
+
+    def test_the_v1_surface_never_authorizes_on_a_role_name(self):
+        import inspect
+        import re
+        from . import v1_pos_views
+        source = inspect.getsource(v1_pos_views)
+        self.assertIn('has_capability', source)
+        for forbidden in (r"role\s*==\s*'", r'\.role\s*in\s*\(', 'ROLE_ADMIN'):
+            self.assertIsNone(re.search(forbidden, source), forbidden)
+
+
+class Ip1ParityManifestTest(TestCase):
+    """
+    The manifest is a document, and a document that drifts is worse than none.
+
+    These do not grant anything — the matrix says so in its own first paragraph.
+    They check that what it CLAIMS is still true, so the day somebody removes a
+    route or renames a capability, the file that told a client to call it fails
+    with them.
+    """
+
+    MANIFEST = 'docs/internal-parity-matrix.md'
+
+    def _manifest(self):
+        import os
+        from django.conf import settings
+        path = os.path.join(os.path.dirname(settings.BASE_DIR), self.MANIFEST)
+        with open(path, encoding='utf-8') as fh:
+            return fh.read()
+
+    def test_the_manifest_exists_and_disclaims_authority(self):
+        text = self._manifest()
+        self.assertIn('NO CONCEDE PERMISOS', text)
+
+    def _capability_cells(self):
+        """
+        Every value in a column headed «Capability», and nothing else.
+
+        THE FIRST VERSION OF THIS GREPPED THE WHOLE FILE for anything shaped
+        like `a.b.c`, and flagged `sales.orders.fulfillment` — an OPERATION
+        code in the manifest's first column, not a permission. A guard that
+        fires on the document's own vocabulary gets loosened by the next person,
+        and then it guards nothing. So it reads the table by header instead.
+        """
+        cells = set()
+        header_index = None
+        for line in self._manifest().split('\n'):
+            if not line.strip().startswith('|'):
+                header_index = None
+                continue
+            cols = [c.strip() for c in line.strip().strip('|').split('|')]
+            lowered = [c.lower() for c in cols]
+            if 'capability' in lowered:
+                header_index = lowered.index('capability')
+                continue
+            if header_index is None or header_index >= len(cols):
+                continue
+            cell = cols[header_index]
+            for token in cell.replace('`', ' ').split():
+                if '.' in token and not token.endswith(('.*', '.')):
+                    cells.add(token.strip(','))
+        return cells
+
+    def test_every_capability_it_names_exists_in_the_catalogue(self):
+        from .capabilities import CAPABILITIES
+
+        named = self._capability_cells()
+        self.assertGreater(len(named), 5, 'la matriz dejó de nombrar capabilities')
+        unknown = sorted(c for c in named if c not in CAPABILITIES)
+        self.assertEqual(unknown, [], f'capabilities inventadas en la matriz: {unknown}')
+
+    def test_every_v1_route_it_names_is_registered(self):
+        import re
+        from django.urls import get_resolver
+
+        registered = set()
+        for key, value in get_resolver().reverse_dict.items():
+            if isinstance(key, str):
+                registered.add(value[0][0][0])
+
+        named = set(re.findall(
+            r'`(internal/<slug>/[a-z0-9/<>_-]+/)`', self._manifest(),
+        ))
+        missing = []
+        for route in named:
+            probe = route.replace('<slug>', '%(company_slug)s').replace('<id>', '%(pk)s')
+            if not any(probe.split('%')[0] in r for r in registered):
+                missing.append(route)
+        self.assertEqual(missing, [], f'rutas que la matriz nombra y no existen: {missing}')
+
+    def test_the_pos_routes_it_promises_are_reachable(self):
+        from django.urls import reverse
+        for name in (
+            'v1-internal-pos-context', 'v1-internal-pos-search',
+            'v1-internal-pos-lookup', 'v1-internal-pos-preview',
+            'v1-internal-pos-sale',
+        ):
+            self.assertTrue(reverse(name, kwargs={'company_slug': 'x'}), name)
+
+    def test_the_presets_it_calls_PROPUESTA_really_do_not_exist(self):
+        # If somebody creates them, this fails and the matrix has to be updated
+        # rather than quietly becoming wrong.
+        from .company_provisioning import PRESET_ROLES
+        slugs = {slug for _name, slug, *_rest in PRESET_ROLES}
+        self.assertNotIn('recepcion', slugs)
+        self.assertNotIn('control-de-calidad', slugs)
