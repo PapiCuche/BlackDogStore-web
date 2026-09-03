@@ -17,6 +17,12 @@ from .v1_customer_views import (
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
 )
+from .evidence_views import (
+    CustomerEvidenceContentView, CustomerEvidenceListView,
+    InternalEvidenceContentView, InternalEvidenceDetailView,
+    InternalEvidenceHideView, InternalEvidenceListView,
+    InternalEvidencePublishView, InternalEvidenceVoidView,
+)
 from .announcement_views import (
     InternalAnnouncementReadView,
     PlatformAnnouncementDetailView, PlatformAnnouncementListView,
@@ -459,6 +465,56 @@ urlpatterns = [
     path(
         'customer/<slug:company_slug>/notifications/<int:pk>/read/',
         CustomerNotificationReadView.as_view(), name='v1-customer-notifications-read',
+    ),
+
+    # --- M12D — evidencias fotográficas ---
+    #
+    # Cuelgan de la orden porque una evidencia SIN su reparación no significa
+    # nada, y porque así la autorización de la orden se aplica antes de llegar
+    # a la foto en lugar de repetirse en cada ruta.
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/',
+        InternalEvidenceListView.as_view(), name='v1-internal-service-evidence',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/',
+        InternalEvidenceDetailView.as_view(),
+        name='v1-internal-service-evidence-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/content/',
+        InternalEvidenceContentView.as_view(),
+        name='v1-internal-service-evidence-content',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/publish-to-customer/',
+        InternalEvidencePublishView.as_view(),
+        name='v1-internal-service-evidence-publish',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/hide-from-customer/',
+        InternalEvidenceHideView.as_view(),
+        name='v1-internal-service-evidence-hide',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/void/',
+        InternalEvidenceVoidView.as_view(),
+        name='v1-internal-service-evidence-void',
+    ),
+    path(
+        'customer/<slug:company_slug>/repairs/<int:pk>/evidence/',
+        CustomerEvidenceListView.as_view(), name='v1-customer-repair-evidence',
+    ),
+    path(
+        'customer/<slug:company_slug>/repairs/<int:pk>/evidence/'
+        '<int:evidence_id>/content/',
+        CustomerEvidenceContentView.as_view(),
+        name='v1-customer-repair-evidence-content',
     ),
 
     # --- M12C — comunicados internos ---
