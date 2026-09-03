@@ -7,8 +7,14 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
 
+    # Renumbered from 0058 in M12B.1. Two branches independently claimed that
+    # number — the payment ledger reached master first — and while a duplicate
+    # numeric prefix is legal (a migration's identity is its name plus its
+    # dependencies), TWO LEAVES ARE NOT. Depending on 0059 rather than 0057
+    # puts this back in a single chain and keeps the file name honest about
+    # where in the order it actually runs.
     dependencies = [
-        ('store', '0057_migrate_legacy_technicians_to_rbac'),
+        ('store', '0059_payment_capability_for_untouched_presets'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

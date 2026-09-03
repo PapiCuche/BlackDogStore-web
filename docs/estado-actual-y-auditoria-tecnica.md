@@ -2149,6 +2149,116 @@ colgado de la capability ancha, no podría.
 
 ---
 
+## G3 + H3 + M12B — consolidación, baseline de tests y cobro del servicio
+
+### G3 — las dos ramas abiertas, consolidadas
+
+Ambas se integraron con `master` mediante **merge normal**, nunca rebase. Un
+compañero había hecho en paralelo la reconciliación del grafo de migraciones
+**renumerando** la cadena RBAC encima de la de entrega en lugar de añadir un
+nodo de merge; su solución es mejor que la mía y se adoptó, descartando la
+propia. La secuencia final es lineal, con **una sola hoja**.
+
+Lo que sí aportó esta fase a PR #10 fueron cuatro defectos que la auditoría
+encontró y que su autor no había visto:
+
+**1. Escalada apagando y encendiendo un rol.** `capability_set` devuelve
+`frozenset()` mientras el rol está inactivo — correcto para **resolver**,
+equivocado para **delegar** — y el PATCH del rol solo revalidaba delegación si
+el cuerpo traía `capabilities`. Encadenado:
+
+```
+PATCH /admin/roles/R/  {"is_active": false}       → 200
+POST  /admin/membership-role-assignments/ {yo, R} → 201  (!)
+PATCH /admin/roles/R/  {"is_active": true}        → 200
+```
+
+y el llamador resolvía una capacidad que nunca tuvo. Reproducido ejecutando: el
+test del viaje completo fallaba con la capacidad efectivamente concedida.
+Cerrado en tres sitios.
+
+**2. Escalada por delegado en la ruta legacy.** `can_delegate_capabilities()`
+guardaba los cuatro caminos RBAC y no el de acuñar una membresía;
+`LEGACY_ROLE_CAPABILITIES['admin']` es todo el catálogo. Cerrado, **estrechando
+deliberadamente** un comportamiento existente.
+
+**3. El discriminador de `Ventas` no filtraba por slug** y ensanchaba cualquier
+rol cuyas capacidades igualaran un conjunto de siete códigos — «el rol de
+mostrador», lo más natural que un taller arma a mano.
+
+**4. El selector de empresa estaba muerto** en `/admin/roles` y `/admin/users`:
+decían «selecciona una empresa» y no pasaban `onSelectCompany`.
+
+### PR #17 — la renumeración arregló el orden, no la comparación
+
+`0057` comparaba contra un `_TECHNICIAN_CAPS` **importado en vivo**. Con la
+cadena lineal el orden queda garantizado, así que una base al día migra bien —
+pero una base **atrasada** no: añádase una capacidad número trece en `0058`, y
+un tenant que cruce ambos nodos en un solo `migrate` compara doce contra trece,
+omite a **todos** los técnicos y culpa al taller de una personalización que
+nunca hizo. Congelado, con un tripwire que falla el día que el preset crezca.
+
+### H3 — baseline de tests del frontend
+
+**Jest + React Testing Library vía `next/jest`.** Elegido por lo instalado: Next
+16.3.4 lo trae, configura el SWC con el que ya se compila, lee el alias del
+tsconfig y stubea CSS. Vitest necesitaría cuatro piezas para llegar al mismo
+sitio.
+
+Dos cosas se aprendieron de ejecuciones fallidas y quedan documentadas en la
+config: el alias hay que declararlo **dos veces** (SWC reescribe los imports
+reales, pero `jest.mock('@/…')` es un string que no toca), y `next/navigation`
+se mockea una vez en el setup porque es un hecho del **entorno**.
+
+El test del selector de empresa, corrido contra el código tal como se publicó,
+falla con `Number of calls: 0`. Esa es la demostración de que la baseline sirve.
+
+### M12B — el libro mayor de cobros
+
+**Arquitectura A**, decidida leyendo el modelo:
+
+| pregunta | respuesta |
+|---|---|
+| ¿`PaymentTransaction` es reutilizable? | **No.** FK no nula a `Order`, `PROTECT`, y **sin columna de empresa**: su tenancy es `order.company` |
+| ¿Qué asume `Order`? | la FK, la tenancy ausente, el índice `(order, created_at)`, `order_number` único **global**, y `amount` contra `Order.total` |
+| ¿Qué webhook lo asume? | `IzipayNotificationView`: resuelve sin pista de tenant y entra por `attempt.order` para comparar, marcar `order.paid`, mover stock, vaciar carrito y mandar correos |
+| ¿Qué sí es reutilizable? | **todo `store/payments/izipay.py`** — no importa un solo modelo |
+| ¿Cuál es el saldo autoritativo? | `financial_quote()` → última revisión aprobada. **Nunca la suma** |
+| ¿Parciales? | sí. ¿Pagar de más? no |
+| ¿Reembolsos? | **no existen en ninguna parte del repo**. `Order.Status.REFUNDED` no lo escribe nadie |
+| ¿Impuestos reales? | **no.** `tax_amount` es columna muerta |
+| ¿Comprobante fiscal? | **no.** `SalesNote` lleva un recuadro rojo que dice que no lo es |
+| ¿Merchant por tenant? | **no.** `load_credentials()` lee de `settings`: config **global** |
+
+### Estado de superficies
+
+| Acción | Backend | Web | Mobile |
+|---|---|---|---|
+| Consola de roles y permisos | IMPLEMENTADO | INTEGRADO | fuera de alcance |
+| «Mis reparaciones» | IMPLEMENTADO | INTEGRADO | PENDIENTE |
+| Libro mayor de cobros | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Resumen de saldo (cliente) | IMPLEMENTADO | **PENDIENTE** | INTEGRADO |
+| Reverso de pago | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| Política pago-antes-de-entregar | IMPLEMENTADO | INTEGRADO | INTEGRADO |
+| **Pago en línea del servicio** | **NO EXISTE** | — | — |
+| Portal Web de cliente | IMPLEMENTADO (API) | **PENDIENTE** | INTEGRADO |
+| Garantía / reingreso | NO EXISTE | — | — |
+| Impuestos · comprobante fiscal | NO EXISTE | — | — |
+
+### Deuda que deja esta fase
+
+1. **Pago en línea (M12B2)** — el adaptador es reutilizable; faltan
+   `RepairPaymentAttempt`, el flujo de sesión y la notificación firmada.
+2. **Recotizar tras aprobar es imposible hoy.** Hueco del módulo de cotización.
+3. **Merchant global**, no por tenant.
+4. **Impuestos y comprobante fiscal** siguen sin existir.
+5. **Portal Web de cliente de reparaciones** — sigue PENDIENTE desde H2.
+6. **`Membership.adopted_rbac_at`** — la marca de adopción RBAC es la existencia
+   de una fila, y `CASCADE` la borra si alguien elimina y recrea la membresía.
+   Solo alcanzable desde el admin de Django.
+7. **`MembershipAdmin`** es el único admin hermano sin `has_delete_permission`.
+
+
 ## M12B — Centro de notificaciones
 
 **Estado: IMPLEMENTADO** para `IN_APP` y `EMAIL`. Migración **0058**.
@@ -2215,3 +2325,4 @@ Preferencias por evento/canal (**PARCIAL**) · reintentos automáticos (existe
 (**PROPUESTA**) · portal web de reparaciones del cliente (**PENDIENTE**) ·
 Mobile (**PENDIENTE**) · `Administrador 18/37` en instalación desde cero
 (**PENDIENTE PREEXISTENTE**, no ampliado por esta fase).
+

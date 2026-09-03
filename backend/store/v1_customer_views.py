@@ -289,3 +289,48 @@ class V1CustomerRepairQuoteDecisionView(V1CustomerRepairQuoteView):
         return Response({
             'quote': V1CustomerQuoteSerializer(fresh, context=self._context(company)).data,
         })
+
+
+class V1CustomerRepairPaymentSummaryView(V1CustomerRepairQuoteView):
+    """
+    GET — what I agreed to, what I have paid, what is left. M12B.
+
+    OWNERSHIP FIRST, inherited from the quote view: the order is looked up
+    through `customer_owned_repair_orders`, so a repair that is not this
+    person's is not found and neither is its balance.
+
+    FIVE NUMBERS AND NOT ONE FIELD MORE. No ledger, no cashier, no method, no
+    reference, no reversal. A customer may know their own balance — withholding
+    it would be indefensible — and everything else on those rows is the shop's
+    own bookkeeping.
+
+    `overpaid` is reported as `paid`. It is true, it is not alarming, and an
+    overpayment is a conversation to have at a counter rather than a number to
+    surprise somebody with in an app.
+
+    THERE IS NO PAY BUTTON BEHIND THIS. Online payment for a repair does not
+    exist, and an endpoint that told a customer their balance while implying
+    they could settle it here would be the lie this whole phase avoided.
+    """
+
+    def get(self, request, company_slug=None, pk=None):
+        from . import service_services
+        from .v1_service_serializers import V1CustomerPaymentSummarySerializer
+
+        company = self.get_customer_company()
+        order = self._order(company, pk)
+
+        summary = service_services.service_payment_summary(order)
+        status_code = summary['payment_status']
+        if status_code == service_services.PAYMENT_STATUS_OVERPAID:
+            status_code = service_services.PAYMENT_STATUS_PAID
+
+        return Response(
+            V1CustomerPaymentSummarySerializer({
+                'currency': summary['currency'],
+                'quoted_total': summary['quoted_total'],
+                'paid': summary['confirmed_paid'],
+                'outstanding': summary['outstanding'],
+                'status': status_code,
+            }).data
+        )

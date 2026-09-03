@@ -8941,13 +8941,19 @@ class Phase2a1SeedAndRegressionTest(TestCase):
         deliberately, and the test now pins the SHAPE of that divergence, which
         is the property that actually matters:
 
-          · `Ventas` grew reception. A company that adopts the preset chooses it.
-          · The legacy matrix did NOT grow. It answers for memberships that never
-            adopted RBAC, and adding reception there would let pre-SaaS operators
-            take devices into a workshop because software shipped.
+          · `Ventas` grew reception in M11 and the till's authority over repair
+            money in M12B. A company that adopts the preset chooses both.
+          · The legacy matrix did NOT grow, either time. It answers for
+            memberships that never adopted RBAC, and adding reception there
+            would let pre-SaaS operators take devices into a workshop because
+            software shipped — adding PAYMENTS there would let them take money.
           · `Inventario` still matches exactly. Nothing about it changed, so a
             difference appearing here would be the accidental drift the original
             test was written to catch.
+
+        THE DIFFERENCE SET GROWS WITH EACH DELIBERATE DIVERGENCE, and that is
+        what makes this test useful: an addition nobody decided shows up as a
+        member of this set that nobody put in it.
         """
         ventas = self.pilot.roles.get(slug='ventas')
         legacy_sales = set(LEGACY_ROLE_CAPABILITIES['sales'])
@@ -8959,9 +8965,13 @@ class Phase2a1SeedAndRegressionTest(TestCase):
             set(ventas.capabilities) - legacy_sales,
             {'service.customers.view', 'service.customers.manage',
              'service.devices.view', 'service.devices.manage',
-             'service.orders.create', 'service.orders.view'},
-            'la única diferencia debe ser recepción técnica',
+             'service.orders.create', 'service.orders.view',
+             # M12B. The counter takes the money for a repair; a legacy `sales`
+             # membership that never adopted RBAC does not.
+             'service.payments.manage'},
+            'la diferencia debe ser recepción técnica y el cobro del servicio',
         )
+        self.assertNotIn('service.payments.manage', legacy_sales)
 
         inventario = self.pilot.roles.get(slug='inventario')
         self.assertEqual(
@@ -37965,6 +37975,1629 @@ class G3TechnicianMigrationFreezeTest(TestCase):
 
 
 # ===========================================================================
+# M12B / BR-005F — the service payment ledger
+# ===========================================================================
+
+from decimal import Decimal as _D  # noqa: E402
+from .models import PaymentMethod as _M12BMethod  # noqa: E402
+from .models import RepairPayment as _M12BPayment  # noqa: E402
+from .models import RepairQuote as _M9Quote  # noqa: E402
+from django.db.models import Max  # noqa: E402
+
+
+def _m12b_url(slug, order_id, tail=''):
+    return f'/api/v1/internal/{slug}/service/orders/{order_id}/{tail}'
+
+
+class M12BPaymentBase(M12DeliveryBase):
+    """M12's fixture, plus a role that may take money."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.only_capabilities(
+            'service.orders.view', 'service.orders.create', 'service.orders.manage',
+            'service.devices.view', 'service.devices.manage', 'service.customers.view',
+            'service.diagnostic.manage', 'service.repair.manage',
+            'service.quality.manage', 'service.delivery.manage',
+            'service.payments.manage',
+            slug='m12b-rol',
+        )
+
+    def quoted(self):
+        """An APPROVED quote, so there is a debt to pay. Total is 450.00."""
+        quote = self.approved_order()
+        quote.refresh_from_db()
+        return quote
+
+    def pay(self, amount, **kwargs):
+        return _m8_service.record_service_payment(
+            repair_order=self.order, amount=amount,
+            method=kwargs.pop('method', _M12BMethod.CASH),
+            actor=self.staff, **kwargs,
+        )
+
+    def summary(self):
+        self.order.refresh_from_db()
+        return _m8_service.service_payment_summary(self.order)
+
+    def require_payment(self, value=True):
+        settings_row, _ = CompanySettings.objects.get_or_create(company=self.company)
+        settings_row.require_service_payment_before_delivery = value
+        settings_row.save(update_fields=['require_service_payment_before_delivery'])
+
+
+class M12BQuoteAuthorityTest(M12BPaymentBase):
+    """
+    What the customer owes, and the one function that answers it.
+
+    THE TRAP THIS CLOSES. A repair carries quote REVISIONS, and a re-quote in
+    this codebase is a full restatement rather than a delta. Summing the
+    approved ones would charge for the same screen twice.
+    """
+
+    def test_the_authority_is_the_latest_approved_revision(self):
+        quote = self.quoted()
+        self.assertEqual(
+            _m8_service.financial_quote(self.order).pk, quote.pk,
+        )
+
+    def test_it_is_the_same_function_the_lifecycle_uses(self):
+        # One answer to "how much", not two that can disagree.
+        self.quoted()
+        self.assertEqual(
+            _m8_service.financial_quote(self.order).pk,
+            _m8_service.approved_quote(self.order).pk,
+        )
+
+    def test_no_approved_quote_means_no_debt_rather_than_zero(self):
+        # `None` is not `0.00`. Rendering it as zero would tell somebody the
+        # repair is free.
+        summary = self.summary()
+        self.assertIsNone(summary['quoted_total'])
+        self.assertIsNone(summary['outstanding'])
+        self.assertEqual(summary['payment_status'], 'no_quote')
+
+    def test_a_rejected_quote_is_not_a_debt(self):
+        quote = self.quote_with_part()
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        quote.refresh_from_db()
+        _m8_service.record_quote_decision(
+            quote=quote, customer=self.customer, user=self.client_user,
+            decision='reject',
+        )
+        self.assertIsNone(_m8_service.financial_quote(self.order))
+        self.assertEqual(self.summary()['payment_status'], 'no_quote')
+
+    def test_the_currency_comes_from_the_quote_not_the_client(self):
+        quote = self.quoted()
+        self.assertEqual(self.summary()['currency'], quote.currency)
+
+    def test_the_total_is_a_Decimal_quantised_to_cents(self):
+        self.quoted()
+        total = self.summary()['quoted_total']
+        self.assertIsInstance(total, _D)
+        self.assertEqual(total, total.quantize(_D('0.01')))
+
+
+class M12BLedgerTest(M12BPaymentBase):
+    """Money in, and the arithmetic over it."""
+
+    def test_a_payment_reduces_the_balance(self):
+        quote = self.quoted()
+        self.pay('200.00')
+        summary = self.summary()
+        self.assertEqual(summary['confirmed_paid'], _D('200.00'))
+        self.assertEqual(summary['outstanding'], _money_total(quote) - _D('200.00'))
+        self.assertEqual(summary['payment_status'], 'partial')
+
+    def test_two_partial_payments_settle_the_debt(self):
+        # A deposit and a balance. The whole reason this is a ledger.
+        quote = self.quoted()
+        total = _money_total(quote)
+        self.pay('200.00')
+        self.pay(total - _D('200.00'))
+        summary = self.summary()
+        self.assertEqual(summary['outstanding'], _D('0.00'))
+        self.assertEqual(summary['payment_status'], 'paid')
+        self.assertEqual(
+            _M12BPayment.objects.filter(repair_order=self.order).count(), 2,
+        )
+
+    def test_the_order_carries_no_paid_flag(self):
+        # A boolean cannot say "two hundred of five hundred".
+        names = {f.name for f in self.order._meta.get_fields()}
+        for forbidden in ('paid', 'is_paid', 'amount_paid', 'balance', 'total'):
+            self.assertNotIn(forbidden, names, forbidden)
+
+    def test_nothing_stores_a_cached_balance(self):
+        names = {f.name for f in _M12BPayment._meta.get_fields()}
+        for forbidden in ('balance', 'outstanding', 'running_total'):
+            self.assertNotIn(forbidden, names, forbidden)
+
+    def test_zero_and_negative_are_refused(self):
+        self.quoted()
+        for bad in ('0.00', '-1.00'):
+            with self.assertRaises(_m8_service.PaymentError):
+                self.pay(bad)
+        self.assertEqual(_M12BPayment.objects.count(), 0)
+
+    def test_the_database_refuses_a_non_positive_amount(self):
+        self.quoted()
+        with self.assertRaises(IntegrityError):
+            _M12BPayment.objects.bulk_create([_M12BPayment(
+                company=self.company, repair_order=self.order, amount=_D('0.00'),
+                currency='PEN', method=_M12BMethod.CASH,
+            )])
+
+    def test_overpayment_is_refused(self):
+        # A till that can take more than is owed turns every typo into a refund
+        # the platform cannot perform.
+        quote = self.quoted()
+        with self.assertRaises(_m8_service.PaymentError):
+            self.pay(_money_total(quote) + _D('0.01'))
+        self.assertEqual(_M12BPayment.objects.count(), 0)
+
+    def test_the_second_payment_cannot_exceed_what_is_left(self):
+        quote = self.quoted()
+        self.pay('200.00')
+        with self.assertRaises(_m8_service.PaymentError):
+            self.pay(_money_total(quote) - _D('199.00'))
+
+    def test_paying_before_a_quote_is_approved_is_refused(self):
+        # Not "zero owed" — unknown. Taking money against an unknown debt is how
+        # a shop ends up owing somebody a refund.
+        with self.assertRaises(_m8_service.PaymentError):
+            self.pay('100.00')
+
+    def test_online_cannot_be_recorded_by_hand(self):
+        # It would assert that a gateway authorised something it never saw.
+        self.quoted()
+        with self.assertRaises(_m8_service.PaymentError):
+            self.pay('100.00', method=_M12BMethod.ONLINE)
+
+    def test_the_database_refuses_online_too(self):
+        self.quoted()
+        with self.assertRaises(IntegrityError):
+            _M12BPayment.objects.bulk_create([_M12BPayment(
+                company=self.company, repair_order=self.order, amount=_D('10.00'),
+                currency='PEN', method=_M12BMethod.ONLINE,
+            )])
+
+    def test_the_four_manual_methods_are_accepted(self):
+        quote = self.quoted()
+        for i, method in enumerate([
+            _M12BMethod.CASH, _M12BMethod.CARD,
+            _M12BMethod.TRANSFER, _M12BMethod.OTHER,
+        ]):
+            self.pay('10.00', method=method, idempotency_key=f'method-{i}')
+        self.assertEqual(_M12BPayment.objects.count(), 4)
+        self.assertEqual(self.summary()['confirmed_paid'], _D('40.00'))
+        void = quote
+
+    def test_the_currency_is_frozen_from_the_quote(self):
+        quote = self.quoted()
+        payment = self.pay('100.00')
+        self.assertEqual(payment.currency, quote.currency)
+
+    def test_the_actor_and_clock_are_the_servers(self):
+        self.quoted()
+        payment = self.pay('100.00')
+        self.assertEqual(payment.received_by, self.staff)
+        self.assertGreater(payment.received_at.year, 2020)
+
+    def test_a_reference_that_looks_like_a_card_is_refused(self):
+        # Somebody typing sixteen digits into a free-text field is a data
+        # protection incident waiting for a report to print it.
+        self.quoted()
+        with self.assertRaises(DjangoValidationError):
+            _M12BPayment.objects.create(
+                company=self.company, repair_order=self.order, amount=_D('10.00'),
+                currency='PEN', method=_M12BMethod.CASH,
+                reference='4111 1111 1111 1111',
+            )
+
+    def test_a_payment_cannot_be_edited_or_deleted(self):
+        self.quoted()
+        payment = self.pay('100.00')
+        payment.amount = _D('999.00')
+        with self.assertRaises(DjangoValidationError):
+            payment.save()
+        with self.assertRaises(DjangoValidationError):
+            payment.delete()
+
+    def test_a_payment_cannot_cross_into_another_company(self):
+        self.quoted()
+        with self.assertRaises(DjangoValidationError):
+            _M12BPayment.objects.create(
+                company=self.other, repair_order=self.order, amount=_D('10.00'),
+                currency='PEN', method=_M12BMethod.CASH,
+            )
+
+    def test_recording_a_payment_moves_no_stock_and_no_status(self):
+        self.quoted()
+        before_status = self.order.status
+        movements = StockMovement.objects.count()
+        self.pay('100.00')
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, before_status)
+        self.assertEqual(StockMovement.objects.count(), movements)
+
+    def test_recording_a_payment_creates_no_ecommerce_order_or_transaction(self):
+        self.quoted()
+        orders = Order.objects.count()
+        transactions = PaymentTransaction.objects.count()
+        self.pay('100.00')
+        self.assertEqual(Order.objects.count(), orders)
+        self.assertEqual(PaymentTransaction.objects.count(), transactions)
+
+    def test_it_writes_an_audit_entry_without_the_reference(self):
+        self.quoted()
+        payment = self.pay('100.00', reference='VOUCHER-PERSONAL-9931')
+        log = AdminAuditLog.objects.filter(
+            action='service_payment_recorded', target_id=str(payment.pk),
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertNotIn('VOUCHER-PERSONAL-9931', json.dumps(log.metadata))
+        self.assertEqual(log.metadata['amount'], '100.00')
+
+
+def _money_total(quote):
+    return _D(str(quote.total)).quantize(_D('0.01'))
+
+
+class M12BIdempotencyTest(M12BPaymentBase):
+    """Two tills must not charge one customer twice."""
+
+    def test_the_same_key_and_payload_replays_the_same_row(self):
+        self.quoted()
+        first = self.pay('200.00', idempotency_key='k1')
+        second = self.pay('200.00', idempotency_key='k1')
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(_M12BPayment.objects.count(), 1)
+        self.assertEqual(self.summary()['confirmed_paid'], _D('200.00'))
+
+    def test_a_replay_writes_no_second_audit_entry(self):
+        self.quoted()
+        for _ in range(3):
+            self.pay('200.00', idempotency_key='k1')
+        self.assertEqual(
+            AdminAuditLog.objects.filter(action='service_payment_recorded').count(), 1,
+        )
+
+    def test_the_same_key_with_a_different_amount_is_a_conflict(self):
+        self.quoted()
+        self.pay('200.00', idempotency_key='k1')
+        with self.assertRaises(_m8_service.PaymentConflict):
+            self.pay('300.00', idempotency_key='k1')
+        self.assertEqual(_M12BPayment.objects.count(), 1)
+
+    def test_the_same_key_with_a_different_method_is_a_conflict(self):
+        self.quoted()
+        self.pay('200.00', idempotency_key='k1')
+        with self.assertRaises(_m8_service.PaymentConflict):
+            self.pay('200.00', method=_M12BMethod.CARD, idempotency_key='k1')
+
+    def test_a_replay_is_answered_from_the_KEY_and_not_re_judged(self):
+        # THE M10 BUG, NOT REPEATED. After the first call the balance is
+        # smaller — because of that call — so re-running the business rules
+        # against the retry could refuse something that already worked.
+        quote = self.quoted()
+        total = _money_total(quote)
+        first = self.pay(total, idempotency_key='full')
+        self.assertEqual(self.summary()['outstanding'], _D('0.00'))
+        # The balance is now zero, so a FRESH payment of this size would be
+        # refused as overpayment. The replay must not be.
+        again = self.pay(total, idempotency_key='full')
+        self.assertEqual(first.pk, again.pk)
+
+    def test_the_constraint_exists_in_the_database(self):
+        self.quoted()
+        self.pay('100.00', idempotency_key='k1')
+        with self.assertRaises(IntegrityError):
+            _M12BPayment.objects.create(
+                company=self.company, repair_order=self.order, amount=_D('10.00'),
+                currency='PEN', method=_M12BMethod.CASH, idempotency_key='k1',
+            )
+
+    def test_two_orders_may_use_the_same_key_in_different_companies(self):
+        # The constraint is per company, like every other one here.
+        self.quoted()
+        self.pay('100.00', idempotency_key='shared')
+        self.assertEqual(
+            _M12BPayment.objects.filter(idempotency_key='shared').count(), 1,
+        )
+
+    def test_a_payment_with_no_key_is_still_allowed(self):
+        # The key is the client's protection, not a requirement.
+        self.quoted()
+        self.pay('50.00')
+        self.pay('50.00')
+        self.assertEqual(_M12BPayment.objects.count(), 2)
+
+
+class M12BReversalTest(M12BPaymentBase):
+    """Correcting the books without rewriting them."""
+
+    def test_a_reversal_stamps_the_row_and_deletes_nothing(self):
+        self.quoted()
+        payment = self.pay('200.00')
+        reversed_payment = _m8_service.reverse_service_payment(
+            payment=payment, reason='Se tecleó 200 en vez de 20.', actor=self.staff,
+        )
+        self.assertTrue(reversed_payment.is_reversed)
+        self.assertEqual(reversed_payment.reversed_by, self.staff)
+        self.assertEqual(_M12BPayment.objects.count(), 1)
+
+    def test_the_original_amount_survives_the_reversal(self):
+        self.quoted()
+        payment = self.pay('200.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        payment.refresh_from_db()
+        self.assertEqual(payment.amount, _D('200.00'))
+
+    def test_the_balance_goes_back_up(self):
+        quote = self.quoted()
+        payment = self.pay('200.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        summary = self.summary()
+        self.assertEqual(summary['confirmed_paid'], _D('0.00'))
+        self.assertEqual(summary['outstanding'], _money_total(quote))
+        self.assertEqual(summary['payment_status'], 'unpaid')
+
+    def test_reversing_twice_is_idempotent_and_does_not_restamp(self):
+        self.quoted()
+        payment = self.pay('200.00')
+        first = _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        stamp = first.reversed_at
+        second = _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        self.assertEqual(second.reversed_at, stamp)
+        self.assertEqual(
+            AdminAuditLog.objects.filter(action='service_payment_reversed').count(), 1,
+        )
+
+    def test_the_freed_balance_can_be_paid_again(self):
+        quote = self.quoted()
+        payment = self.pay('200.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        self.pay(_money_total(quote), idempotency_key='after-reversal')
+        self.assertEqual(self.summary()['payment_status'], 'paid')
+
+    def test_it_writes_one_audit_entry_naming_no_refund(self):
+        self.quoted()
+        payment = self.pay('200.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        log = AdminAuditLog.objects.filter(
+            action='service_payment_reversed', target_id=str(payment.pk),
+        ).first()
+        self.assertIsNotNone(log)
+        # A reversal is not a refund and the audit must not imply one.
+        for forbidden in ('refund', 'reembolso', 'devolucion', 'devolución'):
+            self.assertNotIn(forbidden, log.action.lower())
+
+    def test_a_reversal_moves_no_stock_and_no_status(self):
+        self.quoted()
+        payment = self.pay('200.00')
+        before = self.order.status
+        movements = StockMovement.objects.count()
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, before)
+        self.assertEqual(StockMovement.objects.count(), movements)
+
+
+class M12BRequoteTest(M12BPaymentBase):
+    """
+    A new quote after money has changed hands.
+
+    THE POLICY, STATED: payments already recorded stay as credit against the
+    repair. The new outstanding is the new approved total minus what is held.
+    If the new total is SMALLER than what was paid, nothing is deleted — the
+    summary reports `overpaid` and somebody has to decide, because a refund is
+    money leaving a till and this platform cannot perform one.
+    """
+
+    def _requote(self, total):
+        """
+        A SECOND APPROVED REVISION, written directly, and that is a finding.
+
+        There is no way to reach this through the service layer today. Once a
+        quote is APPROVED the order leaves `DIAGNOSING`, `TRANSITIONS` has no
+        edge back to it from `APPROVED` or anything downstream, `QUOTABLE_STATES`
+        is `{DIAGNOSING}` so nothing can be created or published, and
+        `cancel_quote` refuses an approved quote outright. **A shop that agreed
+        500 and then discovers the board is also gone cannot re-quote at all.**
+
+        That is a gap in the QUOTE module, not in this one, and M12B is not the
+        phase that invents a supersede operation — doing so would decide, in
+        passing, what happens to work already performed against the old figure.
+        It is recorded as debt.
+
+        What CAN be settled here, and is, is what the money does when that
+        operation eventually exists. The rows below are exactly what a supersede
+        would produce, so the policy is defined and tested before anybody builds
+        the path to it.
+        """
+        quote = _M9Quote.objects.create(
+            company=self.company,
+            repair_order=self.order,
+            revision=(self.order.quotes.aggregate(m=Max('revision'))['m'] or 0) + 1,
+            status=_M9Quote.STATUS_APPROVED,
+            currency=_m8_service.company_currency(self.company),
+            subtotal=_D(total),
+            total=_D(total),
+            approved_at=timezone.now(),
+        )
+        self.order.refresh_from_db()
+        return quote
+
+    def test_a_bigger_requote_leaves_the_payment_as_credit(self):
+        self.quoted()
+        self.pay('300.00')
+        new_quote = self._requote('900.00')
+
+        summary = self.summary()
+        self.assertEqual(summary['quoted_total'], _money_total(new_quote))
+        self.assertEqual(summary['confirmed_paid'], _D('300.00'))
+        self.assertEqual(
+            summary['outstanding'], _money_total(new_quote) - _D('300.00'),
+        )
+        self.assertEqual(summary['payment_status'], 'partial')
+
+    def test_a_smaller_requote_never_deletes_money(self):
+        self.quoted()
+        self.pay('300.00')
+        self._requote('100.00')
+
+        summary = self.summary()
+        self.assertEqual(summary['confirmed_paid'], _D('300.00'))
+        self.assertEqual(summary['outstanding'], _D('0.00'))
+        self.assertEqual(summary['credit'], _D('200.00'))
+        self.assertEqual(summary['payment_status'], 'overpaid')
+        self.assertEqual(_M12BPayment.objects.count(), 1)
+
+    def test_an_overpaid_repair_refunds_nothing_automatically(self):
+        self.quoted()
+        payment = self.pay('300.00')
+        self._requote('100.00')
+        payment.refresh_from_db()
+        self.assertFalse(payment.is_reversed)
+
+    def test_the_debt_never_sums_two_revisions(self):
+        # The double-charge this whole helper exists to prevent.
+        first = self.quoted()
+        second = self._requote('900.00')
+        self.assertEqual(self.summary()['quoted_total'], _money_total(second))
+        self.assertNotEqual(
+            self.summary()['quoted_total'],
+            _money_total(first) + _money_total(second),
+        )
+
+
+class M12BDeliveryPolicyTest(M12BPaymentBase):
+    """
+    May a device leave with a balance outstanding? The tenant decides.
+
+    OFF BY DEFAULT, and that is compatibility rather than opinion. M12 shipped
+    delivery with no payment concept at all, so every existing tenant has been
+    handing devices back without one. Switching this on for them would break a
+    flow they use today, retroactively, for a rule nobody asked them about.
+    """
+
+    def paid_and_ready(self, pay=True):
+        self.ready_for_pickup()
+        if pay:
+            quote = _m8_service.approved_quote(self.order)
+            self.pay(_money_total(quote), idempotency_key='settle')
+        return self.order
+
+    def test_the_default_is_off(self):
+        self.assertFalse(
+            _m8_service.requires_payment_before_delivery(self.company)
+        )
+
+    def test_a_company_with_no_settings_row_reads_as_off(self):
+        # `CompanySettings` is get_or_create'd, backfilled and created lazily.
+        # Nothing guarantees a row, and reading a policy must never make one.
+        bare = _saas_company('Sin Ajustes', 'm12b-bare', tax_id='20780040001')
+        CompanySettings.objects.filter(company=bare).delete()
+        self.assertFalse(_m8_service.requires_payment_before_delivery(bare))
+        self.assertFalse(CompanySettings.objects.filter(company=bare).exists())
+
+    # -- policy OFF ---------------------------------------------------------
+
+    def test_with_the_policy_off_an_unpaid_device_is_delivered(self):
+        self.paid_and_ready(pay=False)
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.DELIVERED)
+        self.assertEqual(self.summary()['payment_status'], 'unpaid')
+
+    def test_delivering_does_not_mark_anything_paid(self):
+        # Handing a device over is not receiving money.
+        self.paid_and_ready(pay=False)
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        self.assertEqual(_M12BPayment.objects.count(), 0)
+        self.assertEqual(self.summary()['confirmed_paid'], _D('0.00'))
+
+    # -- policy ON ----------------------------------------------------------
+
+    def test_with_the_policy_on_an_unpaid_device_is_refused(self):
+        self.require_payment()
+        self.paid_and_ready(pay=False)
+        with self.assertRaises(_m8_service.PaymentRequired):
+            _m8_service.deliver_repair(
+                repair_order=self.order, recipient_name='Ana', actor=self.staff,
+            )
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.READY_FOR_PICKUP)
+        self.assertFalse(_M12Delivery.objects.exists())
+
+    def test_a_partial_payment_is_still_refused(self):
+        self.require_payment()
+        self.paid_and_ready(pay=False)
+        self.pay('100.00')
+        with self.assertRaises(_m8_service.PaymentRequired):
+            _m8_service.deliver_repair(
+                repair_order=self.order, recipient_name='Ana', actor=self.staff,
+            )
+
+    def test_a_settled_balance_is_delivered(self):
+        self.require_payment()
+        self.paid_and_ready(pay=True)
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.DELIVERED)
+
+    def test_reversing_the_payment_blocks_delivery_again(self):
+        self.require_payment()
+        self.paid_and_ready(pay=True)
+        payment = _M12BPayment.objects.get(repair_order=self.order)
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+
+        with self.assertRaises(_m8_service.PaymentRequired):
+            _m8_service.deliver_repair(
+                repair_order=self.order, recipient_name='Ana', actor=self.staff,
+            )
+
+    def test_an_order_with_no_approved_quote_is_refused(self):
+        # The policy says "settled", and an unknown debt is not settled.
+        self.require_payment()
+        self.order.refresh_from_db()
+        self.order.status = _M8Status.READY_FOR_PICKUP
+        self.order.save(update_fields=['status'])
+        with self.assertRaises(_m8_service.PaymentRequired):
+            _m8_service.deliver_repair(
+                repair_order=self.order, recipient_name='Ana', actor=self.staff,
+            )
+
+    def test_a_delivery_already_recorded_is_never_re_judged(self):
+        # THE REPLAY CASE, and the reason the gate sits AFTER the idempotency
+        # block. Deliver, then reverse the payment, then retry with the same
+        # key: the retry must return the original handover, not refuse a
+        # device that already left the shop.
+        self.require_payment()
+        self.paid_and_ready(pay=True)
+        first = _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana',
+            idempotency_key='replay', actor=self.staff,
+        )
+        payment = _M12BPayment.objects.get(repair_order=self.order)
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+
+        again = _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana',
+            idempotency_key='replay', actor=self.staff,
+        )
+        self.assertEqual(first.pk, again.pk)
+
+    def test_an_already_delivered_order_from_M12_is_left_alone(self):
+        # No backfill, no invented history. A device delivered before this phase
+        # existed stays delivered and stays unpaid.
+        self.paid_and_ready(pay=False)
+        _m8_service.deliver_repair(
+            repair_order=self.order, recipient_name='Ana', actor=self.staff,
+        )
+        self.require_payment()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, _M8Status.DELIVERED)
+        self.assertEqual(self.summary()['payment_status'], 'unpaid')
+        self.assertEqual(_M12BPayment.objects.count(), 0)
+
+    def test_the_gate_is_not_a_lifecycle_state(self):
+        # Money and lifecycle stay orthogonal: there is no PAID status.
+        codes = {code for code, _l in _M8Status.choices}
+        for forbidden in ('paid', 'unpaid', 'payment_required', 'partial'):
+            self.assertNotIn(forbidden, codes, forbidden)
+
+
+class M12BRbacMatrixTest(M12BPaymentBase):
+    """
+    Who may touch money, resolved by the resolver rather than asserted.
+
+    `service.payments.manage` is its OWN capability. Moving an order through
+    its lifecycle and taking cash for it are different jobs, and a shop must be
+    able to say who does which.
+    """
+
+    def _may(self, user, code='service.payments.manage'):
+        cache.clear()
+        return has_capability(user, self.company, code)
+
+    def test_the_capability_is_ACTIVE_because_the_module_exists(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+        self.assertEqual(
+            CAPABILITIES['service.payments.manage'].status, STATUS_ACTIVE,
+        )
+
+    def test_the_catalogue_still_reserves_nothing(self):
+        from .capabilities import RESERVED_CAPABILITY_CODES
+        self.assertEqual(RESERVED_CAPABILITY_CODES, frozenset())
+
+    def test_a_company_admin_may_take_payment(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='administrador'),
+        )
+        self.assertTrue(self._may(self.staff))
+
+    def test_a_platform_master_may_in_an_EXPLICIT_tenant(self):
+        master = _m7_user('m12b_master')
+        master.is_superuser = True
+        master.is_staff = True
+        master.save(update_fields=['is_superuser', 'is_staff'])
+        self.assertTrue(self._may(master))
+        self.assertFalse(
+            Membership.objects.filter(user=master, company=self.company).exists()
+        )
+
+    def test_the_SALES_preset_may_take_payment(self):
+        # Ventas is the counter: the till, the sales note, technical reception
+        # since 0054, and now the money for a repair.
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='ventas'),
+        )
+        self.assertTrue(self._may(self.staff))
+
+    def test_the_TECHNICIAN_preset_may_NOT_by_default(self):
+        # THE OWNER'S DECISION, PINNED. Authorised technicians manage the STATES
+        # of a repair; it does not follow that every technician handles cash.
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='servicio-tecnico'),
+        )
+        self.assertFalse(self._may(self.staff))
+        # And they keep everything the workshop needs.
+        self.assertTrue(self._may(self.staff, 'service.repair.manage'))
+        self.assertTrue(self._may(self.staff, 'service.delivery.manage'))
+
+    def test_a_tenant_CAN_build_a_technician_who_takes_payment(self):
+        # The platform does not forbid it; it just does not assume it.
+        self.only_capabilities(
+            'service.orders.view', 'service.repair.manage',
+            'service.payments.manage', slug='m12b-tecnico-cobra',
+        )
+        self.assertTrue(self._may(self.staff))
+
+    def test_the_inventory_preset_may_not(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(
+            self.membership,
+            CompanyRole.objects.get(company=self.company, slug='inventario'),
+        )
+        self.assertFalse(self._may(self.staff))
+
+    def test_orders_manage_alone_does_not_grant_it(self):
+        self.only_capabilities(
+            'service.orders.view', 'service.orders.manage', slug='m12b-lifecycle',
+        )
+        self.assertTrue(self._may(self.staff, 'service.orders.manage'))
+        self.assertFalse(self._may(self.staff))
+
+    def test_inventory_adjust_does_not_grant_it_either(self):
+        self.only_capabilities(
+            'service.orders.view', 'inventory.adjust', slug='m12b-almacen',
+        )
+        self.assertFalse(self._may(self.staff))
+
+    def test_a_till_that_takes_money_cannot_cancel_an_order(self):
+        self.only_capabilities(
+            'service.orders.view', 'service.payments.manage', slug='m12b-caja',
+        )
+        self.assertTrue(self._may(self.staff))
+        for denied in (
+            'service.orders.manage', 'service.repair.manage',
+            'service.quality.manage', 'service.delivery.manage',
+        ):
+            self.assertFalse(self._may(self.staff, denied), denied)
+
+    def test_the_legacy_fallback_was_NOT_widened(self):
+        from .tenancy import LEGACY_ROLE_CAPABILITIES
+        from .models import UserProfile
+        self.assertNotIn(
+            'service.payments.manage',
+            LEGACY_ROLE_CAPABILITIES[UserProfile.ROLE_TECHNICIAN],
+        )
+        self.assertNotIn(
+            'service.payments.manage',
+            LEGACY_ROLE_CAPABILITIES[UserProfile.ROLE_SALES],
+        )
+
+    def test_a_role_name_is_never_authority(self):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        cache.clear()
+        self.assertEqual(self.membership.role, 'technician')
+        self.assertFalse(self._may(self.staff))
+
+    def test_a_customer_holds_nothing(self):
+        self.assertFalse(self._may(self.client_user))
+
+
+class M12BInternalApiTest(M12BPaymentBase):
+    """The surface, its gates and its refusals."""
+
+    def _url(self, tail='payments/', order=None, slug='m8-taller'):
+        return _m12b_url(slug, (order or self.order).pk, tail)
+
+    def test_recording_a_payment_over_http(self):
+        self.quoted()
+        res = self.client.post(self._url(), {
+            'amount': '200.00', 'method': 'cash', 'reference': 'V-1',
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['amount'], '200.00')
+        self.assertEqual(res.data['received_by_name'], 'recepcion')
+        self.assertFalse(res.data['is_reversed'])
+
+    def test_the_ledger_and_the_summary_come_back_together(self):
+        self.quoted()
+        self.pay('200.00')
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['summary']['confirmed_paid'], '200.00')
+        self.assertEqual(res.data['summary']['payment_status'], 'partial')
+
+    def test_the_summary_has_its_own_route(self):
+        self.quoted()
+        res = self.client.get(self._url('payment-summary/'))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            sorted(res.data),
+            ['confirmed_paid', 'credit', 'currency', 'outstanding',
+             'payment_status', 'quoted_total',
+             'requires_payment_before_delivery'],
+        )
+
+    def test_the_body_cannot_set_the_currency_clock_cashier_or_status(self):
+        quote = self.quoted()
+        other = _m7_user('m12b_otro_staff')
+        res = self.client.post(self._url(), {
+            'amount': '100.00', 'method': 'cash',
+            'currency': 'USD', 'received_at': '2000-01-01T00:00:00Z',
+            'received_by': other.pk, 'company': self.other.pk,
+            'repair_order': 999, 'payment_status': 'paid', 'is_reversed': True,
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        payment = _M12BPayment.objects.get(pk=res.data['id'])
+        self.assertEqual(payment.currency, quote.currency)
+        self.assertEqual(payment.received_by, self.staff)
+        self.assertEqual(payment.company_id, self.company.pk)
+        self.assertEqual(payment.repair_order_id, self.order.pk)
+        self.assertGreater(payment.received_at.year, 2020)
+        self.assertFalse(payment.is_reversed)
+
+    def test_an_invalid_amount_is_a_400(self):
+        self.quoted()
+        for body in (
+            {'method': 'cash'},
+            {'amount': '0.00', 'method': 'cash'},
+            {'amount': '-5.00', 'method': 'cash'},
+            {'amount': '100.00', 'method': 'inventado'},
+            {'amount': '100.00', 'method': 'online'},
+        ):
+            res = self.client.post(self._url(), body, format='json')
+            self.assertEqual(res.status_code, 400, body)
+        self.assertEqual(_M12BPayment.objects.count(), 0)
+
+    def test_overpaying_over_http_is_a_400_naming_the_balance(self):
+        quote = self.quoted()
+        res = self.client.post(self._url(), {
+            'amount': str(_money_total(quote) + _D('1.00')), 'method': 'cash',
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('saldo', res.data['detail'].lower())
+
+    def test_reading_needs_only_orders_view(self):
+        self.quoted()
+        client = self.only_capabilities('service.orders.view', slug='m12b-lector')
+        for tail in ('payments/', 'payment-summary/'):
+            self.assertEqual(client.get(self._url(tail)).status_code, 200, tail)
+
+    def test_reading_does_not_grant_taking_money(self):
+        self.quoted()
+        client = self.only_capabilities('service.orders.view', slug='m12b-lector2')
+        res = client.post(
+            self._url(), {'amount': '10.00', 'method': 'cash'}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_the_wide_lifecycle_capability_alone_cannot_take_money(self):
+        self.quoted()
+        client = self.only_capabilities(
+            'service.orders.view', 'service.orders.manage', slug='m12b-lifecycle-http',
+        )
+        res = client.post(
+            self._url(), {'amount': '10.00', 'method': 'cash'}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_a_till_can_take_money_without_touching_the_lifecycle(self):
+        self.quoted()
+        client = self.only_capabilities(
+            'service.orders.view', 'service.payments.manage', slug='m12b-caja-http',
+        )
+        res = client.post(
+            self._url(), {'amount': '10.00', 'method': 'cash'}, format='json',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        cancel = client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+            {'status': 'cancelled'}, format='json',
+        )
+        self.assertEqual(cancel.status_code, 403)
+
+    def test_a_replayed_key_returns_the_same_row(self):
+        self.quoted()
+        body = {'amount': '200.00', 'method': 'cash', 'idempotency_key': 'http-1'}
+        first = self.client.post(self._url(), body, format='json')
+        second = self.client.post(self._url(), body, format='json')
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first.data['id'], second.data['id'])
+        self.assertEqual(_M12BPayment.objects.count(), 1)
+
+    def test_a_reused_key_with_a_different_amount_is_409(self):
+        self.quoted()
+        self.client.post(self._url(), {
+            'amount': '200.00', 'method': 'cash', 'idempotency_key': 'http-2',
+        }, format='json')
+        res = self.client.post(self._url(), {
+            'amount': '100.00', 'method': 'cash', 'idempotency_key': 'http-2',
+        }, format='json')
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.data['code'], 'idempotency_conflict')
+
+    def test_reversing_over_http(self):
+        self.quoted()
+        payment = self.pay('200.00')
+        res = self.client.post(
+            self._url(f'payments/{payment.pk}/reverse/'),
+            {'reason': 'Se tecleó de más.'}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertTrue(res.data['is_reversed'])
+        self.assertEqual(res.data['reversed_by_name'], 'recepcion')
+
+    def test_reversing_needs_the_payment_capability(self):
+        self.quoted()
+        payment = self.pay('200.00')
+        client = self.only_capabilities('service.orders.view', slug='m12b-lector3')
+        res = client.post(
+            self._url(f'payments/{payment.pk}/reverse/'), {}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_a_payment_from_another_order_is_404(self):
+        self.quoted()
+        payment = self.pay('200.00')
+        other = self.make_order()
+        res = self.client.post(
+            _m12b_url('m8-taller', other.pk, f'payments/{payment.pk}/reverse/'),
+            {}, format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_a_foreign_tenant_is_404_not_403(self):
+        self.quoted()
+        for tail in ('payments/', 'payment-summary/'):
+            res = self.client.get(self._url(tail, slug='m8-otra'))
+            self.assertEqual(res.status_code, 404, tail)
+
+    def test_an_order_outside_the_caller_branch_is_404(self):
+        self.quoted()
+        self.order.branch = self.branch_b
+        self.order.save(update_fields=['branch'])
+        self.only_capabilities(
+            'service.orders.view', 'service.payments.manage', slug='m12b-sucursal',
+        )
+        client = self.restrict_to_branch_a()
+        self.assertEqual(client.get(self._url()).status_code, 404)
+        res = client.post(
+            self._url(), {'amount': '10.00', 'method': 'cash'}, format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+        self.assertFalse(_M12BPayment.objects.exists())
+
+    def test_an_anonymous_caller_gets_nothing(self):
+        self.quoted()
+        anon = APIClient()
+        self.assertIn(anon.get(self._url()).status_code, (401, 403))
+        self.assertIn(
+            anon.post(self._url(), {'amount': '1.00', 'method': 'cash'},
+                      format='json').status_code,
+            (401, 403),
+        )
+
+    def test_the_serializer_never_echoes_the_key_or_the_fingerprint(self):
+        self.quoted()
+        res = self.client.post(self._url(), {
+            'amount': '10.00', 'method': 'cash', 'idempotency_key': 'http-3',
+        }, format='json')
+        self.assertNotIn('idempotency_key', res.data)
+        self.assertNotIn('request_fingerprint', res.data)
+
+    def test_delivery_answers_409_payment_required_when_the_policy_is_on(self):
+        self.require_payment()
+        self.ready_for_pickup()
+        res = self.client.post(
+            self._url('delivery/'), {'recipient_name': 'Ana'}, format='json',
+        )
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.data['code'], 'payment_required')
+        self.assertIn('saldo', res.data['detail'].lower())
+
+    def test_delivery_succeeds_once_the_balance_is_settled(self):
+        self.require_payment()
+        self.ready_for_pickup()
+        quote = _m8_service.approved_quote(self.order)
+        self.pay(_money_total(quote), idempotency_key='settle-http')
+        res = self.client.post(
+            self._url('delivery/'), {'recipient_name': 'Ana'}, format='json',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_payment_required_is_a_DIFFERENT_code_from_idempotency_conflict(self):
+        # A counter has to draw "saldo pendiente" rather than a generic failure,
+        # and it must not have to parse Spanish to tell them apart.
+        self.require_payment()
+        self.ready_for_pickup()
+        blocked = self.client.post(
+            self._url('delivery/'), {'recipient_name': 'Ana'}, format='json',
+        )
+        self.assertEqual(blocked.data['code'], 'payment_required')
+
+
+class M12BCustomerPrivacyTest(M12BPaymentBase):
+    """A customer knows their own balance. Nothing else about the till."""
+
+    def _customer(self):
+        return _m7_login('cliente_m8')
+
+    def _url(self, order=None, slug='m8-taller'):
+        return (
+            f'/api/v1/customer/{slug}/repairs/'
+            f'{(order or self.order).pk}/payment-summary/'
+        )
+
+    def test_the_owner_sees_their_own_balance(self):
+        quote = self.quoted()
+        self.pay('200.00', reference='V-INTERNO-99')
+        res = self._customer().get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['quoted_total'], str(_money_total(quote)))
+        self.assertEqual(res.data['paid'], '200.00')
+        self.assertEqual(res.data['status'], 'partial')
+
+    def test_it_is_exactly_five_fields(self):
+        self.quoted()
+        res = self._customer().get(self._url())
+        self.assertEqual(
+            sorted(res.data),
+            ['currency', 'outstanding', 'paid', 'quoted_total', 'status'],
+        )
+
+    def test_it_leaks_no_till_detail(self):
+        self.quoted()
+        self.pay('200.00', reference='VOUCHER-9931', notes='Pagó el hermano.')
+        res = self._customer().get(self._url())
+        body = json.dumps(res.data, ensure_ascii=False)
+        for leak in (
+            'VOUCHER-9931', 'Pagó el hermano', 'recepcion', 'cash', 'method',
+            'reference', 'received_by', 'reversal', 'credit', 'idempotency',
+        ):
+            self.assertNotIn(leak, body, leak)
+
+    def test_a_reversal_is_not_published_as_an_event(self):
+        # It is the shop correcting its own books, and the balance already
+        # reflects it. Publishing it turns a correction into an accusation.
+        quote = self.quoted()
+        payment = self.pay('200.00')
+        _m8_service.reverse_service_payment(
+            payment=payment, reason='Error de caja.', actor=self.staff,
+        )
+        res = self._customer().get(self._url())
+        self.assertEqual(res.data['paid'], '0.00')
+        self.assertEqual(res.data['outstanding'], str(_money_total(quote)))
+        self.assertNotIn('Error de caja', json.dumps(res.data, ensure_ascii=False))
+
+    def test_an_overpaid_repair_reads_as_paid(self):
+        self.quoted()
+        quote = _m8_service.approved_quote(self.order)
+        self.pay(_money_total(quote), idempotency_key='full')
+        _M9Quote.objects.create(
+            company=self.company, repair_order=self.order,
+            revision=(self.order.quotes.aggregate(m=Max('revision'))['m'] or 0) + 1,
+            status=_M9Quote.STATUS_APPROVED, currency=quote.currency,
+            subtotal=_D('10.00'), total=_D('10.00'), approved_at=timezone.now(),
+        )
+        res = self._customer().get(self._url())
+        self.assertEqual(res.data['status'], 'paid')
+        self.assertNotIn('overpaid', json.dumps(res.data))
+
+    def test_no_quote_reads_as_no_quote_and_not_as_zero(self):
+        res = self._customer().get(self._url())
+        self.assertIsNone(res.data['quoted_total'])
+        self.assertIsNone(res.data['outstanding'])
+        self.assertEqual(res.data['status'], 'no_quote')
+
+    def test_another_customers_repair_is_404(self):
+        self.quoted()
+        stranger = _m7_user('m12b_extrano')
+        _v1_customer(self.company, stranger, first_name='Otro', last_name='Cliente')
+        client = APIClient()
+        client.force_authenticate(user=stranger)
+        self.assertEqual(client.get(self._url()).status_code, 404)
+
+    def test_a_foreign_tenant_is_404(self):
+        self.quoted()
+        self.assertEqual(
+            self._customer().get(self._url(slug='m8-otra')).status_code, 404,
+        )
+
+    def test_being_staff_grants_nothing_on_the_customer_route(self):
+        # Company-wide access to money is `service.orders.view` on the INTERNAL
+        # surface. A platform master does not become somebody's customer.
+        self.quoted()
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 404)
+
+    def test_a_customer_cannot_record_or_reverse_a_payment(self):
+        self.quoted()
+        payment = self.pay('100.00')
+        client = self._customer()
+        res = client.post(
+            _m12b_url('m8-taller', self.order.pk, 'payments/'),
+            {'amount': '10.00', 'method': 'cash'}, format='json',
+        )
+        self.assertIn(res.status_code, (403, 404))
+        res = client.post(
+            _m12b_url('m8-taller', self.order.pk, f'payments/{payment.pk}/reverse/'),
+            {}, format='json',
+        )
+        self.assertIn(res.status_code, (403, 404))
+        payment.refresh_from_db()
+        self.assertFalse(payment.is_reversed)
+
+    def test_the_repair_detail_payload_gained_no_field(self):
+        # The balance is its own route. The ten allowlisted fields are unchanged.
+        self.quoted()
+        res = self._customer().get(_m8_customer_url('m8-taller', f'{self.order.pk}/'))
+        self.assertEqual(
+            sorted(res.data),
+            ['closed_at', 'device_summary', 'id', 'number', 'received_at',
+             'reported_issue', 'status', 'status_label', 'timeline', 'updated_at'],
+        )
+
+    def test_there_is_no_customer_route_that_takes_money(self):
+        self.quoted()
+        client = self._customer()
+        for tail in ('payments/', 'pay/', 'checkout/'):
+            res = client.post(
+                f'/api/v1/customer/m8-taller/repairs/{self.order.pk}/{tail}',
+                {'amount': '10.00'}, format='json',
+            )
+            self.assertIn(res.status_code, (403, 404, 405), tail)
+
+
+class M12BProvisioningTest(M12BPaymentBase):
+    """A company can take money the moment it exists."""
+
+    def test_a_brand_new_company_has_a_till_role(self):
+        fresh = _saas_company('Nueva M12B', 'm12b-nueva', tax_id='20990000501')
+        provision_company_access_defaults(fresh)
+        sales = CompanyRole.objects.get(company=fresh, slug='ventas')
+        self.assertIn('service.payments.manage', sales.capabilities)
+
+    def test_a_brand_new_technician_preset_does_NOT(self):
+        fresh = _saas_company('Nueva M12B2', 'm12b-nueva2', tax_id='20990000502')
+        provision_company_access_defaults(fresh)
+        tech = CompanyRole.objects.get(company=fresh, slug='servicio-tecnico')
+        self.assertNotIn('service.payments.manage', tech.capabilities)
+
+    def test_the_policy_defaults_to_off_for_a_new_company(self):
+        fresh = _saas_company('Nueva M12B3', 'm12b-nueva3', tax_id='20990000503')
+        provision_company_access_defaults(fresh)
+        self.assertFalse(
+            _m8_service.requires_payment_before_delivery(fresh)
+        )
+
+    def test_the_grant_migration_names_the_new_code_only(self):
+        import importlib
+        module = importlib.import_module(
+            'store.migrations.0059_payment_capability_for_untouched_presets',
+        )
+        self.assertEqual(module.NEW_CAPABILITIES, ('service.payments.manage',))
+        self.assertNotIn('service.payments.manage', module.SALES_PREVIOUS)
+
+    def test_the_grant_requires_all_four_fields(self):
+        # The defect G3 found in the sales grant, not repeated: a capability set
+        # alone can describe a role a tenant built by hand.
+        import importlib
+        import inspect
+        module = importlib.import_module(
+            'store.migrations.0059_payment_capability_for_untouched_presets',
+        )
+        source = inspect.getsource(module.grant)
+        for field in ('slug ==', 'name ==', 'description in', 'held =='):
+            self.assertIn(field, source, field)
+
+    def test_it_reaches_a_sales_preset_carrying_the_original_description(self):
+        # The grants that extended this role never rewrote its sentence, so
+        # matching only the current one would skip exactly the roles they
+        # repaired. Both historical descriptions must be accepted.
+        import importlib
+        from django.apps import apps as django_apps
+        module = importlib.import_module(
+            'store.migrations.0059_payment_capability_for_untouched_presets',
+        )
+        self.assertGreater(len(module.SALES_DESCRIPTIONS), 1)
+
+        for description in module.SALES_DESCRIPTIONS:
+            role = CompanyRole.objects.get(company=self.other, slug='ventas')
+            role.description = description
+            role.capabilities = sorted(module.SALES_PREVIOUS)
+            role.save(update_fields=['description', 'capabilities'])
+
+            module.grant(django_apps, None)
+            role.refresh_from_db()
+            self.assertIn(
+                'service.payments.manage', role.capabilities, description,
+            )
+
+    def test_a_tenant_role_that_matches_only_the_set_is_left_alone(self):
+        import importlib
+        from django.apps import apps as django_apps
+        module = importlib.import_module(
+            'store.migrations.0059_payment_capability_for_untouched_presets',
+        )
+        mine = _role(
+            self.company, 'Mi mostrador', sorted(module.SALES_PREVIOUS),
+            slug='m12b-mio',
+        )
+        module.grant(django_apps, None)
+        mine.refresh_from_db()
+        self.assertNotIn('service.payments.manage', mine.capabilities)
+
+    def test_a_narrowed_sales_preset_is_left_alone(self):
+        import importlib
+        from django.apps import apps as django_apps
+        module = importlib.import_module(
+            'store.migrations.0059_payment_capability_for_untouched_presets',
+        )
+        narrowed = CompanyRole.objects.get(company=self.other, slug='ventas')
+        narrowed.capabilities = sorted(['company.view', 'sales.pos.use'])
+        narrowed.save(update_fields=['capabilities'])
+        module.grant(django_apps, None)
+        narrowed.refresh_from_db()
+        self.assertNotIn('service.payments.manage', narrowed.capabilities)
+
+    def test_it_never_touches_the_technician_preset(self):
+        import importlib
+        from django.apps import apps as django_apps
+        module = importlib.import_module(
+            'store.migrations.0059_payment_capability_for_untouched_presets',
+        )
+        module.grant(django_apps, None)
+        tech = CompanyRole.objects.get(company=self.company, slug='servicio-tecnico')
+        self.assertNotIn('service.payments.manage', tech.capabilities)
+
+    def test_it_is_idempotent(self):
+        import importlib
+        from django.apps import apps as django_apps
+        module = importlib.import_module(
+            'store.migrations.0059_payment_capability_for_untouched_presets',
+        )
+        role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        module.grant(django_apps, None)
+        role.refresh_from_db()
+        once = sorted(role.capabilities)
+        module.grant(django_apps, None)
+        role.refresh_from_db()
+        self.assertEqual(sorted(role.capabilities), once)
+
+
+class M12BStructuralTest(M12BPaymentBase):
+    """Guarantees that must not be able to drift."""
+
+    def _module_source(self, module):
+        import ast, inspect, textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(module)))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)):
+                body = getattr(node, 'body', [])
+                if (
+                    body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                ):
+                    body.pop(0)
+                    if not body and not isinstance(node, ast.Module):
+                        body.append(ast.Pass())
+        ast.fix_missing_locations(tree)
+        return ast.unparse(tree)
+
+    def _fn(self, module, name):
+        import ast
+        tree = ast.parse(self._module_source(module))
+        return ast.unparse(next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == name
+        ))
+
+    def test_no_float_touches_money(self):
+        # Decimal, never float. A binary fraction is not a price.
+        import ast
+        from . import service_services
+        tree = ast.parse(self._module_source(service_services))
+        for name in (
+            '_record_service_payment', 'service_payment_summary', '_net_paid',
+            'reverse_service_payment', '_payment_fingerprint',
+        ):
+            body = self._fn(service_services, name)
+            self.assertNotIn('float(', body, name)
+        void = tree
+
+    def test_the_view_layer_does_no_arithmetic_on_money(self):
+        from . import v1_service_views
+        code = self._module_source(v1_service_views)
+        for forbidden in ('float(', 'outstanding -', 'outstanding +', 'amount +'):
+            self.assertNotIn(forbidden, code, forbidden)
+
+    def test_the_ledger_never_touches_the_ecommerce_payment_domain(self):
+        # THE RULE THIS PINS: technical service is its own domain. Not one line
+        # of M12B reaches into the storefront's money.
+        import re
+        from . import service_services, v1_service_views, v1_customer_views
+        for module in (service_services, v1_service_views, v1_customer_views):
+            code = self._module_source(module)
+            for forbidden in (
+                'PaymentTransaction', 'izipay', 'stripe', 'CartItem', 'OrderItem',
+                'order.paid', 'record_sale_stock_movements',
+            ):
+                self.assertNotIn(forbidden, code, f'{module.__name__}: {forbidden}')
+            self.assertIsNone(re.search(r'(?<![A-Za-z])Order\.objects', code))
+
+    def test_recording_a_payment_never_writes_status_or_stock(self):
+        from . import service_services
+        body = self._fn(service_services, '_record_service_payment')
+        for forbidden in (
+            '_apply_transition', 'RepairStatusCode', 'create_stock_movement',
+            'BranchStock', 'StockMovement', 'PartUsage',
+        ):
+            self.assertNotIn(forbidden, body, forbidden)
+
+    def test_reversing_never_writes_status_or_stock(self):
+        from . import service_services
+        body = self._fn(service_services, 'reverse_service_payment')
+        for forbidden in (
+            '_apply_transition', 'create_stock_movement', 'StockMovement',
+        ):
+            self.assertNotIn(forbidden, body, forbidden)
+
+    def test_there_is_no_paid_status_and_no_paid_flag(self):
+        codes = {code for code, _l in _M8Status.choices}
+        self.assertNotIn('paid', codes)
+        from . import service_services
+        code = self._module_source(service_services)
+        self.assertNotIn('paid = True', code)
+        self.assertNotIn('paid=True', code)
+
+    def test_the_service_layer_locks_the_order_before_it_writes(self):
+        from . import service_services
+        body = self._fn(service_services, '_record_service_payment')
+        self.assertIn('select_for_update()', body)
+        self.assertLess(
+            body.index('select_for_update()'), body.index('RepairPayment('),
+        )
+
+    def test_the_reversal_locks_the_payment_row(self):
+        from . import service_services
+        body = self._fn(service_services, 'reverse_service_payment')
+        self.assertIn('select_for_update()', body)
+
+    def test_the_idempotency_key_is_checked_before_any_business_rule(self):
+        # M10's real bug, pinned again: judging the rules first refuses a
+        # legitimate replay, because the balance is smaller now BECAUSE the
+        # first call worked.
+        from . import service_services
+        body = self._fn(service_services, '_record_service_payment')
+        self.assertLess(
+            body.index('idempotency_key=key'),
+            body.index('MANUAL_PAYMENT_METHODS'),
+        )
+
+    def test_the_delivery_gate_sits_after_the_idempotency_block(self):
+        # A replay must be answered from the key, never re-judged: a handover
+        # that already happened cannot become "payment required" because
+        # somebody reversed a payment in between.
+        from . import service_services
+        body = self._fn(service_services, '_deliver_repair')
+        self.assertLess(
+            body.index('idempotency_key=key'),
+            body.index('requires_payment_before_delivery'),
+        )
+
+    def test_the_delivery_gate_sits_inside_the_lock(self):
+        from . import service_services
+        body = self._fn(service_services, '_deliver_repair')
+        self.assertLess(
+            body.index('select_for_update()'),
+            body.index('requires_payment_before_delivery'),
+        )
+
+    def test_the_write_serializer_accepts_five_fields_and_no_currency(self):
+        from .v1_service_serializers import V1ServicePaymentWriteSerializer
+        self.assertEqual(
+            set(V1ServicePaymentWriteSerializer().get_fields()),
+            {'amount', 'method', 'reference', 'notes', 'idempotency_key'},
+        )
+
+    def test_the_reversal_serializer_accepts_a_reason_and_nothing_else(self):
+        from .v1_service_serializers import V1ServicePaymentReversalSerializer
+        self.assertEqual(
+            set(V1ServicePaymentReversalSerializer().get_fields()), {'reason'},
+        )
+
+    def test_the_read_serializer_exposes_no_key_and_no_fingerprint(self):
+        from .v1_service_serializers import V1ServicePaymentSerializer
+        fields = set(V1ServicePaymentSerializer.Meta.fields)
+        self.assertNotIn('idempotency_key', fields)
+        self.assertNotIn('request_fingerprint', fields)
+        self.assertEqual(fields, set(V1ServicePaymentSerializer.Meta.read_only_fields))
+
+    def test_the_customer_serializer_does_not_inherit_the_internal_one(self):
+        # A customer serializer that extends a backoffice one leaks the next
+        # field somebody adds upstream.
+        from .v1_service_serializers import (
+            V1CustomerPaymentSummarySerializer, V1ServicePaymentSummarySerializer,
+        )
+        self.assertFalse(issubclass(
+            V1CustomerPaymentSummarySerializer, V1ServicePaymentSummarySerializer,
+        ))
+        self.assertEqual(
+            set(V1CustomerPaymentSummarySerializer().get_fields()),
+            {'currency', 'quoted_total', 'paid', 'outstanding', 'status'},
+        )
+
+    def test_the_model_holds_no_card_or_provider_field(self):
+        names = {f.name for f in _M12BPayment._meta.get_fields()}
+        for forbidden in (
+            'card_number', 'pan', 'cvv', 'authorization_code', 'transaction_id',
+            'provider', 'provider_unique_id', 'response_code', 'signature',
+            'raw_payload', 'session_token',
+        ):
+            self.assertNotIn(forbidden, names, forbidden)
+
+    def test_no_m12b_model_uses_a_file_field(self):
+        from django.db import models as dj_models
+        for field in _M12BPayment._meta.get_fields():
+            self.assertNotIsInstance(field, dj_models.FileField, field.name)
+
+    def test_the_ledger_is_append_only_in_the_model_itself(self):
+        import inspect
+        from .models import RepairPayment
+        source = inspect.getsource(RepairPayment)
+        self.assertIn('def save', source)
+        self.assertIn('def delete', source)
+
+    def test_the_only_financial_authority_is_one_function(self):
+        # Two answers to "how much does this cost" is one answer too many.
+        import ast
+        from . import service_services
+        tree = ast.parse(self._module_source(service_services))
+        summary = self._fn(service_services, 'service_payment_summary')
+        self.assertIn('financial_quote', summary)
+        self.assertNotIn('STATUS_APPROVED', summary)
+        void = tree
+
+    def test_nothing_logs_a_reference_or_a_note(self):
+        from . import service_services
+        for name in ('_record_service_payment', 'reverse_service_payment'):
+            body = self._fn(service_services, name)
+            audit = body[body.index('AdminAuditLog.log'):] if 'AdminAuditLog.log' in body else ''
+            self.assertNotIn("'reference'", audit, name)
+            self.assertNotIn("'notes'", audit, name)
+
+
+class M12BConcurrencyTest(TransactionTestCase):
+    """
+    Two tills, one last balance.
+
+    `TransactionTestCase` and not `TestCase`, for the reason M10 documented: a
+    plain `TestCase` wraps each test in a transaction that is rolled back, so a
+    second thread would never see the first thread's rows and the race being
+    reproduced would not exist.
+
+    `select_for_update()` is a no-op on SQLite, so the genuinely concurrent case
+    is skipped loudly rather than passing for the wrong reason, the sequential
+    invariants run everywhere, and `M12BStructuralTest` backs the guarantee up
+    so it never rests on a skip alone.
+    """
+
+    reset_sequences = True
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Caja', 'm12b-conc', tax_id='20900000040')
+        provision_company_access_defaults(self.company)
+        self.branch = self.company.branches.order_by('pk').first()
+
+        self.user = _m7_user('cliente_caja')
+        self.customer = _v1_customer(
+            self.company, self.user, first_name='Ana', last_name='Cliente',
+        )
+        self.device = _M8Device.objects.create(
+            company=self.company, customer=self.customer,
+            device_type=_M8Device.TYPE_PHONE, brand='G', model='X',
+        )
+        self.staff = _m7_user('cajero_conc')
+        Membership.objects.create(
+            user=self.staff, company=self.company, role='sales',
+        )
+
+    def _approved_order(self, total='500.00'):
+        order = _m8_service.create_repair_order(
+            company=self.company, branch=self.branch, customer=self.customer,
+            device=self.device, reported_issue='No enciende.', actor=self.staff,
+        )
+        _m8_service.transition_repair_order(
+            repair_order=order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        order.refresh_from_db()
+        diagnostic = _m8_service.create_diagnostic(
+            repair_order=order, description='Batería agotada.',
+            recommended_action='Reemplazar.', actor=self.staff,
+        )
+        quote = _m8_service.create_quote(
+            repair_order=order, diagnostic=diagnostic, actor=self.staff,
+        )
+        _m8_service.add_quote_item(
+            quote=quote, description='Trabajo', quantity=1, unit_price=total,
+        )
+        quote.refresh_from_db()
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        quote.refresh_from_db()
+        _m8_service.record_quote_decision(
+            quote=quote, customer=self.customer, user=self.user, decision='approve',
+        )
+        order.refresh_from_db()
+        return order
+
+    def test_the_second_payment_of_the_last_balance_is_refused(self):
+        # The sequential invariant, asserted everywhere.
+        order = self._approved_order('500.00')
+        _m8_service.record_service_payment(
+            repair_order=order, amount=_D('500.00'),
+            method=_M12BMethod.CASH, actor=self.staff,
+        )
+        with self.assertRaises(_m8_service.PaymentError):
+            _m8_service.record_service_payment(
+                repair_order=order, amount=_D('500.00'),
+                method=_M12BMethod.CASH, actor=self.staff,
+            )
+        self.assertEqual(
+            _m8_service.service_payment_summary(order)['confirmed_paid'],
+            _D('500.00'),
+        )
+
+    def test_two_simultaneous_tills_do_not_overcharge_the_last_balance(self):
+        import threading
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a green result here would prove nothing about PostgreSQL.'
+            )
+
+        order = self._approved_order('500.00')
+        results, errors = [], []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def attempt():
+            barrier.wait()
+            try:
+                payment = _m8_service.record_service_payment(
+                    repair_order=order, amount=_D('500.00'),
+                    method=_M12BMethod.CASH, actor=self.staff,
+                )
+                with lock:
+                    results.append(payment.pk)
+            except _m8_service.ServiceError as exc:
+                with lock:
+                    errors.append(str(exc))
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=attempt) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(results), 1, 'exactamente un cobro debe ganar')
+        self.assertEqual(len(errors), 1, 'el otro debe fallar de forma controlada')
+        self.assertEqual(
+            _m8_service.service_payment_summary(order)['confirmed_paid'],
+            _D('500.00'),
+        )
+
+    def test_two_simultaneous_requests_with_one_key_charge_once(self):
+        import threading
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op, '
+                'so a green result here would prove nothing about PostgreSQL.'
+            )
+
+        order = self._approved_order('500.00')
+        results, errors = [], []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def attempt():
+            barrier.wait()
+            try:
+                payment = _m8_service.record_service_payment(
+                    repair_order=order, amount=_D('200.00'),
+                    method=_M12BMethod.CASH, idempotency_key='same-key',
+                    actor=self.staff,
+                )
+                with lock:
+                    results.append(payment.pk)
+            except _m8_service.ServiceError as exc:
+                with lock:
+                    errors.append(str(exc))
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=attempt) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], 'ningún caller debe ver un error')
+        self.assertEqual(len(set(results)), 1, 'ambos deben recibir la MISMA fila')
+        self.assertEqual(_M12BPayment.objects.count(), 1)
+        self.assertEqual(
+            AdminAuditLog.objects.filter(action='service_payment_recorded').count(), 1,
+        )
+
+
 # M12B — Centro de notificaciones
 # ===========================================================================
 #
@@ -38114,7 +39747,7 @@ class M12BInboxTest(TestCase):
 
 
 @override_settings(**IZIPAY_TEST_SETTINGS)
-class M12BInternalApiTest(TestCase):
+class M12BNotificationInternalApiTest(TestCase):
     """§43, §69 — la bandeja interna por HTTP."""
 
     def setUp(self):

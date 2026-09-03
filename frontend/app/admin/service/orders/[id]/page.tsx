@@ -29,11 +29,13 @@ import {
 import { Button, Confirm, ErrorNote, Field, Panel, Pill, dateTime } from "../../components/ServiceUi";
 import {
   CAP_DELIVERY_MANAGE,
+  CAP_PAYMENTS_MANAGE,
   CAP_DIAGNOSTIC_MANAGE,
   CAP_ORDERS_MANAGE,
   CAP_ORDERS_VIEW,
   CAP_QUALITY_MANAGE,
   CAP_REPAIR_MANAGE,
+  PAYMENT_METHODS,
   ServiceApiError,
   addQuoteItem,
   assignTechnician,
@@ -43,6 +45,7 @@ import {
   createQuote,
   failQualityCheck,
   fetchDelivery,
+  fetchServicePayments,
   fetchServiceAssignmentOptions,
   fetchServiceDiagnostics,
   fetchServiceExecution,
@@ -58,6 +61,8 @@ import {
   pauseForParts,
   publishQuote,
   recordDelivery,
+  recordServicePayment,
+  reverseServicePayment,
   recordPartUsage,
   recordQualityResult,
   removeQuoteItem,
@@ -68,6 +73,8 @@ import {
   transitionServiceOrder,
   updateExecution,
   type ServiceDelivery,
+  type ServicePayment,
+  type ServicePaymentSummary,
   type ServiceDiagnostic,
   type ServiceExecution,
   type ServiceHistoryEntry,
@@ -88,6 +95,8 @@ type Data = {
   candidates: ServicePartCandidate[];
   quality: ServiceQualityCheck | null;
   delivery: ServiceDelivery | null;
+  payments: ServicePayment[];
+  paymentSummary: ServicePaymentSummary;
   qualityHistory: ServiceQualityCheck[];
   technicians: { id: number; name: string }[];
 };
@@ -125,7 +134,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
     setLoading(true);
     setError(null);
     try {
-      const [order, history, diagnostics, quotes, execution, parts, candidates, quality, qualityHistory, delivery, assignment] =
+      const [order, history, diagnostics, quotes, execution, parts, candidates, quality, qualityHistory, delivery, payments, assignment] =
         await Promise.all([
           fetchServiceOrder(slug, orderId),
           fetchServiceHistory(slug, orderId),
@@ -137,6 +146,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
           fetchServiceQuality(slug, orderId),
           fetchServiceQualityHistory(slug, orderId),
           fetchDelivery(slug, orderId),
+          fetchServicePayments(slug, orderId),
           may(CAP_ORDERS_MANAGE)
             ? fetchServiceAssignmentOptions(slug, orderId)
             : Promise.resolve({ current: null, technicians: [] }),
@@ -152,6 +162,8 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         quality: quality.quality_check,
         qualityHistory: qualityHistory.results,
         delivery: delivery.delivery,
+        payments: payments.results,
+        paymentSummary: payments.summary,
         technicians: assignment.technicians ?? [],
       });
     } catch (err) {
@@ -251,6 +263,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         <ExecutionSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <PartsSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <QualitySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
+        <PaymentSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <DeliverySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <HistorySection history={data.history} />
       </div>
@@ -1029,6 +1042,174 @@ function QualitySection({ data, may, busy, run, slug, orderId }: SectionProps) {
   );
 }
 
+const PAYMENT_STATUS_LABEL: Record<string, { label: string; tone: "neutral" | "good" | "warn" | "bad" }> = {
+  no_quote: { label: "Sin cotización aprobada", tone: "neutral" },
+  unpaid: { label: "Sin pagos", tone: "warn" },
+  partial: { label: "Pago parcial", tone: "warn" },
+  paid: { label: "Pagado", tone: "good" },
+  overpaid: { label: "Pagado de más", tone: "warn" },
+};
+
+/**
+ * The money on this repair. M12B.
+ *
+ * THIS SCREEN DOES NO ARITHMETIC. Every figure below is a string the server
+ * computed and this component prints. Parsing them into numbers to show a
+ * running total would create a second answer to "how much is owed" that can
+ * disagree with the first — and the one that disagrees is always the one a
+ * customer is looking at.
+ *
+ * `outstanding` and `quoted_total` can be NULL, and null is not zero: it means
+ * the shop has not agreed a price yet. Drawing "S/ 0.00" there would tell
+ * somebody the repair is free.
+ *
+ * A REVERSAL IS NOT A REFUND, and the copy says so. It marks a row as written
+ * in error; whether money went back over the counter is between the shop and
+ * the customer, and this platform cannot return any.
+ */
+function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
+  const canManage = may(CAP_PAYMENTS_MANAGE);
+  const summary = data.paymentSummary;
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState<string>(PAYMENT_METHODS[0].value);
+  const [reference, setReference] = useState("");
+  // Held OUTSIDE render state, as everywhere else here: a retry must resend the
+  // SAME key, and a key that changed on re-render would be no key at all.
+  const [keys] = useState<Map<string, string>>(() => new Map());
+
+  function keyFor(shape: string): string {
+    const existing = keys.get(shape);
+    if (existing) return existing;
+    const minted = makeIdempotencyKey(shape);
+    keys.set(shape, minted);
+    return minted;
+  }
+
+  const badge = PAYMENT_STATUS_LABEL[summary.payment_status]
+    ?? { label: summary.payment_status, tone: "neutral" as const };
+  const settled = summary.outstanding === "0.00";
+  const canPayMore = summary.outstanding !== null && !settled;
+
+  return (
+    <Panel
+      title="Pago del servicio"
+      subtitle="Registro de dinero recibido en mostrador. El saldo lo calcula el servidor."
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <dl className="grid flex-1 gap-3 text-sm sm:grid-cols-3">
+          <div>
+            <dt className="text-xs text-white/40">Total aprobado</dt>
+            <dd className="mt-0.5 text-white/80">
+              {summary.quoted_total === null
+                ? "Sin cotización aprobada"
+                : `${summary.currency} ${summary.quoted_total}`}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-white/40">Pagado</dt>
+            <dd className="mt-0.5 text-white/80">
+              {summary.currency} {summary.confirmed_paid}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-white/40">Saldo pendiente</dt>
+            <dd className="mt-0.5 text-white/80">
+              {summary.outstanding === null
+                ? "—"
+                : `${summary.currency} ${summary.outstanding}`}
+            </dd>
+          </div>
+        </dl>
+        <Pill label={badge.label} tone={badge.tone} />
+      </div>
+
+      {summary.payment_status === "overpaid" ? (
+        <p className="mt-3 text-xs text-amber-300">
+          Se recibió {summary.currency} {summary.credit} de más. No se devuelve nada
+          automáticamente: esta plataforma no puede reembolsar.
+        </p>
+      ) : null}
+
+      {canManage && canPayMore ? (
+        <div className="mt-4 space-y-3 border-t border-white/[0.06] pt-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label={`Importe (${summary.currency})`} value={amount} onChange={setAmount} />
+            <label className="text-xs text-white/50">
+              Medio
+              <select
+                value={method}
+                onChange={(e) => setMethod(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+              >
+                {PAYMENT_METHODS.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </label>
+            <Field label="Referencia" value={reference} onChange={setReference} placeholder="Nº de operación" />
+          </div>
+          <Confirm
+            label="Registrar pago"
+            question={`¿Registrar ${summary.currency} ${amount.trim() || "…"}? No se puede editar después.`}
+            tone="primary"
+            disabled={busy || amount.trim() === ""}
+            onConfirm={() => void run(async () => {
+              const value = amount.trim();
+              await recordServicePayment(slug, orderId, {
+                amount: value,
+                method,
+                ...(reference.trim() ? { reference: reference.trim() } : {}),
+                idempotency_key: keyFor(`${orderId}:${value}:${method}:${reference.trim()}`),
+              });
+              setAmount("");
+              setReference("");
+            })}
+          />
+        </div>
+      ) : null}
+
+      {data.payments.length > 0 ? (
+        <ul className="mt-4 space-y-2 border-t border-white/[0.06] pt-4">
+          {data.payments.map((payment) => (
+            <li key={payment.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className={payment.is_reversed ? "text-white/30 line-through" : "text-white/80"}>
+                {payment.currency} {payment.amount}
+                <span className="text-white/40">
+                  {" · "}
+                  {PAYMENT_METHODS.find((m) => m.value === payment.method)?.label ?? payment.method}
+                  {payment.reference ? ` · ${payment.reference}` : ""}
+                </span>
+              </span>
+              <span className="flex items-center gap-2 text-xs text-white/30">
+                {dateTime(payment.received_at)}
+                {payment.received_by_name ? ` · ${payment.received_by_name}` : ""}
+                {payment.is_reversed ? (
+                  <Pill label="Reversado" tone="bad" />
+                ) : canManage ? (
+                  <Confirm
+                    label="Reversar"
+                    question="¿Marcar este pago como registrado por error? No devuelve dinero."
+                    tone="danger"
+                    disabled={busy}
+                    onConfirm={() => void run(() =>
+                      reverseServicePayment(slug, orderId, payment.id, "")
+                    )}
+                  />
+                ) : null}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      <p className="mt-4 border-t border-white/[0.06] pt-3 text-xs text-white/30">
+        Un pago no se edita ni se borra: se reversa, y ambos hechos quedan.
+        Reversar NO devuelve dinero — esta plataforma no puede hacerlo.
+      </p>
+    </Panel>
+  );
+}
+
 /**
  * The handover.
  *
@@ -1042,6 +1223,13 @@ function DeliverySection({ data, may, busy, run, slug, orderId }: SectionProps) 
   const canManage = may(CAP_DELIVERY_MANAGE);
   const delivery = data.delivery;
   const ready = data.order.status === "ready_for_pickup";
+  // A PREVIEW, never authority. The server re-checks the policy and the balance
+  // inside the delivery transaction; this only spares somebody a 409 they
+  // cannot act on from this panel. If the two ever disagree, the server wins.
+  const blockedByBalance =
+    data.paymentSummary.payment_status !== "paid"
+    && data.paymentSummary.payment_status !== "overpaid"
+    && data.paymentSummary.requires_payment_before_delivery;
   const [recipient, setRecipient] = useState("");
   const [notes, setNotes] = useState("");
   // Held OUTSIDE render state, exactly as the parts section does: a retry must
@@ -1081,6 +1269,17 @@ function DeliverySection({ data, may, busy, run, slug, orderId }: SectionProps) 
         <p className="text-sm text-white/50">
           Solo se entrega un equipo que aprobó el control de calidad.
         </p>
+      ) : blockedByBalance ? (
+        <div className="space-y-2">
+          <p className="text-sm text-amber-300">
+            Esta empresa exige el pago antes de entregar. Saldo pendiente:{" "}
+            {data.paymentSummary.currency} {data.paymentSummary.outstanding ?? "—"}.
+          </p>
+          <p className="text-xs text-white/40">
+            El servidor vuelve a comprobarlo al entregar, así que registrar el pago
+            arriba es lo que habilita esta acción — ocultar el botón no bastaría.
+          </p>
+        </div>
       ) : !canManage ? (
         <p className="text-sm text-white/50">
           Este equipo está listo. Tu cuenta no tiene permiso para registrar la entrega.

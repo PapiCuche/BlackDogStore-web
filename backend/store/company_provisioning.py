@@ -141,6 +141,13 @@ _SALES_CAPS = (
     'service.customers.view', 'service.customers.manage',
     'service.devices.view', 'service.devices.manage',
     'service.orders.create', 'service.orders.view',
+    # M12B. Ventas IS the counter: the till, the sales note, and now the money a
+    # customer hands over for a repair. 0054 had already given this role
+    # technical RECEPTION for the same reason — the person who takes the device
+    # in is the person who takes payment for it. The technician preset
+    # deliberately does NOT get this: authorised technicians manage the STATES
+    # of a repair, and it does not follow that every technician handles cash.
+    'service.payments.manage',
 )
 _INVENTORY_CAPS = (
     'company.view', 'products.view', 'reports.view',

@@ -68,6 +68,10 @@ from .v1_service_serializers import (
     V1ServicePartUsageWriteSerializer,
     V1ServicePausePartsSerializer,
     V1ServiceDeliverySerializer,
+    V1ServicePaymentSerializer,
+    V1ServicePaymentWriteSerializer,
+    V1ServicePaymentReversalSerializer,
+    V1ServicePaymentSummarySerializer,
     V1ServiceDeliveryWriteSerializer,
     V1ServiceQualityCheckSerializer,
     V1ServiceQualityDecisionSerializer,
@@ -1476,6 +1480,20 @@ class V1ServiceDeliveryView(V1ServiceSurfaceMixin, APIView):
                 {'detail': str(exc), 'code': 'idempotency_conflict'},
                 status=status.HTTP_409_CONFLICT,
             )
+        except service.PaymentRequired as exc:
+            # M12B. Its own code, because the cause is not the handover: the
+            # request was correct and this tenant's own policy says not yet. A
+            # counter has to be able to draw "saldo pendiente" instead of a
+            # generic failure, and it must not have to parse Spanish to do it.
+            #
+            # 409 rather than 402: `HTTP_402` appears nowhere in this codebase
+            # and is not a status any client here already understands, while 409
+            # is exactly what the surface already means by "your request is
+            # fine, the current state refuses it".
+            return Response(
+                {'detail': str(exc), 'code': 'payment_required'},
+                status=status.HTTP_409_CONFLICT,
+            )
         except service.ServiceError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1483,3 +1501,145 @@ class V1ServiceDeliveryView(V1ServiceSurfaceMixin, APIView):
             V1ServiceDeliverySerializer(delivery).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+# ---------------------------------------------------------------------------
+# M12B / BR-005F — the service payment ledger
+# ---------------------------------------------------------------------------
+
+CAP_PAYMENTS_MANAGE = 'service.payments.manage'
+
+
+class V1ServicePaymentView(V1ServiceSurfaceMixin, APIView):
+    """
+    GET — every payment on this order, plus the balance. POST — record one.
+
+    READING uses `service.orders.view`, RECORDING uses
+    `service.payments.manage`.
+
+    WHY READING IS THE WIDER PERMISSION. Whoever may open the order may see what
+    it cost and what has been paid — a technician who cannot see whether a
+    customer has settled cannot answer the question they will be asked at the
+    counter, and asking for a second permission to see what the order already
+    implies would be theatre. What `service.payments.manage` gates is TOUCHING
+    the money, which is a different act.
+
+    409 for an idempotency conflict, the same shape M10 and M12 use: a key
+    reused for a different payment is a client bug and not bad input, and a
+    client has to tell the two apart without parsing Spanish.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        payments = service.service_payments_for(order)
+        summary = service.service_payment_summary(order)
+        return Response({
+            'count': payments.count(),
+            'results': V1ServicePaymentSerializer(payments, many=True).data,
+            'summary': V1ServicePaymentSummarySerializer(summary).data,
+        })
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_PAYMENTS_MANAGE)
+        order = self.get_order(company, pk)
+
+        serializer = V1ServicePaymentWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            payment = service.record_service_payment(
+                repair_order=order,
+                amount=data['amount'],
+                method=data['method'],
+                reference=data.get('reference', ''),
+                notes=data.get('notes', ''),
+                idempotency_key=data.get('idempotency_key', ''),
+                actor=request.user, request=request,
+            )
+        except service.PaymentConflict as exc:
+            return Response(
+                {'detail': str(exc), 'code': 'idempotency_conflict'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            V1ServicePaymentSerializer(payment).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class V1ServicePaymentSummaryView(V1ServiceSurfaceMixin, APIView):
+    """
+    GET — the balance alone, without the ledger.
+
+    Its own route because that is what a screen refetches after a write, and
+    after a 409 `payment_required` from the delivery endpoint. Pulling the whole
+    payment history to redraw one number would be wasteful on a counter's phone.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+
+        return Response(
+            V1ServicePaymentSummarySerializer(
+                service.service_payment_summary(order)
+            ).data
+        )
+
+
+class V1ServicePaymentReverseView(V1ServiceSurfaceMixin, APIView):
+    """
+    POST — undo a payment that should not have been recorded.
+
+    NOT A REFUND, and the endpoint is named for what it does. It says the row
+    was written in error; whether money went back over the counter is between
+    the shop and the customer, and whether a gateway returned any needs a
+    provider call that does not exist.
+
+    Idempotent: reversing twice returns the row as it already stands. A counter
+    that pressed the button again because the page had not refreshed has not
+    done anything wrong.
+
+    A payment belonging to ANOTHER order is 404, not 403 — the same rule the
+    rest of this surface follows, so nobody can sweep ids to learn what exists.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None, payment_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_PAYMENTS_MANAGE)
+        order = self.get_order(company, pk)
+
+        payment = (
+            service.service_payments_for(order).filter(pk=payment_id).first()
+        )
+        if payment is None:
+            raise NotFound('No encontrado.')
+
+        serializer = V1ServicePaymentReversalSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            reversed_payment = service.reverse_service_payment(
+                payment=payment,
+                reason=serializer.validated_data.get('reason', ''),
+                actor=request.user, request=request,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(V1ServicePaymentSerializer(reversed_payment).data)
