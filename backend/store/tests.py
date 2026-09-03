@@ -42103,10 +42103,1270 @@ class M121PaymentEventTest(M12BPaymentBase):
             ).count(), 1,
         )
 
-    def test_no_new_capability_was_invented(self):
-        """§31 — M12B.1 creates no capability. It uses the ones PR #19 shipped."""
-        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
-        self.assertIn('service.payments.manage', ASSIGNABLE_CAPABILITY_CODES)
-        self.assertNotIn('communications.manage', ASSIGNABLE_CAPABILITY_CODES)
-        self.assertNotIn('notifications.manage', ASSIGNABLE_CAPABILITY_CODES)
+    def test_the_payment_events_invented_no_capability_of_their_own(self):
+        """
+        M12B.1 added no capability: it addresses payment notices with the one
+        PR #19 shipped.
 
+        This test used to also assert that `communications.manage` did not
+        exist, and that assertion was WRONG — not wrong then, wrong as a test.
+        It froze a "not yet" as if it were an invariant, so M12C adding the
+        capability on purpose broke a test about payments. What is actually
+        permanent is the shape below: the notification centre addresses people
+        by capabilities that already exist, and reading one's own inbox needs
+        none at all.
+        """
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES, ALL_CAPABILITY_CODES
+        self.assertIn('service.payments.manage', ASSIGNABLE_CAPABILITY_CODES)
+        # No permission is ever required to read the notices addressed to you.
+        self.assertNotIn('notifications.manage', ALL_CAPABILITY_CODES)
+        self.assertNotIn('notifications.view', ALL_CAPABILITY_CODES)
+        self.assertNotIn('communications.view', ALL_CAPABILITY_CODES)
+
+
+
+# ---------------------------------------------------------------------------
+# M12C — comunicados internos
+# ---------------------------------------------------------------------------
+
+from . import announcement_services as _ann              # noqa: E402
+from .models import Announcement as _Ann                 # noqa: E402
+from .models import AnnouncementAudienceRule as _Rule    # noqa: E402
+
+
+class M12CBase(TestCase):
+    """One company, one branch, and people who differ in exactly one way."""
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        self.company = _saas_company('Comunicados SA', 'm12c', tax_id='20780050001')
+        provision_company_access_defaults(self.company)
+        self.branch = self.company.branches.first()
+        from .models import Branch
+        self.branch_b = Branch.objects.create(company=self.company, name='Sucursal B')
+
+        self.admin_role = self.company.roles.get(slug='administrador')
+        self.sales_role = self.company.roles.get(slug='ventas')
+        self.tech_role = self.company.roles.get(slug='servicio-tecnico')
+
+        self.admin = self.staff('m12c_admin', role=self.admin_role)
+        self.seller = self.staff('m12c_seller', role=self.sales_role)
+        self.tech = self.staff('m12c_tech', role=self.tech_role)
+
+    def staff(self, username, *, role=None, active=True, company=None,
+              branches=None):
+        company = company or self.company
+        user = _saas_user(username)
+        if not active:
+            user.is_active = False
+            user.save(update_fields=['is_active'])
+        membership = Membership.objects.create(
+            user=user, company=company, role='staff', is_active=True,
+        )
+        if role is not None:
+            MembershipRoleAssignment.objects.create(membership=membership, role=role)
+        if branches is not None:
+            membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+            membership.save(update_fields=['branch_access_mode'])
+            from .models import MembershipBranchAccess
+            for b in branches:
+                MembershipBranchAccess.objects.create(membership=membership, branch=b)
+        user.membership = membership
+        return user
+
+    def draft(self, *, author=None, company=None, title='Cierre por feriado',
+              body='Cerramos el lunes.'):
+        return _ann.create_draft(
+            author=author or self.admin,
+            source_company=self.company if company is None else company,
+            title=title, body=body,
+        )
+
+    def rule(self, kind, **kw):
+        spec = {'company': kw.pop('company', self.company), 'kind': kind}
+        spec.update(kw)
+        return spec
+
+    def publish_to_all(self, announcement=None):
+        announcement = announcement or self.draft()
+        _ann.set_audience(
+            announcement=announcement,
+            rules=[self.rule(_Rule.Kind.ALL_COMPANY)],
+        )
+        return _ann.publish(announcement=announcement, actor=self.admin)
+
+
+class M12CLifecycleTest(M12CBase):
+    """§84 — DRAFT, PUBLISHED, CANCELLED, y qué se puede tocar en cada uno."""
+
+    def test_a_draft_is_created_and_sends_nothing(self):
+        a = self.draft()
+        self.assertEqual(a.status, _Ann.Status.DRAFT)
+        self.assertIsNone(a.published_at)
+        self.assertEqual(_Notif.objects.count(), 0)
+        self.assertEqual(_Event.objects.count(), 0)
+
+    def test_saving_a_draft_ten_times_still_reaches_nobody(self):
+        a = self.draft()
+        for i in range(10):
+            _ann.update_draft(announcement=a, body=f'Versión {i}.')
+        self.assertEqual(_Notif.objects.count(), 0)
+        self.assertEqual(_Event.objects.count(), 0)
+
+    def test_a_draft_is_editable(self):
+        a = self.draft()
+        updated = _ann.update_draft(announcement=a, title='Otro título')
+        self.assertEqual(updated.title, 'Otro título')
+
+    def test_a_published_announcement_is_not_editable(self):
+        a = self.publish_to_all()
+        with self.assertRaises(_ann.AnnouncementStateError):
+            _ann.update_draft(announcement=a, title='Rectificación')
+        a.refresh_from_db()
+        self.assertEqual(a.title, 'Cierre por feriado')
+
+    def test_a_published_announcement_cannot_have_its_audience_changed(self):
+        a = self.publish_to_all()
+        with self.assertRaises(_ann.AnnouncementStateError):
+            _ann.set_audience(
+                announcement=a, rules=[self.rule(_Rule.Kind.ALL_COMPANY)],
+            )
+
+    def test_a_cancelled_draft_never_publishes(self):
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[self.rule(_Rule.Kind.ALL_COMPANY)])
+        _ann.cancel_draft(announcement=a, actor=self.admin)
+        with self.assertRaises(_ann.AnnouncementStateError):
+            _ann.publish(announcement=a, actor=self.admin)
+        self.assertEqual(_Notif.objects.count(), 0)
+
+    def test_cancel_does_not_apply_to_something_already_published(self):
+        """Descartar es tirar un borrador, no recuperar un mensaje enviado."""
+        a = self.publish_to_all()
+        with self.assertRaises(_ann.AnnouncementStateError):
+            _ann.cancel_draft(announcement=a, actor=self.admin)
+        a.refresh_from_db()
+        self.assertEqual(a.status, _Ann.Status.PUBLISHED)
+        self.assertTrue(_Notif.objects.exists())
+
+    def test_the_full_body_lives_on_the_announcement_not_the_notification(self):
+        long_body = 'x' * 1200
+        a = self.draft(body=long_body)
+        self.publish_to_all(a)
+        a.refresh_from_db()
+        self.assertEqual(len(a.body), 1200)
+        note = _Notif.objects.filter(user=self.seller).first()
+        self.assertEqual(len(note.body), 400, 'la notificación es un preview')
+        self.assertEqual(note.target_type, 'announcement')
+        self.assertEqual(note.target_id, a.pk)
+
+    def test_notifications_are_marked_as_announcements(self):
+        a = self.publish_to_all()
+        for note in _Notif.objects.all():
+            self.assertEqual(note.source, _Notif.Source.ANNOUNCEMENT)
+            self.assertEqual(note.audience, _Notif.Audience.INTERNAL)
+
+    def test_an_empty_title_or_body_is_refused(self):
+        for kw in ({'title': '   '}, {'body': '   '}):
+            with self.assertRaises(_ann.AnnouncementError):
+                self.draft(**kw)
+
+    def test_publishing_without_an_audience_is_refused_not_broadened(self):
+        """Un target vacío jamás significa «todos»."""
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.publish(announcement=a, actor=self.admin)
+        a.refresh_from_db()
+        self.assertEqual(a.status, _Ann.Status.DRAFT)
+        self.assertEqual(_Notif.objects.count(), 0)
+
+
+class M12CAudienceTest(M12CBase):
+    """§88 — las cinco formas de decir a quién."""
+
+    def recipients_of(self, *rules):
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=list(rules))
+        _ann.publish(announcement=a, actor=self.admin)
+        return set(
+            _Notif.objects.filter(target_id=a.pk).values_list('user_id', flat=True)
+        )
+
+    def test_all_company(self):
+        got = self.recipients_of(self.rule(_Rule.Kind.ALL_COMPANY))
+        self.assertEqual(got, {self.admin.pk, self.seller.pk, self.tech.pk})
+
+    def test_branch(self):
+        only_b = self.staff('m12c_only_b', role=self.sales_role,
+                            branches=[self.branch_b])
+        got = self.recipients_of(
+            self.rule(_Rule.Kind.BRANCH, branch=self.branch_b),
+        )
+        self.assertIn(only_b.pk, got)
+
+    def test_branch_excludes_somebody_who_does_not_work_there(self):
+        only_a = self.staff('m12c_only_a', role=self.sales_role,
+                            branches=[self.branch])
+        got = self.recipients_of(
+            self.rule(_Rule.Kind.BRANCH, branch=self.branch_b),
+        )
+        self.assertNotIn(only_a.pk, got)
+
+    def test_role(self):
+        got = self.recipients_of(self.rule(_Rule.Kind.ROLE, role=self.sales_role))
+        self.assertEqual(got, {self.seller.pk})
+
+    def test_role_works_for_a_custom_role_nobody_hardcoded(self):
+        custom = CompanyRole.objects.create(
+            company=self.company, name='Mostrador', slug='mostrador',
+            description='Rol del taller.', capabilities=['company.view'],
+        )
+        person = self.staff('m12c_mostrador', role=custom)
+        got = self.recipients_of(self.rule(_Rule.Kind.ROLE, role=custom))
+        self.assertEqual(got, {person.pk})
+
+    def test_capability(self):
+        got = self.recipients_of(
+            self.rule(_Rule.Kind.CAPABILITY,
+                      capability_code='service.delivery.manage'),
+        )
+        self.assertIn(self.tech.pk, got)
+        self.assertNotIn(self.seller.pk, got)
+
+    def test_user(self):
+        got = self.recipients_of(self.rule(_Rule.Kind.USER, user=self.tech))
+        self.assertEqual(got, {self.tech.pk})
+
+    def test_four_rules_matching_one_person_send_one_notice(self):
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[
+            self.rule(_Rule.Kind.ALL_COMPANY),
+            self.rule(_Rule.Kind.ROLE, role=self.tech_role),
+            self.rule(_Rule.Kind.CAPABILITY,
+                      capability_code='service.delivery.manage'),
+            self.rule(_Rule.Kind.USER, user=self.tech),
+        ])
+        _ann.publish(announcement=a, actor=self.admin)
+        self.assertEqual(
+            _Notif.objects.filter(user=self.tech, target_id=a.pk).count(), 1,
+        )
+
+    def test_overlapping_rules_do_not_inflate_the_frozen_denominator(self):
+        """
+        La prueba por retirada encontró este hueco.
+
+        Quitar el dedupe de `resolve_audience` dejaba la suite verde, porque
+        `_unique()` de M12B volvía a colapsar los repetidos antes de escribir
+        las filas. Pero `publish` cuenta `len(recipients)` ANTES de eso, así que
+        `recipient_count` se habría inflado — y ese número se congela. Un
+        denominador inflado no se nota nunca: sólo hace que «% leído» sea
+        permanentemente menor de lo real, para siempre, sin que nada falle.
+
+        La constraint protege las filas. No protege la aritmética.
+        """
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[
+            self.rule(_Rule.Kind.ALL_COMPANY),
+            self.rule(_Rule.Kind.ROLE, role=self.tech_role),
+            self.rule(_Rule.Kind.CAPABILITY,
+                      capability_code='service.delivery.manage'),
+            self.rule(_Rule.Kind.USER, user=self.tech),
+        ])
+        published = _ann.publish(announcement=a, actor=self.admin)
+        written = _Notif.objects.filter(target_id=a.pk).count()
+        self.assertEqual(written, 3)
+        self.assertEqual(
+            published.recipient_count, written,
+            'el contador congelado no coincide con las filas escritas',
+        )
+        self.assertEqual(_ann.stats(published)['recipients'], written)
+
+    def test_the_resolver_itself_returns_each_person_once(self):
+        """Preguntado al resolutor, no a la constraint que hay detrás."""
+        a = self.draft()
+        rules = _ann.set_audience(announcement=a, rules=[
+            self.rule(_Rule.Kind.ALL_COMPANY),
+            self.rule(_Rule.Kind.ROLE, role=self.tech_role),
+            self.rule(_Rule.Kind.USER, user=self.tech),
+        ])
+        resolved = _notif.resolve_audience(self.company, rules)
+        pks = [u.pk for u in resolved]
+        self.assertEqual(len(pks), len(set(pks)))
+
+    def test_an_inactive_membership_is_excluded(self):
+        person = self.staff('m12c_inactive_m', role=self.sales_role)
+        person.membership.is_active = False
+        person.membership.save(update_fields=['is_active'])
+        got = self.recipients_of(self.rule(_Rule.Kind.ALL_COMPANY))
+        self.assertNotIn(person.pk, got)
+
+    def test_an_inactive_user_is_excluded(self):
+        person = self.staff('m12c_inactive_u', role=self.sales_role, active=False)
+        got = self.recipients_of(self.rule(_Rule.Kind.ALL_COMPANY))
+        self.assertNotIn(person.pk, got)
+
+    def test_the_platform_master_is_never_swept_into_a_tenant_audience(self):
+        """
+        §20. Un superusuario tiene todas las capacidades en todas las empresas,
+        así que cualquier audiencia expresada como consulta lo arrastraría.
+        Puede ENVIAR; no se le mete de oyente.
+        """
+        master = _saas_user('m12c_master')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        Membership.objects.create(
+            user=master, company=self.company, role='staff', is_active=True,
+        )
+        got = self.recipients_of(self.rule(_Rule.Kind.ALL_COMPANY))
+        self.assertNotIn(master.pk, got)
+
+
+class M12CSnapshotTest(M12CBase):
+    """
+    §89 — la audiencia se congela al publicar.
+
+    Es la regla que más fácil se rompe sin darse cuenta, porque la
+    implementación equivocada —resolver el rol al leer— funciona perfectamente
+    el primer día y va reescribiendo la historia a partir del segundo.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.announcement = self.draft()
+        _ann.set_audience(
+            announcement=self.announcement,
+            rules=[self.rule(_Rule.Kind.ROLE, role=self.sales_role)],
+        )
+        _ann.publish(announcement=self.announcement, actor=self.admin)
+
+    def _got_it(self, user):
+        return _Notif.objects.filter(
+            user=user, target_type='announcement',
+            target_id=self.announcement.pk,
+        ).exists()
+
+    def test_the_person_who_had_the_role_received_it(self):
+        self.assertTrue(self._got_it(self.seller))
+
+    def test_losing_the_role_afterwards_does_not_take_the_message_away(self):
+        MembershipRoleAssignment.objects.filter(
+            membership__user=self.seller,
+        ).delete()
+        self.assertTrue(
+            self._got_it(self.seller),
+            'un cambio de rol mañana no reescribe un mensaje de ayer',
+        )
+
+    def test_gaining_the_role_afterwards_does_not_deliver_old_messages(self):
+        MembershipRoleAssignment.objects.create(
+            membership=self.tech.membership, role=self.sales_role,
+        )
+        self.assertFalse(self._got_it(self.tech))
+
+    def test_a_new_employee_does_not_receive_what_went_out_before_they_arrived(self):
+        newcomer = self.staff('m12c_newcomer', role=self.sales_role)
+        self.assertFalse(self._got_it(newcomer))
+
+    def test_changing_branch_access_afterwards_changes_nothing(self):
+        from .models import MembershipBranchAccess
+        m = self.seller.membership
+        m.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        m.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.create(membership=m, branch=self.branch_b)
+        self.assertTrue(self._got_it(self.seller))
+
+    def test_the_denominator_does_not_move_when_the_workforce_does(self):
+        before = _ann.stats(self.announcement)['recipients']
+        self.staff('m12c_later_1', role=self.sales_role)
+        self.staff('m12c_later_2', role=self.sales_role)
+        self.announcement.refresh_from_db()
+        self.assertEqual(_ann.stats(self.announcement)['recipients'], before)
+
+
+class M12CTenantIsolationTest(M12CBase):
+    """§87 — una empresa no elige destinatarios de otra."""
+
+    def setUp(self):
+        super().setUp()
+        self.other = _saas_company('Otra SA', 'm12c-otra', tax_id='20780050002')
+        provision_company_access_defaults(self.other)
+        self.other_branch = self.other.branches.first()
+        self.other_role = self.other.roles.get(slug='ventas')
+        self.outsider = self.staff('m12c_outsider', role=self.other_role,
+                                   company=self.other)
+
+    def test_a_branch_from_another_company_is_refused(self):
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.BRANCH, branch=self.other_branch),
+            ])
+
+    def test_a_role_from_another_company_is_refused(self):
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.ROLE, role=self.other_role),
+            ])
+
+    def test_a_person_from_another_company_is_refused(self):
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.USER, user=self.outsider),
+            ])
+
+    def test_a_capability_that_does_not_exist_is_refused(self):
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.CAPABILITY, capability_code='no.existe'),
+            ])
+
+    def test_an_inactive_company_is_refused(self):
+        self.other.is_active = False
+        self.other.save(update_fields=['is_active'])
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.ALL_COMPANY, company=self.other),
+            ])
+
+    def test_publishing_in_one_company_never_reaches_the_other(self):
+        self.publish_to_all()
+        self.assertFalse(
+            _Notif.objects.filter(company=self.other).exists(),
+        )
+        self.assertFalse(
+            _Notif.objects.filter(user=self.outsider).exists(),
+        )
+
+
+class M12CPlatformMasterTest(M12CBase):
+    """§90 — el master publica en varios tenants, y jamás por defecto."""
+
+    def setUp(self):
+        super().setUp()
+        self.master = _saas_user('m12c_platform_master')
+        self.master.is_superuser = True
+        self.master.save(update_fields=['is_superuser'])
+
+        self.other = _saas_company('Otra SA', 'm12c-otra', tax_id='20780050003')
+        provision_company_access_defaults(self.other)
+        self.other_person = self.staff(
+            'm12c_other_person', role=self.other.roles.get(slug='ventas'),
+            company=self.other,
+        )
+        self.third = _saas_company('Tercera SA', 'm12c-3ra', tax_id='20780050004')
+        provision_company_access_defaults(self.third)
+
+    def _publish(self, companies):
+        a = _ann.create_draft(
+            author=self.master, source_company=None,
+            title='Mantenimiento', body='El sábado a las 22:00.',
+        )
+        _ann.set_audience(announcement=a, rules=[
+            {'company': c, 'kind': _Rule.Kind.ALL_COMPANY} for c in companies
+        ])
+        return _ann.publish(announcement=a, actor=self.master)
+
+    def test_one_company(self):
+        a = self._publish([self.company])
+        self.assertEqual(
+            set(_Notif.objects.filter(target_id=a.pk)
+                .values_list('company_id', flat=True)),
+            {self.company.pk},
+        )
+
+    def test_several_companies(self):
+        a = self._publish([self.company, self.other])
+        self.assertEqual(
+            set(_Notif.objects.filter(target_id=a.pk)
+                .values_list('company_id', flat=True)),
+            {self.company.pk, self.other.pk},
+        )
+
+    def test_one_event_per_company_never_a_shared_one(self):
+        """
+        §33. `NotificationEvent.company` es NOT NULL, así que un comunicado
+        multiempresa que compartiera un evento pondría los avisos de dos
+        tenants detrás de una misma fila.
+        """
+        a = self._publish([self.company, self.other])
+        evs = _Event.objects.filter(
+            event_type='communications.announcement.published',
+        )
+        self.assertEqual(evs.count(), 2)
+        self.assertEqual(
+            {e.company_id for e in evs}, {self.company.pk, self.other.pk},
+        )
+        self.assertEqual(len({e.event_key for e in evs}), 2)
+
+    def test_a_source_company_of_null_does_not_mean_everybody(self):
+        """
+        La ausencia de tenant es «lo escribió la plataforma», nunca «va a
+        todos». Publicar sin reglas se rechaza; no se ensancha.
+        """
+        a = _ann.create_draft(
+            author=self.master, source_company=None,
+            title='Sin destino', body='...',
+        )
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.publish(announcement=a, actor=self.master)
+        self.assertEqual(_Notif.objects.count(), 0)
+
+    def test_the_same_person_in_two_tenants_gets_one_notice_in_each(self):
+        """
+        §32. La bandeja es por empresa, así que dos avisos es la respuesta
+        correcta: no se deduplica entre tenants.
+        """
+        Membership.objects.create(
+            user=self.seller, company=self.other, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(
+            membership=Membership.objects.get(user=self.seller, company=self.other),
+            role=self.other.roles.get(slug='ventas'),
+        )
+        a = self._publish([self.company, self.other])
+        rows = _Notif.objects.filter(user=self.seller, target_id=a.pk)
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(
+            {r.company_id for r in rows}, {self.company.pk, self.other.pk},
+        )
+
+    def test_the_master_does_not_receive_their_own_platform_announcement(self):
+        Membership.objects.create(
+            user=self.master, company=self.company, role='staff', is_active=True,
+        )
+        a = self._publish([self.company])
+        self.assertFalse(
+            _Notif.objects.filter(user=self.master, target_id=a.pk).exists(),
+        )
+
+
+class M12CIdempotencyTest(M12CBase):
+    """§91 — publicar dos veces es publicar una vez."""
+
+    def test_a_double_click_publishes_once(self):
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[self.rule(_Rule.Kind.ALL_COMPANY)])
+        first = _ann.publish(announcement=a, actor=self.admin)
+        second = _ann.publish(announcement=a, actor=self.admin)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(first.published_at, second.published_at)
+        self.assertEqual(
+            _Notif.objects.filter(target_id=a.pk).count(), 3,
+        )
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type='communications.announcement.published',
+            ).count(), 1,
+        )
+
+    def test_the_event_key_is_derived_from_the_document_and_the_tenant(self):
+        a = self.publish_to_all()
+        event = _Event.objects.get(
+            event_type='communications.announcement.published',
+        )
+        self.assertEqual(
+            event.event_key,
+            f'communications.announcement.published:announcement:{a.pk}:{self.company.pk}',
+        )
+
+    def test_the_key_alone_would_stop_a_second_fanout(self):
+        """
+        El bloqueo de estado responde antes de llegar al fanout, así que la
+        clave nunca se consulta por esa vía. Emitir a mano es la única forma de
+        preguntarle si de verdad describe el documento.
+        """
+        a = self.publish_to_all()
+        before = _Notif.objects.filter(target_id=a.pk).count()
+        _notif.emit(
+            company=self.company,
+            event_type='communications.announcement.published',
+            event_key=(
+                f'communications.announcement.published:announcement:'
+                f'{a.pk}:{self.company.pk}'
+            ),
+            title='Repetido', body='Repetido',
+            target_type='announcement', target_id=a.pk,
+            users=[self.seller],
+            source=_Notif.Source.ANNOUNCEMENT,
+        )
+        self.assertEqual(_Notif.objects.filter(target_id=a.pk).count(), before)
+
+    def test_a_failure_midway_publishes_nothing(self):
+        """§77 — atomicidad: ni medio publicado ni la mitad de las empresas."""
+        from unittest.mock import patch
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[self.rule(_Rule.Kind.ALL_COMPANY)])
+        with patch.object(_ann.AdminAuditLog, 'log', side_effect=RuntimeError('boom')):
+            with self.assertRaises(RuntimeError):
+                _ann.publish(announcement=a, actor=self.admin)
+        a.refresh_from_db()
+        self.assertEqual(a.status, _Ann.Status.DRAFT)
+        self.assertEqual(_Notif.objects.count(), 0)
+        self.assertEqual(_Event.objects.count(), 0)
+
+    def test_no_email_rows_are_created_for_announcements(self):
+        """§62/§63 — M12C es in-app. Sin cola no se abre la puerta al fanout SMTP."""
+        from .models import NotificationDelivery
+        with self.captureOnCommitCallbacks(execute=True):
+            self.publish_to_all()
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(NotificationDelivery.objects.count(), 0)
+
+
+class M12CCapabilityTest(M12CBase):
+    """§85 — quién puede redactar."""
+
+    def test_the_capability_is_active_in_the_catalogue(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+        cap = CAPABILITIES['communications.manage']
+        self.assertEqual(cap.status, STATUS_ACTIVE)
+        self.assertTrue(cap.is_assignable)
+
+    def test_there_is_no_capability_for_reading_your_own_inbox(self):
+        from .capabilities import ALL_CAPABILITY_CODES
+        self.assertNotIn('communications.view', ALL_CAPABILITY_CODES)
+
+    def test_the_standard_administrador_has_it(self):
+        self.assertIn('communications.manage', self.admin_role.capabilities)
+
+    def test_the_other_standard_presets_do_not(self):
+        for slug in ('ventas', 'inventario', 'servicio-tecnico',
+                     'supervisor-tecnico'):
+            role = self.company.roles.get(slug=slug)
+            self.assertNotIn(
+                'communications.manage', role.capabilities,
+                f'{slug} no debería poder publicar comunicados por defecto',
+            )
+
+    def test_a_tenant_can_grant_it_to_a_role_of_its_own(self):
+        from .tenancy import resolve_capabilities
+        custom = CompanyRole.objects.create(
+            company=self.company, name='Comunicaciones', slug='comunicaciones',
+            description='Rol del taller.',
+            capabilities=['company.view', 'communications.manage'],
+        )
+        person = self.staff('m12c_comms', role=custom)
+        self.assertIn(
+            'communications.manage', resolve_capabilities(person, self.company),
+        )
+
+    def test_no_preset_lists_a_capability_twice(self):
+        """§49 — la defensa de M12B.1 sigue en pie tras añadir una capability."""
+        from .company_provisioning import PRESET_ROLES
+        for name, _s, _d, caps in PRESET_ROLES:
+            self.assertEqual(
+                len(caps), len(set(caps)), f'{name} repite una capability',
+            )
+
+
+class M12CFreshInstallParityTest(TestCase):
+    """§86 — fresh install y provisioning siguen coincidiendo."""
+
+    STANDARD = ('Administrador', 'Ventas', 'Inventario',
+                'Servicio Técnico', 'Supervisor Técnico')
+
+    def test_the_five_presets_agree_on_both_paths(self):
+        seeded = Company.objects.get(slug='black-dog-store')
+        fresh = _saas_company('Paridad M12C', 'm12c-par', tax_id='20780050009')
+        provision_company_access_defaults(fresh)
+        divergent = {}
+        for name in self.STANDARD:
+            a = CompanyRole.objects.filter(company=seeded, name=name).first()
+            b = CompanyRole.objects.filter(company=fresh, name=name).first()
+            sa = frozenset(a.capabilities) if a else frozenset()
+            sb = frozenset(b.capabilities) if b else frozenset()
+            if sa != sb:
+                divergent[name] = {'fresh': sorted(sa), 'prov': sorted(sb)}
+        self.assertEqual(divergent, {})
+
+    def test_the_seeded_administrador_holds_the_whole_catalogue(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        seeded = Company.objects.get(slug='black-dog-store')
+        role = CompanyRole.objects.get(company=seeded, slug='administrador')
+        self.assertEqual(
+            frozenset(role.capabilities), frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+        self.assertIn('communications.manage', role.capabilities)
+
+    def test_no_role_anywhere_stores_a_repeated_capability(self):
+        offenders = [
+            (r.company_id, r.name) for r in CompanyRole.objects.all()
+            if len(r.capabilities or []) != len(set(r.capabilities or []))
+        ]
+        self.assertEqual(offenders, [])
+
+
+class M12CGrantMigrationTest(TestCase):
+    """
+    §46, §48 — la migración de la capability, escrita como M12B.1 concluyó.
+
+    En instalación desde cero no llega a disparar: 0061 apunta al catálogo vivo
+    y el admin ya trae las 39. Donde SÍ actúa es en un upgrade, y ese es el
+    camino que hay que probar porque es el que nadie ejecuta al desarrollar.
+    """
+
+    def setUp(self):
+        self.module = importlib.import_module(
+            'store.migrations.0063_communications_capability'
+        )
+        self.company = _saas_company('Grant SA', 'm12c-grant', tax_id='20780050010')
+
+    def _apps(self):
+        outer = self
+
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                outer.assertEqual(app_label, 'store')
+                return {'CompanyRole': CompanyRole}[model_name]
+        return _Apps()
+
+    def _role(self, *, name='Administrador', slug='administrador',
+              description=None, caps=None):
+        return CompanyRole.objects.create(
+            company=self.company, name=name, slug=slug,
+            description=description or self.module.ADMIN_DESCRIPTIONS[1],
+            capabilities=sorted(caps or self.module._PREVIOUS_ADMIN_PRESET),
+        )
+
+    def test_the_previous_shape_is_a_frozen_literal_not_a_live_import(self):
+        """
+        El defecto entero, en una aserción. Preguntado a la SINTAXIS: el
+        docstring cita el patrón malo para explicarlo, así que un escaneo de
+        texto acabaría vigilando su propia explicación.
+        """
+        import ast, inspect
+        tree = ast.parse(inspect.getsource(self.module))
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == 'grant':
+                break
+            names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            names |= {a.name for n in ast.walk(node)
+                      if isinstance(n, ast.ImportFrom) for a in n.names}
+            self.assertNotIn('ASSIGNABLE_CAPABILITY_CODES', names)
+        self.assertIsInstance(self.module._PREVIOUS_ADMIN_PRESET, frozenset)
+        self.assertEqual(len(self.module._PREVIOUS_ADMIN_PRESET), 38)
+        self.assertNotIn(
+            'communications.manage', self.module._PREVIOUS_ADMIN_PRESET,
+        )
+
+    def test_an_untouched_admin_receives_it(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        role = self._role()
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertEqual(
+            frozenset(role.capabilities), frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+        self.assertIn('communications.manage', role.capabilities)
+
+    def test_both_historical_descriptions_are_recognised(self):
+        for i, description in enumerate(self.module.ADMIN_DESCRIPTIONS):
+            other = _saas_company(f'Desc M12C {i}', f'm12c-desc-{i}',
+                                  tax_id=f'2078005011{i}')
+            role = CompanyRole.objects.create(
+                company=other, name='Administrador', slug='administrador',
+                description=description,
+                capabilities=sorted(self.module._PREVIOUS_ADMIN_PRESET),
+            )
+            self.module.grant(self._apps(), None)
+            role.refresh_from_db()
+            self.assertIn('communications.manage', role.capabilities)
+
+    def test_an_admin_the_tenant_narrowed_is_left_alone(self):
+        """§48 — su preset ya no está intacto. La decisión es del taller."""
+        caps = set(self.module._PREVIOUS_ADMIN_PRESET) - {'settings.manage'}
+        role = self._role(caps=caps)
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+        self.assertNotIn('communications.manage', role.capabilities)
+
+    def test_an_admin_the_tenant_widened_is_left_alone(self):
+        caps = set(self.module._PREVIOUS_ADMIN_PRESET) | {'communications.manage'}
+        role = self._role(caps=caps)
+        before = sorted(caps)
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertEqual(sorted(role.capabilities), before)
+
+    def test_a_renamed_role_is_left_alone(self):
+        role = self._role(name='Jefatura')
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertNotIn('communications.manage', role.capabilities)
+
+    def test_other_presets_are_left_alone(self):
+        role = CompanyRole.objects.create(
+            company=self.company, name='Ventas', slug='ventas',
+            description='Operación comercial: pedidos y notas de venta internas.',
+            capabilities=['company.view', 'sales.orders.view'],
+        )
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertNotIn('communications.manage', role.capabilities)
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        role = self._role()
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        first = list(role.capabilities)
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertEqual(list(role.capabilities), first)
+
+
+class M12CApiTest(M12CBase):
+    """§87, §93 — la superficie tenant por HTTP."""
+
+    def setUp(self):
+        super().setUp()
+        self.other = _saas_company('Otra API', 'm12c-api-otra', tax_id='20780050020')
+        provision_company_access_defaults(self.other)
+        self.other_admin = self.staff(
+            'm12c_other_admin', role=self.other.roles.get(slug='administrador'),
+            company=self.other,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _url(self, tail='', slug=None):
+        return f'/api/v1/internal/{slug or self.company.slug}/communications/{tail}'
+
+    def _create(self, **kw):
+        payload = {'title': 'Aviso', 'body': 'Cuerpo del aviso.'}
+        payload.update(kw)
+        return self.client.post(self._url(), payload, format='json')
+
+    def test_a_manager_can_create_a_draft(self):
+        res = self._create()
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.json()['status'], 'draft')
+
+    def test_somebody_without_the_capability_is_refused(self):
+        self.client.force_authenticate(user=self.seller)
+        self.assertEqual(self._create().status_code, 403)
+
+    def test_a_stranger_gets_404_not_403(self):
+        """Un 403 confirmaría que la empresa existe."""
+        self.client.force_authenticate(user=self.other_admin)
+        self.assertEqual(self._create().status_code, 404)
+
+    def test_another_companys_announcement_is_not_found(self):
+        mine = self.draft()
+        self.client.force_authenticate(user=self.other_admin)
+        res = self.client.get(
+            f'/api/v1/internal/{self.other.slug}/communications/{mine.pk}/'
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_full_publish_flow(self):
+        pk = self._create().json()['id']
+        patched = self.client.patch(
+            self._url(f'{pk}/'),
+            {'audience': [{'kind': 'all_company'}]}, format='json',
+        )
+        self.assertEqual(patched.status_code, 200)
+        preview = self.client.post(self._url(f'{pk}/preview/'), format='json')
+        self.assertEqual(preview.json()['recipient_count'], 3)
+        published = self.client.post(self._url(f'{pk}/publish/'), format='json')
+        self.assertEqual(published.status_code, 200)
+        self.assertEqual(published.json()['status'], 'published')
+        stats = self.client.get(self._url(f'{pk}/stats/')).json()
+        self.assertEqual(stats['recipients'], 3)
+        self.assertEqual(stats['read'], 0)
+
+    def test_publishing_without_an_audience_returns_400(self):
+        pk = self._create().json()['id']
+        res = self.client.post(self._url(f'{pk}/publish/'), format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_editing_a_published_one_returns_400(self):
+        pk = self._create().json()['id']
+        self.client.patch(self._url(f'{pk}/'),
+                          {'audience': [{'kind': 'all_company'}]}, format='json')
+        self.client.post(self._url(f'{pk}/publish/'), format='json')
+        res = self.client.patch(self._url(f'{pk}/'), {'title': 'Otro'},
+                                format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_there_is_no_delete(self):
+        pk = self._create().json()['id']
+        self.client.patch(self._url(f'{pk}/'),
+                          {'audience': [{'kind': 'all_company'}]}, format='json')
+        self.client.post(self._url(f'{pk}/publish/'), format='json')
+        self.assertIn(
+            self.client.delete(self._url(f'{pk}/')).status_code, (404, 405),
+        )
+
+    def test_a_branch_id_from_another_company_is_refused(self):
+        pk = self._create().json()['id']
+        res = self.client.patch(
+            self._url(f'{pk}/'),
+            {'audience': [{'kind': 'branch',
+                           'branch_id': self.other.branches.first().pk}]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_user_id_from_another_company_is_refused(self):
+        pk = self._create().json()['id']
+        res = self.client.patch(
+            self._url(f'{pk}/'),
+            {'audience': [{'kind': 'user', 'user_id': self.other_admin.pk}]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+
+
+class M12CRecipientAccessTest(M12CBase):
+    """§57, §72 — qué ve quien lo recibió, y qué no."""
+
+    def setUp(self):
+        super().setUp()
+        self.announcement = self.draft(body='Texto completo del comunicado.')
+        _ann.set_audience(
+            announcement=self.announcement,
+            rules=[self.rule(_Rule.Kind.ROLE, role=self.sales_role)],
+        )
+        _ann.publish(announcement=self.announcement, actor=self.admin)
+        self.client = APIClient()
+
+    def _url(self, slug=None, pk=None):
+        return (f'/api/v1/internal/{slug or self.company.slug}'
+                f'/announcements/{pk or self.announcement.pk}/')
+
+    def test_a_recipient_reads_the_full_body_without_any_capability(self):
+        self.client.force_authenticate(user=self.seller)
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['body'], 'Texto completo del comunicado.')
+
+    def test_a_recipient_is_not_shown_the_targeting(self):
+        self.client.force_authenticate(user=self.seller)
+        body = self.client.get(self._url()).json()
+        self.assertNotIn('audience', body)
+
+    def test_somebody_who_was_not_addressed_gets_404(self):
+        """
+        No 403. Un comunicado que no te enviaron no existe para ti, y decir
+        otra cosa permitiría enumerar lo que otras empresas cuentan al personal.
+        """
+        self.client.force_authenticate(user=self.tech)
+        self.assertEqual(self.client.get(self._url()).status_code, 404)
+
+    def test_a_manager_sees_the_targeting_of_their_own_companys_message(self):
+        self.client.force_authenticate(user=self.admin)
+        body = self.client.get(self._url()).json()
+        self.assertIn('audience', body)
+
+    def test_being_a_recipient_grants_nothing_else(self):
+        """Una notificación no es una autorización."""
+        self.client.force_authenticate(user=self.seller)
+        res = self.client.get(
+            f'/api/v1/internal/{self.company.slug}/communications/'
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_a_draft_is_not_readable_by_anybody_as_an_announcement(self):
+        other = self.draft(title='Todavía no')
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(
+            self.client.get(self._url(pk=other.pk)).status_code, 404,
+        )
+
+
+class M12CPrivacyAndContentTest(M12CBase):
+    """§81, §93 — el cuerpo es texto, y el cliente nunca lo ve."""
+
+    def test_a_customer_inbox_never_receives_an_internal_announcement(self):
+        customer_user = _saas_user('m12c_cliente')
+        _m12b_customer(self.company, customer_user, 'm12ccli')
+        self.publish_to_all()
+        self.assertEqual(
+            _Notif.objects.filter(audience=_Notif.Audience.CUSTOMER).count(), 0,
+        )
+
+    def test_the_customer_api_does_not_list_announcements(self):
+        customer_user = _saas_user('m12c_cliente_api')
+        _m12b_customer(self.company, customer_user, 'm12ccliapi')
+        self.publish_to_all()
+        client = APIClient()
+        client.force_authenticate(user=customer_user)
+        res = client.get(f'/api/v1/customer/{self.company.slug}/notifications/')
+        if res.status_code == 200:
+            self.assertEqual(res.json()['results'], [])
+
+    def test_a_script_tag_is_stored_and_returned_as_text(self):
+        """
+        No se sanea al guardar: el cuerpo es TEXTO y quien lo pinta debe
+        tratarlo como texto. Escapar aquí escondería un frontend que use
+        `dangerouslySetInnerHTML` y lo dejaría roto para el siguiente que lo
+        pinte bien.
+        """
+        payload = '<script>alert(1)</script><img src=x onerror=alert(2)>'
+        a = self.draft(body=payload)
+        self.publish_to_all(a)
+        a.refresh_from_db()
+        self.assertEqual(a.body, payload)
+        note = _Notif.objects.filter(user=self.seller).first()
+        self.assertIn('<script>', note.body)
+
+    def test_the_body_length_is_bounded(self):
+        with self.assertRaises(_ann.AnnouncementError):
+            self.draft(body='x' * (_ann.BODY_MAX + 1))
+
+    def test_the_title_length_is_bounded(self):
+        with self.assertRaises(_ann.AnnouncementError):
+            self.draft(title='x' * (_ann.TITLE_MAX + 1))
+
+    def test_unicode_survives_intact(self):
+        body = 'Cerramos el 28 — feriado 🇵🇪. Ñandú, ácido, 汉字.'
+        a = self.draft(body=body)
+        self.publish_to_all(a)
+        a.refresh_from_db()
+        self.assertEqual(a.body, body)
+
+    def test_a_notification_carries_no_url_only_a_structured_target(self):
+        a = self.publish_to_all()
+        note = _Notif.objects.filter(user=self.seller).first()
+        self.assertEqual(note.target_type, 'announcement')
+        self.assertEqual(note.target_id, a.pk)
+        for field in (note.title, note.body):
+            for scheme in ('javascript:', 'http://', 'https://'):
+                self.assertNotIn(scheme, field)
+
+
+class M12CAuditTest(M12CBase):
+    """§94 — publicar es una acción administrativa sensible."""
+
+    def test_publishing_is_audited_with_scope_and_count(self):
+        a = self.publish_to_all()
+        entry = AdminAuditLog.objects.filter(
+            action='announcement_published', target_id=str(a.pk),
+        ).latest('id')
+        self.assertEqual(entry.actor_id, self.admin.pk)
+        self.assertEqual(entry.company_id, self.company.pk)
+        self.assertEqual(entry.metadata['scope'], [self.company.slug])
+        self.assertEqual(entry.metadata['recipient_count'], 3)
+        self.assertEqual(entry.metadata['company_count'], 1)
+
+    def test_cancelling_a_draft_is_audited(self):
+        a = self.draft()
+        _ann.cancel_draft(announcement=a, actor=self.admin)
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='announcement_cancelled', target_id=str(a.pk),
+            ).exists(),
+        )
+
+    def test_the_audit_entry_carries_no_recipient_identities(self):
+        a = self.publish_to_all()
+        entry = AdminAuditLog.objects.filter(
+            action='announcement_published', target_id=str(a.pk),
+        ).latest('id')
+        blob = str(entry.metadata)
+        for leak in (self.seller.username, self.tech.username, '@'):
+            self.assertNotIn(leak, blob)
+
+    def test_saving_a_draft_is_not_audited_as_a_publication(self):
+        a = self.draft()
+        _ann.update_draft(announcement=a, body='Otra cosa.')
+        self.assertFalse(
+            AdminAuditLog.objects.filter(action='announcement_published').exists(),
+        )
+
+
+class M12CReadStatsTest(M12CBase):
+    """§92 — recuentos agregados, no vigilancia individual."""
+
+    def setUp(self):
+        super().setUp()
+        self.announcement = self.publish_to_all()
+
+    def test_the_counts_start_at_zero_read(self):
+        s = _ann.stats(self.announcement)
+        self.assertEqual((s['recipients'], s['read'], s['unread']), (3, 0, 3))
+        self.assertEqual(s['read_pct'], 0.0)
+
+    def test_marking_read_moves_the_numbers(self):
+        note = _Notif.objects.get(user=self.seller, target_id=self.announcement.pk)
+        _notif.mark_read(_Notif.objects.filter(pk=note.pk))
+        s = _ann.stats(self.announcement)
+        self.assertEqual((s['read'], s['unread']), (1, 2))
+        self.assertEqual(s['read_pct'], 33.3)
+
+    def test_stats_never_name_anybody(self):
+        s = _ann.stats(self.announcement)
+        self.assertEqual(
+            set(s), {'recipients', 'read', 'unread', 'read_pct'},
+        )
+
+
+class M12CPlatformApiTest(M12CBase):
+    """§19, §90 — la superficie del master, y el global que nunca es implícito."""
+
+    def setUp(self):
+        super().setUp()
+        self.master = _saas_user('m12c_api_master')
+        self.master.is_superuser = True
+        self.master.save(update_fields=['is_superuser'])
+        self.other = _saas_company('Plataforma B', 'm12c-plat-b',
+                                   tax_id='20780050030')
+        provision_company_access_defaults(self.other)
+        self.other_person = self.staff(
+            'm12c_plat_person', role=self.other.roles.get(slug='ventas'),
+            company=self.other,
+        )
+        self.inactive = _saas_company('Cerrada SA', 'm12c-cerrada',
+                                      tax_id='20780050031')
+        self.inactive.is_active = False
+        self.inactive.save(update_fields=['is_active'])
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.master)
+
+    def _create(self):
+        return self.client.post(
+            '/api/v1/platform/announcements/',
+            {'title': 'Mantenimiento', 'body': 'El sábado.'}, format='json',
+        ).json()['id']
+
+    def _audience(self, pk, payload):
+        return self.client.patch(
+            f'/api/v1/platform/announcements/{pk}/',
+            {'audience': payload}, format='json',
+        )
+
+    def test_a_tenant_admin_cannot_reach_the_platform_surface(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get('/api/v1/platform/announcements/')
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_master_publishes_to_named_companies(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': [self.company.slug, self.other.slug],
+                                'rules': [{'kind': 'all_company'}]}).status_code,
+            200,
+        )
+        res = self.client.post(f'/api/v1/platform/announcements/{pk}/publish/',
+                               format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            set(_Notif.objects.filter(target_id=pk)
+                .values_list('company_id', flat=True)),
+            {self.company.pk, self.other.pk},
+        )
+
+    def test_all_active_companies_must_be_spelled_out(self):
+        pk = self._create()
+        res = self._audience(pk, {'companies': 'ALL_ACTIVE_COMPANIES',
+                                  'rules': [{'kind': 'all_company'}]})
+        self.assertEqual(res.status_code, 200)
+        self.client.post(f'/api/v1/platform/announcements/{pk}/publish/',
+                         format='json')
+        reached = set(_Notif.objects.filter(target_id=pk)
+                      .values_list('company_id', flat=True))
+        self.assertIn(self.company.pk, reached)
+        self.assertIn(self.other.pk, reached)
+        self.assertNotIn(self.inactive.pk, reached)
+
+    def test_an_empty_company_list_is_refused_never_read_as_global(self):
+        """El default peligroso, probado explícitamente."""
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': [],
+                                'rules': [{'kind': 'all_company'}]}).status_code,
+            400,
+        )
+
+    def test_omitting_the_companies_key_is_refused(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'rules': [{'kind': 'all_company'}]}).status_code,
+            400,
+        )
+
+    def test_a_null_company_is_refused(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': None,
+                                'rules': [{'kind': 'all_company'}]}).status_code,
+            400,
+        )
+
+    def test_an_inactive_company_is_refused_by_name(self):
+        pk = self._create()
+        res = self._audience(pk, {'companies': [self.inactive.slug],
+                                  'rules': [{'kind': 'all_company'}]})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn(self.inactive.slug, res.json()['detail'])
+
+    def test_an_unknown_company_is_refused(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': ['no-existe'],
+                                'rules': [{'kind': 'all_company'}]}).status_code,
+            400,
+        )
+
+    def test_publishing_without_rules_is_refused(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': [self.company.slug],
+                                'rules': []}).status_code,
+            400,
+        )
+
+    def test_a_tenant_admin_cannot_read_another_companys_platform_message(self):
+        """
+        §58. El master ve lo que la plataforma escribió; un tenant sólo ve su
+        propia copia, y sólo si se la enviaron.
+        """
+        pk = self._create()
+        self._audience(pk, {'companies': [self.other.slug],
+                            'rules': [{'kind': 'all_company'}]})
+        self.client.post(f'/api/v1/platform/announcements/{pk}/publish/',
+                         format='json')
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get(
+            f'/api/v1/internal/{self.company.slug}/announcements/{pk}/'
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_recipient_in_the_targeted_company_can_read_it(self):
+        pk = self._create()
+        self._audience(pk, {'companies': [self.other.slug],
+                            'rules': [{'kind': 'all_company'}]})
+        self.client.post(f'/api/v1/platform/announcements/{pk}/publish/',
+                         format='json')
+        self.client.force_authenticate(user=self.other_person)
+        res = self.client.get(
+            f'/api/v1/internal/{self.other.slug}/announcements/{pk}/'
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['body'], 'El sábado.')
+        self.assertNotIn('audience', res.json())
+
+    def test_the_preview_reports_per_company_counts(self):
+        pk = self._create()
+        self._audience(pk, {'companies': [self.company.slug, self.other.slug],
+                            'rules': [{'kind': 'all_company'}]})
+        body = self.client.post(
+            f'/api/v1/platform/announcements/{pk}/preview/', format='json',
+        ).json()
+        self.assertEqual(body['company_count'], 2)
+        self.assertEqual(
+            {c['slug'] for c in body['companies']},
+            {self.company.slug, self.other.slug},
+        )
+        self.assertEqual(
+            body['recipient_count'],
+            sum(c['recipient_count'] for c in body['companies']),
+        )
