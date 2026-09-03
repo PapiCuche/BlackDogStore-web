@@ -52,13 +52,13 @@ automáticamente, y eso es lo que hace el guard.
 | POS — contexto | `pos_views.AdminPosContextView` | `/admin/sales/pos` | `sales/pos/context/` | ✅ (IP1A) | `sales.pos.use` | **A** |
 | POS — buscar producto | `pos_views.AdminPosSearchView` | ✅ | `sales/pos/products/search/` | ✅ (IP1A) | `sales.pos.use` | **A** |
 | POS — leer código | `pos_views.AdminPosLookupView` | ✅ | `sales/pos/products/lookup/` | ✅ (IP1A) | `sales.pos.use` | **A** |
-| POS — previsualizar | `pos_services.build_pos_sale` | ✅ | `sales/pos/preview/` | PARCIAL — el endpoint está integrado; la pantalla no lo llama antes de cobrar | `sales.pos.use` | **B** |
+| POS — previsualizar | `pos_services.build_pos_sale` | ✅ | `sales/pos/preview/` | ✅ (IP2A) — la caja no cobra nada que no haya cotizado | `sales.pos.use` | **A** |
 | **POS — registrar venta** | `pos_services.create_pos_sale` | ✅ | `sales/pos/sales/` | ✅ (IP1A) | `sales.pos.use` | **A** |
-| POS — asignar vendedor | `pos_services.resolve_pos_seller` | ✅ | ✅ campo `seller` en preview y venta | PENDIENTE — el transporte lo soporta; no hay control en pantalla | `sales.pos.assign_seller` | **B** |
-| POS — descuento manual | `pos_services.resolve_discount` | ✅ | ✅ campos `manual_discount_type` · `manual_discount_value` · `discount_reason` | PENDIENTE — ídem | `sales.discounts.apply` | **B** |
-| POS — cupón | `pos_services.resolve_discount` | ✅ | ✅ campo `coupon_code` | PENDIENTE — ídem | — (ninguna, por diseño) | **B** |
-| POS — promoción automática | `promotion_services.evaluate` | ✅ | ✅ la calcula el servidor y la devuelve en `promotions[]` | PENDIENTE — no se muestran | — (automática) | **B** |
-| POS — comisión | `pos_services.calculate_commission` | ✅ | ✅ campo `commission`, nulo sin capability | PENDIENTE — no se muestra | `sales.commissions.view` para verla | **B** |
+| POS — asignar vendedor | `pos_services.resolve_pos_seller` | ✅ | ✅ campo `seller` en preview y venta | ✅ (IP2A) | `sales.pos.assign_seller` | **A** |
+| POS — descuento manual | `pos_services.resolve_discount` | ✅ | ✅ campos `manual_discount_type` · `manual_discount_value` · `discount_reason` | ✅ (IP2A) | `sales.discounts.apply` | **A** |
+| POS — cupón | `pos_services.resolve_discount` | ✅ | ✅ campo `coupon_code` | ✅ (IP2A) | — (ninguna, por diseño) | **A** |
+| POS — promoción automática | `promotion_services.evaluate` | ✅ | ✅ la calcula el servidor y la devuelve en `promotions[]` | ✅ (IP2A) — se muestran con su nombre | — (automática) | **A** |
+| POS — comisión | `pos_services.calculate_commission` | ✅ | ✅ campo `commission`, nulo sin capability | ✅ (IP2A) — solo si el payload la trae | `sales.commissions.view` para verla | **A** |
 | POS — combos sugeridos | `promotion_services.combo_availability` | `promotion_views.AdminPosCombosView` | PENDIENTE | PENDIENTE | `sales.pos.use` | **C** |
 | Pedidos — listar / abrir | `v1_internal_views.V1InternalOrderListView` | ✅ | ✅ | ✅ | `sales.orders.view` | **A** |
 | Pedidos — fulfillment | `order_fulfillment_services.change_fulfillment_status` | ✅ | ✅ | ✅ | `sales.orders.manage` | **A** |
@@ -335,3 +335,26 @@ todo lo demás `inventory.adjust`. Ahora está escrito.
 símbolo citado existe, que no vuelven los números de línea, y que la columna TIPO
 describe el presente. Cada uno se probó plantando el defecto que existe para
 atrapar y viéndolo fallar.
+
+
+---
+
+## IP2A — LA CAJA COMPLETA
+
+Seis filas pasan a **A** sin tocar el backend: el contrato v1 ya aceptaba todas
+las condiciones de precio desde IP1A, y el transporte de Mobile también. Lo que
+faltaba era una caja que los usara.
+
+**Nada se cobra que no se haya cotizado antes.** El botón de cobrar aparece solo
+cuando `preview/` respondió para ESAS condiciones, y desaparece en cuanto
+cualquiera cambia. Un total rancio es peor que ninguno: es un número que el
+operador leyó en voz alta y que el servidor nunca aceptó.
+
+Lo que la ola NO cambió, porque no le corresponde: la previsualización no
+autoriza. La venta recalcula desde cero y la pantalla muestra la respuesta final
+del servidor, no la suya.
+
+Una regla que solo se ve probándola: **una promoción automática no se apila** con
+un cupón ni con un descuento manual. El dominio se niega con un mensaje claro en
+vez de resolver un orden que nadie decidió, y Mobile repite sus palabras en lugar
+de parafrasear una política que no es suya.
