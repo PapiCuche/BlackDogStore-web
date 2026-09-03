@@ -16,7 +16,7 @@ export default function Hero() {
   // Phase 3: location and logo belong to the tenant. The marketing copy below
   // is still the pilot's — a content system for per-tenant landing pages is a
   // separate concern, recorded in docs/saas-multiempresa.md.
-  const { company, branding, contact } = useStorefront();
+  const { company, branding, contact, policies } = useStorefront();
 
   return (
     <section className="relative overflow-hidden bg-[#080808]">
@@ -41,21 +41,31 @@ export default function Hero() {
               </span>
             </div>
 
-            {/* Main headline */}
+            {/*
+              COPY APROBADO POR EL MANUAL, no redactado aquí.
+
+              Lo que había antes decía "El Mejor Servicio Apple en Perú", y eran
+              dos problemas en una frase. "El mejor" es un superlativo que nadie
+              puede demostrar. Y "Servicio Apple" se lee como servicio oficial de
+              Apple, que es exactamente lo que el manual prohíbe afirmar sin una
+              acreditación vigente: la forma correcta es "especializada en
+              productos y equipos Apple".
+
+              La frase principal y el descriptor salen literalmente del manual.
+            */}
             <h1 className="font-display mt-5 text-6xl font-black uppercase leading-[0.92] tracking-tight text-white sm:text-7xl lg:text-8xl">
-              El Mejor<br />
-              <span className="text-zinc-300">Servicio</span><br />
-              Apple en<br />
+              Tu Apple,<br />
+              <span className="text-zinc-300">con respaldo</span><br />
               <span className="relative">
-                Perú
+                especializado
                 <span className="absolute -bottom-1 left-0 right-0 h-[5px] rounded-full bg-white opacity-80" />
               </span>
             </h1>
 
             <p className="mt-8 max-w-md text-base leading-7 text-zinc-400">
-              Repuestos originales, diagnóstico gratuito y garantía de{" "}
-              <strong className="text-white">6 meses</strong> en cada reparación.
-              Tecnología láser para cambio de tapa trasera sin mensaje de pieza reparada.
+              Compra, renueva o repara tu equipo Apple con asesoría
+              especializada y respaldo postventa.
+              {policies.warranty_text ? ` ${policies.warranty_text}` : ""}
             </p>
 
             {/* CTA buttons */}
@@ -113,11 +123,24 @@ export default function Hero() {
                 </span>
               )}
 
-              {/* Floating badge — top right */}
-              <div className="absolute right-2 top-12 rounded-2xl border border-white/10 bg-[#111] px-4 py-3 shadow-2xl sm:right-0">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Garantía</p>
-                <p className="font-display text-2xl font-black text-white">6 MESES</p>
-              </div>
+              {/*
+                El plazo de garantía viene de la configuración del tenant, no
+                compilado. Antes decía "6 MESES" fijo, y el propio manual marca
+                la política de garantía como PENDIENTE de redactar: prometer un
+                plazo concreto en la portada mientras la política no existe es
+                comprometer a la tienda a algo que todavía no ha decidido.
+
+                Sin dato configurado no se dibuja nada. Un hueco es honesto; un
+                número inventado, no.
+              */}
+              {policies.warranty_text ? (
+                <div className="absolute right-2 top-12 max-w-[11rem] rounded-2xl border border-white/10 bg-[#111] px-4 py-3 shadow-2xl sm:right-0">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Garantía</p>
+                  <p className="font-display mt-0.5 text-sm font-black leading-tight text-white">
+                    {policies.warranty_text}
+                  </p>
+                </div>
+              ) : null}
 
               {/* Floating badge — bottom left */}
               <div className="absolute bottom-14 left-2 rounded-2xl border border-white/10 bg-[#111] px-4 py-3 shadow-2xl sm:left-0">
