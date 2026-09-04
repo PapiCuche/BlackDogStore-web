@@ -166,8 +166,12 @@ export default function AuthPage() {
         </div>
 
         {/* Right — form panel */}
-        <div className="flex flex-col items-center justify-center px-6 py-12 lg:px-12">
-          <div className="w-full max-w-md">
+        <div className="flex min-w-0 flex-col items-center justify-center px-6 py-12 lg:px-12">
+          {/* `min-w-0`: un ítem flex no baja de su ancho intrínseco por defecto, así
+              que cualquier contenido ancho —la tarjeta de accesos, por ejemplo—
+              estiraba esta columna y con ella TODO lo que lleva `w-full`. A 320 px
+              el formulario entero medía 330. */}
+          <div className="w-full min-w-0 max-w-md">
 
             {/* Mobile logo */}
             <div className="mb-8 flex items-center gap-3 lg:hidden">

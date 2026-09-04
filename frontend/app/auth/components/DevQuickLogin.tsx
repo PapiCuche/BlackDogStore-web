@@ -97,11 +97,11 @@ export function DevQuickLogin({ onUse }: Props) {
         </div>
       ) : null}
 
-      <ul className="mt-3 space-y-1.5">
+      <ul className="mt-3 min-w-0 space-y-1.5">
         {data.accounts.map((account) => (
           <li
             key={account.username}
-            className="flex items-center justify-between gap-3 rounded-lg border border-bd-border px-3 py-2"
+            className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-bd-border px-2.5 py-2"
           >
             <div className="min-w-0">
               <p className="truncate text-xs font-semibold text-foreground">
@@ -128,7 +128,7 @@ export function DevQuickLogin({ onUse }: Props) {
               <button
                 type="button"
                 onClick={() => onUse(account.username, data.password)}
-                className="min-h-11 shrink-0 rounded-lg border border-bd-border px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                className="min-h-11 shrink-0 whitespace-nowrap rounded-lg border border-bd-border px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
               >
                 Usar cuenta
               </button>
@@ -137,9 +137,18 @@ export function DevQuickLogin({ onUse }: Props) {
         ))}
       </ul>
 
+      {/*
+        `break-words` en el comando: es una cadena larga sin puntos de corte
+        naturales, y a 320 px empujaba la tarjeta 58 px fuera de la pantalla.
+        Un bloque de código dentro de un párrafo estrecho tiene que poder
+        partirse, o parte la página.
+      */}
       <p className="mt-3 text-[11px] leading-relaxed text-muted">
         Sólo desarrollo. Se eliminan con{" "}
-        <code className="font-mono">python manage.py seed_demo_users --purge</code>.
+        <code className="break-words font-mono">
+          python manage.py seed_demo_users --purge
+        </code>
+        .
       </p>
     </section>
   );
