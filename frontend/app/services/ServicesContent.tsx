@@ -46,8 +46,8 @@ export function ServicesContent() {
         <div className="relative mx-auto max-w-7xl px-6 py-20 lg:px-8 lg:py-28">
           <span className="section-label">Servicio Técnico</span>
           <h1
-            className="font-display mt-4 max-w-3xl font-black uppercase leading-[0.9] tracking-tight text-foreground text-balance"
-            style={{ fontSize: "clamp(2.5rem, 9vw, 6rem)" }}
+            className="font-display mt-4 max-w-3xl font-black uppercase leading-[0.9] tracking-tight text-foreground text-balance break-words"
+            style={{ fontSize: "clamp(1.75rem, 8vw, 6rem)" }}
           >
             {titleLines.map((line, i) => (
               <span key={i} className="block">{line}</span>
@@ -101,7 +101,7 @@ export function ServicesContent() {
         {services.length > 0 ? (
           <section>
             <span className="section-label">Servicios disponibles</span>
-            <h2 className="font-display mt-3 text-4xl font-black uppercase tracking-tight text-foreground sm:text-5xl">
+            <h2 className="font-display mt-3 text-[clamp(1.6rem,7vw,3rem)] font-black uppercase tracking-tight text-foreground break-words">
               ¿Qué podemos reparar?
             </h2>
 
@@ -178,7 +178,7 @@ export function ServicesContent() {
         {faqs.length > 0 ? (
           <section className="mt-20">
             <span className="section-label">FAQ</span>
-            <h2 className="font-display mt-3 text-4xl font-black uppercase tracking-tight text-foreground sm:text-5xl">
+            <h2 className="font-display mt-3 text-[clamp(1.6rem,7vw,3rem)] font-black uppercase tracking-tight text-foreground break-words">
               Preguntas<br />Frecuentes
             </h2>
             <div className="mt-10 divide-y divide-bd-border">
@@ -200,7 +200,7 @@ export function ServicesContent() {
             contraste es el contrario al de la página. */}
         <section className="my-20 overflow-hidden rounded-3xl bg-foreground text-center">
           <div className="relative px-8 py-16 sm:px-12">
-            <p className="font-display text-5xl font-black uppercase leading-none tracking-tight text-background sm:text-6xl">
+            <p className="font-display text-[clamp(1.75rem,8vw,3.75rem)] font-black uppercase leading-none tracking-tight text-background break-words">
               ¿Listo para<br />reparar tu Apple?
             </p>
             <p className="mt-4 text-sm text-background/70">

@@ -72,8 +72,8 @@ export default function Hero() {
               líneas cuando el tenant escribe un titular de una sola línea larga.
             */}
             <h1
-              className="font-display mt-5 font-black uppercase leading-[0.92] tracking-tight text-foreground text-balance"
-              style={{ fontSize: "clamp(2.5rem, 9vw, 6rem)" }}
+              className="font-display mt-5 font-black uppercase leading-[0.92] tracking-tight text-foreground text-balance break-words"
+              style={{ fontSize: "clamp(1.75rem, 5.5vw, 4.5rem)" }}
             >
               {titleLines.map((line, i) => (
                 <span key={i} className="block">
@@ -180,30 +180,23 @@ export default function Hero() {
               />
 
               {/*
-                El plazo de garantía viene de la configuración del tenant, no
-                compilado. Antes decía "6 MESES" fijo, y el propio manual marca
-                la política de garantía como PENDIENTE de redactar: prometer un
-                plazo concreto en la portada mientras la política no existe es
-                comprometer a la tienda a algo que todavía no ha decidido.
+                AQUÍ HABÍA DOS TARJETAS FLOTANTES, Y LAS DOS SOBRABAN.
 
-                Sin dato configurado no se dibuja nada. Un hueco es honesto; un
-                número inventado, no.
+                La primera repetía `policies.warranty_text` — la misma frase
+                que ya está en el párrafo de la izquierda, palabra por palabra.
+                Una política de garantía de cien caracteres dentro de una
+                tarjeta de 11 rem se desbordaba encima del logotipo: en la
+                revisión con navegador tapaba el lockup entero.
+
+                La segunda decía «Baterías NASAN · Certificadas ✓». Es la misma
+                afirmación de certificación que M12F.1 retiró de /services, en
+                otro fichero: no hay documento de Nasan en el proyecto, y el
+                manual exige trazabilidad o validación para publicarla. El dato
+                comprobable —con qué marca se trabaja— vive en el servicio
+                correspondiente, que el taller edita.
+
+                Lo que queda es el logotipo, sin nada encima.
               */}
-              {policies.warranty_text ? (
-                <div className="absolute right-2 top-12 max-w-[11rem] rounded-2xl border border-white/10 bg-surface px-4 py-3 shadow-2xl sm:right-0">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Garantía</p>
-                  <p className="font-display mt-0.5 text-sm font-black leading-tight text-white">
-                    {policies.warranty_text}
-                  </p>
-                </div>
-              ) : null}
-
-              {/* Floating badge — bottom left */}
-              <div className="absolute bottom-14 left-2 rounded-2xl border border-white/10 bg-surface px-4 py-3 shadow-2xl sm:left-0">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Baterías</p>
-                <p className="font-display text-xl font-black text-white">NASAN</p>
-                <p className="text-[9px] text-zinc-600">Certificadas ✓</p>
-              </div>
             </div>
           </div>
         </div>

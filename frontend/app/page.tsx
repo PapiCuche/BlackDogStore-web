@@ -182,13 +182,23 @@ export default function Home() {
 
       {/* Pilares — reemplazan a las cuatro cifras que nadie podía respaldar */}
       <section className="border-y border-white/[0.06] bg-surface">
-        <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-white/[0.06] lg:grid-cols-4">
+        {/*
+          UNA COLUMNA HASTA 400 px. Con dos columnas en un móvil de 320, cada
+          celda tiene 112 px útiles tras el `px-6` — y «Especialización» no cabe
+          en 112 px a ningún tamaño legible. El navegador no lo encoge: lo
+          desborda, y la portada entera se desplazaba a lo ancho.
+
+          `min-w-0` en las celdas porque una celda de rejilla no baja de su
+          ancho intrínseco por defecto, y ése es el mecanismo exacto del
+          desbordamiento.
+        */}
+        <div className="mx-auto grid max-w-7xl grid-cols-1 divide-y divide-bd-border xs:grid-cols-2 xs:divide-x xs:divide-y-0 lg:grid-cols-4">
           {PILLARS.map((item) => (
-            <div key={item.title} className="px-6 py-8 text-center sm:px-8">
-              <p className="font-display text-xl font-black uppercase tracking-tight text-white lg:text-2xl">
+            <div key={item.title} className="min-w-0 px-6 py-8 text-center sm:px-8">
+              <p className="font-display text-[clamp(0.95rem,2.2vw,1.25rem)] font-black uppercase tracking-tight text-foreground break-words">
                 {item.title}
               </p>
-              <p className="mt-1.5 text-xs leading-5 text-zinc-500">{item.label}</p>
+              <p className="mt-1.5 text-xs leading-5 text-muted text-pretty">{item.label}</p>
             </div>
           ))}
         </div>
@@ -221,7 +231,7 @@ export default function Home() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <span className="section-label">Catálogo</span>
-              <h2 className="font-display mt-2 text-5xl font-black uppercase leading-none tracking-tight text-white sm:text-6xl">
+              <h2 className="font-display mt-2 text-[clamp(1.75rem,8vw,3.75rem)] font-black uppercase leading-none tracking-tight text-foreground break-words">
                 Categorías
               </h2>
             </div>
@@ -250,7 +260,7 @@ export default function Home() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <span className="section-label">Reparaciones</span>
-              <h2 className="font-display mt-2 text-5xl font-black uppercase leading-none tracking-tight text-white sm:text-6xl">
+              <h2 className="font-display mt-2 text-[clamp(1.75rem,8vw,3.75rem)] font-black uppercase leading-none tracking-tight text-foreground break-words">
                 {/*
                   "Servicio Técnico Apple" se lee como servicio oficial de
                   Apple. El manual lo prohíbe sin acreditación vigente y da la
@@ -303,7 +313,7 @@ export default function Home() {
           <div className="relative grid gap-8 px-8 py-12 sm:px-12 sm:py-16 lg:grid-cols-2 lg:items-center">
             <div>
               <span className="section-label">Confianza</span>
-              <h2 className="font-display mt-2 text-5xl font-black uppercase leading-none tracking-tight text-white sm:text-6xl">
+              <h2 className="font-display mt-2 text-[clamp(1.75rem,8vw,3.75rem)] font-black uppercase leading-none tracking-tight text-foreground break-words">
                 ¿Tu iPhone<br />No Funciona?
               </h2>
               <p className="mt-5 max-w-md text-base leading-7 text-zinc-400">
@@ -358,7 +368,7 @@ export default function Home() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <span className="section-label">Catálogo</span>
-              <h2 className="font-display mt-2 text-5xl font-black uppercase leading-none tracking-tight text-white sm:text-6xl">
+              <h2 className="font-display mt-2 text-[clamp(1.75rem,8vw,3.75rem)] font-black uppercase leading-none tracking-tight text-foreground break-words">
                 Productos<br />Destacados
               </h2>
             </div>
@@ -427,8 +437,8 @@ export default function Home() {
                   <span className="section-label text-muted">{bottomPromo.badge}</span>
                 ) : null}
                 <h2
-                  className="font-display mt-3 font-black uppercase leading-none tracking-tight text-foreground text-balance"
-                  style={{ fontSize: "clamp(2rem, 6vw, 3.75rem)" }}
+                  className="font-display mt-3 font-black uppercase leading-none tracking-tight text-foreground text-balance break-words"
+                  style={{ fontSize: "clamp(1.6rem, 6vw, 3.75rem)" }}
                 >
                   {bottomPromo.title}
                 </h2>
@@ -474,8 +484,8 @@ export default function Home() {
                   />
                 ) : (
                   <p
-                    className="font-display font-black uppercase tracking-tight text-foreground text-balance"
-                    style={{ fontSize: "clamp(2.5rem, 7vw, 4.5rem)" }}
+                    className="font-display font-black uppercase tracking-tight text-foreground text-balance break-words"
+                    style={{ fontSize: "clamp(1.75rem, 7vw, 4.5rem)" }}
                   >
                     {bottomPromo.badge || bottomPromo.title}
                   </p>

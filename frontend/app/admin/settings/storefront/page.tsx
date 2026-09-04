@@ -172,6 +172,20 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
         capacidades y garantías aparecen tal cual los escribas.
       </p>
 
+      {/*
+        §36 — LA ESPERA SE DICE, NO SE DESCUBRE.
+
+        La configuración pública se sirve con una caché de 60 segundos. Sin
+        avisar, quien publica recarga la tienda, no ve su cambio y vuelve a
+        publicar pensando que algo falló. No se invalida la caché al guardar
+        porque hoy es una cabecera HTTP: quien la respeta es el navegador o un
+        CDN, y no hay mecanismo de invalidación selectiva por tenant que se
+        pueda usar sin vaciar la de todos.
+      */}
+      <p className="text-xs leading-5 text-muted">
+        Los cambios publicados tardan hasta un minuto en verse en la tienda.
+      </p>
+
       {error ? (
         <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-300">
           {error}

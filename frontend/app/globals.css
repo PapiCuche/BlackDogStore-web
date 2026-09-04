@@ -93,6 +93,12 @@
 }
 
 @theme inline {
+  /* M12F.1 — un escalón por debajo de `sm`. Existe porque hay rejillas de dos
+     columnas que funcionan desde 400 px y desbordan en 320: sin este punto
+     había que elegir entre una columna hasta 640 px —desaprovechando el móvil
+     grande— o desbordar el pequeño. */
+  --breakpoint-xs: 26rem;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
