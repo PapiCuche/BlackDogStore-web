@@ -26,6 +26,11 @@ from .settings_views import _settings_context
 from .storefront_content_services import (
     CONTENT_CAPABILITY,
     CONTENT_VIEW_CAPABILITY,
+    LIST_CONTENT_MODELS,
+    admin_list_payload,
+    delete_list_row,
+    list_content_rows,
+    save_list_row,
     archive_campaign,
     create_campaign,
     publish_campaign,
@@ -261,3 +266,98 @@ def _errors(exc) -> dict:
     if hasattr(exc, 'message_dict'):
         return exc.message_dict
     return {'__all__': list(getattr(exc, 'messages', [str(exc)]))}
+
+
+class AdminStorefrontListContentView(APIView):
+    """
+    GET    /api/admin/storefront/<kind>/?company=<id>       — `company.view`
+    POST   /api/admin/storefront/<kind>/?company=<id>       — `company.manage`
+    PATCH  /api/admin/storefront/<kind>/<pk>/?company=<id>  — `company.manage`
+    DELETE /api/admin/storefront/<kind>/<pk>/?company=<id>  — `company.manage`
+
+    `kind` es servicios, preguntas o métricas. UNA vista y no tres: los tres
+    tienen la misma vida, y tres copias del mismo CRUD son tres sitios donde
+    arreglar el mismo fallo — con dos de ellos olvidados.
+
+    `kind` se valida contra el mapa; un valor desconocido es 404 y no una
+    excepción.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _kind(self, kind):
+        return kind if kind in LIST_CONTENT_MODELS else None
+
+    def get(self, request, kind):
+        if self._kind(kind) is None:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        company, _row, error = _settings_context(request, CONTENT_VIEW_CAPABILITY)
+        if error:
+            return error
+        return Response({
+            'company': {'id': company.pk, 'slug': company.slug, 'name': company.name},
+            'results': [
+                admin_list_payload(kind, row) for row in list_content_rows(kind, company)
+            ],
+        })
+
+    def post(self, request, kind):
+        if self._kind(kind) is None:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        company, _row, error = _settings_context(request, CONTENT_CAPABILITY)
+        if error:
+            return error
+        try:
+            row = save_list_row(
+                kind=kind, company=company, actor=request.user,
+                data=request.data, request=request,
+            )
+        except DjangoValidationError as exc:
+            return Response(
+                {'detail': 'Datos inválidos.', 'errors': _errors(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(admin_list_payload(kind, row), status=status.HTTP_201_CREATED)
+
+
+class AdminStorefrontListContentDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _row(self, kind, company, pk):
+        if kind not in LIST_CONTENT_MODELS:
+            return None
+        # SIEMPRE dentro de la empresa resuelta: filtrar por `pk` y comprobar la
+        # empresa después deja una ventana en la que el objeto ajeno ya está
+        # cargado.
+        return list_content_rows(kind, company).filter(pk=pk).first()
+
+    def patch(self, request, kind, pk):
+        company, _row, error = _settings_context(request, CONTENT_CAPABILITY)
+        if error:
+            return error
+        row = self._row(kind, company, pk)
+        if row is None:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            row = save_list_row(
+                kind=kind, company=company, actor=request.user,
+                data=request.data, row=row, request=request,
+            )
+        except DjangoValidationError as exc:
+            return Response(
+                {'detail': 'Datos inválidos.', 'errors': _errors(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(admin_list_payload(kind, row))
+
+    def delete(self, request, kind, pk):
+        company, _row, error = _settings_context(request, CONTENT_CAPABILITY)
+        if error:
+            return error
+        row = self._row(kind, company, pk)
+        if row is None:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        delete_list_row(
+            kind=kind, company=company, actor=request.user, row=row, request=request,
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)

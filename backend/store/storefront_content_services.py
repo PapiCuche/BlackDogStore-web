@@ -29,7 +29,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import (
-    AdminAuditLog, Product, StorefrontCampaign, StorefrontPageSettings,
+    AdminAuditLog, Product, StorefrontCampaign, StorefrontFaq,
+    StorefrontPageSettings, StorefrontServiceOffering, StorefrontTrustMetric,
 )
 
 #: La autoridad que ya gobierna la configuración de la empresa.
@@ -49,6 +50,16 @@ CONTENT_VIEW_CAPABILITY = 'company.view'
 
 #: Lo que el público llega a ver de una campaña. Lista blanca, no lista negra:
 #: un campo nuevo en el modelo NO aparece solo en la respuesta pública.
+#: Los campos de la página estable. UNA lista, usada al leer y al escribir:
+#: dos listas que deberían coincidir acaban no coincidiendo, y entonces hay un
+#: campo que se puede guardar y no se puede leer.
+PAGE_FIELDS = (
+    'hero_eyebrow', 'hero_title', 'hero_subtitle',
+    'hero_primary_cta_label', 'hero_primary_cta_url',
+    'hero_secondary_cta_label', 'hero_secondary_cta_url',
+    'services_hero_title', 'services_hero_subtitle', 'services_warranty_note',
+)
+
 PUBLIC_CAMPAIGN_FIELDS = (
     'slot', 'badge', 'title', 'subtitle', 'body',
     'image_url', 'cta_label', 'cta_url',
@@ -98,6 +109,41 @@ def _public_payload(campaign) -> dict:
     return data
 
 
+#: M12F.1 — el contenido de lista, con su lista blanca cada uno.
+#:
+#: Un diccionario por modelo y no un serializador genérico: `updated_by`,
+#: `is_active` y las marcas de tiempo NO son asunto del público, y una lista
+#: blanca escrita a mano es lo que impide que un campo nuevo aparezca solo.
+PUBLIC_SERVICE_FIELDS = (
+    'title', 'description', 'devices_text', 'estimated_time_text', 'highlight',
+)
+PUBLIC_FAQ_FIELDS = ('question', 'answer')
+PUBLIC_METRIC_FIELDS = ('value', 'label')
+
+_LIST_CONTENT = (
+    ('services', StorefrontServiceOffering, PUBLIC_SERVICE_FIELDS),
+    ('faqs', StorefrontFaq, PUBLIC_FAQ_FIELDS),
+    ('metrics', StorefrontTrustMetric, PUBLIC_METRIC_FIELDS),
+)
+
+
+def public_list_content(company) -> dict:
+    """
+    Servicios, preguntas y métricas ACTIVAS de este tenant.
+
+    Listas vacías son la respuesta normal, no un fallo: un taller que no ha
+    escrito métricas no tiene métricas, y el escaparate no dibuja el bloque.
+    Un bloque vacío es peor que ninguno, y una cifra inventada peor que los dos.
+    """
+    return {
+        key: [
+            {field: getattr(row, field) or '' for field in fields}
+            for row in model.objects.published(company)
+        ]
+        for key, model, fields in _LIST_CONTENT
+    }
+
+
 def public_page_settings(company) -> dict:
     """
     El contenido estable de la portada de este tenant.
@@ -108,12 +154,10 @@ def public_page_settings(company) -> dict:
     identidad comercial desde la Fase 3.
     """
     row = getattr(company, 'storefront_page', None) if company is not None else None
-    fields = (
-        'hero_eyebrow', 'hero_title', 'hero_subtitle',
-        'hero_primary_cta_label', 'hero_primary_cta_url',
-        'hero_secondary_cta_label', 'hero_secondary_cta_url',
-    )
-    return {f: (getattr(row, f, '') or '') if row is not None else '' for f in fields}
+    return {
+        f: (getattr(row, f, '') or '') if row is not None else ''
+        for f in PAGE_FIELDS
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -246,12 +290,7 @@ def archive_campaign(*, campaign, actor, request=None):
 @transaction.atomic
 def update_page_settings(*, company, actor, data, request=None):
     row, _ = StorefrontPageSettings.objects.get_or_create(company=company)
-    fields = (
-        'hero_eyebrow', 'hero_title', 'hero_subtitle',
-        'hero_primary_cta_label', 'hero_primary_cta_url',
-        'hero_secondary_cta_label', 'hero_secondary_cta_url',
-    )
-    for field in fields:
+    for field in PAGE_FIELDS:
         if field in data:
             setattr(row, field, data[field] or '')
     row.updated_by = actor
@@ -264,3 +303,89 @@ def update_page_settings(*, company, actor, data, request=None):
         request=request, company=company,
     )
     return row
+
+
+# ---------------------------------------------------------------------------
+# M12F.1 — contenido de lista: servicios, preguntas y métricas
+# ---------------------------------------------------------------------------
+
+#: Qué se puede escribir en cada modelo, y con qué nombre público.
+#:
+#: UN MAPA Y NO TRES VISTAS: los tres tienen la misma vida —crear, editar,
+#: activar, ordenar— y escribir tres veces el mismo CRUD es garantizar que el
+#: día que se arregle un fallo se arregle en uno de los tres.
+LIST_CONTENT_MODELS = {
+    'services': (
+        StorefrontServiceOffering,
+        ('title', 'description', 'devices_text', 'estimated_time_text',
+         'highlight', 'is_active', 'sort_order'),
+    ),
+    'faqs': (
+        StorefrontFaq,
+        ('question', 'answer', 'is_active', 'sort_order'),
+    ),
+    'metrics': (
+        StorefrontTrustMetric,
+        ('value', 'label', 'is_active', 'sort_order'),
+    ),
+}
+
+
+def list_content_rows(kind, company):
+    """Todas las filas del tenant, activas o no: esto es el panel."""
+    model, _fields = LIST_CONTENT_MODELS[kind]
+    return model.objects.for_company(company).order_by('sort_order', 'id')
+
+
+def admin_list_payload(kind, row) -> dict:
+    _model, fields = LIST_CONTENT_MODELS[kind]
+    data = {f: getattr(row, f) for f in fields}
+    data['id'] = row.pk
+    return data
+
+
+@transaction.atomic
+def save_list_row(*, kind, company, actor, data, row=None, request=None):
+    """
+    Crear o editar una fila de contenido.
+
+    La empresa NUNCA sale de `data`: llega resuelta y autorizada desde la vista.
+    Aceptarla del cuerpo sería dejar que quien edita eligiera de qué tienda es
+    lo que escribe.
+    """
+    model, fields = LIST_CONTENT_MODELS[kind]
+    instance = row or model(company=company)
+    for field in fields:
+        if field in data:
+            setattr(instance, field, data[field])
+    instance.updated_by = actor
+    instance.full_clean(exclude=['company'])
+    instance.save()
+    AdminAuditLog.log(
+        actor=actor,
+        action=f'storefront_{kind}_saved',
+        target_type=f'storefront_{kind}', target_id=instance.pk,
+        metadata={'kind': kind},
+        request=request, company=company,
+    )
+    return instance
+
+
+@transaction.atomic
+def delete_list_row(*, kind, company, actor, row, request=None):
+    """
+    Se borra de verdad, y aquí sí es correcto.
+
+    Una campaña archivada es historia de lo que la tienda anunció; una pregunta
+    frecuente retirada no lo es. Para dejar de mostrarla sin perderla existe
+    `is_active`, que es lo que el panel ofrece primero.
+    """
+    pk = row.pk
+    row.delete()
+    AdminAuditLog.log(
+        actor=actor,
+        action=f'storefront_{kind}_deleted',
+        target_type=f'storefront_{kind}', target_id=pk,
+        metadata={'kind': kind},
+        request=request, company=company,
+    )

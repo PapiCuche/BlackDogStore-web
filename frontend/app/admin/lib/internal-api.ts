@@ -1479,6 +1479,9 @@ export type StorefrontPageContent = {
   hero_primary_cta_url: string;
   hero_secondary_cta_label: string;
   hero_secondary_cta_url: string;
+  services_hero_title: string;
+  services_hero_subtitle: string;
+  services_warranty_note: string;
 };
 
 /** Errores por campo, tal como los devuelve el backend. */
@@ -1575,4 +1578,64 @@ export async function updateStorefrontPage(
     { method: "PATCH", body: JSON.stringify(payload) },
   );
   return handle<{ page: StorefrontPageContent }>(res, "la portada");
+}
+
+// ---------------------------------------------------------------------------
+// M12F.1 — servicios, preguntas y métricas del escaparate
+// ---------------------------------------------------------------------------
+
+export type StorefrontListKind = "services" | "faqs" | "metrics";
+
+export type StorefrontListRow = {
+  id: number;
+  is_active: boolean;
+  sort_order: number;
+  // servicios
+  title?: string;
+  description?: string;
+  devices_text?: string;
+  estimated_time_text?: string;
+  highlight?: string;
+  // preguntas
+  question?: string;
+  answer?: string;
+  // métricas
+  value?: string;
+  label?: string;
+};
+
+export async function fetchStorefrontList(
+  kind: StorefrontListKind, companyId?: number | null,
+): Promise<{ results: StorefrontListRow[] }> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/${kind}/${companyQuery(companyId)}`,
+  );
+  return handle<{ results: StorefrontListRow[] }>(res, "el escaparate");
+}
+
+export async function saveStorefrontListRow(
+  kind: StorefrontListKind,
+  payload: Partial<StorefrontListRow>,
+  companyId?: number | null,
+): Promise<StorefrontListRow> {
+  const id = payload.id;
+  const url = id
+    ? `${API_BASE}/admin/storefront/${kind}/${id}/${companyQuery(companyId)}`
+    : `${API_BASE}/admin/storefront/${kind}/${companyQuery(companyId)}`;
+  const res = await fetchWithAuth(url, {
+    method: id ? "PATCH" : "POST",
+    body: JSON.stringify(payload),
+  });
+  return handle<StorefrontListRow>(res, "el escaparate");
+}
+
+export async function deleteStorefrontListRow(
+  kind: StorefrontListKind, id: number, companyId?: number | null,
+): Promise<void> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/${kind}/${id}/${companyQuery(companyId)}`,
+    { method: "DELETE" },
+  );
+  if (res.status === 204) return;
+  await handle<unknown>(res, "el escaparate");
 }

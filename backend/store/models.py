@@ -6794,6 +6794,30 @@ class StorefrontPageSettings(models.Model):
         max_length=500, blank=True, validators=[validate_cta_url],
     )
 
+    # --- M12F.1 — la página de servicios ----------------------------------
+    #
+    # Se amplía ESTE modelo en vez de crear un segundo singleton: sigue siendo
+    # «el contenido estable del escaparate de una empresa», y una tabla más con
+    # una fila por tenant sólo añadiría fontanería. Lo que sí tiene vida propia
+    # —servicios, preguntas, métricas— son entidades con sus filas.
+    services_hero_title = models.CharField(max_length=160, blank=True)
+    services_hero_subtitle = models.TextField(
+        max_length=400, blank=True, validators=[MaxLengthValidator(400)],
+    )
+
+    #: LA NOTA DE GARANTÍA DEL SERVICIO TÉCNICO.
+    #:
+    #: Existe porque la página afirmaba «todos nuestros servicios incluyen 6
+    #: meses de garantía» y eso contradice al manual del propio piloto, que dice
+    #: que la cobertura de servicios técnicos DEPENDE del producto o reparación.
+    #: Los seis meses son de los equipos seminuevos; alguien los trasladó a las
+    #: reparaciones.
+    #:
+    #: Vacío no pinta nada. Una garantía que nadie ha escrito no se inventa.
+    services_warranty_note = models.TextField(
+        max_length=600, blank=True, validators=[MaxLengthValidator(600)],
+    )
+
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         null=True, blank=True, related_name='updated_storefront_pages',
@@ -6824,3 +6848,156 @@ class StorefrontPageSettings(models.Model):
                 errors[url_field] = f'El botón {name} necesita destino.'
         if errors:
             raise ValidationError(errors)
+
+
+class StorefrontContentQuerySet(models.QuerySet):
+    """
+    La misma regla de visibilidad que las campañas, para el contenido de lista.
+
+    Menos condiciones —esto no caduca— pero la parte que importa es idéntica:
+    sin empresa no hay filas, NUNCA todas.
+    """
+
+    def for_company(self, company):
+        if company is None:
+            return self.none()
+        return self.filter(company=company)
+
+    def published(self, company):
+        return self.for_company(company).filter(is_active=True).order_by('sort_order', 'id')
+
+
+class StorefrontServiceOffering(models.Model):
+    """
+    Un servicio que este taller ofrece. Dato del tenant, no del código.
+
+    POR QUÉ ES UNA ENTIDAD Y NO TEXTO
+    ---------------------------------
+    La lista vivía DOS veces compilada: una en `/services` y otra, distinta y
+    más corta, en el pie. Dos listas de lo mismo divergen — ya divergían — y
+    quien las lee no sabe cuál es la buena. Una entidad da una sola fuente.
+
+    Y hace falta poder activar, desactivar y reordenar sin desplegar: un taller
+    que deja de cambiar tapas traseras no debería necesitar un despliegue para
+    dejar de anunciarlo.
+
+    EL TIEMPO ES UNA ESTIMACIÓN, Y SE LLAMA ASÍ
+    -------------------------------------------
+    El manual dice que «el tiempo y costo pueden variar según equipo, falla y
+    disponibilidad de repuestos». Un «2–3 horas» presentado como dato es una
+    promesa; presentado como estimación es información. El campo se llama
+    `estimated_time_text` por eso, y la interfaz lo etiqueta.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_services',
+    )
+    title = models.CharField(max_length=80)
+    description = models.TextField(max_length=400, blank=True,
+                                   validators=[MaxLengthValidator(400)])
+    #: Texto libre corto: «iPhone · iPad». No es una relación con el catálogo
+    #: porque nombra familias de equipo, no productos que el taller venda.
+    devices_text = models.CharField(max_length=120, blank=True)
+    #: ESTIMACIÓN. Nunca un compromiso. Vacío se acepta y no se pinta.
+    estimated_time_text = models.CharField(max_length=40, blank=True)
+    #: Una etiqueta corta al lado del título. Vacía no se pinta.
+    highlight = models.CharField(max_length=40, blank=True)
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_services',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontContentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'is_active', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.title} ({self.company_id})'
+
+
+class StorefrontFaq(models.Model):
+    """
+    Una pregunta frecuente de este taller.
+
+    Las FAQ cambian con el negocio y son EXACTAMENTE donde se colaron las
+    afirmaciones que M12F.1 tuvo que retirar: la que decía que todos los
+    servicios llevan seis meses de garantía vivía aquí, compilada, contradiciendo
+    la política que el propio tenant tiene configurada.
+
+    Como dato, quien la escribe es quien responde por ella.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_faqs',
+    )
+    question = models.CharField(max_length=200)
+    answer = models.TextField(max_length=1200, validators=[MaxLengthValidator(1200)])
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_faqs',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontContentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'is_active', 'sort_order'])]
+
+    def __str__(self):
+        return self.question[:60]
+
+
+class StorefrontTrustMetric(models.Model):
+    """
+    Una cifra que el taller publica sobre sí mismo.
+
+    NACE VACÍO Y ASÍ SE QUEDA HASTA QUE ALGUIEN RESPONDA POR ELLA. Ninguna
+    migración siembra métricas: la anterior versión de la página anunciaba
+    «5.000+ dispositivos reparados» sin ninguna fuente dentro del proyecto, y
+    trasladar esa cifra a la base de datos sería darle una credibilidad que no
+    tiene por haber cambiado de sitio.
+
+    Un tenant sin métricas no muestra el bloque. Un bloque vacío es peor que
+    ninguno, y una cifra inventada es peor que las dos cosas.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_metrics',
+    )
+    #: Lo grande: «+1.200», «24 h», «Nasan».
+    value = models.CharField(max_length=24)
+    #: Lo pequeño: qué significa.
+    label = models.CharField(max_length=60)
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_metrics',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontContentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'is_active', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.value} {self.label}'

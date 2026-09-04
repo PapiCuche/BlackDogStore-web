@@ -31,6 +31,7 @@ import {
   type InternalContext,
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
+import { ListContentEditor } from "./ListContentEditor";
 import {
   ContentValidationError,
   actOnStorefrontCampaign,
@@ -58,6 +59,9 @@ const EMPTY_PAGE: StorefrontPageContent = {
   hero_primary_cta_url: "",
   hero_secondary_cta_label: "",
   hero_secondary_cta_url: "",
+  services_hero_title: "",
+  services_hero_subtitle: "",
+  services_warranty_note: "",
 };
 
 /** `2026-09-03T10:00:00Z` → `2026-09-03T10:00`, que es lo que pide el input. */
@@ -192,6 +196,41 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
                 setNotice("Portada actualizada.");
               }}
               companyId={companyId}
+            />
+          </DashboardSection>
+
+          {/*
+            M12F.1 — el contenido de la página de servicios.
+
+            Aquí vivían compiladas varias afirmaciones que el proyecto no
+            respalda: una cifra de dispositivos reparados sin fuente, una
+            garantía universal que contradice al manual del propio taller y una
+            certificación de la que no hay documento. Como datos, quien las
+            escribe responde por ellas — y por eso el aviso de arriba.
+          */}
+          <DashboardSection title="Servicios">
+            <ListContentEditor
+              kind="services" companyId={companyId}
+              canManage={canManage} onNotice={setNotice}
+            />
+          </DashboardSection>
+
+          <DashboardSection title="Preguntas frecuentes">
+            <ListContentEditor
+              kind="faqs" companyId={companyId}
+              canManage={canManage} onNotice={setNotice}
+            />
+          </DashboardSection>
+
+          <DashboardSection title="Métricas">
+            <p className="mb-4 text-xs leading-5 text-muted">
+              Publica sólo cifras verificadas y vigentes. Mientras no haya
+              ninguna, el bloque no aparece en la web — que es preferible a una
+              cifra que nadie pueda respaldar.
+            </p>
+            <ListContentEditor
+              kind="metrics" companyId={companyId}
+              canManage={canManage} onNotice={setNotice}
             />
           </DashboardSection>
 
@@ -439,6 +478,31 @@ function PageForm({
         value={draft.hero_secondary_cta_label} onChange={set} errors={errors} maxLength={40} />
       <Field label="Botón secundario — destino" name="hero_secondary_cta_url"
         value={draft.hero_secondary_cta_url} onChange={set} errors={errors} />
+
+      <div className="sm:col-span-2">
+        <Field label="Servicios — titular" name="services_hero_title"
+          value={draft.services_hero_title} onChange={set} errors={errors}
+          as="textarea" maxLength={160}
+          hint="Un salto de línea = una línea del titular." />
+      </div>
+      <div className="sm:col-span-2">
+        <Field label="Servicios — texto" name="services_hero_subtitle"
+          value={draft.services_hero_subtitle} onChange={set} errors={errors}
+          as="textarea" maxLength={400} />
+      </div>
+      <div className="sm:col-span-2">
+        {/*
+          LA NOTA DE GARANTÍA. Existe porque la página afirmaba que todos los
+          servicios llevan seis meses, y eso contradice al manual del propio
+          taller: la cobertura de una reparación depende del trabajo y del
+          repuesto. Vacío no publica nada, que es lo correcto mientras nadie
+          escriba la política real.
+        */}
+        <Field label="Servicios — nota de garantía" name="services_warranty_note"
+          value={draft.services_warranty_note} onChange={set} errors={errors}
+          as="textarea" maxLength={600}
+          hint="Vacío no publica ninguna garantía. Escribe sólo la que puedas sostener." />
+      </div>
 
       {errors.__all__ ? (
         <p role="alert" className="text-sm text-red-300 sm:col-span-2">{errors.__all__.join(" ")}</p>

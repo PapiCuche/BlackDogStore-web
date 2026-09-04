@@ -74,6 +74,8 @@ from .customer_views import (
     AdminCustomerListView,
 )
 from .storefront_content_views import (
+    AdminStorefrontListContentDetailView,
+    AdminStorefrontListContentView,
     AdminStorefrontCampaignActionView,
     AdminStorefrontCampaignDetailView,
     AdminStorefrontCampaignListView,
@@ -213,6 +215,16 @@ urlpatterns = [
         'admin/storefront/campaigns/<int:pk>/preview/',
         AdminStorefrontCampaignPreviewView.as_view(),
         name='admin-storefront-campaign-preview',
+    ),
+    path(
+        'admin/storefront/<str:kind>/',
+        AdminStorefrontListContentView.as_view(),
+        name='admin-storefront-list-content',
+    ),
+    path(
+        'admin/storefront/<str:kind>/<int:pk>/',
+        AdminStorefrontListContentDetailView.as_view(),
+        name='admin-storefront-list-content-detail',
     ),
     path(
         'admin/storefront/campaigns/<int:pk>/<str:action>/',

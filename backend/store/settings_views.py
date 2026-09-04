@@ -39,7 +39,9 @@ from .company_settings import (
     get_company_settings,
 )
 from .models import AdminAuditLog, Company, CompanySettings
-from .storefront_content_services import public_campaigns, public_page_settings
+from .storefront_content_services import (
+    public_campaigns, public_list_content, public_page_settings,
+)
 from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .serializers import (
@@ -140,6 +142,10 @@ def build_storefront_config_payload(company) -> dict:
         # es precisamente la defensa contra la preventa del año pasado.
         'page': public_page_settings(company),
         'campaigns': public_campaigns(company),
+        # M12F.1 — servicios, preguntas y métricas del tenant. Listas vacías son
+        # la respuesta normal: quien no ha escrito métricas no tiene métricas, y
+        # el escaparate no dibuja ese bloque.
+        **public_list_content(company),
     }
 
 

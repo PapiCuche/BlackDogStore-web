@@ -13280,10 +13280,11 @@ from .company_settings import (  # noqa: E402
     order_pickup_location,
 )
 from .models import (  # noqa: E402
-    CompanySettings, StorefrontCampaign, StorefrontPageSettings,
+    CompanySettings, StorefrontCampaign, StorefrontFaq, StorefrontPageSettings,
+    StorefrontServiceOffering, StorefrontTrustMetric,
 )
 from .storefront_content_services import (  # noqa: E402
-    public_campaigns, public_page_settings,
+    public_campaigns, public_list_content, public_page_settings,
 )
 
 
@@ -45588,3 +45589,271 @@ class M12FContentApiTest(TestCase):
             'hero_primary_cta_url': 'javascript:alert(1)',
         }, format='json')
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class M12F1ServicesContentTest(TestCase):
+    """
+    M12F.1 — el contenido de /services como dato del tenant.
+
+    Y sobre todo: lo que la reconciliación de claims tiene que impedir que
+    vuelva. Varias afirmaciones sobrevivieron a una fase entera por estar
+    compiladas; ahora que son datos, lo que las sujeta es que nadie las siembre.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f1-a', 'Taller A')
+        self.b = _p3_company('m12f1-b', 'Taller B')
+        self.admin_a, _ = _p2d_member(
+            self.a, 'm12f1_admin_a', ['company.view', 'company.manage'],
+        )
+        self.viewer_a, _ = _p2d_member(self.a, 'm12f1_viewer_a', ['company.view'])
+        self.admin_b, _ = _p2d_member(
+            self.b, 'm12f1_admin_b', ['company.view', 'company.manage'],
+        )
+        self.master = User.objects.create_superuser(
+            username='m12f1_master', password='x', email='m1@example.com',
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # -- visibilidad ------------------------------------------------------
+
+    def test_only_active_rows_reach_the_public(self):
+        StorefrontServiceOffering.objects.create(
+            company=self.a, title='Visible', sort_order=0,
+        )
+        StorefrontServiceOffering.objects.create(
+            company=self.a, title='Retirado', is_active=False, sort_order=1,
+        )
+        titles = [s['title'] for s in public_list_content(self.a)['services']]
+        self.assertEqual(titles, ['Visible'])
+
+    def test_order_is_deterministic(self):
+        for order, title in ((30, 'Tercero'), (10, 'Primero'), (20, 'Segundo')):
+            StorefrontServiceOffering.objects.create(
+                company=self.a, title=title, sort_order=order,
+            )
+        for _ in range(3):
+            titles = [s['title'] for s in public_list_content(self.a)['services']]
+            self.assertEqual(titles, ['Primero', 'Segundo', 'Tercero'])
+
+    def test_one_companys_content_never_reaches_another(self):
+        StorefrontFaq.objects.create(company=self.b, question='¿De B?', answer='Sí')
+        self.assertEqual(public_list_content(self.a)['faqs'], [])
+        self.assertEqual(len(public_list_content(self.b)['faqs']), 1)
+
+    def test_no_company_means_no_content_never_all(self):
+        StorefrontServiceOffering.objects.create(company=self.a, title='X')
+        content = public_list_content(None)
+        self.assertEqual(content['services'], [])
+        self.assertEqual(content['faqs'], [])
+        self.assertEqual(content['metrics'], [])
+
+    def test_a_tenant_without_metrics_gets_an_empty_list(self):
+        """
+        Y eso es lo correcto: el escaparate no dibuja el bloque.
+
+        Un bloque de cifras vacío es peor que ninguno, y una cifra inventada
+        peor que las dos cosas.
+        """
+        self.assertEqual(public_list_content(self.a)['metrics'], [])
+
+    # -- lo que el público NO recibe --------------------------------------
+
+    def test_internal_fields_never_reach_the_public(self):
+        row = StorefrontServiceOffering.objects.create(
+            company=self.a, title='Servicio', updated_by=self.admin_a,
+        )
+        payload = public_list_content(self.a)['services'][0]
+        for leaked in ('id', 'is_active', 'sort_order', 'updated_by',
+                       'created_at', 'updated_at', 'company'):
+            self.assertNotIn(leaked, payload)
+        self.assertEqual(row.updated_by, self.admin_a)
+
+    def test_the_public_shape_is_fixed(self):
+        StorefrontServiceOffering.objects.create(company=self.a, title='S')
+        StorefrontFaq.objects.create(company=self.a, question='P', answer='R')
+        StorefrontTrustMetric.objects.create(company=self.a, value='+1', label='L')
+        content = public_list_content(self.a)
+        self.assertEqual(
+            set(content['services'][0]),
+            {'title', 'description', 'devices_text', 'estimated_time_text', 'highlight'},
+        )
+        self.assertEqual(set(content['faqs'][0]), {'question', 'answer'})
+        self.assertEqual(set(content['metrics'][0]), {'value', 'label'})
+
+    # -- autoridad --------------------------------------------------------
+
+    def test_a_viewer_reads_but_cannot_write(self):
+        client = self._as(self.viewer_a)
+        self.assertEqual(
+            client.get('/api/admin/storefront/services/').status_code,
+            status.HTTP_200_OK,
+        )
+        res = client.post('/api/admin/storefront/services/',
+                          {'title': 'Intento'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_an_admin_cannot_touch_another_companys_content(self):
+        foreign = StorefrontFaq.objects.create(
+            company=self.b, question='¿De B?', answer='Sí',
+        )
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/storefront/faqs/{foreign.pk}/',
+            {'answer': 'Secuestrada'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.answer, 'Sí')
+
+    def test_a_row_cannot_be_created_for_another_company(self):
+        """
+        La empresa NUNCA sale del cuerpo. Mandarla ahí no cambia dónde se
+        escribe.
+        """
+        res = self._as(self.admin_a).post(
+            '/api/admin/storefront/services/',
+            {'title': 'Infiltrado', 'company': self.b.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            StorefrontServiceOffering.objects.filter(company=self.b).count(), 0,
+        )
+
+    def test_master_must_name_the_company(self):
+        res = self._as(self.master).get('/api/admin/storefront/services/')
+        self.assertIn(
+            res.status_code,
+            (status.HTTP_403_FORBIDDEN, status.HTTP_400_BAD_REQUEST),
+        )
+
+    def test_master_with_an_explicit_company_works(self):
+        StorefrontServiceOffering.objects.create(company=self.b, title='De B')
+        res = self._as(self.master).get(
+            f'/api/admin/storefront/services/?company={self.b.pk}',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([r['title'] for r in res.data['results']], ['De B'])
+
+    def test_an_unknown_kind_is_a_404(self):
+        res = self._as(self.admin_a).get('/api/admin/storefront/inventado/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- el panel ve lo que el público no ---------------------------------
+
+    def test_the_admin_list_includes_inactive_rows(self):
+        StorefrontFaq.objects.create(
+            company=self.a, question='Oculta', answer='R', is_active=False,
+        )
+        res = self._as(self.admin_a).get('/api/admin/storefront/faqs/')
+        self.assertEqual([r['question'] for r in res.data['results']], ['Oculta'])
+        self.assertEqual(public_list_content(self.a)['faqs'], [])
+
+    # -- auditoría --------------------------------------------------------
+
+    def test_writing_content_leaves_a_trace(self):
+        client = self._as(self.admin_a)
+        res = client.post('/api/admin/storefront/faqs/',
+                          {'question': 'P', 'answer': 'R'}, format='json')
+        client.delete(f'/api/admin/storefront/faqs/{res.data["id"]}/')
+        actions = set(
+            AdminAuditLog.objects.filter(company=self.a)
+            .values_list('action', flat=True)
+        )
+        self.assertIn('storefront_faqs_saved', actions)
+        self.assertIn('storefront_faqs_deleted', actions)
+
+    # -- límites ----------------------------------------------------------
+
+    def test_content_length_is_bounded(self):
+        res = self._as(self.admin_a).post(
+            '/api/admin/storefront/faqs/',
+            {'question': 'P', 'answer': 'x' * 5000}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class M12F1ClaimReconciliationTest(TestCase):
+    """
+    LAS AFIRMACIONES QUE NO PUEDEN VOLVER.
+
+    Cada una tiene un motivo concreto, y el motivo está en el proyecto:
+
+      «5.000+ dispositivos reparados»
+          Ninguna fuente. Mover una cifra de sitio no le da respaldo.
+
+      «Todos nuestros servicios incluyen 6 meses de garantía»
+          CONTRADICE al manual v3.0 del piloto, que dice que la cobertura de
+          servicios técnicos depende del producto o reparación. Los seis meses
+          son de los equipos seminuevos.
+
+      «Baterías Nasan Originales» y su certificado
+          El manual exige publicar «original» sólo con trazabilidad o
+          validación. No hay documento de Nasan en el proyecto.
+
+      «Sin msg / Pieza reparada»
+          Depende del firmware del equipo, que es de un tercero.
+
+      «Diagnóstico gratuito»
+          Sin política configurada que lo respalde.
+
+    Este test mira el CONTENIDO SEMBRADO, no el código: la fase entera consistió
+    en mover estas frases de un sitio al otro, y sembrarlas otra vez sería no
+    haber hecho nada.
+    """
+
+    RETIRED = (
+        '5,000', '5.000', 'Nasan Originales', 'certificado de autenticidad',
+        'Abril 2025', 'Sin msg', 'Diagnóstico gratuito', 'Diagnóstico Gratuito',
+        'incluyen 6 meses',
+    )
+
+    @staticmethod
+    def _seed_module():
+        import importlib
+        return importlib.import_module('store.migrations.0078_pilot_services_content')
+
+    def test_the_pilot_seed_carries_no_retired_claim(self):
+        module = self._seed_module()
+        blob = ' '.join(
+            [s['title'] + ' ' + s['description'] for s in module.SERVICES]
+            + [f['question'] + ' ' + f['answer'] for f in module.FAQS]
+            + list(module.PAGE.values())
+        )
+        for claim in self.RETIRED:
+            self.assertNotIn(claim, blob, f'la siembra volvió a incluir «{claim}»')
+
+    def test_the_seed_publishes_no_metric(self):
+        """
+        Ninguna cifra tiene respaldo, así que no se siembra ninguna. Un bloque
+        de métricas vacío es exactamente lo que debe verse.
+        """
+        self.assertFalse(hasattr(self._seed_module(), 'METRICS'))
+
+    def test_the_warranty_answer_distinguishes_product_from_repair(self):
+        """
+        La corrección central. La respuesta tiene que separar lo que el manual
+        separa: garantía de PRODUCTO —1 año equipos nuevos, 6 meses
+        seminuevos— de cobertura de REPARACIÓN, que depende del trabajo.
+        """
+        module = self._seed_module()
+        answer = next(
+            f['answer'] for f in module.FAQS if 'garantía' in f['question'].lower()
+        )
+        self.assertIn('seminuevos', answer)
+        self.assertIn('depende', answer)
+        self.assertNotIn('Todos nuestros servicios', answer)
+
+    def test_times_are_offered_as_estimates(self):
+        """
+        El manual pide informar que el tiempo puede variar. El campo se llama
+        `estimated_time_text` y no `time`, y eso no es cosmética: obliga a
+        quien lo pinta a decir qué es.
+        """
+        field_names = {f.name for f in StorefrontServiceOffering._meta.fields}
+        self.assertIn('estimated_time_text', field_names)
+        self.assertNotIn('time', field_names)

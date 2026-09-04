@@ -74,6 +74,10 @@ export type StorefrontPage = {
   hero_primary_cta_url: string;
   hero_secondary_cta_label: string;
   hero_secondary_cta_url: string;
+  services_hero_title: string;
+  services_hero_subtitle: string;
+  /** La garantía QUE ESTE TALLER OFRECE. Vacía no pinta nada. */
+  services_warranty_note: string;
 };
 
 export const EMPTY_PAGE: StorefrontPage = {
@@ -84,7 +88,29 @@ export const EMPTY_PAGE: StorefrontPage = {
   hero_primary_cta_url: "",
   hero_secondary_cta_label: "",
   hero_secondary_cta_url: "",
+  services_hero_title: "",
+  services_hero_subtitle: "",
+  services_warranty_note: "",
 };
+
+/**
+ * M12F.1 — el contenido de lista del taller.
+ *
+ * Listas vacías son la respuesta normal, no un fallo: quien no ha escrito
+ * métricas no tiene métricas, y la página no dibuja ese bloque. Un bloque vacío
+ * es peor que ninguno, y una cifra inventada peor que las dos cosas.
+ */
+export type StorefrontService = {
+  title: string;
+  description: string;
+  devices_text: string;
+  /** ESTIMACIÓN, y la interfaz lo rotula así. Nunca un compromiso. */
+  estimated_time_text: string;
+  highlight: string;
+};
+
+export type StorefrontFaq = { question: string; answer: string };
+export type StorefrontMetric = { value: string; label: string };
 
 export type StorefrontColors = {
   primary_color: string;
@@ -145,6 +171,9 @@ export type StorefrontConfig = {
    * de su ventana — un borrador no viaja hasta aquí, y una caducada tampoco.
    */
   campaigns: Record<string, StorefrontCampaign | undefined>;
+  services: StorefrontService[];
+  faqs: StorefrontFaq[];
+  metrics: StorefrontMetric[];
 };
 
 /**
@@ -196,6 +225,9 @@ export const NEUTRAL_CONFIG: StorefrontConfig = {
   page: { ...EMPTY_PAGE },
   // Sin campañas. Una plataforma sin tenant resuelto no anuncia nada de nadie.
   campaigns: {},
+  services: [],
+  faqs: [],
+  metrics: [],
 };
 
 /** Only `#RRGGBB` reaches a stylesheet. The backend validates; so does this. */
@@ -250,6 +282,9 @@ export async function fetchStorefrontConfig(): Promise<StorefrontConfig> {
       // claves, y la portada tiene que renderizar igual.
       page: { ...EMPTY_PAGE, ...(data.page ?? {}) },
       campaigns: data.campaigns ?? {},
+      services: data.services ?? [],
+      faqs: data.faqs ?? [],
+      metrics: data.metrics ?? [],
     };
   } catch {
     // The shop renders unbranded rather than not at all.

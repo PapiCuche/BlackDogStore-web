@@ -23,7 +23,7 @@ const WHATSAPP_SVG = (
 );
 
 export function Footer() {
-  const { company, contact } = useStorefront();
+  const { company, contact, services } = useStorefront();
   const storeName = company.name;
 
   return (
@@ -195,28 +195,36 @@ export function Footer() {
             </ul>
           </div>
 
-          {/* Services */}
+          {/*
+            UNA SOLA FUENTE.
+
+            Aquí había una segunda lista de servicios, escrita a mano, más corta
+            que la de `/services` y ya divergente: incluía «Diagnóstico
+            Gratuito», que la otra no ofrecía con ese nombre y que ninguna
+            política del proyecto respalda. Dos listas de lo mismo divergen
+            siempre; quien las lee no sabe cuál es la buena.
+
+            Ahora ambas salen de los servicios ACTIVOS del tenant. Un taller que
+            deja de ofrecer algo lo desactiva una vez y desaparece de los dos
+            sitios.
+          */}
+          {services.length > 0 ? (
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-zinc-500">Servicios</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-muted">Servicios</p>
             <ul className="mt-4 space-y-3">
-              {[
-                { label: "Cambio de Pantalla" },
-                { label: "Cambio de Batería" },
-                { label: "Cambio de Tapa Trasera" },
-                { label: "Cambio de Glass" },
-                { label: "Diagnóstico Gratuito" },
-              ].map((s) => (
-                <li key={s.label}>
+              {services.slice(0, 5).map((s) => (
+                <li key={s.title}>
                   <Link
                     href="/services"
-                    className="text-sm text-zinc-500 transition hover:text-white"
+                    className="text-sm text-muted transition-colors hover:text-foreground"
                   >
-                    {s.label}
+                    {s.title}
                   </Link>
                 </li>
               ))}
             </ul>
           </div>
+          ) : null}
         </div>
 
         {/* Bottom bar */}
