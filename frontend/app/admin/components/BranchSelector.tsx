@@ -73,9 +73,9 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
   // noise, not a choice.
   if (branches.length === 1 && !canAggregate) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2">
-        <IconBranch className="h-4 w-4 text-zinc-500" />
-        <span className="truncate text-sm font-medium text-zinc-200">{branches[0].name}</span>
+      <div className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2">
+        <IconBranch className="h-4 w-4 text-muted" />
+        <span className="truncate text-sm font-medium text-foreground">{branches[0].name}</span>
       </div>
     );
   }
@@ -94,17 +94,17 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-sm text-zinc-200 transition hover:border-white/20"
+        className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm text-foreground transition hover:border-bd-border"
       >
-        <IconBranch className="h-4 w-4 text-zinc-500" />
+        <IconBranch className="h-4 w-4 text-muted" />
         <span className="max-w-[12rem] truncate font-medium">{labelFor(access, value)}</span>
-        <IconChevronDown className="h-3.5 w-3.5 text-zinc-500" />
+        <IconChevronDown className="h-3.5 w-3.5 text-muted" />
       </button>
 
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 z-50 mt-1.5 min-w-[14rem] overflow-hidden rounded-xl border border-white/10 bg-[#0d0d0d] py-1 shadow-2xl"
+          className="absolute right-0 z-50 mt-1.5 min-w-[14rem] overflow-hidden rounded-xl border border-bd-border bg-surface py-1 shadow-2xl"
         >
           {options.map((option) => {
             const selected = option.value === value;
@@ -118,12 +118,12 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
                   onChange(option.value);
                   setOpen(false);
                 }}
-                className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-sm transition hover:bg-white/5 ${
-                  selected ? "text-white" : "text-zinc-400"
+                className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-sm transition hover:bg-surface ${
+                  selected ? "text-foreground" : "text-muted"
                 }`}
               >
                 <span className="truncate">{option.label}</span>
-                {selected && <span className="ml-auto text-xs text-zinc-500">✓</span>}
+                {selected && <span className="ml-auto text-xs text-muted">✓</span>}
               </button>
             );
           })}
@@ -144,7 +144,7 @@ export function ScopeNote({ scope }: { scope: InventoryScope | null | undefined 
   if (!scope || !scope.is_aggregate) return null;
   const names = scope.branches.map((b) => b.name).join(" · ");
   return (
-    <p className="text-xs text-zinc-600">
+    <p className="text-xs text-muted">
       {scope.branches.length === 0
         ? "Sin sucursales visibles."
         : `Agregado de ${scope.branches.length} sucursal${

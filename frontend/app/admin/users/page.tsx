@@ -79,16 +79,16 @@ async function deleteJson(path: string): Promise<void> {
 
 function PermissionSummary({ codes }: { codes: string[] }) {
   const unique = Array.from(new Set(codes)).sort();
-  if (!unique.length) return <span className="text-xs text-zinc-600">Sin permisos efectivos</span>;
+  if (!unique.length) return <span className="text-xs text-muted">Sin permisos efectivos</span>;
   return (
     <div className="flex flex-wrap gap-1.5">
       {unique.slice(0, 4).map((code) => (
-        <code key={code} className="rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-1 text-[10px] text-zinc-500">
+        <code key={code} className="rounded-md border border-bd-border bg-surface-2 px-2 py-1 text-[10px] text-muted">
           {code}
         </code>
       ))}
       {unique.length > 4 ? (
-        <span className="rounded-md border border-white/[0.07] px-2 py-1 text-[10px] text-zinc-600">
+        <span className="rounded-md border border-bd-border px-2 py-1 text-[10px] text-muted">
           +{unique.length - 4}
         </span>
       ) : null}
@@ -217,7 +217,7 @@ function MemberCard({
   }
 
   return (
-    <article className="rounded-xl border border-white/[0.07] bg-white/[0.02]">
+    <article className="rounded-xl border border-bd-border bg-surface">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -225,19 +225,19 @@ function MemberCard({
       >
         <div>
           <div className="flex items-center gap-2">
-            <span className="font-medium text-zinc-100">{membership.username}</span>
-            <span className={`rounded-full px-2 py-0.5 text-[10px] ${membership.is_active ? "bg-white/[0.06] text-zinc-300" : "bg-red-500/10 text-red-400"}`}>
+            <span className="font-medium text-foreground">{membership.username}</span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] ${membership.is_active ? "bg-surface-2 text-foreground/85" : "bg-red-500/10 text-red-400"}`}>
               {membership.is_active ? "Activo" : "Inactivo"}
             </span>
           </div>
-          <p className="mt-1 text-xs text-zinc-600">Membresía #{membership.id}</p>
+          <p className="mt-1 text-xs text-muted">Membresía #{membership.id}</p>
         </div>
 
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Rol empresarial</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Rol empresarial</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {accessState === "custom" ? activeAssignments.map((assignment) => (
-              <span key={assignment.id} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-300">
+              <span key={assignment.id} className="rounded-md border border-bd-border px-2 py-1 text-xs text-foreground/85">
                 {assignment.role_name}{assignment.area_name ? ` · ${assignment.area_name}` : ""}
               </span>
             )) : accessState === "legacy" ? (
@@ -249,12 +249,12 @@ function MemberCard({
         </div>
 
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Permisos</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Permisos</p>
           <div className="mt-1.5">
             {accessState === "custom" ? (
               <PermissionSummary codes={effective} />
             ) : accessState === "legacy" ? (
-              <span className="text-xs text-zinc-500">Pendiente de migrar a roles configurables.</span>
+              <span className="text-xs text-muted">Pendiente de migrar a roles configurables.</span>
             ) : (
               <span className="text-xs text-red-300/70">Sin permisos efectivos.</span>
             )}
@@ -262,15 +262,15 @@ function MemberCard({
         </div>
 
         <div className="flex items-center justify-between gap-3 lg:justify-end">
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs text-muted">
             {membership.branch_access_mode === "all" ? "Todas las sucursales" : `${membership.branch_access.length} sucursal(es)`}
           </span>
-          <span className="text-zinc-600">{open ? "−" : "+"}</span>
+          <span className="text-muted">{open ? "−" : "+"}</span>
         </div>
       </button>
 
       {open ? (
-        <div className="border-t border-white/[0.06] px-5 py-5">
+        <div className="border-t border-bd-border px-5 py-5">
           {accessState === "custom-empty" ? (
             <div className="mb-5 rounded-lg border border-amber-500/20 bg-amber-500/[0.05] px-4 py-3 text-xs leading-5 text-amber-200/80">
               <strong>Sin roles activos.</strong> Esta persona no tiene ninguna capacidad en la empresa. No vuelve al rol heredado «{membership.role_label}»: ya usa RBAC configurable, y quitarle el último rol significa exactamente eso.
@@ -279,16 +279,16 @@ function MemberCard({
 
           <div className="grid gap-6 xl:grid-cols-2">
             <section>
-              <h3 className="text-sm font-semibold text-zinc-200">Roles y área</h3>
-              <p className="mt-1 text-xs text-zinc-600">El rol concede autoridad; el área solo organiza al personal.</p>
+              <h3 className="text-sm font-semibold text-foreground">Roles y área</h3>
+              <p className="mt-1 text-xs text-muted">El rol concede autoridad; el área solo organiza al personal.</p>
 
               <div className="mt-3 space-y-2">
                 {assignments.length ? assignments.map((assignment) => (
-                  <div key={assignment.id} className="rounded-lg border border-white/[0.06] px-3 py-2.5">
+                  <div key={assignment.id} className="rounded-lg border border-bd-border px-3 py-2.5">
                     <div className="flex items-center justify-between gap-3">
-                      <span className={assignment.is_active ? "text-sm text-zinc-200" : "text-sm text-zinc-600 line-through"}>{assignment.role_name}</span>
+                      <span className={assignment.is_active ? "text-sm text-foreground" : "text-sm text-muted line-through"}>{assignment.role_name}</span>
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-zinc-600">{assignment.is_active ? "Activo" : "Histórico"}</span>
+                        <span className="text-[10px] text-muted">{assignment.is_active ? "Activo" : "Histórico"}</span>
                         {canManage ? (
                           <button
                             type="button"
@@ -297,7 +297,7 @@ function MemberCard({
                               : reactivateRole(assignment.id))}
                             disabled={busy}
                             className={`rounded-md border px-2 py-1 text-[10px] disabled:opacity-40 ${assignment.is_active
-                              ? "border-white/10 text-zinc-400 hover:border-red-500/40 hover:text-red-300"
+                              ? "border-bd-border text-muted hover:border-red-500/40 hover:text-red-300"
                               : "border-emerald-500/25 text-emerald-300/80 hover:border-emerald-400/60 hover:text-emerald-200"}`}
                           >
                             {assignment.is_active ? "Quitar" : "Reactivar"}
@@ -305,7 +305,7 @@ function MemberCard({
                         ) : null}
                       </div>
                     </div>
-                    <p className="mt-1 text-[11px] text-zinc-600">{assignment.area_name || "Sin área"} · {assignment.capabilities.length} permisos</p>
+                    <p className="mt-1 text-[11px] text-muted">{assignment.area_name || "Sin área"} · {assignment.capabilities.length} permisos</p>
                   </div>
                 )) : (
                   <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.03] px-3 py-3 text-xs leading-5 text-amber-200/70">
@@ -316,7 +316,7 @@ function MemberCard({
 
               {canManage ? (
                 <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
-                  <select value={roleId} onChange={(event) => setRoleId(event.target.value)} disabled={busy} className="rounded-lg border border-white/[0.08] bg-black/50 px-3 py-2 text-sm text-zinc-300">
+                  <select value={roleId} onChange={(event) => setRoleId(event.target.value)} disabled={busy} className="rounded-lg border border-bd-border bg-background/50 px-3 py-2 text-sm text-foreground/85">
                     <option value="">Elegir rol…</option>
                     {roles
                       .filter((role) => role.is_active)
@@ -338,11 +338,11 @@ function MemberCard({
                         );
                       })}
                   </select>
-                  <select value={areaId} onChange={(event) => setAreaId(event.target.value)} disabled={busy} className="rounded-lg border border-white/[0.08] bg-black/50 px-3 py-2 text-sm text-zinc-300">
+                  <select value={areaId} onChange={(event) => setAreaId(event.target.value)} disabled={busy} className="rounded-lg border border-bd-border bg-background/50 px-3 py-2 text-sm text-foreground/85">
                     <option value="">Sin área</option>
                     {areas.filter((area) => area.is_active).map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
                   </select>
-                  <button type="button" onClick={() => void assignRole()} disabled={busy || !roleId} className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40">
+                  <button type="button" onClick={() => void assignRole()} disabled={busy || !roleId} className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background disabled:opacity-40">
                     {roleId && existingAssignment(Number(roleId), areaId ? Number(areaId) : null) ? "Reactivar" : "Asignar"}
                   </button>
                 </div>
@@ -350,8 +350,8 @@ function MemberCard({
             </section>
 
             <section>
-              <h3 className="text-sm font-semibold text-zinc-200">Alcance por sucursal</h3>
-              <p className="mt-1 text-xs text-zinc-600">Responde dónde puede operar; nunca agrega capacidades.</p>
+              <h3 className="text-sm font-semibold text-foreground">Alcance por sucursal</h3>
+              <p className="mt-1 text-xs text-muted">Responde dónde puede operar; nunca agrega capacidades.</p>
 
               <div className="mt-3 flex gap-2">
                 {(["all", "selected"] as const).map((value) => (
@@ -360,7 +360,7 @@ function MemberCard({
                     type="button"
                     disabled={!canManage || busy}
                     onClick={() => setMode(value)}
-                    className={`rounded-lg border px-3 py-2 text-xs ${mode === value ? "border-white/30 bg-white/[0.07] text-white" : "border-white/[0.07] text-zinc-500"}`}
+                    className={`rounded-lg border px-3 py-2 text-xs ${mode === value ? "border-bd-border bg-surface-2 text-foreground" : "border-bd-border text-muted"}`}
                   >
                     {value === "all" ? "Todas" : "Seleccionadas"}
                   </button>
@@ -372,7 +372,7 @@ function MemberCard({
                   {branches.filter((branch) => branch.is_active).map((branch) => {
                     const checked = selectedBranches.includes(branch.id);
                     return (
-                      <label key={branch.id} className="flex items-center gap-2 rounded-lg border border-white/[0.06] px-3 py-2 text-sm text-zinc-400">
+                      <label key={branch.id} className="flex items-center gap-2 rounded-lg border border-bd-border px-3 py-2 text-sm text-muted">
                         <input
                           type="checkbox"
                           checked={checked}
@@ -387,14 +387,14 @@ function MemberCard({
               ) : null}
 
               {canManage ? (
-                <button type="button" onClick={() => void saveBranches()} disabled={busy} className="mt-3 rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:text-white disabled:opacity-40">
+                <button type="button" onClick={() => void saveBranches()} disabled={busy} className="mt-3 rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground/85 hover:text-foreground disabled:opacity-40">
                   Guardar sucursales
                 </button>
               ) : null}
             </section>
           </div>
 
-          {!canManage ? <p className="mt-4 text-xs text-zinc-600">Modo lectura: necesitas <code>memberships.manage</code> para modificar accesos.</p> : null}
+          {!canManage ? <p className="mt-4 text-xs text-muted">Modo lectura: necesitas <code>memberships.manage</code> para modificar accesos.</p> : null}
           {error ? <p className="mt-4 text-sm text-red-400">{error}</p> : null}
         </div>
       ) : null}
@@ -474,11 +474,11 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
       <div className="space-y-7">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-zinc-600">Administración</p>
-            <h1 className="mt-1 text-2xl font-semibold text-white">Personal y accesos</h1>
-            <p className="mt-2 max-w-3xl text-sm text-zinc-500">Administra el acceso real por empresa: rol = qué puede hacer; sucursal = dónde puede hacerlo.</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted">Administración</p>
+            <h1 className="mt-1 text-2xl font-semibold text-foreground">Personal y accesos</h1>
+            <p className="mt-2 max-w-3xl text-sm text-muted">Administra el acceso real por empresa: rol = qué puede hacer; sucursal = dónde puede hacerlo.</p>
           </div>
-          {canManageRoles ? <Link href="/admin/roles" className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-zinc-200">Roles y permisos</Link> : null}
+          {canManageRoles ? <Link href="/admin/roles" className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background hover:bg-foreground/90">Roles y permisos</Link> : null}
         </header>
 
         {!companyId ? (
@@ -486,17 +486,17 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
         ) : (
           <>
             <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"><p className="text-xs text-zinc-600">Miembros</p><p className="mt-1 text-2xl font-semibold text-white">{memberships.length}</p></div>
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"><p className="text-xs text-zinc-600">Roles activos</p><p className="mt-1 text-2xl font-semibold text-white">{roles.filter((role) => role.is_active).length}</p></div>
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"><p className="text-xs text-zinc-600">Mi autoridad</p><p className="mt-1 text-sm font-medium text-zinc-200">{access?.is_platform_admin ? "Master de plataforma" : canManage ? "Administra accesos" : "Solo lectura"}</p></div>
+              <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Miembros</p><p className="mt-1 text-2xl font-semibold text-foreground">{memberships.length}</p></div>
+              <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Roles activos</p><p className="mt-1 text-2xl font-semibold text-foreground">{roles.filter((role) => role.is_active).length}</p></div>
+              <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Mi autoridad</p><p className="mt-1 text-sm font-medium text-foreground">{access?.is_platform_admin ? "Master de plataforma" : canManage ? "Administra accesos" : "Solo lectura"}</p></div>
             </div>
 
             <div className="flex items-center justify-between gap-3">
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar usuario…" className="w-full max-w-sm rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-zinc-200 outline-none focus:border-white/25" />
-              <span className="hidden text-xs text-zinc-600 sm:block">{ctx.dashboard?.company?.name}</span>
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar usuario…" className="w-full max-w-sm rounded-lg border border-bd-border bg-background/40 px-3 py-2.5 text-sm text-foreground outline-none focus:border-bd-border" />
+              <span className="hidden text-xs text-muted sm:block">{ctx.dashboard?.company?.name}</span>
             </div>
 
-            {loading ? <p className="py-12 text-center text-sm text-zinc-600">Cargando accesos…</p> : null}
+            {loading ? <p className="py-12 text-center text-sm text-muted">Cargando accesos…</p> : null}
             {error ? <div className="rounded-xl border border-red-500/20 bg-red-500/[0.05] p-4 text-sm text-red-400">{error}</div> : null}
             {!loading && !error ? (
               <div className="space-y-3">
@@ -512,16 +512,16 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
                     onChanged={load}
                   />
                 ))}
-                {!filtered.length ? <div className="rounded-xl border border-white/[0.06] py-12 text-center text-sm text-zinc-500">No se encontraron miembros.</div> : null}
+                {!filtered.length ? <div className="rounded-xl border border-bd-border py-12 text-center text-sm text-muted">No se encontraron miembros.</div> : null}
               </div>
             ) : null}
 
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
-              <h2 className="text-sm font-semibold text-zinc-200">Jerarquía correcta</h2>
-              <div className="mt-3 grid gap-3 text-xs leading-5 text-zinc-500 md:grid-cols-3">
-                <p><strong className="text-zinc-300">Master de plataforma:</strong> <code>User.is_superuser</code>. Puede operar todas las empresas; no es un rol de tenant.</p>
-                <p><strong className="text-zinc-300">Administrador de empresa:</strong> recibe capacidades dentro de su tenant y no puede escalar por encima de su propia autoridad.</p>
-                <p><strong className="text-zinc-300">Roles operativos:</strong> ventas, inventario y técnico se limitan por capacidades y, cuando aplica, por sucursal.</p>
+            <div className="rounded-xl border border-bd-border bg-surface p-5">
+              <h2 className="text-sm font-semibold text-foreground">Jerarquía correcta</h2>
+              <div className="mt-3 grid gap-3 text-xs leading-5 text-muted md:grid-cols-3">
+                <p><strong className="text-foreground/85">Master de plataforma:</strong> <code>User.is_superuser</code>. Puede operar todas las empresas; no es un rol de tenant.</p>
+                <p><strong className="text-foreground/85">Administrador de empresa:</strong> recibe capacidades dentro de su tenant y no puede escalar por encima de su propia autoridad.</p>
+                <p><strong className="text-foreground/85">Roles operativos:</strong> ventas, inventario y técnico se limitan por capacidades y, cuando aplica, por sucursal.</p>
               </div>
             </div>
           </>

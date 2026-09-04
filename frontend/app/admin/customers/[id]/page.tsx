@@ -54,37 +54,37 @@ function date(value: string | null) {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+      <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
         {label}
       </p>
-      <p className="mt-0.5 text-sm text-zinc-300">{value || "—"}</p>
+      <p className="mt-0.5 text-sm text-foreground/85">{value || "—"}</p>
     </div>
   );
 }
 
 function OrderRow({ order }: { order: CustomerOrderRow }) {
   return (
-    <tr className="border-b border-white/[0.04] last:border-0">
+    <tr className="border-b border-bd-border last:border-0">
       <td className="px-4 py-3">
         <Link
           href={`/admin/orders/${order.id}`}
-          className="text-zinc-300 transition hover:text-white"
+          className="text-foreground/85 transition hover:text-foreground"
         >
           #{order.id}
         </Link>
       </td>
-      <td className="px-4 py-3 text-zinc-400">{date(order.created_at)}</td>
+      <td className="px-4 py-3 text-muted">{date(order.created_at)}</td>
       <td className="px-4 py-3">
         {order.paid ? (
           <span className="text-xs text-emerald-400/80">Pagado</span>
         ) : (
-          <span className="text-xs text-zinc-500">{order.status}</span>
+          <span className="text-xs text-muted">{order.status}</span>
         )}
       </td>
-      <td className="px-4 py-3 text-right font-mono text-xs text-zinc-300">
+      <td className="px-4 py-3 text-right font-mono text-xs text-foreground/85">
         {money(order.total)}
       </td>
-      <td className="px-4 py-3 text-xs text-zinc-600">{order.customer_name || "—"}</td>
+      <td className="px-4 py-3 text-xs text-muted">{order.customer_name || "—"}</td>
     </tr>
   );
 }
@@ -148,7 +148,7 @@ function CustomerDetailContent({
   if (loading) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <p className="py-8 text-sm text-zinc-600">Cargando ficha…</p>
+        <p className="py-8 text-sm text-muted">Cargando ficha…</p>
       </AdminShell>
     );
   }
@@ -160,7 +160,7 @@ function CustomerDetailContent({
         </div>
         <Link
           href="/admin/customers"
-          className="mt-4 inline-block text-sm text-zinc-500 underline underline-offset-2"
+          className="mt-4 inline-block text-sm text-muted underline underline-offset-2"
         >
           Volver a clientes
         </Link>
@@ -177,16 +177,16 @@ function CustomerDetailContent({
         <div>
           <Link
             href="/admin/customers"
-            className="text-xs text-zinc-500 transition hover:text-zinc-300"
+            className="text-xs text-muted transition hover:text-foreground/85"
           >
             ← Clientes
           </Link>
           <div className="mt-2 flex flex-wrap items-baseline justify-between gap-3">
-            <h1 className="font-display text-xl font-semibold text-white">
+            <h1 className="font-display text-xl font-semibold text-foreground">
               {customer.display_name}
             </h1>
             {!customer.is_active ? (
-              <span className="rounded border border-white/10 px-2 py-0.5 text-xs text-zinc-500">
+              <span className="rounded border border-bd-border px-2 py-0.5 text-xs text-muted">
                 Archivado
               </span>
             ) : null}
@@ -201,7 +201,7 @@ function CustomerDetailContent({
                 <button
                   type="button"
                   onClick={() => setEditing(true)}
-                  className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-zinc-200 transition hover:border-white/30 hover:text-white"
+                  className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-bd-border hover:text-foreground"
                 >
                   Editar
                 </button>
@@ -209,7 +209,7 @@ function CustomerDetailContent({
                   type="button"
                   disabled={busy}
                   onClick={() => void toggleActive()}
-                  className="rounded-lg border border-white/[0.08] px-3 py-1.5 text-sm text-zinc-400 transition hover:border-white/25 hover:text-zinc-200 disabled:opacity-40"
+                  className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-muted transition hover:border-bd-border hover:text-foreground disabled:opacity-40"
                 >
                   {customer.is_active ? "Archivar" : "Reactivar"}
                 </button>
@@ -218,7 +218,7 @@ function CustomerDetailContent({
           }
         >
           {editing ? (
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+            <div className="rounded-xl border border-bd-border bg-surface p-5">
               <CustomerForm
                 companyId={companyId}
                 customer={customer}
@@ -230,7 +230,7 @@ function CustomerDetailContent({
               />
             </div>
           ) : (
-            <div className="grid gap-5 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-5 rounded-xl border border-bd-border bg-surface p-5 sm:grid-cols-2 lg:grid-cols-3">
               <Field
                 label="Tipo"
                 value={customer.customer_type === "business" ? "Empresa" : "Persona"}
@@ -264,40 +264,40 @@ function CustomerDetailContent({
           description="Pedidos del e-commerce vinculados a esta ficha."
         >
           <div className="grid gap-4 sm:grid-cols-3">
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-              <p className="text-[11px] uppercase tracking-widest text-zinc-500">
+            <div className="rounded-xl border border-bd-border bg-surface p-4">
+              <p className="text-[11px] uppercase tracking-widest text-muted">
                 Compras pagadas
               </p>
-              <p className="mt-1 text-lg text-white">{customer.summary.paid_orders}</p>
+              <p className="mt-1 text-lg text-foreground">{customer.summary.paid_orders}</p>
             </div>
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-              <p className="text-[11px] uppercase tracking-widest text-zinc-500">
+            <div className="rounded-xl border border-bd-border bg-surface p-4">
+              <p className="text-[11px] uppercase tracking-widest text-muted">
                 Total pagado
               </p>
-              <p className="mt-1 text-lg text-white">
+              <p className="mt-1 text-lg text-foreground">
                 {money(customer.summary.paid_amount)}
               </p>
             </div>
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-              <p className="text-[11px] uppercase tracking-widest text-zinc-500">
+            <div className="rounded-xl border border-bd-border bg-surface p-4">
+              <p className="text-[11px] uppercase tracking-widest text-muted">
                 Última compra
               </p>
-              <p className="mt-1 text-lg text-white">
+              <p className="mt-1 text-lg text-foreground">
                 {date(customer.summary.last_purchase_at)}
               </p>
             </div>
           </div>
 
           {customer.orders.length === 0 ? (
-            <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-8 text-center text-sm text-zinc-500">
+            <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">
               Esta ficha todavía no tiene pedidos vinculados.
             </p>
           ) : (
             <div className="space-y-4">
               {paidOrders.length ? (
-                <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+                <div className="overflow-x-auto rounded-xl border border-bd-border">
                   <table className="w-full min-w-[38rem] text-left text-sm">
-                    <thead className="border-b border-white/[0.06] text-[11px] uppercase tracking-widest text-zinc-500">
+                    <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                       <tr>
                         <th className="px-4 py-3 font-semibold">Pedido</th>
                         <th className="px-4 py-3 font-semibold">Fecha</th>
@@ -317,10 +317,10 @@ function CustomerDetailContent({
 
               {otherOrders.length ? (
                 <div>
-                  <p className="mb-2 text-[11px] uppercase tracking-widest text-zinc-600">
+                  <p className="mb-2 text-[11px] uppercase tracking-widest text-muted">
                     Pedidos no pagados — no cuentan como ventas
                   </p>
-                  <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+                  <div className="overflow-x-auto rounded-xl border border-bd-border">
                     <table className="w-full min-w-[38rem] text-left text-sm">
                       <tbody>
                         {otherOrders.map((o) => (
@@ -333,7 +333,7 @@ function CustomerDetailContent({
               ) : null}
 
               {customer.orders_truncated ? (
-                <p className="text-xs text-zinc-600">
+                <p className="text-xs text-muted">
                   Mostrando los pedidos más recientes de un total de{" "}
                   {customer.summary.orders_total}.
                 </p>
@@ -346,11 +346,11 @@ function CustomerDetailContent({
           title="Notas internas"
           description="Sólo para el equipo. El cliente nunca las ve."
         >
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+          <div className="rounded-xl border border-bd-border bg-surface p-5">
             {customer.notes ? (
-              <p className="whitespace-pre-wrap text-sm text-zinc-300">{customer.notes}</p>
+              <p className="whitespace-pre-wrap text-sm text-foreground/85">{customer.notes}</p>
             ) : (
-              <p className="text-sm text-zinc-600">Sin notas.</p>
+              <p className="text-sm text-muted">Sin notas.</p>
             )}
           </div>
         </DashboardSection>

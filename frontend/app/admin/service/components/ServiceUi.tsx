@@ -13,15 +13,15 @@ export function Panel({
   actions?: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-6">
+    <section className="rounded-2xl border border-bd-border bg-surface p-6">
       {title ? (
         <header className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-white/70">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">
               {title}
             </h2>
             {subtitle ? (
-              <p className="mt-1 text-xs text-white/40">{subtitle}</p>
+              <p className="mt-1 text-xs text-muted">{subtitle}</p>
             ) : null}
           </div>
           {actions}
@@ -43,9 +43,9 @@ export function Field({
   type?: string;
 }) {
   const cls =
-    "mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/25";
+    "mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground placeholder:text-muted";
   return (
-    <label className="block text-xs text-white/50">
+    <label className="block text-xs text-muted">
       {label}
       {textarea ? (
         <textarea
@@ -77,7 +77,7 @@ export function Button({
   tone?: "default" | "primary" | "danger";
 }) {
   const tones = {
-    default: "border-white/[0.12] text-white/80 hover:border-white/30",
+    default: "border-bd-border text-foreground/85 hover:border-bd-border",
     primary: "border-emerald-400/40 bg-emerald-400/10 text-emerald-200 hover:border-emerald-400/70",
     danger: "border-rose-400/40 text-rose-200 hover:border-rose-400/70",
   } as const;
@@ -95,7 +95,7 @@ export function Button({
 
 export function Pill({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "good" | "warn" | "bad" }) {
   const tones = {
-    neutral: "border-white/[0.12] text-white/70",
+    neutral: "border-bd-border text-muted",
     good: "border-emerald-400/40 text-emerald-200",
     warn: "border-amber-400/40 text-amber-200",
     bad: "border-rose-400/40 text-rose-200",
@@ -137,8 +137,8 @@ export function Confirm({
     return <Button onClick={() => setAsking(true)} disabled={disabled} tone={tone}>{label}</Button>;
   }
   return (
-    <span className="inline-flex items-center gap-2 rounded-lg border border-white/[0.12] px-2 py-1">
-      <span className="text-[11px] text-white/60">{question}</span>
+    <span className="inline-flex items-center gap-2 rounded-lg border border-bd-border px-2 py-1">
+      <span className="text-[11px] text-muted">{question}</span>
       <Button onClick={() => { setAsking(false); onConfirm(); }} tone={tone}>Sí</Button>
       <Button onClick={() => setAsking(false)}>No</Button>
     </span>

@@ -9,6 +9,98 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12F.1 — Reconciliación: claims, contraste de logotipo y contenido de servicios
+
+**Estado: IMPLEMENTADO.** Migraciones **0077**–**0078**.
+
+### Los claims no contradecían a la evidencia: contradecían al manual del propio taller
+
+| Claim | Qué dice el proyecto |
+| --- | --- |
+| «Todos nuestros servicios incluyen 6 meses de garantía» | El manual v3.0 dice 1 año para equipos **nuevos**, 6 meses para **seminuevos**, y que la cobertura de servicios técnicos **depende del producto o reparación** |
+| «Baterías Nasan **Originales**» | El manual exige publicar «original» **únicamente** con trazabilidad o validación |
+| «Certificado Nasan — Abril 2025» | No hay ningún documento de Nasan en el proyecto |
+| «5.000+ dispositivos reparados» | Ninguna fuente |
+| «Sin msg / Pieza reparada» | Depende del firmware del equipo, que es de un tercero |
+
+Y la fila del propio tenant ya decía que la garantía «se aplicará **según la condición** del producto y los términos informados». La página contradecía el dato autoritativo del sistema.
+
+Los tiempos **sí** se conservan, como estimaciones, porque el manual pide informar que pueden variar. El campo se llama `estimated_time_text` y la página rotula «Estimado:» — no es cosmética: obliga a quien lo pinta a decir qué es.
+
+### El tema global rompió el contraste del logotipo
+
+M12F tradujo `bg-[#080808]` a `bg-background`. Tres bloques pasaron así a **seguir al tema** y su `surface="dark"` se quedó: en tema claro pedían la variante blanca sobre fondo crema. **Invisible** — el defecto que abrió M12E, reintroducido por el propio cambio que hacía global el tema.
+
+Sobrevivió a 215 pruebas porque ninguna miraba la relación entre la superficie **declarada** y la **real**.
+
+### `surface="inverse"`
+
+La banda de llamada del pie se pinta con `bg-white`, que tras la traducción de paleta **es** el color del texto: su contraste es el contrario al de la página. No es una excepción — es la tercera respuesta posible a «¿de qué color es el fondo sobre el que dibujo?», y decirla explícitamente es lo contrario de adivinarla.
+
+### Revisión con navegador: disponible
+
+`@playwright/test` como dependencia de desarrollo. **63 comprobaciones** sobre 4 anchos × 2 temas × 7 rutas. Encontró **194 px de desbordamiento** en la portada a 320 px, celdas de 112 px útiles en el bloque de pilares y un titular que se partía a mitad de palabra en escritorio — tres defectos que ninguna aserción estructural podía ver.
+
+### Una sola fuente de servicios
+
+El pie tenía su propia lista, más corta que la de `/services` y ya divergente. Dos listas de lo mismo divergen siempre.
+
+### Métricas: ninguna
+
+No se siembra ni una. Un bloque de cifras vacío es exactamente lo que debe verse mientras nadie responda por ellas.
+
+## M12F — Escaparate editable, tema global y responsive
+
+**Estado: IMPLEMENTADO.** Migraciones **0072**–**0076**.
+
+### El defecto que abre la fase
+
+```
+<h2>iPhone 17 Pro Max</h2>
+```
+
+Dentro del código. Cambiar de campaña exigía tocar un componente y desplegar; **no** cambiarla dejaba una preventa caducada en portada — y ése es el fallo peor, porque nadie despliega para borrar algo que ya no existe.
+
+La misma falta, más silenciosa, estaba en la marquesina: nueve modelos de iPhone escritos a mano, encabezados por el mismo teléfono.
+
+### Tres sitios, tres vidas distintas
+
+```
+CompanySettings          identidad y políticas — quién eres
+StorefrontPageSettings   contenido permanente  — qué ofreces
+StorefrontCampaign       contenido temporal    — qué anuncias hoy
+```
+
+Meterlo todo en `CompanySettings` habría mezclado el RUC con un titular de portada: dos cosas que cambian con frecuencias distintas, las edita gente distinta y fallan de formas distintas.
+
+### La seguridad vive en el queryset
+
+`active(company)` responde las cuatro condiciones a la vez —empresa, estado, inicio, fin— y quien la usa no puede olvidarse de una porque no las escribe. El escaparate público y la vista previa del admin llaman a la MISMA función; si divergieran, un borrador acabaría publicado.
+
+`ends_at` no es una comodidad: **es la defensa contra «Preventa iPhone 17» un año después.** Una campaña que termina desaparece sola.
+
+### Autoridad reutilizada, no inventada
+
+`company.manage` — la que ya gobierna la configuración de la empresa, incluidos logotipo y paleta. Crear `storefront.content.manage` habría exigido una migración de presets congelados, la clase de cambio que M12B.1 dedicó una fase entera a reparar, a cambio de una distinción que hoy no separa a nadie de nadie. Queda como **PROPUESTA** para el día que un taller quiera que su encargado de marketing publique campañas sin poder cambiar el RUC.
+
+### El tema, en toda la web
+
+2.779 utilidades de color literales en 87 ficheros. No eran colores arbitrarios: eran **roles escritos con el vocabulario de un tema único** — la aplicación se escribió cuando sólo había tema oscuro, así que `white` significaba «el color que se lee» y `zinc-500` «menos importante».
+
+Se traduce el vocabulario una vez, redefiniendo los tokens de la paleta, en vez de reescribir 2.779 clases a mano — que serían 2.779 oportunidades de equivocarse y una revisión imposible. Las excepciones reales van a mano: cinco `text-white` sobre relleno saturado, donde «white» sí significaba blanco, y el verde de WhatsApp, que es identidad de un tercero.
+
+84 comprobaciones de contraste miden el resultado sobre dos temas y dos paletas. Sacaron un error: `zinc-700` al 65 % daba 4.29:1 sobre la superficie elevada del tema oscuro.
+
+### Lo que no se arrastró
+
+El bloque viejo afirmaba «Separa el tuyo con solo **$300** de reserva» y «Disponible · **256GB · 512GB · 1TB**». No hay dato aprobado que respalde esas cifras para el modelo nuevo, y copiarlas cambiando el número del teléfono sería inventarlas con aspecto de continuidad. La campaña sembrada queda neutra.
+
+### Hallazgos
+
+`max_length` en un `TextField` **no lo valida** `full_clean()` — sólo lo usa el widget del formulario. Declararlo sin validarlo es peor que no declararlo, porque parece un límite y quien lee el modelo cree que el layout está protegido.
+
+El gráfico del hero medía 340 px de lado fijo: con el `px-6` del contenedor, en 320 px desbordaba 68 px y la portada tenía scroll horizontal en el móvil más estrecho que soportamos.
+
 ## M12E — Sistema visual adaptativo: contraste, tema y responsive
 
 **Estado: IMPLEMENTADO.** Migraciones **0067**–**0071**.

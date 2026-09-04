@@ -33,7 +33,7 @@ import {
 } from "../lib/internal-api";
 
 const FIELD =
-  "w-full rounded-lg border bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
+  "w-full rounded-lg border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
 
 function SequenceRow({
   sequence,
@@ -83,25 +83,25 @@ function SequenceRow({
   const preview = previewNumber(prefix, Number(padding) || 1, Number(nextValue) || 1);
 
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+    <div className="rounded-xl border border-bd-border bg-surface p-5">
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm font-medium text-zinc-200">{label}</p>
-        <p className="font-mono text-sm text-zinc-400">
-          Próximo: <span className="text-white">{preview}</span>
+        <p className="text-sm font-medium text-foreground">{label}</p>
+        <p className="font-mono text-sm text-muted">
+          Próximo: <span className="text-foreground">{preview}</span>
         </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
         <div>
           <label
-            className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+            className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
             htmlFor={`seq-prefix-${sequence.id}`}
           >
             Prefijo
           </label>
           <input
             id={`seq-prefix-${sequence.id}`}
-            className={`${FIELD} ${errors.prefix ? "border-red-500/50" : "border-white/[0.08]"} font-mono`}
+            className={`${FIELD} ${errors.prefix ? "border-red-500/50" : "border-bd-border"} font-mono`}
             value={prefix}
             maxLength={12}
             disabled={!canManage || saving}
@@ -110,7 +110,7 @@ function SequenceRow({
           {errors.prefix ? (
             <p className="mt-1.5 text-xs text-red-400">{errors.prefix}</p>
           ) : (
-            <p className="mt-1.5 text-[11px] text-zinc-600">
+            <p className="mt-1.5 text-[11px] text-muted">
               Letras, dígitos, guion y guion bajo.
             </p>
           )}
@@ -118,7 +118,7 @@ function SequenceRow({
 
         <div>
           <label
-            className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+            className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
             htmlFor={`seq-padding-${sequence.id}`}
           >
             Dígitos
@@ -128,7 +128,7 @@ function SequenceRow({
             type="number"
             min={1}
             max={12}
-            className={`${FIELD} ${errors.padding ? "border-red-500/50" : "border-white/[0.08]"}`}
+            className={`${FIELD} ${errors.padding ? "border-red-500/50" : "border-bd-border"}`}
             value={padding}
             disabled={!canManage || saving}
             onChange={(e) => setPadding(e.target.value)}
@@ -140,7 +140,7 @@ function SequenceRow({
 
         <div>
           <label
-            className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+            className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
             htmlFor={`seq-next-${sequence.id}`}
           >
             Próximo número
@@ -149,7 +149,7 @@ function SequenceRow({
             id={`seq-next-${sequence.id}`}
             type="number"
             min={1}
-            className={`${FIELD} ${errors.next_value ? "border-red-500/50" : "border-white/[0.08]"}`}
+            className={`${FIELD} ${errors.next_value ? "border-red-500/50" : "border-bd-border"}`}
             value={nextValue}
             disabled={!canManage || saving || !sequence.can_edit_next_value}
             onChange={(e) => setNextValue(e.target.value)}
@@ -157,7 +157,7 @@ function SequenceRow({
           {errors.next_value ? (
             <p className="mt-1.5 text-xs text-red-400">{errors.next_value}</p>
           ) : (
-            <p className="mt-1.5 text-[11px] text-zinc-600">
+            <p className="mt-1.5 text-[11px] text-muted">
               {sequence.can_edit_next_value
                 ? "Puedes fijarlo antes de emitir el primer documento — útil si migras desde otro sistema."
                 : "Bloqueado: esta serie ya emitió documentos."}
@@ -176,12 +176,12 @@ function SequenceRow({
             type="button"
             disabled={saving || !dirty}
             onClick={() => void save()}
-            className="rounded-lg border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-lg border border-bd-border px-4 py-2 text-sm font-medium text-foreground transition hover:border-bd-border hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Guardando…" : "Guardar serie"}
           </button>
           {saved && !dirty ? (
-            <span className="text-sm text-zinc-500">Guardado.</span>
+            <span className="text-sm text-muted">Guardado.</span>
           ) : null}
         </div>
       ) : null}
@@ -235,7 +235,7 @@ export function SequenceSettings({ companyId }: { companyId: number | null }) {
     }
   }
 
-  if (loading) return <p className="py-6 text-sm text-zinc-600">Cargando numeración…</p>;
+  if (loading) return <p className="py-6 text-sm text-muted">Cargando numeración…</p>;
   if (error) {
     return (
       <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
@@ -249,12 +249,12 @@ export function SequenceSettings({ companyId }: { companyId: number | null }) {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-        <p className="text-xs text-zinc-500">{data.notice}</p>
+      <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+        <p className="text-xs text-muted">{data.notice}</p>
       </div>
 
       <fieldset className="space-y-3">
-        <legend className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+        <legend className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
           Alcance
         </legend>
 
@@ -264,7 +264,7 @@ export function SequenceSettings({ companyId }: { companyId: number | null }) {
             ["branch", "Una numeración por sucursal", "Cada sucursal lleva su propio correlativo, empezando en 1."],
           ] as [SequenceScope, string, string][]
         ).map(([value, title, hint]) => (
-          <label key={value} className="flex items-start gap-2 text-sm text-zinc-300">
+          <label key={value} className="flex items-start gap-2 text-sm text-foreground/85">
             <input
               type="radio"
               name="sequence-scope"
@@ -275,13 +275,13 @@ export function SequenceSettings({ companyId }: { companyId: number | null }) {
             />
             <span>
               {title}
-              <span className="block text-xs text-zinc-600">{hint}</span>
+              <span className="block text-xs text-muted">{hint}</span>
             </span>
           </label>
         ))}
 
         {!data.can_change_scope ? (
-          <p className="text-[11px] text-zinc-600">
+          <p className="text-[11px] text-muted">
             El alcance queda fijo una vez emitido el primer documento: cambiarlo
             haría que una nota nueva repitiera un número que esta empresa ya
             imprimió.
@@ -310,7 +310,7 @@ export function SequenceSettings({ companyId }: { companyId: number | null }) {
         ))}
 
         {data.scope === "branch" && data.results.length === 1 ? (
-          <p className="text-[11px] text-zinc-600">
+          <p className="text-[11px] text-muted">
             Las series de cada sucursal se crean al emitir su primera nota.
           </p>
         ) : null}

@@ -133,7 +133,7 @@ export function Header() {
                     key={item.href}
                     href={item.href}
                     onClick={() => setCatalogOpen(false)}
-                    className="block px-4 py-2 text-sm text-muted transition hover:bg-white/[0.04] hover:text-foreground"
+                    className="block px-4 py-2 text-sm text-muted transition hover:bg-surface hover:text-foreground"
                   >
                     {item.label}
                   </Link>
@@ -189,7 +189,7 @@ export function Header() {
           ) : (
             <Link
               href="/auth"
-              className="ml-3 rounded-full bg-white px-5 py-2 text-xs font-bold uppercase tracking-wider text-[#080808] transition hover:bg-zinc-200"
+              className="ml-3 rounded-full bg-foreground px-5 py-2 text-xs font-bold uppercase tracking-wider text-background transition hover:bg-foreground/90"
             >
               Ingresar
             </Link>
@@ -290,7 +290,7 @@ export function Header() {
               <Link
                 href="/auth"
                 onClick={() => setMenuOpen(false)}
-                className="mt-3 block rounded-full bg-white px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-[#080808]"
+                className="mt-3 block rounded-full bg-foreground px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-background"
               >
                 Ingresar
               </Link>

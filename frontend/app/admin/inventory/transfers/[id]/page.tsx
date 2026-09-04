@@ -127,18 +127,18 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
       <div className="space-y-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">
+            <h1 className="text-xl font-semibold text-foreground">
               Transferencia {transfer ? `#${transfer.id}` : ""}
             </h1>
             {transfer ? (
-              <p className="mt-1 text-sm text-zinc-500">
+              <p className="mt-1 text-sm text-muted">
                 {transfer.source_branch_name} → {transfer.destination_branch_name}
               </p>
             ) : null}
           </div>
           <Link
             href="/admin/inventory/transfers"
-            className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
           >
             ← Transferencias
           </Link>
@@ -152,7 +152,7 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
           <>
             <div className="flex items-center gap-2">
               <TransferStatusBadge transfer={transfer} />
-              <span className="text-xs text-zinc-600">
+              <span className="text-xs text-muted">
                 {transfer.items.length} línea(s) · creada por{" "}
                 {transfer.created_by_username ?? "—"}
               </span>
@@ -187,7 +187,7 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
                       void run(() => dispatchTransfer(transfer.id));
                     }
                   }}
-                  className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Despachar
                 </button>
@@ -204,7 +204,7 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
                       void run(() => receiveTransfer(transfer.id));
                     }
                   }}
-                  className="rounded-lg border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  className="rounded-lg border border-bd-border px-4 py-2 text-sm font-medium text-foreground transition hover:border-bd-border hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Recibir
                 </button>
@@ -216,7 +216,7 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
                       void run(() => cancelTransfer(transfer.id));
                     }
                   }}
-                  className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-400 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Anular
                 </button>
@@ -224,8 +224,8 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
             ) : null}
 
             {transfer.status === "in_transit" ? (
-              <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-                <p className="text-sm text-zinc-400">
+              <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+                <p className="text-sm text-muted">
                   El stock ya salió de {transfer.source_branch_name} y todavía no
                   entró en {transfer.destination_branch_name}. Una transferencia
                   despachada no se anula: debe recibirse.
@@ -247,7 +247,7 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
                     {products.map((p) => (
                       <div key={p.id} className="flex items-center gap-2">
                         <label
-                          className="min-w-0 flex-1 truncate text-sm text-zinc-400"
+                          className="min-w-0 flex-1 truncate text-sm text-muted"
                           htmlFor={`ti-${p.id}`}
                         >
                           {p.name}
@@ -256,7 +256,7 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
                           id={`ti-${p.id}`}
                           type="number"
                           min={0}
-                          className="w-20 rounded-lg border border-white/[0.08] bg-black/40 px-2 py-1.5 text-sm text-zinc-200 outline-none transition focus:border-white/25"
+                          className="w-20 rounded-lg border border-bd-border bg-background/40 px-2 py-1.5 text-sm text-foreground outline-none transition focus:border-bd-border"
                           value={draft[p.id] ?? ""}
                           onChange={(e) =>
                             setDraft((d) => ({ ...d, [p.id]: e.target.value }))
@@ -269,7 +269,7 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
                     type="button"
                     disabled={busy}
                     onClick={() => void saveLines()}
-                    className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+                    className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
                   >
                     Guardar líneas
                   </button>
@@ -279,14 +279,14 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
               ) : (
                 <TableWrap>
                   <thead>
-                    <tr className="border-b border-white/[0.06]">
+                    <tr className="border-b border-bd-border">
                       <Th>Producto</Th>
                       <Th right>Cantidad</Th>
                     </tr>
                   </thead>
                   <tbody>
                     {transfer.items.map((item) => (
-                      <tr key={item.id} className="border-b border-white/[0.03]">
+                      <tr key={item.id} className="border-b border-bd-border">
                         <Td>{item.product_name}</Td>
                         <Td right>{item.quantity}</Td>
                       </tr>

@@ -24,24 +24,24 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 px-6 py-12">
+    <div className="min-h-screen bg-background px-6 py-12">
       <div className="mx-auto max-w-md">
         <div className="mb-8 text-center">
-          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-white/40">Cuenta</p>
-          <h1 className="mt-2 text-3xl font-bold text-white">Olvidé mi contraseña</h1>
+          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-muted">Cuenta</p>
+          <h1 className="mt-2 text-3xl font-bold text-foreground">Olvidé mi contraseña</h1>
         </div>
 
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-8">
+        <div className="rounded-2xl border border-bd-border bg-surface p-8">
           {submitted ? (
             <div className="text-center">
-              <p className="text-white font-semibold">Correo enviado</p>
-              <p className="mt-3 text-sm text-slate-400">
+              <p className="text-foreground font-semibold">Correo enviado</p>
+              <p className="mt-3 text-sm text-muted">
                 Si el correo está registrado, recibirás instrucciones para restablecer tu contraseña.
                 Revisa también la carpeta de spam.
               </p>
               <a
                 href="/auth"
-                className="mt-6 inline-block text-sm text-slate-400 hover:text-white transition"
+                className="mt-6 inline-block text-sm text-muted hover:text-foreground transition"
               >
                 Volver al inicio de sesión
               </a>
@@ -53,13 +53,13 @@ export default function ForgotPasswordPage() {
                   {error}
                 </div>
               )}
-              <p className="mb-6 text-sm text-slate-400">
+              <p className="mb-6 text-sm text-muted">
                 Ingresa el correo asociado a tu cuenta. Si existe, recibirás un enlace para restablecer
                 tu contraseña.
               </p>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-300">
+                  <label className="block text-sm font-medium text-foreground/85">
                     Correo electrónico
                   </label>
                   <input
@@ -68,20 +68,20 @@ export default function ForgotPasswordPage() {
                     onChange={(e) => setEmail(e.target.value)}
                     required
                     autoComplete="email"
-                    className="mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 focus:border-white/30 focus:outline-none"
+                    className="mt-2 w-full rounded-xl border border-bd-border bg-surface px-4 py-3 text-foreground placeholder-muted focus:border-bd-border focus:outline-none"
                     placeholder="tu@correo.com"
                   />
                 </div>
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-50"
+                  className="w-full rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-50"
                 >
                   {loading ? "Enviando…" : "Enviar instrucciones"}
                 </button>
               </form>
               <div className="mt-6 text-center text-sm">
-                <a href="/auth" className="text-slate-400 hover:text-white transition">
+                <a href="/auth" className="text-muted hover:text-foreground transition">
                   Volver al inicio de sesión
                 </a>
               </div>

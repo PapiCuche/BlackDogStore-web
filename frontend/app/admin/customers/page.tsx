@@ -39,11 +39,11 @@ const STATE_LABELS: [StateFilter, string][] = [
 
 function DocumentCell({ row }: { row: CustomerRow }) {
   if (!row.document_number) {
-    return <span className="text-zinc-600">—</span>;
+    return <span className="text-muted">—</span>;
   }
   return (
     <span className="font-mono text-xs">
-      <span className="text-zinc-500">{row.document_type.toUpperCase()} </span>
+      <span className="text-muted">{row.document_type.toUpperCase()} </span>
       {row.document_number}
     </span>
   );
@@ -124,7 +124,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
                   setCreating(true);
                   setNotice(null);
                 }}
-                className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-zinc-200 transition hover:border-white/30 hover:text-white"
+                className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-bd-border hover:text-foreground"
               >
                 Nuevo cliente
               </button>
@@ -132,7 +132,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
           }
         >
           {creating ? (
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+            <div className="rounded-xl border border-bd-border bg-surface p-5">
               <CustomerForm
                 companyId={companyId}
                 customer={null}
@@ -152,7 +152,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
           ) : null}
 
           {notice ? (
-            <p className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-sm text-zinc-400">
+            <p className="rounded-lg border border-bd-border bg-surface px-4 py-3 text-sm text-muted">
               {notice}
             </p>
           ) : null}
@@ -163,9 +163,9 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
               placeholder="Buscar por nombre, documento, teléfono o email…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="min-w-[16rem] flex-1 rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25"
+              className="min-w-[16rem] flex-1 rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border"
             />
-            <div className="flex gap-1 rounded-lg border border-white/[0.08] p-1">
+            <div className="flex gap-1 rounded-lg border border-bd-border p-1">
               {STATE_LABELS.map(([value, label]) => (
                 <button
                   key={value}
@@ -176,8 +176,8 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
                   }}
                   className={`rounded px-2.5 py-1 text-xs transition ${
                     state === value
-                      ? "bg-white/10 text-white"
-                      : "text-zinc-500 hover:text-zinc-300"
+                      ? "bg-surface-2 text-foreground"
+                      : "text-muted hover:text-foreground/85"
                   }`}
                 >
                   {label}
@@ -190,7 +190,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
                 setType(e.target.value as CustomerType | "");
                 setPage(1);
               }}
-              className="rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none"
+              className="rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none"
             >
               <option value="">Persona y empresa</option>
               <option value="person">Sólo personas</option>
@@ -203,17 +203,17 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
               {error}
             </div>
           ) : loading ? (
-            <p className="py-6 text-sm text-zinc-600">Cargando clientes…</p>
+            <p className="py-6 text-sm text-muted">Cargando clientes…</p>
           ) : !data || data.results.length === 0 ? (
-            <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-8 text-center text-sm text-zinc-500">
+            <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">
               {debounced
                 ? "Ningún cliente coincide con esa búsqueda."
                 : "Todavía no hay clientes registrados en esta empresa."}
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+            <div className="overflow-x-auto rounded-xl border border-bd-border">
               <table className="w-full min-w-[46rem] text-left text-sm">
-                <thead className="border-b border-white/[0.06] text-[11px] uppercase tracking-widest text-zinc-500">
+                <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                   <tr>
                     <th className="px-4 py-3 font-semibold">Cliente</th>
                     <th className="px-4 py-3 font-semibold">Documento</th>
@@ -226,30 +226,30 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
                   {data.results.map((row) => (
                     <tr
                       key={row.id}
-                      className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02]"
+                      className="border-b border-bd-border last:border-0 hover:bg-surface"
                     >
                       <td className="px-4 py-3">
                         <Link
                           href={`/admin/customers/${row.id}`}
-                          className="text-zinc-200 transition hover:text-white"
+                          className="text-foreground transition hover:text-foreground"
                         >
                           {row.display_name}
                         </Link>
-                        <span className="ml-2 text-[11px] text-zinc-600">
+                        <span className="ml-2 text-[11px] text-muted">
                           {row.customer_type === "business" ? "Empresa" : "Persona"}
                           {row.has_account ? " · con cuenta" : ""}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-zinc-400">
+                      <td className="px-4 py-3 text-muted">
                         <DocumentCell row={row} />
                       </td>
-                      <td className="px-4 py-3 text-zinc-400">{row.phone || "—"}</td>
-                      <td className="px-4 py-3 text-zinc-400">{row.email || "—"}</td>
+                      <td className="px-4 py-3 text-muted">{row.phone || "—"}</td>
+                      <td className="px-4 py-3 text-muted">{row.email || "—"}</td>
                       <td className="px-4 py-3">
                         {row.is_active ? (
                           <span className="text-xs text-emerald-400/80">Activo</span>
                         ) : (
-                          <span className="text-xs text-zinc-600">Archivado</span>
+                          <span className="text-xs text-muted">Archivado</span>
                         )}
                       </td>
                     </tr>
@@ -260,7 +260,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
           )}
 
           {data && data.count > data.page_size ? (
-            <div className="flex items-center justify-between text-sm text-zinc-500">
+            <div className="flex items-center justify-between text-sm text-muted">
               <span>
                 {data.count} cliente{data.count === 1 ? "" : "s"} · página {data.page} de{" "}
                 {totalPages}
@@ -270,7 +270,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
                   type="button"
                   disabled={page <= 1}
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  className="rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs transition hover:border-white/25 disabled:opacity-30"
+                  className="rounded-lg border border-bd-border px-3 py-1.5 text-xs transition hover:border-bd-border disabled:opacity-30"
                 >
                   Anterior
                 </button>
@@ -278,7 +278,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
                   type="button"
                   disabled={page >= totalPages}
                   onClick={() => setPage((p) => p + 1)}
-                  className="rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs transition hover:border-white/25 disabled:opacity-30"
+                  className="rounded-lg border border-bd-border px-3 py-1.5 text-xs transition hover:border-bd-border disabled:opacity-30"
                 >
                   Siguiente
                 </button>

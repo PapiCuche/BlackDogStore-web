@@ -17,7 +17,7 @@
 
 import type { StorefrontLogos } from "./storefront";
 
-export type LogoPlacement = "header" | "hero" | "footer";
+export type LogoPlacement = "header" | "hero" | "footer" | "compact";
 export type LogoSurface = "light" | "dark";
 
 /**
@@ -42,15 +42,29 @@ export function pickLogo(
     primary_on_dark: "",
     horizontal_on_light: "",
     horizontal_on_dark: "",
+    isotype_on_light: "",
+    isotype_on_dark: "",
   };
 
   const horizontal = surface === "dark" ? l.horizontal_on_dark : l.horizontal_on_light;
   const primary = surface === "dark" ? l.primary_on_dark : l.primary_on_light;
+  const isotype = surface === "dark" ? l.isotype_on_dark : l.isotype_on_light;
 
+  // `compact` es el sitio donde no cabe un lockup: la cabecera en 320 px, donde
+  // el horizontal necesita 220 px de ancho mínimo y a su lado tienen que caber
+  // el carrito, el tema y el menú.
+  //
+  // La respuesta correcta NO es encoger el horizontal por debajo de su mínimo
+  // ni aplastarlo —«deformar» y «reducir bajo el mínimo» son alteraciones que
+  // el manual prohíbe— sino usar la pieza diseñada para ese tamaño. Si el
+  // tenant no tiene isotipo se cae al horizontal, que es peor composición pero
+  // sigue siendo SU logotipo sin alterar.
   const order =
-    placement === "header"
-      ? [horizontal, primary]
-      : [primary, horizontal];
+    placement === "compact"
+      ? [isotype, horizontal, primary]
+      : placement === "header"
+        ? [horizontal, primary]
+        : [primary, horizontal];
 
   for (const candidate of order) {
     if (candidate) return candidate;

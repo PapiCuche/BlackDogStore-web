@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
-from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.validators import MaxLengthValidator, MinValueValidator, MaxValueValidator
 from django.utils import timezone
 
 
@@ -2425,6 +2425,23 @@ class CompanySettings(models.Model):
         max_length=500, blank=True, validators=[validate_asset_url],
     )
 
+    # --- M12F — isotipo ----------------------------------------------------
+    #
+    # El isotipo es RECURSO AUXILIAR AUTORIZADO, no un logotipo recortado. Existe
+    # como campo propio porque en 320 px un lockup horizontal de 220 px no cabe
+    # junto al carrito, el tema y el menú — y la salida no es aplastarlo, que es
+    # una de las alteraciones que el manual prohíbe, sino usar la pieza que el
+    # manual ya diseñó para ese tamaño.
+    #
+    # DOS CAMPOS, POR CONTRASTE, igual que los cuatro de arriba. Un isotipo
+    # blanco sobre cabecera clara es el mismo defecto que abrió M12E.
+    logo_isotype_on_light_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_isotype_on_dark_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
     # --- M12E — tema claro ------------------------------------------------
     #
     # Los seis campos de arriba se diseñaron cuando el storefront tenía UN tema,
@@ -2575,6 +2592,8 @@ class CompanySettings(models.Model):
             ('logo_on_dark_url', validate_asset_url),
             ('logo_horizontal_on_light_url', validate_asset_url),
             ('logo_horizontal_on_dark_url', validate_asset_url),
+            ('logo_isotype_on_light_url', validate_asset_url),
+            ('logo_isotype_on_dark_url', validate_asset_url),
             ('light_background_color', validate_hex_color),
             ('light_surface_color', validate_hex_color),
         ):
@@ -6434,3 +6453,551 @@ class RepairEvidence(models.Model):
     @property
     def is_voided(self) -> bool:
         return self.voided_at is not None
+
+
+# ---------------------------------------------------------------------------
+# M12F — contenido comercial del escaparate
+# ---------------------------------------------------------------------------
+
+def validate_cta_url(value):
+    """
+    El destino de un botón: ruta del propio sitio, http(s), `tel:` o `mailto:`.
+
+    Misma filosofía que `validate_asset_url` y un motivo más fuerte: esto acaba
+    en el `href` de un enlace que una persona va a PULSAR. `javascript:` ahí no
+    es una URL rota, es ejecución de código elegida por quien edita la campaña.
+
+    `tel:` y `mailto:` se aceptan porque una promoción que dice «llámanos» es
+    normal — pero por permiso EXPLÍCITO, no porque el filtro se distraiga. Todo
+    lo demás se rechaza sin excepción: no hay lista de esquemas prohibidos que
+    envejezca, hay una lista de permitidos que no envejece.
+
+    Vacío se acepta: un bloque puede no tener botón.
+    """
+    from django.core.exceptions import ValidationError
+
+    if not value:
+        return
+    text = str(value).strip()
+    # `//evil.example` es una URL absoluta de protocolo relativo disfrazada de
+    # ruta interna. Empieza por «/» y no es del sitio.
+    if text.startswith('/') and not text.startswith('//'):
+        return
+    if re.match(r'^https?://[^\s]+$', text, re.IGNORECASE):
+        return
+    if re.match(r'^tel:[+0-9()\s.-]{3,}$', text, re.IGNORECASE):
+        return
+    if re.match(r'^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$', text, re.IGNORECASE):
+        return
+    raise ValidationError(
+        'Usa una ruta del sitio que empiece por «/», una URL http(s), '
+        '«tel:» o «mailto:».'
+    )
+
+
+class StorefrontCampaignQuerySet(models.QuerySet):
+    """
+    Dónde vive la regla de visibilidad — en UN solo sitio.
+
+    Que una campaña «esté activa» es una pregunta con cuatro partes y la
+    respuesta tiene que ser idéntica en el escaparate público, en la vista
+    previa del admin y en cualquier informe futuro. Repetir el filtro en tres
+    sitios es garantizar que un día divergen y que el borrador de alguien acaba
+    publicado.
+    """
+
+    def for_company(self, company):
+        """Sin empresa no hay campañas. NUNCA todas."""
+        if company is None:
+            return self.none()
+        return self.filter(company=company)
+
+    def published(self):
+        return self.filter(status=StorefrontCampaign.Status.PUBLISHED)
+
+    def within_window(self, now=None):
+        """
+        Dentro de su ventana temporal.
+
+        Fechas ausentes significan «sin límite por ese lado», que es distinto de
+        «siempre visible»: el estado sigue mandando. `ends_at` es exclusivo, así
+        que una campaña que termina a las 23:59 deja de verse a las 23:59:00 —
+        el instante que el editor escribió es el primero en el que ya no está.
+        """
+        now = now or timezone.now()
+        return self.filter(
+            models.Q(starts_at__isnull=True) | models.Q(starts_at__lte=now),
+        ).filter(
+            models.Q(ends_at__isnull=True) | models.Q(ends_at__gt=now),
+        )
+
+    def active(self, company, now=None):
+        """
+        Lo que el público puede ver, y nada más.
+
+        Es deliberadamente una sola llamada: quien la use no puede olvidarse de
+        una de las cuatro condiciones, porque no las escribe.
+        """
+        return (
+            self.for_company(company)
+            .published()
+            .within_window(now)
+            .order_by('slot', '-priority', '-published_at', '-id')
+        )
+
+
+class StorefrontCampaign(models.Model):
+    """
+    Contenido comercial temporal del escaparate, editable sin desplegar.
+
+    EL DEFECTO QUE CIERRA
+    ---------------------
+    La preventa del Home vivía compilada: un `<h2>` con un modelo de teléfono
+    dentro. Cambiar de campaña exigía tocar código, y no cambiarla dejaba una
+    promoción caducada en portada — que es peor, porque nadie despliega para
+    borrar algo que ya no existe.
+
+    NO ES UN CMS
+    ------------
+    No hay HTML, ni Markdown, ni CSS, ni componentes. Hay CAMPOS. Quien edita
+    escribe un título y un texto; no elige cómo se pinta. Un editor que acepta
+    marcado es un editor que acepta `<script>`, y el contenido lo escribe
+    personal del tenant, no el equipo que audita el código.
+
+    LA CADUCIDAD ES EL PUNTO
+    ------------------------
+    `ends_at` no es una comodidad: es la defensa contra «Preventa iPhone 17» un
+    año después. Una campaña que termina desaparece sola.
+    """
+
+    class Slot(models.TextChoices):
+        """
+        DÓNDE, no CÓMO.
+
+        Un slot nombra un sitio de la página, no una clase CSS ni una posición.
+        Guardar `"mt-10 rounded-3xl"` aquí convertiría la base de datos en una
+        hoja de estilos que nadie revisa.
+
+        Sólo los cuatro que el escaparate consume hoy. Inventar cuarenta slots
+        para un futuro imaginado es crear treinta y seis contratos que nadie
+        cumple.
+        """
+        HOME_HERO = 'home_hero', 'Portada — bloque principal'
+        HOME_FEATURED = 'home_featured', 'Portada — destacado'
+        HOME_PROMO = 'home_promo', 'Portada — promoción'
+        HOME_BOTTOM_PROMO = 'home_bottom_promo', 'Portada — promoción inferior'
+
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Borrador'
+        PUBLISHED = 'published', 'Publicada'
+        ARCHIVED = 'archived', 'Archivada'
+
+    #: NOT NULL a propósito. Una campaña siempre pertenece a una empresa; no
+    #: existe la campaña «de la plataforma». Un `company` nulo interpretado como
+    #: «todas» es exactamente el default peligroso que M12C prohibió.
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_campaigns',
+    )
+
+    slot = models.CharField(max_length=32, choices=Slot.choices, db_index=True)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.DRAFT,
+        db_index=True,
+    )
+
+    # -- contenido ---------------------------------------------------------
+    # Los límites no son burocracia: sin ellos, veinte mil caracteres en un
+    # título rompen el layout de la portada desde el panel de administración.
+    badge = models.CharField(max_length=40, blank=True)
+    title = models.CharField(max_length=120)
+    subtitle = models.CharField(max_length=200, blank=True)
+    #: `MaxLengthValidator` EXPLÍCITO. En un `TextField`, `max_length` sólo lo
+    #: usa el widget del formulario: `full_clean()` no lo comprueba. Declararlo
+    #: y no validarlo es peor que no declararlo — parece un límite, y quien lee
+    #: el modelo cree que el layout está protegido.
+    body = models.TextField(
+        max_length=600, blank=True,
+        validators=[MaxLengthValidator(600)],
+    )
+
+    image_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
+    cta_label = models.CharField(max_length=40, blank=True)
+    cta_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_cta_url],
+    )
+    secondary_cta_label = models.CharField(max_length=40, blank=True)
+    secondary_cta_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_cta_url],
+    )
+
+    #: Opcional. Enlazarla evita que el banner diga un precio y la ficha otro.
+    #: `PROTECT`: borrar un producto no puede vaciar en silencio la campaña que
+    #: lo anuncia.
+    product = models.ForeignKey(
+        'Product', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='storefront_campaigns',
+    )
+
+    # -- ventana temporal --------------------------------------------------
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+
+    #: Desempate determinista cuando dos campañas publicadas comparten slot.
+    #: Sin esto la portada mostraría la fila que la base devolviera primero, que
+    #: es una respuesta distinta según el plan de consulta.
+    priority = models.IntegerField(default=0)
+
+    published_at = models.DateTimeField(null=True, blank=True)
+
+    #: NULL significa «sembrada por el sistema», no «autor desconocido». Una
+    #: campaña que crea una migración no la escribió nadie, y atribuírsela a un
+    #: usuario real sería inventar un registro de auditoría. Las acciones de
+    #: personas SÍ llevan actor, y además quedan en el log.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='created_storefront_campaigns',
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_campaigns',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontCampaignQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['slot', '-priority', '-published_at', '-id']
+        indexes = [
+            models.Index(fields=['company', 'slot', 'status']),
+            models.Index(fields=['company', 'status', 'starts_at', 'ends_at']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status='published', published_at__isnull=False)
+                    | ~models.Q(status='published')
+                ),
+                name='storefront_campaign_published_has_a_timestamp',
+            ),
+            models.CheckConstraint(
+                # Una ventana que termina antes de empezar no se ve nunca, y el
+                # editor creería haber programado algo. Es un error, no un
+                # estado.
+                condition=(
+                    models.Q(starts_at__isnull=True)
+                    | models.Q(ends_at__isnull=True)
+                    | models.Q(ends_at__gt=models.F('starts_at'))
+                ),
+                name='storefront_campaign_window_is_ordered',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.title} [{self.slot}/{self.status}]'
+
+    def clean(self):
+        """
+        Lo que un validador de campo no puede ver: las relaciones entre campos.
+
+        `save()` no llama a `full_clean()`, así que esto protege al serializador
+        y al formulario de admin. La defensa de verdad contra datos cruzados de
+        empresa vive además en la constraint y en el servicio.
+        """
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+
+        if self.product_id and self.company_id:
+            # UNA EMPRESA NO PUEDE ANUNCIAR EL PRODUCTO DE OTRA. Sin esto, un
+            # admin podría enlazar por id un producto ajeno y el escaparate
+            # publicaría su nombre, su imagen y su precio.
+            if self.product.company_id != self.company_id:
+                errors['product'] = 'El producto no pertenece a esta empresa.'
+
+        if self.starts_at and self.ends_at and self.ends_at <= self.starts_at:
+            errors['ends_at'] = 'El fin debe ser posterior al inicio.'
+
+        if self.cta_url and not self.cta_label:
+            errors['cta_label'] = 'Un botón con destino necesita texto.'
+        if self.cta_label and not self.cta_url:
+            errors['cta_url'] = 'Un botón con texto necesita destino.'
+
+        if errors:
+            raise ValidationError(errors)
+
+    def is_active(self, now=None):
+        """La misma pregunta que `QuerySet.active`, para una fila ya cargada."""
+        if self.status != self.Status.PUBLISHED:
+            return False
+        now = now or timezone.now()
+        if self.starts_at and self.starts_at > now:
+            return False
+        if self.ends_at and self.ends_at <= now:
+            return False
+        return True
+
+
+class StorefrontPageSettings(models.Model):
+    """
+    Contenido ESTABLE del escaparate: lo que no caduca pero cambia por empresa.
+
+    TRES SITIOS, TRES VIDAS DISTINTAS
+    ---------------------------------
+        CompanySettings          identidad y políticas — quién eres
+        StorefrontPageSettings   contenido permanente  — qué ofreces
+        StorefrontCampaign       contenido temporal    — qué anuncias hoy
+
+    Meterlo todo en `CompanySettings` habría mezclado el RUC con un titular de
+    portada: dos cosas que cambian con frecuencias distintas, las edita gente
+    distinta y fallan de formas distintas.
+
+    TODO VACÍO POR DEFECTO
+    ----------------------
+    Un campo en blanco significa «usa el texto genérico de la plataforma», no
+    «usa el del piloto». El copy aprobado del manual de Black Dog vive en la
+    fila de Black Dog, escrito por una migración — igual que su identidad
+    comercial desde la Fase 3. Una empresa nueva no hereda el titular de otra.
+
+    SIN MARCADO
+    -----------
+    Texto plano. Los saltos de línea del titular son saltos de línea, no `<br>`:
+    el componente los interpreta. Aceptar HTML aquí sería aceptar `<script>`
+    escrito desde un panel de administración.
+    """
+
+    company = models.OneToOneField(
+        'Company', on_delete=models.CASCADE, related_name='storefront_page',
+    )
+
+    #: La línea pequeña sobre el titular. Vacía cae a empresa · ciudad, que el
+    #: tenant ya tiene configuradas y no hay que volver a escribir.
+    hero_eyebrow = models.CharField(max_length=80, blank=True)
+    #: Los saltos de línea se respetan: son composición del titular, y quien
+    #: escribe «Tu Apple, / con respaldo / especializado» está decidiendo el
+    #: ritmo de lectura, no insertando marcado.
+    hero_title = models.CharField(max_length=160, blank=True)
+    hero_subtitle = models.TextField(
+        max_length=400, blank=True,
+        validators=[MaxLengthValidator(400)],
+    )
+
+    hero_primary_cta_label = models.CharField(max_length=40, blank=True)
+    hero_primary_cta_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_cta_url],
+    )
+    hero_secondary_cta_label = models.CharField(max_length=40, blank=True)
+    hero_secondary_cta_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_cta_url],
+    )
+
+    # --- M12F.1 — la página de servicios ----------------------------------
+    #
+    # Se amplía ESTE modelo en vez de crear un segundo singleton: sigue siendo
+    # «el contenido estable del escaparate de una empresa», y una tabla más con
+    # una fila por tenant sólo añadiría fontanería. Lo que sí tiene vida propia
+    # —servicios, preguntas, métricas— son entidades con sus filas.
+    services_hero_title = models.CharField(max_length=160, blank=True)
+    services_hero_subtitle = models.TextField(
+        max_length=400, blank=True, validators=[MaxLengthValidator(400)],
+    )
+
+    #: LA NOTA DE GARANTÍA DEL SERVICIO TÉCNICO.
+    #:
+    #: Existe porque la página afirmaba «todos nuestros servicios incluyen 6
+    #: meses de garantía» y eso contradice al manual del propio piloto, que dice
+    #: que la cobertura de servicios técnicos DEPENDE del producto o reparación.
+    #: Los seis meses son de los equipos seminuevos; alguien los trasladó a las
+    #: reparaciones.
+    #:
+    #: Vacío no pinta nada. Una garantía que nadie ha escrito no se inventa.
+    services_warranty_note = models.TextField(
+        max_length=600, blank=True, validators=[MaxLengthValidator(600)],
+    )
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_pages',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'configuración de portada'
+        verbose_name_plural = 'configuraciones de portada'
+
+    def __str__(self):
+        return f'Portada de {self.company.name}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        for label_field, url_field, name in (
+            ('hero_primary_cta_label', 'hero_primary_cta_url', 'principal'),
+            ('hero_secondary_cta_label', 'hero_secondary_cta_url', 'secundario'),
+        ):
+            label = (getattr(self, label_field) or '').strip()
+            url = (getattr(self, url_field) or '').strip()
+            if url and not label:
+                errors[label_field] = f'El botón {name} necesita texto.'
+            if label and not url:
+                errors[url_field] = f'El botón {name} necesita destino.'
+        if errors:
+            raise ValidationError(errors)
+
+
+class StorefrontContentQuerySet(models.QuerySet):
+    """
+    La misma regla de visibilidad que las campañas, para el contenido de lista.
+
+    Menos condiciones —esto no caduca— pero la parte que importa es idéntica:
+    sin empresa no hay filas, NUNCA todas.
+    """
+
+    def for_company(self, company):
+        if company is None:
+            return self.none()
+        return self.filter(company=company)
+
+    def published(self, company):
+        return self.for_company(company).filter(is_active=True).order_by('sort_order', 'id')
+
+
+class StorefrontServiceOffering(models.Model):
+    """
+    Un servicio que este taller ofrece. Dato del tenant, no del código.
+
+    POR QUÉ ES UNA ENTIDAD Y NO TEXTO
+    ---------------------------------
+    La lista vivía DOS veces compilada: una en `/services` y otra, distinta y
+    más corta, en el pie. Dos listas de lo mismo divergen — ya divergían — y
+    quien las lee no sabe cuál es la buena. Una entidad da una sola fuente.
+
+    Y hace falta poder activar, desactivar y reordenar sin desplegar: un taller
+    que deja de cambiar tapas traseras no debería necesitar un despliegue para
+    dejar de anunciarlo.
+
+    EL TIEMPO ES UNA ESTIMACIÓN, Y SE LLAMA ASÍ
+    -------------------------------------------
+    El manual dice que «el tiempo y costo pueden variar según equipo, falla y
+    disponibilidad de repuestos». Un «2–3 horas» presentado como dato es una
+    promesa; presentado como estimación es información. El campo se llama
+    `estimated_time_text` por eso, y la interfaz lo etiqueta.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_services',
+    )
+    title = models.CharField(max_length=80)
+    description = models.TextField(max_length=400, blank=True,
+                                   validators=[MaxLengthValidator(400)])
+    #: Texto libre corto: «iPhone · iPad». No es una relación con el catálogo
+    #: porque nombra familias de equipo, no productos que el taller venda.
+    devices_text = models.CharField(max_length=120, blank=True)
+    #: ESTIMACIÓN. Nunca un compromiso. Vacío se acepta y no se pinta.
+    estimated_time_text = models.CharField(max_length=40, blank=True)
+    #: Una etiqueta corta al lado del título. Vacía no se pinta.
+    highlight = models.CharField(max_length=40, blank=True)
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_services',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontContentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'is_active', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.title} ({self.company_id})'
+
+
+class StorefrontFaq(models.Model):
+    """
+    Una pregunta frecuente de este taller.
+
+    Las FAQ cambian con el negocio y son EXACTAMENTE donde se colaron las
+    afirmaciones que M12F.1 tuvo que retirar: la que decía que todos los
+    servicios llevan seis meses de garantía vivía aquí, compilada, contradiciendo
+    la política que el propio tenant tiene configurada.
+
+    Como dato, quien la escribe es quien responde por ella.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_faqs',
+    )
+    question = models.CharField(max_length=200)
+    answer = models.TextField(max_length=1200, validators=[MaxLengthValidator(1200)])
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_faqs',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontContentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'is_active', 'sort_order'])]
+
+    def __str__(self):
+        return self.question[:60]
+
+
+class StorefrontTrustMetric(models.Model):
+    """
+    Una cifra que el taller publica sobre sí mismo.
+
+    NACE VACÍO Y ASÍ SE QUEDA HASTA QUE ALGUIEN RESPONDA POR ELLA. Ninguna
+    migración siembra métricas: la anterior versión de la página anunciaba
+    «5.000+ dispositivos reparados» sin ninguna fuente dentro del proyecto, y
+    trasladar esa cifra a la base de datos sería darle una credibilidad que no
+    tiene por haber cambiado de sitio.
+
+    Un tenant sin métricas no muestra el bloque. Un bloque vacío es peor que
+    ninguno, y una cifra inventada es peor que las dos cosas.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_metrics',
+    )
+    #: Lo grande: «+1.200», «24 h», «Nasan».
+    value = models.CharField(max_length=24)
+    #: Lo pequeño: qué significa.
+    label = models.CharField(max_length=60)
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_metrics',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontContentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'is_active', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.value} {self.label}'

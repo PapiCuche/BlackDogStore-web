@@ -102,7 +102,7 @@ function cashSuggestions(total: number): number[] {
 }
 
 const FIELD =
-  "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
+  "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
 
 function PosContent({ ctx }: { ctx: InternalContext }) {
   const companyId = ctx.selectedCompanyId;
@@ -426,7 +426,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   if (loading) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <p className="py-8 text-sm text-zinc-600">Abriendo caja…</p>
+        <p className="py-8 text-sm text-muted">Abriendo caja…</p>
       </AdminShell>
     );
   }
@@ -447,8 +447,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           <p className="text-sm uppercase tracking-widest text-emerald-400/80">
             Venta registrada
           </p>
-          <p className="font-display text-3xl text-white">{money(done.total)}</p>
-          <div className="space-y-1 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 text-left text-sm text-zinc-400">
+          <p className="font-display text-3xl text-foreground">{money(done.total)}</p>
+          <div className="space-y-1 rounded-xl border border-bd-border bg-surface p-5 text-left text-sm text-muted">
             <p>Pedido #{done.order_id}</p>
             <p>Cliente: {done.customer || "Sin identificar"}</p>
             <p>Vendedor: {done.seller || "—"}</p>
@@ -460,7 +460,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 {done.discount_reason ? ` (${done.discount_reason})` : ""}
               </p>
             ) : null}
-            <p className="text-zinc-200">Total: {money(done.total)}</p>
+            <p className="text-foreground">Total: {money(done.total)}</p>
             <p className="pt-2">
               Medio de pago:{" "}
               {context.payment_methods.find((m) => m.value === done.payment_method)?.label ??
@@ -471,13 +471,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             {done.amount_received !== null ? (
               <>
                 <p>Efectivo recibido: {money(done.amount_received)}</p>
-                <p className="text-zinc-200">Vuelto: {money(done.change_amount ?? "0")}</p>
+                <p className="text-foreground">Vuelto: {money(done.change_amount ?? "0")}</p>
               </>
             ) : null}
             {done.payment_reference ? <p>Referencia: {done.payment_reference}</p> : null}
             {/* Null unless this operator may see earnings. */}
             {done.commission ? (
-              <p className="pt-2 text-zinc-500">Comisión: {money(done.commission)}</p>
+              <p className="pt-2 text-muted">Comisión: {money(done.commission)}</p>
             ) : null}
           </div>
           <div className="flex flex-wrap justify-center gap-3">
@@ -487,13 +487,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 setDone(null);
                 setTimeout(focusScan, 0);
               }}
-              className="rounded-lg border border-white/15 px-4 py-2 text-sm text-zinc-200 transition hover:border-white/30 hover:text-white"
+              className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:border-bd-border hover:text-foreground"
             >
               Nueva venta
             </button>
             <Link
               href={`/admin/orders/${done.order_id}`}
-              className="rounded-lg border border-white/[0.08] px-4 py-2 text-sm text-zinc-400 transition hover:border-white/25 hover:text-zinc-200"
+              className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground"
             >
               Ver pedido y nota interna
             </Link>
@@ -508,13 +508,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <label className="text-[11px] uppercase tracking-widest text-zinc-500">
+            <label className="text-[11px] uppercase tracking-widest text-muted">
               Sucursal
             </label>
             <select
               value={branch ?? ""}
               onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
-              className="rounded-lg border border-white/[0.08] bg-black/40 px-3 py-1.5 text-sm text-zinc-200 outline-none"
+              className="rounded-lg border border-bd-border bg-background/40 px-3 py-1.5 text-sm text-foreground outline-none"
             >
               <option value="">Selecciona…</option>
               {context.branches.map((b) => (
@@ -524,7 +524,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               ))}
             </select>
           </div>
-          <p className="text-xs text-zinc-600">Vendedor: {context.seller.username}</p>
+          <p className="text-xs text-muted">Vendedor: {context.seller.username}</p>
         </div>
 
         {branch === null ? (
@@ -539,7 +539,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           <div className="space-y-4">
             <div>
               <label
-                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-scan"
               >
                 Escanear código
@@ -582,7 +582,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
             <div>
               <label
-                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-search"
               >
                 Buscar producto
@@ -606,7 +606,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
             {combos.length && lines.length === 0 ? (
               <div className="space-y-2">
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Combos disponibles
                 </p>
                 {combos.map((combo) => (
@@ -628,18 +628,18 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       );
                       focusScan();
                     }}
-                    className="flex w-full items-center justify-between rounded-lg border border-white/[0.08] px-4 py-3 text-left text-sm transition hover:border-white/25 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex w-full items-center justify-between rounded-lg border border-bd-border px-4 py-3 text-left text-sm transition hover:border-bd-border disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <span>
-                      <span className="text-zinc-200">{combo.name}</span>
-                      <span className="block text-[11px] text-zinc-600">
+                      <span className="text-foreground">{combo.name}</span>
+                      <span className="block text-[11px] text-muted">
                         {combo.components
                           .map((c) => `${c.quantity}× ${c.product_name}`)
                           .join(" + ")}
                       </span>
                     </span>
                     <span className="text-right">
-                      <span className="block font-mono text-zinc-300">
+                      <span className="block font-mono text-foreground/85">
                         {money(combo.combo_amount)}
                       </span>
                       <span className="block text-[11px] text-emerald-400/80">
@@ -657,7 +657,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             ) : null}
 
             {found.length ? (
-              <div className="overflow-hidden rounded-xl border border-white/[0.06]">
+              <div className="overflow-hidden rounded-xl border border-bd-border">
                 {found.map((p) => (
                   <button
                     key={p.id}
@@ -671,16 +671,16 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       setTerm("");
                       focusScan();
                     }}
-                    className="flex w-full items-center justify-between border-b border-white/[0.04] px-4 py-3 text-left text-sm transition last:border-0 hover:bg-white/[0.03]"
+                    className="flex w-full items-center justify-between border-b border-bd-border px-4 py-3 text-left text-sm transition last:border-0 hover:bg-surface"
                   >
-                    <span className="text-zinc-200">{p.name}</span>
+                    <span className="text-foreground">{p.name}</span>
                     <span className="flex items-center gap-4 text-xs">
                       <span
-                        className={p.available > 0 ? "text-zinc-500" : "text-red-400/80"}
+                        className={p.available > 0 ? "text-muted" : "text-red-400/80"}
                       >
                         {p.available} disp.
                       </span>
-                      <span className="font-mono text-zinc-300">{money(p.price)}</span>
+                      <span className="font-mono text-foreground/85">{money(p.price)}</span>
                     </span>
                   </button>
                 ))}
@@ -689,9 +689,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           </div>
 
           {/* --- carrito --------------------------------------------- */}
-          <div className="space-y-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <div className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
             <div className="flex items-baseline justify-between">
-              <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Carrito
               </p>
               {lines.length ? (
@@ -703,7 +703,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       focusScan();
                     }
                   }}
-                  className="text-[11px] text-zinc-600 transition hover:text-zinc-400"
+                  className="text-[11px] text-muted transition hover:text-muted"
                 >
                   Vaciar
                 </button>
@@ -711,20 +711,20 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             </div>
 
             {lines.length === 0 ? (
-              <p className="py-8 text-center text-sm text-zinc-600">
+              <p className="py-8 text-center text-sm text-muted">
                 Escanea un producto para empezar.
               </p>
             ) : (
               <div className="space-y-2">
                 {lines.map((l) => (
-                  <div key={l.product} className="rounded-lg bg-black/30 p-3">
+                  <div key={l.product} className="rounded-lg bg-background/30 p-3">
                     <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm text-zinc-200">{l.name}</p>
+                      <p className="text-sm text-foreground">{l.name}</p>
                       <button
                         type="button"
                         onClick={() => setQuantity(l.product, 0)}
                         aria-label={`Quitar ${l.name}`}
-                        className="text-xs text-zinc-600 transition hover:text-red-400"
+                        className="text-xs text-muted transition hover:text-red-400"
                       >
                         ✕
                       </button>
@@ -735,9 +735,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         min={1}
                         value={l.quantity}
                         onChange={(e) => setQuantity(l.product, Number(e.target.value))}
-                        className="w-20 rounded border border-white/[0.08] bg-black/40 px-2 py-1 text-sm text-zinc-200 outline-none"
+                        className="w-20 rounded border border-bd-border bg-background/40 px-2 py-1 text-sm text-foreground outline-none"
                       />
-                      <span className="font-mono text-sm text-zinc-300">
+                      <span className="font-mono text-sm text-foreground/85">
                         {money(Number(l.price) * l.quantity)}
                       </span>
                     </div>
@@ -752,17 +752,17 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             )}
 
             {/* --- cliente --------------------------------------------- */}
-            <div className="border-t border-white/[0.06] pt-3">
-              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+            <div className="border-t border-bd-border pt-3">
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Cliente
               </p>
               {customer ? (
-                <div className="flex items-center justify-between rounded-lg bg-black/30 px-3 py-2 text-sm">
-                  <span className="text-zinc-200">{customer.display_name}</span>
+                <div className="flex items-center justify-between rounded-lg bg-background/30 px-3 py-2 text-sm">
+                  <span className="text-foreground">{customer.display_name}</span>
                   <button
                     type="button"
                     onClick={() => setCustomer(null)}
-                    className="text-xs text-zinc-600 transition hover:text-red-400"
+                    className="text-xs text-muted transition hover:text-red-400"
                   >
                     Quitar
                   </button>
@@ -793,11 +793,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         setCustomerTerm("");
                         focusScan();
                       }}
-                      className="block w-full rounded bg-black/30 px-3 py-2 text-left text-sm text-zinc-300 transition hover:bg-white/[0.05]"
+                      className="block w-full rounded bg-background/30 px-3 py-2 text-left text-sm text-foreground/85 transition hover:bg-surface"
                     >
                       {c.display_name}
                       {c.document_number ? (
-                        <span className="ml-2 font-mono text-[11px] text-zinc-600">
+                        <span className="ml-2 font-mono text-[11px] text-muted">
                           {c.document_number}
                         </span>
                       ) : null}
@@ -811,14 +811,14 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         setCustomerTerm("");
                         focusScan();
                       }}
-                      className="text-zinc-600 transition hover:text-zinc-400"
+                      className="text-muted transition hover:text-muted"
                     >
                       Cancelar
                     </button>
                     {context.can_manage_customers ? (
                       <Link
                         href="/admin/customers"
-                        className="text-zinc-500 underline underline-offset-2 transition hover:text-zinc-300"
+                        className="text-muted underline underline-offset-2 transition hover:text-foreground/85"
                       >
                         Nuevo cliente
                       </Link>
@@ -829,7 +829,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 <button
                   type="button"
                   onClick={() => setPickingCustomer(true)}
-                  className="w-full rounded-lg border border-dashed border-white/[0.12] px-3 py-2 text-sm text-zinc-500 transition hover:border-white/25 hover:text-zinc-300"
+                  className="w-full rounded-lg border border-dashed border-bd-border px-3 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground/85"
                 >
                   Buscar cliente (opcional)
                 </button>
@@ -837,8 +837,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             </div>
 
             {/* --- vendedor -------------------------------------------- */}
-            <div className="border-t border-white/[0.06] pt-3">
-              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+            <div className="border-t border-bd-border pt-3">
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Vendedor
               </p>
               {context.can_assign_seller && context.sellers.length ? (
@@ -856,13 +856,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               ) : (
                 // Read-only when the operator may not reassign: offering a
                 // control the backend would refuse is worse than not offering it.
-                <p className="text-sm text-zinc-300">{context.seller.name}</p>
+                <p className="text-sm text-foreground/85">{context.seller.name}</p>
               )}
             </div>
 
             {/* --- descuento ------------------------------------------- */}
-            <div className="space-y-2 border-t border-white/[0.06] pt-3">
-              <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+            <div className="space-y-2 border-t border-bd-border pt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Descuento
               </p>
               {preview?.promotions?.length ? (
@@ -924,9 +924,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               ) : null}
             </div>
 
-            <div className="border-t border-white/[0.06] pt-3">
+            <div className="border-t border-bd-border pt-3">
               <label
-                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-payment"
               >
                 Medio de pago
@@ -947,9 +947,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
             {/* --- efectivo -------------------------------------------- */}
             {isCash ? (
-              <div className="border-t border-white/[0.06] pt-3">
+              <div className="border-t border-bd-border pt-3">
                 <label
-                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                   htmlFor="pos-received"
                 >
                   Efectivo recibido
@@ -971,15 +971,15 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       key={amount}
                       type="button"
                       onClick={() => setReceived(String(amount))}
-                      className="rounded border border-white/[0.08] px-2.5 py-1 text-xs text-zinc-400 transition hover:border-white/25 hover:text-zinc-200"
+                      className="rounded border border-bd-border px-2.5 py-1 text-xs text-muted transition hover:border-bd-border hover:text-foreground"
                     >
                       {money(amount)}
                     </button>
                   ))}
                 </div>
                 {change !== null && change >= 0 ? (
-                  <p className="mt-2 text-sm text-zinc-400">
-                    Vuelto: <span className="text-white">{money(change)}</span>
+                  <p className="mt-2 text-sm text-muted">
+                    Vuelto: <span className="text-foreground">{money(change)}</span>
                   </p>
                 ) : received !== "" ? (
                   <p className="mt-2 text-sm text-amber-400/90">
@@ -988,9 +988,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 ) : null}
               </div>
             ) : (
-              <div className="border-t border-white/[0.06] pt-3">
+              <div className="border-t border-bd-border pt-3">
                 <label
-                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                   htmlFor="pos-ref"
                 >
                   Referencia del pago (opcional)
@@ -1006,8 +1006,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               </div>
             )}
 
-            <div className="space-y-1 border-t border-white/[0.06] pt-3 text-sm">
-              <div className="flex justify-between text-zinc-500">
+            <div className="space-y-1 border-t border-bd-border pt-3 text-sm">
+              <div className="flex justify-between text-muted">
                 <span>Subtotal</span>
                 <span className="font-mono">{money(subtotal)}</span>
               </div>
@@ -1033,21 +1033,21 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                     </div>
                   ) : null}
               <div className="flex items-baseline justify-between pt-1">
-                <span className="text-xs text-zinc-500">
+                <span className="text-xs text-muted">
                   {units} unidad{units === 1 ? "" : "es"}
                 </span>
-                <span className="font-display text-2xl text-white">{money(total)}</span>
+                <span className="font-display text-2xl text-foreground">{money(total)}</span>
               </div>
               {preview?.commission ? (
-                <p className="pt-1 text-right text-[11px] text-zinc-600">
+                <p className="pt-1 text-right text-[11px] text-muted">
                   Comisión estimada: {money(preview.commission.amount)}
                 </p>
               ) : null}
             </div>
 
-            <div className="border-t border-white/[0.06] pt-3">
+            <div className="border-t border-bd-border pt-3">
               <label
-                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-notes"
               >
                 Observaciones (opcional)
@@ -1061,12 +1061,12 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 value={saleNotes}
                 onChange={(e) => setSaleNotes(e.target.value)}
               />
-              <p className="mt-1 text-[11px] text-zinc-600">
+              <p className="mt-1 text-[11px] text-muted">
                 Sobre esta venta, no sobre el cliente. Sólo control interno.
               </p>
             </div>
 
-            <label className="flex items-start gap-2 border-t border-white/[0.06] pt-3 text-xs text-zinc-400">
+            <label className="flex items-start gap-2 border-t border-bd-border pt-3 text-xs text-muted">
               <input
                 type="checkbox"
                 className="mt-0.5"
@@ -1091,11 +1091,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 (isCash && (received === "" || Number(received) < total))
               }
               onClick={() => void charge()}
-              className="w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:border-emerald-500/50 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-transparent disabled:text-zinc-600"
+              className="w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:border-emerald-500/50 disabled:cursor-not-allowed disabled:border-bd-border disabled:bg-transparent disabled:text-muted"
             >
               {charging ? "Cobrando…" : "Cobrar"}
             </button>
-            <p className="text-center text-[11px] text-zinc-600">
+            <p className="text-center text-[11px] text-muted">
               El precio, el descuento y el total los calcula el servidor.
             </p>
           </div>

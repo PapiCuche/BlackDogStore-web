@@ -30,15 +30,15 @@ export function MetricCard({
   icon?: IconComponent;
 }) {
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+    <div className="rounded-xl border border-bd-border bg-surface p-5">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
           {label}
         </p>
-        {Icon ? <Icon className="h-4 w-4 shrink-0 text-zinc-600" /> : null}
+        {Icon ? <Icon className="h-4 w-4 shrink-0 text-muted" /> : null}
       </div>
-      <p className="mt-2 text-2xl font-semibold tabular-nums text-white">{value}</p>
-      {hint ? <p className="mt-1 text-xs text-zinc-500">{hint}</p> : null}
+      <p className="mt-2 text-2xl font-semibold tabular-nums text-foreground">{value}</p>
+      {hint ? <p className="mt-1 text-xs text-muted">{hint}</p> : null}
     </div>
   );
 }
@@ -61,14 +61,14 @@ export function QuickActionCard({
   return (
     <Link
       href={href}
-      className="group flex items-start gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 transition hover:border-white/15 hover:bg-white/[0.04]"
+      className="group flex items-start gap-3 rounded-xl border border-bd-border bg-surface p-5 transition hover:border-bd-border hover:bg-surface"
     >
-      <span className="mt-0.5 rounded-lg border border-white/[0.08] bg-black/40 p-2 text-zinc-400 transition group-hover:text-white">
+      <span className="mt-0.5 rounded-lg border border-bd-border bg-background/40 p-2 text-muted transition group-hover:text-foreground">
         <Icon />
       </span>
       <span className="min-w-0">
-        <span className="block text-sm font-semibold text-white">{label}</span>
-        <span className="mt-0.5 block text-xs leading-relaxed text-zinc-500">
+        <span className="block text-sm font-semibold text-foreground">{label}</span>
+        <span className="mt-0.5 block text-xs leading-relaxed text-muted">
           {description}
         </span>
       </span>
@@ -79,10 +79,10 @@ export function QuickActionCard({
 export function StatusBadge({ status }: { status: ModuleStatus }) {
   const tone =
     status === "implemented"
-      ? "border-white/25 bg-white/[0.08] text-white"
+      ? "border-bd-border bg-surface-2 text-foreground"
       : status === "partial"
-        ? "border-white/15 bg-white/[0.04] text-zinc-300"
-        : "border-white/[0.08] bg-transparent text-zinc-500";
+        ? "border-bd-border bg-surface text-foreground/85"
+        : "border-bd-border bg-transparent text-muted";
   return (
     <span
       className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider ${tone}`}
@@ -106,17 +106,17 @@ export function ModuleCard({
   const body = (
     <>
       <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-medium text-zinc-200">{label}</p>
+        <p className="text-sm font-medium text-foreground">{label}</p>
         <StatusBadge status={status} />
       </div>
-      <p className="mt-1 text-xs leading-relaxed text-zinc-500">{description}</p>
+      <p className="mt-1 text-xs leading-relaxed text-muted">{description}</p>
     </>
   );
 
   // No href → no link. A module that does not exist never becomes a dead click.
   if (!href) {
     return (
-      <div className="rounded-lg border border-white/[0.05] bg-white/[0.01] p-4 opacity-70">
+      <div className="rounded-lg border border-bd-border bg-surface p-4 opacity-70">
         {body}
       </div>
     );
@@ -125,7 +125,7 @@ export function ModuleCard({
   return (
     <Link
       href={href}
-      className="block rounded-lg border border-white/[0.06] bg-white/[0.02] p-4 transition hover:border-white/15 hover:bg-white/[0.04]"
+      className="block rounded-lg border border-bd-border bg-surface p-4 transition hover:border-bd-border hover:bg-surface"
     >
       {body}
     </Link>
@@ -151,9 +151,9 @@ export function Section({
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-white">{title}</h2>
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
           {description ? (
-            <p className="mt-0.5 text-xs text-zinc-500">{description}</p>
+            <p className="mt-0.5 text-xs text-muted">{description}</p>
           ) : null}
         </div>
         {action}
@@ -165,7 +165,7 @@ export function Section({
 
 export function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-block rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-xs text-zinc-300">
+    <span className="inline-block rounded-lg border border-bd-border bg-surface px-2.5 py-1 text-xs text-foreground/85">
       {children}
     </span>
   );
@@ -178,8 +178,8 @@ export function AlertsPanel({
 }) {
   if (alerts.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-white/10 px-4 py-6 text-center">
-        <p className="text-sm text-zinc-500">Sin avisos pendientes.</p>
+      <div className="rounded-xl border border-dashed border-bd-border px-4 py-6 text-center">
+        <p className="text-sm text-muted">Sin avisos pendientes.</p>
       </div>
     );
   }
@@ -191,17 +191,17 @@ export function AlertsPanel({
           alert.level === "critical"
             ? "border-red-500/25 bg-red-500/[0.07]"
             : alert.level === "warning"
-              ? "border-white/20 bg-white/[0.05]"
-              : "border-white/[0.06] bg-white/[0.02]";
+              ? "border-bd-border bg-surface"
+              : "border-bd-border bg-surface";
         return (
           <div
             key={alert.code + alert.title}
             className={`flex gap-3 rounded-lg border p-4 ${tone}`}
           >
-            <IconAlert className="mt-0.5 h-4 w-4 shrink-0 text-zinc-400" />
+            <IconAlert className="mt-0.5 h-4 w-4 shrink-0 text-muted" />
             <div className="min-w-0">
-              <p className="text-sm font-medium text-zinc-200">{alert.title}</p>
-              <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">
+              <p className="text-sm font-medium text-foreground">{alert.title}</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-muted">
                 {alert.detail}
               </p>
             </div>
@@ -215,15 +215,15 @@ export function AlertsPanel({
 export function DashboardSkeleton() {
   return (
     <div className="space-y-8" aria-busy="true" aria-label="Cargando dashboard">
-      <div className="h-16 w-full max-w-md animate-pulse rounded-xl bg-white/[0.03]" />
+      <div className="h-16 w-full max-w-md animate-pulse rounded-xl bg-surface" />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="h-28 animate-pulse rounded-xl bg-white/[0.03]" />
+          <div key={i} className="h-28 animate-pulse rounded-xl bg-surface" />
         ))}
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {[0, 1, 2, 3, 4, 5].map((i) => (
-          <div key={i} className="h-24 animate-pulse rounded-xl bg-white/[0.03]" />
+          <div key={i} className="h-24 animate-pulse rounded-xl bg-surface" />
         ))}
       </div>
     </div>
@@ -232,8 +232,8 @@ export function DashboardSkeleton() {
 
 export function EmptyState({ message }: { message: string }) {
   return (
-    <div className="rounded-xl border border-dashed border-white/10 px-4 py-8 text-center">
-      <p className="text-sm text-zinc-500">{message}</p>
+    <div className="rounded-xl border border-dashed border-bd-border px-4 py-8 text-center">
+      <p className="text-sm text-muted">{message}</p>
     </div>
   );
 }

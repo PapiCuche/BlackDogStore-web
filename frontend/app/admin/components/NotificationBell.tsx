@@ -114,7 +114,7 @@ export function NotificationBell({ slug }: { slug: string | null }) {
         type="button"
         onClick={() => void toggle()}
         aria-label="Notificaciones"
-        className="relative rounded-lg border border-white/[0.08] p-2 text-zinc-400 transition hover:text-white"
+        className="relative rounded-lg border border-bd-border p-2 text-muted transition hover:text-foreground"
       >
         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0v1a3 3 0 1 1-6 0v-1m6 0H9" />
@@ -122,42 +122,42 @@ export function NotificationBell({ slug }: { slug: string | null }) {
         {/* `null` means "not loaded yet" and shows nothing. Rendering 0 while
             loading would state a fact the client does not have. */}
         {unread !== null && unread > 0 ? (
-          <span className="absolute -right-1 -top-1 min-w-[18px] rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-[18px] text-white">
+          <span className="absolute -right-1 -top-1 min-w-[18px] rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-[18px] text-on-status">
             {unread > 99 ? "99+" : unread}
           </span>
         ) : null}
       </button>
 
       {open ? (
-        <div className="absolute right-0 z-50 mt-2 w-80 rounded-xl border border-white/[0.08] bg-[#0d0d0d] p-2 shadow-2xl">
+        <div className="absolute right-0 z-50 mt-2 w-80 rounded-xl border border-bd-border bg-surface p-2 shadow-2xl">
           <div className="flex items-center justify-between px-2 py-1.5">
-            <span className="text-xs font-semibold text-zinc-300">Notificaciones</span>
+            <span className="text-xs font-semibold text-foreground/85">Notificaciones</span>
             <Link
               href="/admin/notifications"
               onClick={() => setOpen(false)}
-              className="text-[11px] text-zinc-500 hover:text-white"
+              className="text-[11px] text-muted hover:text-foreground"
             >
               Ver todas
             </Link>
           </div>
 
           {items === null ? (
-            <p className="px-2 py-6 text-center text-xs text-zinc-600">Cargando…</p>
+            <p className="px-2 py-6 text-center text-xs text-muted">Cargando…</p>
           ) : items.length === 0 ? (
-            <p className="px-2 py-6 text-center text-xs text-zinc-600">No tienes notificaciones.</p>
+            <p className="px-2 py-6 text-center text-xs text-muted">No tienes notificaciones.</p>
           ) : (
             <ul className="max-h-80 overflow-y-auto">
               {items.map((n) => {
                 const href = targetHref(n);
                 const inner = (
-                  <div className={`rounded-lg px-2 py-2 ${n.read_at ? "opacity-60" : "bg-white/[0.03]"}`}>
+                  <div className={`rounded-lg px-2 py-2 ${n.read_at ? "opacity-60" : "bg-surface"}`}>
                     {sourceLabel(n) ? (
                       <span className="mb-0.5 inline-block rounded bg-sky-500/15 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-sky-300">
                         {sourceLabel(n)}
                       </span>
                     ) : null}
-                    <p className="text-xs font-medium text-zinc-200">{n.title}</p>
-                    {n.body ? <p className="mt-0.5 text-[11px] text-zinc-500">{n.body}</p> : null}
+                    <p className="text-xs font-medium text-foreground">{n.title}</p>
+                    {n.body ? <p className="mt-0.5 text-[11px] text-muted">{n.body}</p> : null}
                   </div>
                 );
                 return (

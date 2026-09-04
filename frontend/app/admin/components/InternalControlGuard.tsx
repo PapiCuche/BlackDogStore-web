@@ -53,11 +53,11 @@ function Spinner({ label }: { label: string }) {
   return (
     <Centered>
       <div
-        className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent"
+        className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-foreground border-t-transparent"
         role="status"
         aria-label={label}
       />
-      <p className="mt-4 text-sm text-zinc-500">{label}</p>
+      <p className="mt-4 text-sm text-muted">{label}</p>
     </Centered>
   );
 }
@@ -65,15 +65,15 @@ function Spinner({ label }: { label: string }) {
 function Denied({ title, message }: { title: string; message: string }) {
   return (
     <Centered>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-10">
-        <p className="text-xs font-semibold uppercase tracking-[0.3em] text-white/40">
+      <div className="rounded-2xl border border-bd-border bg-surface p-10">
+        <p className="text-xs font-semibold uppercase tracking-[0.3em] text-muted">
           Control interno
         </p>
-        <h1 className="mt-2 text-2xl font-bold text-white">{title}</h1>
-        <p className="mt-4 text-sm text-zinc-400">{message}</p>
+        <h1 className="mt-2 text-2xl font-bold text-foreground">{title}</h1>
+        <p className="mt-4 text-sm text-muted">{message}</p>
         <Link
           href="/"
-          className="mt-6 inline-block rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200"
+          className="mt-6 inline-block rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90"
         >
           Volver a la tienda
         </Link>
@@ -159,12 +159,12 @@ export function InternalControlGuard({ children }: Props) {
     return (
       <Centered>
         <div className="rounded-2xl border border-red-500/25 bg-red-500/[0.07] p-8">
-          <h1 className="text-lg font-semibold text-white">No se pudo cargar</h1>
+          <h1 className="text-lg font-semibold text-foreground">No se pudo cargar</h1>
           <p className="mt-3 text-sm text-red-300">{error}</p>
           <button
             type="button"
             onClick={reload}
-            className="mt-6 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-zinc-200"
+            className="mt-6 rounded-full bg-foreground px-5 py-2.5 text-sm font-semibold text-background transition hover:bg-foreground/90"
           >
             Reintentar
           </button>

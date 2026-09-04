@@ -58,7 +58,7 @@ export function InventoryAdjustForm({
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="flex gap-4">
         <div className="flex-1">
-          <label className="block text-xs text-zinc-400 mb-1.5">
+          <label className="block text-xs text-muted mb-1.5">
             Delta (positivo = ingreso, negativo = salida)
           </label>
           <input
@@ -67,10 +67,10 @@ export function InventoryAdjustForm({
             onChange={(e) => setDelta(e.target.value)}
             placeholder="ej. +5 o -3"
             disabled={saving}
-            className="w-full bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-white/30 disabled:opacity-50"
+            className="w-full bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border disabled:opacity-50"
           />
           {preview !== null && (
-            <p className="text-xs mt-1.5 text-zinc-400">
+            <p className="text-xs mt-1.5 text-muted">
               Resultado:{" "}
               <span
                 className={
@@ -78,7 +78,7 @@ export function InventoryAdjustForm({
                     ? "text-red-400"
                     : preview === 0
                       ? "text-yellow-400"
-                      : "text-zinc-200"
+                      : "text-foreground"
                 }
               >
                 {preview} unidades
@@ -87,7 +87,7 @@ export function InventoryAdjustForm({
           )}
         </div>
         <div className="flex-[2]">
-          <label className="block text-xs text-zinc-400 mb-1.5">Motivo</label>
+          <label className="block text-xs text-muted mb-1.5">Motivo</label>
           <input
             type="text"
             value={reason}
@@ -95,18 +95,18 @@ export function InventoryAdjustForm({
             placeholder="ej. Restock de proveedor"
             maxLength={500}
             disabled={saving}
-            className="w-full bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-white/30 disabled:opacity-50"
+            className="w-full bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border disabled:opacity-50"
           />
         </div>
       </div>
 
       {error && <p className="text-sm text-red-400">{error}</p>}
-      {success && <p className="text-sm text-zinc-300">{success}</p>}
+      {success && <p className="text-sm text-foreground/85">{success}</p>}
 
       <button
         type="submit"
         disabled={saving}
-        className="px-4 py-2 bg-white text-black text-sm font-medium rounded hover:bg-zinc-200 disabled:opacity-50 transition-colors"
+        className="px-4 py-2 bg-foreground text-background text-sm font-medium rounded hover:bg-foreground/90 disabled:opacity-50 transition-colors"
       >
         {saving ? "Guardando…" : "Aplicar ajuste"}
       </button>

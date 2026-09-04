@@ -79,15 +79,15 @@ function Panel({ ctx }: { ctx: InternalContext }) {
   }, [load]);
 
   if (!slug) {
-    return <p className="text-sm text-zinc-500">Selecciona una empresa.</p>;
+    return <p className="text-sm text-muted">Selecciona una empresa.</p>;
   }
 
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-zinc-100">Comunicados</h1>
-          <p className="text-xs text-zinc-500">
+          <h1 className="text-lg font-semibold text-foreground">Comunicados</h1>
+          <p className="text-xs text-muted">
             Mensajes internos para el personal de {ctx.dashboard?.company?.name}.
           </p>
         </div>
@@ -97,13 +97,13 @@ function Panel({ ctx }: { ctx: InternalContext }) {
             setSelected(null);
             setComposing(true);
           }}
-          className="rounded-lg bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
+          className="rounded-lg bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-on-status hover:bg-sky-500"
         >
           Nuevo comunicado
         </button>
       </header>
 
-      <nav className="flex gap-1 border-b border-white/5">
+      <nav className="flex gap-1 border-b border-bd-border">
         {(["draft", "published"] as Tab[]).map((t) => (
           <button
             key={t}
@@ -111,8 +111,8 @@ function Panel({ ctx }: { ctx: InternalContext }) {
             onClick={() => setTab(t)}
             className={`px-3 py-2 text-xs ${
               tab === t
-                ? "border-b-2 border-sky-400 text-zinc-100"
-                : "text-zinc-500 hover:text-zinc-300"
+                ? "border-b-2 border-sky-400 text-foreground"
+                : "text-muted hover:text-foreground/85"
             }`}
           >
             {t === "draft" ? "Borradores" : "Publicados"}
@@ -151,23 +151,23 @@ function Panel({ ctx }: { ctx: InternalContext }) {
       ) : null}
 
       {rows === null ? (
-        <p className="text-xs text-zinc-600">Cargando…</p>
+        <p className="text-xs text-muted">Cargando…</p>
       ) : rows.length === 0 ? (
-        <p className="text-xs text-zinc-600">
+        <p className="text-xs text-muted">
           {tab === "draft" ? "No hay borradores." : "Todavía no se publicó nada."}
         </p>
       ) : (
-        <ul className="divide-y divide-white/5 rounded-xl border border-white/5">
+        <ul className="divide-y divide-bd-border rounded-xl border border-bd-border">
           {rows.map((a) => (
             <li key={a.id}>
               <button
                 type="button"
                 onClick={() => setSelected(a)}
-                className="flex w-full flex-wrap items-center justify-between gap-2 px-3 py-3 text-left hover:bg-white/[0.02]"
+                className="flex w-full flex-wrap items-center justify-between gap-2 px-3 py-3 text-left hover:bg-surface"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm text-zinc-200">{a.title}</p>
-                  <p className="mt-0.5 text-[11px] text-zinc-500">
+                  <p className="truncate text-sm text-foreground">{a.title}</p>
+                  <p className="mt-0.5 text-[11px] text-muted">
                     {a.author} · {STATUS_LABELS[a.status] ?? a.status} ·{" "}
                     {PRIORITY_LABELS[a.priority] ?? a.priority}
                     {a.published_at
@@ -176,7 +176,7 @@ function Panel({ ctx }: { ctx: InternalContext }) {
                   </p>
                 </div>
                 {a.status === "published" ? (
-                  <span className="shrink-0 text-[11px] text-zinc-400">
+                  <span className="shrink-0 text-[11px] text-muted">
                     {a.recipient_count} destinatarios
                   </span>
                 ) : null}
@@ -250,15 +250,15 @@ function Composer({
   }
 
   return (
-    <section className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
-      <h2 className="text-sm font-medium text-zinc-200">Nuevo comunicado</h2>
+    <section className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
+      <h2 className="text-sm font-medium text-foreground">Nuevo comunicado</h2>
 
       <input
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         maxLength={140}
         placeholder="Título"
-        className="w-full rounded-lg border border-white/10 bg-transparent px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
+        className="w-full rounded-lg border border-bd-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted"
       />
       <textarea
         value={body}
@@ -266,18 +266,18 @@ function Composer({
         maxLength={4000}
         rows={6}
         placeholder="Cuerpo del mensaje"
-        className="w-full rounded-lg border border-white/10 bg-transparent px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
+        className="w-full rounded-lg border border-bd-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted"
       />
-      <p className="text-[11px] text-zinc-600">{body.length} / 4000</p>
+      <p className="text-[11px] text-muted">{body.length} / 4000</p>
 
       <div className="flex flex-wrap gap-2">
         <select
           value={priority}
           onChange={(e) => setPriority(e.target.value)}
-          className="rounded-lg border border-white/10 bg-transparent px-2 py-1.5 text-xs text-zinc-200"
+          className="rounded-lg border border-bd-border bg-transparent px-2 py-1.5 text-xs text-foreground"
         >
           {Object.entries(PRIORITY_LABELS).map(([v, label]) => (
-            <option key={v} value={v} className="bg-zinc-900">
+            <option key={v} value={v} className="bg-surface">
               {label}
             </option>
           ))}
@@ -289,10 +289,10 @@ function Composer({
             setTarget("");
             setPreview(null);
           }}
-          className="rounded-lg border border-white/10 bg-transparent px-2 py-1.5 text-xs text-zinc-200"
+          className="rounded-lg border border-bd-border bg-transparent px-2 py-1.5 text-xs text-foreground"
         >
           {AUDIENCE_KINDS.map((k) => (
-            <option key={k} value={k} className="bg-zinc-900">
+            <option key={k} value={k} className="bg-surface">
               {AUDIENCE_LABELS[k]}
             </option>
           ))}
@@ -304,7 +304,7 @@ function Composer({
             placeholder={
               kind === "capability" ? "código de capacidad" : "identificador"
             }
-            className="rounded-lg border border-white/10 bg-transparent px-2 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600"
+            className="rounded-lg border border-bd-border bg-transparent px-2 py-1.5 text-xs text-foreground placeholder:text-muted"
           />
         ) : null}
       </div>
@@ -320,29 +320,29 @@ function Composer({
           <p className="text-xs font-medium text-amber-200">
             Confirma antes de publicar
           </p>
-          <dl className="space-y-1 text-[11px] text-zinc-300">
+          <dl className="space-y-1 text-[11px] text-foreground/85">
             <div className="flex justify-between gap-3">
-              <dt className="text-zinc-500">Título</dt>
+              <dt className="text-muted">Título</dt>
               <dd className="truncate">{title}</dd>
             </div>
             <div className="flex justify-between gap-3">
-              <dt className="text-zinc-500">Prioridad</dt>
+              <dt className="text-muted">Prioridad</dt>
               <dd>{PRIORITY_LABELS[priority]}</dd>
             </div>
             <div className="flex justify-between gap-3">
-              <dt className="text-zinc-500">Audiencia</dt>
+              <dt className="text-muted">Audiencia</dt>
               <dd>{AUDIENCE_LABELS[kind]}</dd>
             </div>
             <div className="flex justify-between gap-3">
-              <dt className="text-zinc-500">Empresas</dt>
+              <dt className="text-muted">Empresas</dt>
               <dd>{preview.company_count}</dd>
             </div>
             <div className="flex justify-between gap-3">
-              <dt className="text-zinc-500">Destinatarios</dt>
+              <dt className="text-muted">Destinatarios</dt>
               <dd>{preview.recipient_count}</dd>
             </div>
           </dl>
-          <p className="text-[11px] text-zinc-500">
+          <p className="text-[11px] text-muted">
             Una vez publicado no se puede editar ni retirar. Una corrección es
             un comunicado nuevo.
           </p>
@@ -350,7 +350,7 @@ function Composer({
             type="button"
             disabled={busy || preview.recipient_count === 0}
             onClick={() => void confirmPublish()}
-            className="rounded-lg bg-amber-500/90 px-3 py-1.5 text-xs font-medium text-zinc-950 disabled:opacity-40"
+            className="rounded-lg bg-amber-500/90 px-3 py-1.5 text-xs font-medium text-background disabled:opacity-40"
           >
             Publicar a {preview.recipient_count} personas
           </button>
@@ -362,14 +362,14 @@ function Composer({
           type="button"
           disabled={busy || !title.trim() || !body.trim()}
           onClick={() => void buildPreview()}
-          className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-200 disabled:opacity-40"
+          className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-foreground disabled:opacity-40"
         >
           {preview ? "Recalcular" : "Revisar destinatarios"}
         </button>
         <button
           type="button"
           onClick={onClose}
-          className="rounded-lg px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300"
+          className="rounded-lg px-3 py-1.5 text-xs text-muted hover:text-foreground/85"
         >
           Cancelar
         </button>
@@ -414,30 +414,30 @@ function Detail({
   }
 
   return (
-    <section className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+    <section className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
       <div className="flex items-start justify-between gap-3">
-        <h2 className="text-sm font-medium text-zinc-100">
+        <h2 className="text-sm font-medium text-foreground">
           {announcement.title}
         </h2>
         <button
           type="button"
           onClick={onClose}
-          className="text-xs text-zinc-500 hover:text-zinc-300"
+          className="text-xs text-muted hover:text-foreground/85"
         >
           Cerrar
         </button>
       </div>
 
-      <p className="whitespace-pre-wrap text-sm text-zinc-300">
+      <p className="whitespace-pre-wrap text-sm text-foreground/85">
         {announcement.body}
       </p>
 
-      <p className="text-[11px] text-zinc-500">
+      <p className="text-[11px] text-muted">
         {describeAudience(announcement.audience)}
       </p>
 
       {stats ? (
-        <div className="grid grid-cols-4 gap-2 rounded-lg border border-white/5 p-2 text-center">
+        <div className="grid grid-cols-4 gap-2 rounded-lg border border-bd-border p-2 text-center">
           {[
             ["Destinatarios", stats.recipients],
             ["Leídos", stats.read],
@@ -445,8 +445,8 @@ function Detail({
             ["% leído", `${stats.read_pct}%`],
           ].map(([label, value]) => (
             <div key={String(label)}>
-              <p className="text-sm text-zinc-100">{value}</p>
-              <p className="text-[10px] text-zinc-500">{label}</p>
+              <p className="text-sm text-foreground">{value}</p>
+              <p className="text-[10px] text-muted">{label}</p>
             </div>
           ))}
         </div>
@@ -461,12 +461,12 @@ function Detail({
           type="button"
           disabled={busy}
           onClick={() => void discard()}
-          className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-400 disabled:opacity-40"
+          className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-muted disabled:opacity-40"
         >
           Descartar borrador
         </button>
       ) : (
-        <p className="text-[11px] text-zinc-600">
+        <p className="text-[11px] text-muted">
           Publicado. No se edita ni se retira: una corrección es un comunicado
           nuevo.
         </p>

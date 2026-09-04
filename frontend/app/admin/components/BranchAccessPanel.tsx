@@ -37,7 +37,7 @@ type Props = {
 
 function ScopeSummary({ membership }: { membership: MembershipRow }) {
   if (membership.branch_access_mode === "all") {
-    return <span className="text-zinc-300">Todas las sucursales</span>;
+    return <span className="text-foreground/85">Todas las sucursales</span>;
   }
   const granted = membership.branch_access.filter((b) => b.is_active);
   if (granted.length === 0) {
@@ -47,7 +47,7 @@ function ScopeSummary({ membership }: { membership: MembershipRow }) {
       </span>
     );
   }
-  return <span className="text-zinc-300">{granted.map((b) => b.name).join(" · ")}</span>;
+  return <span className="text-foreground/85">{granted.map((b) => b.name).join(" · ")}</span>;
 }
 
 function MembershipRowEditor({
@@ -103,18 +103,18 @@ function MembershipRowEditor({
 
   return (
     <>
-      <tr className="border-b border-white/[0.03]">
-        <td className="px-4 py-3 text-zinc-200">{membership.username}</td>
-        <td className="px-4 py-3 text-zinc-500">{membership.role_label}</td>
+      <tr className="border-b border-bd-border">
+        <td className="px-4 py-3 text-foreground">{membership.username}</td>
+        <td className="px-4 py-3 text-muted">{membership.role_label}</td>
         <td className="px-4 py-3 text-sm">
           <ScopeSummary membership={membership} />
         </td>
-        <td className="px-4 py-3 text-zinc-500">{membership.branch_name ?? "—"}</td>
+        <td className="px-4 py-3 text-muted">{membership.branch_name ?? "—"}</td>
         <td className="px-4 py-3 text-right">
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 transition hover:border-white/20 hover:text-white"
+            className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-foreground/85 transition hover:border-bd-border hover:text-foreground"
           >
             {open ? "Cerrar" : "Editar"}
           </button>
@@ -122,14 +122,14 @@ function MembershipRowEditor({
       </tr>
 
       {open && (
-        <tr className="border-b border-white/[0.06] bg-white/[0.02]">
+        <tr className="border-b border-bd-border bg-surface">
           <td colSpan={5} className="px-4 py-5">
             <fieldset className="space-y-3">
-              <legend className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+              <legend className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Alcance de sucursales
               </legend>
 
-              <label className="flex items-start gap-2 text-sm text-zinc-300">
+              <label className="flex items-start gap-2 text-sm text-foreground/85">
                 <input
                   type="radio"
                   name={`mode-${membership.id}`}
@@ -139,13 +139,13 @@ function MembershipRowEditor({
                 />
                 <span>
                   Todas
-                  <span className="block text-xs text-zinc-600">
+                  <span className="block text-xs text-muted">
                     Incluye automáticamente las sucursales que se abran en el futuro.
                   </span>
                 </span>
               </label>
 
-              <label className="flex items-start gap-2 text-sm text-zinc-300">
+              <label className="flex items-start gap-2 text-sm text-foreground/85">
                 <input
                   type="radio"
                   name={`mode-${membership.id}`}
@@ -155,7 +155,7 @@ function MembershipRowEditor({
                 />
                 <span>
                   Seleccionadas
-                  <span className="block text-xs text-zinc-600">
+                  <span className="block text-xs text-muted">
                     Solo las marcadas. Una sucursal nueva NO se concede sola.
                   </span>
                 </span>
@@ -167,7 +167,7 @@ function MembershipRowEditor({
                 {branches.map((branch) => (
                   <label
                     key={branch.id}
-                    className="flex items-center gap-2 rounded-lg border border-white/[0.08] px-3 py-2 text-sm text-zinc-300"
+                    className="flex items-center gap-2 rounded-lg border border-bd-border px-3 py-2 text-sm text-foreground/85"
                   >
                     <input
                       type="checkbox"
@@ -189,7 +189,7 @@ function MembershipRowEditor({
 
             <div className="mt-4 max-w-xs">
               <label
-                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor={`default-${membership.id}`}
               >
                 Sucursal predeterminada
@@ -198,7 +198,7 @@ function MembershipRowEditor({
                 id={`default-${membership.id}`}
                 value={defaultBranch}
                 onChange={(e) => setDefaultBranch(e.target.value)}
-                className="w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25"
+                className="w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border"
               >
                 <option value="">Sin preferencia</option>
                 {defaultOptions.map((b) => (
@@ -207,7 +207,7 @@ function MembershipRowEditor({
                   </option>
                 ))}
               </select>
-              <p className="mt-1.5 text-[11px] text-zinc-600">
+              <p className="mt-1.5 text-[11px] text-muted">
                 Por cuál abre el Control Interno. No concede acceso por sí sola.
               </p>
             </div>
@@ -222,7 +222,7 @@ function MembershipRowEditor({
               type="button"
               onClick={() => void save()}
               disabled={saving}
-              className="mt-4 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+              className="mt-4 rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
             >
               {saving ? "Guardando…" : "Guardar acceso"}
             </button>
@@ -275,14 +275,14 @@ export function BranchAccessPanel({ companyId, canManage }: Props) {
   return (
     <section className="space-y-4">
       <div>
-        <h2 className="text-base font-semibold text-white">Acceso por sucursal</h2>
-        <p className="mt-1 text-sm text-zinc-500">
+        <h2 className="text-base font-semibold text-foreground">Acceso por sucursal</h2>
+        <p className="mt-1 text-sm text-muted">
           Dónde puede trabajar cada persona. Es una decisión distinta de qué puede
           hacer: los permisos vienen de sus roles, y ambos deben permitirlo.
         </p>
       </div>
 
-      {loading && <div className="py-8 text-center text-zinc-600">Cargando personal…</div>}
+      {loading && <div className="py-8 text-center text-muted">Cargando personal…</div>}
       {error && !loading && (
         <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
           {error}
@@ -290,16 +290,16 @@ export function BranchAccessPanel({ companyId, canManage }: Props) {
       )}
 
       {!loading && !error && memberships.length === 0 && (
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] py-10 text-center text-zinc-500">
+        <div className="rounded-xl border border-bd-border bg-surface py-10 text-center text-muted">
           Esta empresa todavía no tiene personal interno.
         </div>
       )}
 
       {!loading && !error && memberships.length > 0 && (
-        <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+        <div className="overflow-x-auto rounded-xl border border-bd-border">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/[0.06] bg-white/[0.02] text-left text-xs font-semibold uppercase tracking-wider text-zinc-500">
+              <tr className="border-b border-bd-border bg-surface text-left text-xs font-semibold uppercase tracking-wider text-muted">
                 <th className="px-4 py-3">Persona</th>
                 <th className="px-4 py-3">Rol</th>
                 <th className="px-4 py-3">Sucursales</th>

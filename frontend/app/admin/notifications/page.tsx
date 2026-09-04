@@ -35,7 +35,7 @@ type Row = {
 };
 
 const PRIORITY_STYLES: Record<string, string> = {
-  info: "border-white/10 text-zinc-400",
+  info: "border-bd-border text-muted",
   action: "border-amber-500/30 text-amber-300/80",
   warning: "border-orange-500/30 text-orange-300/80",
   critical: "border-red-500/40 text-red-300",
@@ -92,7 +92,7 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
 
   if (!slug) {
     return (
-      <p className="text-sm text-zinc-500">
+      <p className="text-sm text-muted">
         Selecciona una empresa para ver tus notificaciones.
       </p>
     );
@@ -102,8 +102,8 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold text-white">Notificaciones</h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <h1 className="text-2xl font-semibold text-foreground">Notificaciones</h1>
+          <p className="mt-1 text-sm text-muted">
             Lo que la plataforma te ha comunicado en {ctx.dashboard?.company?.name}.
           </p>
         </div>
@@ -111,7 +111,7 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
           type="button"
           onClick={() => void markAll()}
           disabled={busy}
-          className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:text-white disabled:opacity-40"
+          className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground/85 hover:text-foreground disabled:opacity-40"
         >
           Marcar todas como leídas
         </button>
@@ -128,8 +128,8 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
             onClick={() => { setUnreadOnly(option.value); setPage(1); }}
             className={`rounded-lg border px-4 py-2 text-sm ${
               unreadOnly === option.value
-                ? "border-white/30 bg-white/[0.07] text-white"
-                : "border-white/[0.07] text-zinc-500 hover:text-zinc-300"
+                ? "border-bd-border bg-surface-2 text-foreground"
+                : "border-bd-border text-muted hover:text-foreground/85"
             }`}
           >
             {option.label}
@@ -142,9 +142,9 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
           {error}
         </p>
       ) : rows === null ? (
-        <p className="text-sm text-zinc-600">Cargando…</p>
+        <p className="text-sm text-muted">Cargando…</p>
       ) : rows.length === 0 ? (
-        <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-8 text-center text-sm text-zinc-600">
+        <p className="rounded-xl border border-bd-border bg-surface px-4 py-8 text-center text-sm text-muted">
           {unreadOnly ? "No tienes notificaciones sin leer." : "No tienes notificaciones."}
         </p>
       ) : (
@@ -156,26 +156,26 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
                 key={row.id}
                 className={`rounded-xl border px-4 py-3 ${
                   row.read_at
-                    ? "border-white/[0.05] bg-transparent opacity-70"
-                    : "border-white/[0.09] bg-white/[0.02]"
+                    ? "border-bd-border bg-transparent opacity-70"
+                    : "border-bd-border bg-surface"
                 }`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium text-zinc-100">{row.title}</p>
+                      <p className="text-sm font-medium text-foreground">{row.title}</p>
                       <span className={`rounded-full border px-2 py-0.5 text-[10px] ${PRIORITY_STYLES[row.priority] ?? PRIORITY_STYLES.info}`}>
                         {row.priority}
                       </span>
                     </div>
-                    {row.body ? <p className="mt-1 text-xs text-zinc-500">{row.body}</p> : null}
+                    {row.body ? <p className="mt-1 text-xs text-muted">{row.body}</p> : null}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     {href ? (
                       <Link
                         href={href}
                         onClick={() => void markRead(row.id)}
-                        className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:text-white"
+                        className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-foreground/85 hover:text-foreground"
                       >
                         Abrir
                       </Link>
@@ -184,7 +184,7 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
                       <button
                         type="button"
                         onClick={() => void markRead(row.id)}
-                        className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:text-white"
+                        className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-muted hover:text-foreground"
                       >
                         Marcar leída
                       </button>
@@ -198,12 +198,12 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
       )}
 
       {count > 20 ? (
-        <div className="flex items-center justify-between text-xs text-zinc-500">
+        <div className="flex items-center justify-between text-xs text-muted">
           <button
             type="button"
             disabled={page <= 1}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="rounded-lg border border-white/10 px-3 py-1.5 disabled:opacity-30"
+            className="rounded-lg border border-bd-border px-3 py-1.5 disabled:opacity-30"
           >
             Anterior
           </button>
@@ -212,7 +212,7 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
             type="button"
             disabled={page * 20 >= count}
             onClick={() => setPage((p) => p + 1)}
-            className="rounded-lg border border-white/10 px-3 py-1.5 disabled:opacity-30"
+            className="rounded-lg border border-bd-border px-3 py-1.5 disabled:opacity-30"
           >
             Siguiente
           </button>

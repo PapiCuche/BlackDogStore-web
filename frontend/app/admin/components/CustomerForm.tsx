@@ -27,10 +27,10 @@ import {
 } from "../lib/internal-api";
 
 const FIELD =
-  "w-full rounded-lg border bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
-const BORDER = "border-white/[0.08]";
+  "w-full rounded-lg border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+const BORDER = "border-bd-border";
 const LABEL =
-  "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500";
+  "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
 const DOCUMENT_TYPES = [
   { value: "", label: "Sin documento" },
@@ -130,7 +130,7 @@ export function CustomerForm({
               ["business", "Empresa"],
             ] as [CustomerType, string][]
           ).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2 text-sm text-zinc-300">
+            <label key={value} className="flex items-center gap-2 text-sm text-foreground/85">
               <input
                 type="radio"
                 name="customer-type"
@@ -216,7 +216,7 @@ export function CustomerForm({
           {errors.document_type ? (
             <p className="mt-1.5 text-xs text-red-400">{errors.document_type}</p>
           ) : (
-            <p className="mt-1.5 text-[11px] text-zinc-600">
+            <p className="mt-1.5 text-[11px] text-muted">
               Opcional. Un cliente puede atenderse sin documento.
             </p>
           )}
@@ -330,7 +330,7 @@ export function CustomerForm({
           disabled={saving}
           onChange={(e) => set("notes", e.target.value)}
         />
-        <p className="mt-1.5 text-[11px] text-zinc-600">
+        <p className="mt-1.5 text-[11px] text-muted">
           Sólo para el equipo. El cliente nunca las ve.
         </p>
       </div>
@@ -354,7 +354,7 @@ export function CustomerForm({
           type="button"
           disabled={saving}
           onClick={() => void save()}
-          className="rounded-lg border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-lg border border-bd-border px-4 py-2 text-sm font-medium text-foreground transition hover:border-bd-border hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
         >
           {saving ? "Guardando…" : customer ? "Guardar cambios" : "Crear cliente"}
         </button>
@@ -362,7 +362,7 @@ export function CustomerForm({
           type="button"
           disabled={saving}
           onClick={onCancel}
-          className="text-sm text-zinc-500 transition hover:text-zinc-300"
+          className="text-sm text-muted transition hover:text-foreground/85"
         >
           Cancelar
         </button>

@@ -49,9 +49,9 @@ export default async function ProductPage({ params }: Props) {
 
   if (!product) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-zinc-950">
-        <p className="text-lg text-slate-400">Producto no encontrado.</p>
-        <Link href="/product" className="text-sm text-zinc-400 hover:text-white underline transition">
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background">
+        <p className="text-lg text-muted">Producto no encontrado.</p>
+        <Link href="/product" className="text-sm text-muted hover:text-foreground underline transition">
           Ver catálogo completo
         </Link>
       </div>

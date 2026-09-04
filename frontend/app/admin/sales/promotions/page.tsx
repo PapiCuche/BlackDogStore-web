@@ -49,9 +49,9 @@ function money(value: string | number) {
 }
 
 const FIELD =
-  "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
+  "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
 const LABEL =
-  "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500";
+  "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
 function PromotionRowView({
   promotion,
@@ -74,20 +74,20 @@ function PromotionRowView({
   const saving = Math.max(regular - comboPrice, 0);
 
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+    <div className="rounded-xl border border-bd-border bg-surface p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-medium text-zinc-200">
+          <p className="text-sm font-medium text-foreground">
             {promotion.name}
             {promotion.is_live ? (
               <span className="ml-2 text-[11px] text-emerald-400/80">activa</span>
             ) : (
-              <span className="ml-2 text-[11px] text-zinc-600">
+              <span className="ml-2 text-[11px] text-muted">
                 {promotion.is_active ? "fuera de fecha" : "archivada"}
               </span>
             )}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">
+          <p className="mt-0.5 text-[11px] text-muted">
             {promotion.promotion_type_label} · prioridad {promotion.priority} ·{" "}
             {promotion.branch_scope === "all"
               ? "todas las sucursales"
@@ -98,22 +98,22 @@ function PromotionRowView({
         </div>
       </div>
 
-      <div className="mt-3 space-y-1 text-xs text-zinc-500">
+      <div className="mt-3 space-y-1 text-xs text-muted">
         {promotion.items.map((item) => (
           <p key={item.product}>
             {item.quantity}× {item.product_name}{" "}
-            <span className="text-zinc-700">{money(item.price)}</span>
+            <span className="text-muted">{money(item.price)}</span>
           </p>
         ))}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-baseline justify-between gap-3 border-t border-white/[0.06] pt-3 text-sm">
-        <span className="text-zinc-600 line-through">{money(regular)}</span>
-        <span className="text-white">{money(comboPrice)}</span>
+      <div className="mt-3 flex flex-wrap items-baseline justify-between gap-3 border-t border-bd-border pt-3 text-sm">
+        <span className="text-muted line-through">{money(regular)}</span>
+        <span className="text-foreground">{money(comboPrice)}</span>
         <span className="text-emerald-400/80">ahorro {money(saving)}</span>
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-zinc-600">
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-muted">
         <span>
           Aplicada {promotion.stats.applications ?? 0} vez(ces) en{" "}
           {promotion.stats.orders ?? 0} venta(s) · descontado{" "}
@@ -137,7 +137,7 @@ function PromotionRowView({
                 }
               })();
             }}
-            className="text-zinc-500 underline underline-offset-2 transition hover:text-zinc-300"
+            className="text-muted underline underline-offset-2 transition hover:text-foreground/85"
           >
             {promotion.is_active ? "Archivar" : "Reactivar"}
           </button>
@@ -224,7 +224,7 @@ function ComboForm({
   }
 
   return (
-    <div className="space-y-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+    <div className="space-y-4 rounded-xl border border-bd-border bg-surface p-5">
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <label className={LABEL} htmlFor="combo-name">
@@ -282,7 +282,7 @@ function ComboForm({
           onChange={(e) => setTerm(e.target.value)}
         />
         {hits.length ? (
-          <div className="mt-2 overflow-hidden rounded-lg border border-white/[0.06]">
+          <div className="mt-2 overflow-hidden rounded-lg border border-bd-border">
             {hits.map((h) => (
               <button
                 key={h.id}
@@ -298,10 +298,10 @@ function ComboForm({
                   );
                   setTerm("");
                 }}
-                className="flex w-full justify-between border-b border-white/[0.04] px-3 py-2 text-left text-sm transition last:border-0 hover:bg-white/[0.03]"
+                className="flex w-full justify-between border-b border-bd-border px-3 py-2 text-left text-sm transition last:border-0 hover:bg-surface"
               >
-                <span className="text-zinc-300">{h.name}</span>
-                <span className="font-mono text-xs text-zinc-500">{money(h.price)}</span>
+                <span className="text-foreground/85">{h.name}</span>
+                <span className="font-mono text-xs text-muted">{money(h.price)}</span>
               </button>
             ))}
           </div>
@@ -311,8 +311,8 @@ function ComboForm({
       {picked.length ? (
         <div className="space-y-2">
           {picked.map((p) => (
-            <div key={p.product} className="flex items-center gap-3 rounded-lg bg-black/30 p-2">
-              <span className="flex-1 text-sm text-zinc-200">{p.name}</span>
+            <div key={p.product} className="flex items-center gap-3 rounded-lg bg-background/30 p-2">
+              <span className="flex-1 text-sm text-foreground">{p.name}</span>
               <input
                 type="number"
                 min={1}
@@ -326,15 +326,15 @@ function ComboForm({
                     ),
                   )
                 }
-                className="w-16 rounded border border-white/[0.08] bg-black/40 px-2 py-1 text-sm text-zinc-200 outline-none"
+                className="w-16 rounded border border-bd-border bg-background/40 px-2 py-1 text-sm text-foreground outline-none"
               />
-              <span className="w-24 text-right font-mono text-xs text-zinc-500">
+              <span className="w-24 text-right font-mono text-xs text-muted">
                 {money(Number(p.price) * p.quantity)}
               </span>
               <button
                 type="button"
                 onClick={() => setPicked((prev) => prev.filter((x) => x.product !== p.product))}
-                className="text-xs text-zinc-600 transition hover:text-red-400"
+                className="text-xs text-muted transition hover:text-red-400"
               >
                 ✕
               </button>
@@ -345,13 +345,13 @@ function ComboForm({
       {errors.items ? <p className="text-xs text-red-400">{errors.items}</p> : null}
 
       {picked.length >= 2 ? (
-        <div className="flex flex-wrap items-baseline justify-between gap-3 border-t border-white/[0.06] pt-3 text-sm">
-          <span className="text-zinc-600 line-through">{money(regular)}</span>
-          <span className="text-white">{money(combo)}</span>
+        <div className="flex flex-wrap items-baseline justify-between gap-3 border-t border-bd-border pt-3 text-sm">
+          <span className="text-muted line-through">{money(regular)}</span>
+          <span className="text-foreground">{money(combo)}</span>
           <span className="text-emerald-400/80">ahorro {money(saving_)}</span>
         </div>
       ) : (
-        <p className="text-[11px] text-zinc-600">
+        <p className="text-[11px] text-muted">
           Un combo necesita al menos dos productos.
         </p>
       )}
@@ -374,14 +374,14 @@ function ComboForm({
             type="button"
             disabled={saving || picked.length < 2 || !name.trim()}
             onClick={() => void save()}
-            className="rounded-lg border border-white/15 px-4 py-2 text-sm text-zinc-200 transition hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:border-bd-border disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Creando…" : "Crear promoción"}
           </button>
           <button
             type="button"
             onClick={onCancel}
-            className="text-sm text-zinc-500 transition hover:text-zinc-300"
+            className="text-sm text-muted transition hover:text-foreground/85"
           >
             Cancelar
           </button>
@@ -437,7 +437,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
   if (loading) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <p className="py-8 text-sm text-zinc-600">Cargando promociones…</p>
+        <p className="py-8 text-sm text-muted">Cargando promociones…</p>
       </AdminShell>
     );
   }
@@ -455,7 +455,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex gap-1 rounded-lg border border-white/[0.08] p-1">
+          <div className="flex gap-1 rounded-lg border border-bd-border p-1">
             {(
               [
                 ["auto", "Automáticas y combos"],
@@ -467,7 +467,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                 type="button"
                 onClick={() => setTab(value)}
                 className={`rounded px-3 py-1 text-xs transition ${
-                  tab === value ? "bg-white/10 text-white" : "text-zinc-500 hover:text-zinc-300"
+                  tab === value ? "bg-surface-2 text-foreground" : "text-muted hover:text-foreground/85"
                 }`}
               >
                 {label}
@@ -476,7 +476,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
           </div>
           <Link
             href="/admin/sales"
-            className="text-sm text-zinc-500 transition hover:text-zinc-300"
+            className="text-sm text-muted transition hover:text-foreground/85"
           >
             ← Resumen comercial
           </Link>
@@ -491,7 +491,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                 <button
                   type="button"
                   onClick={() => setCreating(true)}
-                  className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-zinc-200 transition hover:border-white/30"
+                  className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-bd-border"
                 >
                   Nuevo combo
                 </button>
@@ -509,7 +509,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
               />
             ) : null}
             {data.results.length === 0 && !creating ? (
-              <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-8 text-center text-sm text-zinc-500">
+              <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">
                 Todavía no hay promociones configuradas.
               </p>
             ) : (
@@ -533,7 +533,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                 ))}
               </div>
             )}
-            <p className="text-[11px] text-zinc-600">
+            <p className="text-[11px] text-muted">
               Cuando dos promociones quieren la misma unidad, gana la de mayor prioridad y
               la otra no encuentra unidades libres. El resultado es siempre el mismo para
               el mismo carrito.
@@ -545,7 +545,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
             description="Se aplican cuando alguien escribe el código en la caja o en el checkout."
           >
             {coupons?.can_manage ? (
-              <div className="flex flex-wrap items-end gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+              <div className="flex flex-wrap items-end gap-3 rounded-xl border border-bd-border bg-surface p-4">
                 <div className="flex-1">
                   <label className={LABEL} htmlFor="new-code">
                     Código
@@ -590,7 +590,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                       }
                     })();
                   }}
-                  className="rounded-lg border border-white/15 px-4 py-2 text-sm text-zinc-200 transition hover:border-white/30"
+                  className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:border-bd-border"
                 >
                   Crear código
                 </button>
@@ -599,13 +599,13 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
             {couponError ? <p className="text-sm text-red-400">{couponError}</p> : null}
 
             {!coupons?.results.length ? (
-              <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-8 text-center text-sm text-zinc-500">
+              <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">
                 No hay códigos configurados.
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+              <div className="overflow-x-auto rounded-xl border border-bd-border">
                 <table className="w-full min-w-[32rem] text-left text-sm">
-                  <thead className="border-b border-white/[0.06] text-[11px] uppercase tracking-widest text-zinc-500">
+                  <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                     <tr>
                       <th className="px-4 py-3 font-semibold">Código</th>
                       <th className="px-4 py-3 text-right font-semibold">Descuento</th>
@@ -615,18 +615,18 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                   </thead>
                   <tbody>
                     {coupons.results.map((c) => (
-                      <tr key={c.id} className="border-b border-white/[0.04] last:border-0">
-                        <td className="px-4 py-3 font-mono text-zinc-200">{c.code}</td>
-                        <td className="px-4 py-3 text-right text-zinc-400">
+                      <tr key={c.id} className="border-b border-bd-border last:border-0">
+                        <td className="px-4 py-3 font-mono text-foreground">{c.code}</td>
+                        <td className="px-4 py-3 text-right text-muted">
                           {c.discount_percent}%
                         </td>
                         <td className="px-4 py-3 text-xs">
                           {c.is_expired ? (
-                            <span className="text-zinc-600">vencido</span>
+                            <span className="text-muted">vencido</span>
                           ) : c.is_active ? (
                             <span className="text-emerald-400/80">activo</span>
                           ) : (
-                            <span className="text-zinc-600">inactivo</span>
+                            <span className="text-muted">inactivo</span>
                           )}
                         </td>
                         <td className="px-4 py-3 text-right">
@@ -641,7 +641,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                                   await load();
                                 })();
                               }}
-                              className="text-xs text-zinc-500 underline underline-offset-2 transition hover:text-zinc-300"
+                              className="text-xs text-muted underline underline-offset-2 transition hover:text-foreground/85"
                             >
                               {c.is_active ? "Desactivar" : "Activar"}
                             </button>

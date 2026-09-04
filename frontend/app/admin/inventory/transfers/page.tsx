@@ -52,10 +52,10 @@ export function TransferStatusBadge({ transfer }: { transfer: StockTransfer }) {
     <span
       className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium ${
         emphasised
-          ? "border-white/25 bg-white/[0.08] text-white"
+          ? "border-bd-border bg-surface-2 text-foreground"
           : muted
-            ? "border-white/[0.06] text-zinc-600"
-            : "border-white/10 text-zinc-400"
+            ? "border-bd-border text-muted"
+            : "border-bd-border text-muted"
       }`}
     >
       {transfer.status_label}
@@ -133,23 +133,23 @@ function TransfersContent({ user }: { user: AuthUser }) {
   }
 
   const fieldClass =
-    "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
-  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500";
+    "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">Transferencias</h1>
-            <p className="mt-1 text-sm text-zinc-500">
+            <h1 className="text-xl font-semibold text-foreground">Transferencias</h1>
+            <p className="mt-1 text-sm text-muted">
               Traslados de stock entre sucursales. El stock sale al despachar y
               entra al recibir.
             </p>
           </div>
           <Link
             href="/admin/inventory"
-            className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
           >
             ← Inventario
           </Link>
@@ -216,7 +216,7 @@ function TransfersContent({ user }: { user: AuthUser }) {
               <button
                 type="submit"
                 disabled={creating || !source || !destination || source === destination}
-                className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {creating ? "Creando…" : "Crear borrador"}
               </button>
@@ -225,8 +225,8 @@ function TransfersContent({ user }: { user: AuthUser }) {
         ) : null}
 
         {mayTransfer && branches.length < 2 ? (
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-            <p className="text-sm text-zinc-500">
+          <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+            <p className="text-sm text-muted">
               Necesitas acceso a al menos dos sucursales para transferir stock.
             </p>
           </div>
@@ -244,8 +244,8 @@ function TransfersContent({ user }: { user: AuthUser }) {
                 }}
                 className={`rounded-lg border px-3 py-1.5 text-sm transition ${
                   statusFilter === option.value
-                    ? "border-white/25 bg-white/[0.06] text-white"
-                    : "border-white/10 text-zinc-400 hover:border-white/20 hover:text-white"
+                    ? "border-bd-border bg-surface-2 text-foreground"
+                    : "border-bd-border text-muted hover:border-bd-border hover:text-foreground"
                 }`}
               >
                 {option.label}
@@ -263,7 +263,7 @@ function TransfersContent({ user }: { user: AuthUser }) {
           {!loading && !error && transfers.length > 0 ? (
             <TableWrap>
               <thead>
-                <tr className="border-b border-white/[0.06]">
+                <tr className="border-b border-bd-border">
                   <Th>#</Th>
                   <Th>Fecha</Th>
                   <Th>Origen</Th>
@@ -276,11 +276,11 @@ function TransfersContent({ user }: { user: AuthUser }) {
               </thead>
               <tbody>
                 {transfers.map((t) => (
-                  <tr key={t.id} className="border-b border-white/[0.03]">
+                  <tr key={t.id} className="border-b border-bd-border">
                     <Td>
                       <Link
                         href={`/admin/inventory/transfers/${t.id}`}
-                        className="transition hover:text-white"
+                        className="transition hover:text-foreground"
                       >
                         #{t.id}
                       </Link>

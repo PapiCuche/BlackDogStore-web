@@ -58,14 +58,14 @@ export function DevQuickLogin({ onUse }: Props) {
   if (process.env.NODE_ENV !== "development") return null;
 
   return (
-    <section className="mt-8 rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-5">
+    <section className="mt-8 rounded-xl border border-dashed border-bd-border bg-surface p-5">
       <div className="mb-1 flex items-center gap-2">
-        <span className="rounded border border-white/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-300">
+        <span className="rounded border border-bd-border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-foreground/85">
           Solo desarrollo
         </span>
-        <h2 className="text-sm font-semibold text-white">Accesos de desarrollo</h2>
+        <h2 className="text-sm font-semibold text-foreground">Accesos de desarrollo</h2>
       </div>
-      <p className="mb-4 text-xs text-zinc-500">
+      <p className="mb-4 text-xs text-muted">
         Usuarios temporales para probar roles durante el desarrollo. Rellenan el
         formulario; el inicio de sesión sigue siendo el real.
       </p>
@@ -74,26 +74,26 @@ export function DevQuickLogin({ onUse }: Props) {
         {DEMO_ACCOUNTS.map((account) => (
           <div
             key={account.username}
-            className="rounded-lg border border-white/[0.08] bg-black/30 p-3"
+            className="rounded-lg border border-bd-border bg-background/30 p-3"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-sm font-medium text-zinc-200">{account.label}</p>
-                <p className="truncate font-mono text-[11px] text-zinc-500">
+                <p className="text-sm font-medium text-foreground">{account.label}</p>
+                <p className="truncate font-mono text-[11px] text-muted">
                   {account.username}
                 </p>
-                <p className="font-mono text-[11px] text-zinc-600">{DEMO_PASSWORD}</p>
-                <p className="mt-1 text-[11px] text-zinc-500">
+                <p className="font-mono text-[11px] text-muted">{DEMO_PASSWORD}</p>
+                <p className="mt-1 text-[11px] text-muted">
                   → {account.destination}
                   {account.pending ? (
-                    <span className="ml-1 text-zinc-600">(UI pendiente)</span>
+                    <span className="ml-1 text-muted">(UI pendiente)</span>
                   ) : null}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => onUse(account.username, DEMO_PASSWORD)}
-                className="shrink-0 rounded-lg border border-white/15 px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-white/30 hover:text-white"
+                className="shrink-0 rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-medium text-foreground/85 transition hover:border-bd-border hover:text-foreground"
               >
                 Usar cuenta
               </button>
@@ -102,17 +102,17 @@ export function DevQuickLogin({ onUse }: Props) {
         ))}
       </div>
 
-      <p className="mt-4 text-[11px] leading-relaxed text-zinc-600">
+      <p className="mt-4 text-[11px] leading-relaxed text-muted">
         Crear con{" "}
-        <code className="text-zinc-500">
+        <code className="text-muted">
           python manage.py seed_demo_users --company-slug &lt;slug&gt;
         </code>
         , eliminar con{" "}
-        <code className="text-zinc-500">
+        <code className="text-muted">
           python manage.py seed_demo_users --purge
         </code>
         . El módulo de Servicio Técnico y la UI de Platform Control todavía no
-        existen; <code className="text-zinc-500">/admin</code> sigue siendo el
+        existen; <code className="text-muted">/admin</code> sigue siendo el
         panel legacy.
       </p>
     </section>

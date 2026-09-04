@@ -17,6 +17,7 @@
  */
 
 import { useStorefront } from "./StorefrontProvider";
+import { useTheme } from "./ThemeProvider";
 import {
   pickLogo,
   shouldRenderWordmark,
@@ -30,11 +31,24 @@ type Props = {
    * La SUPERFICIE sobre la que se dibuja, no el tema global.
    *
    * Un hero negro dentro de un tema claro sigue necesitando el logo blanco. Si
-   * esto leyera el tema, ese hero mostraría un logo negro sobre negro — que es
+   * esto leyera el tema SIEMPRE, ese hero mostraría un logo negro sobre negro —
    * exactamente el defecto que M12E vino a cerrar, reintroducido por otra
    * puerta.
+   *
+   * `"theme"` es para las superficies que SÍ siguen el tema, que tras M12F son
+   * casi todas: se pinta con `bg-background` y por tanto su contraste es el del
+   * tema resuelto. Sigue siendo una afirmación sobre la superficie —«ésta
+   * cambia con el tema»— y no una consulta al tema desde un componente que no
+   * sabe sobre qué se dibuja.
+   *
+   * `"inverse"` es para las bandas que se pintan CON el color del texto —
+   * `bg-foreground`— para destacar. Su contraste es el contrario al de la
+   * página: en tema oscuro son claras y en tema claro son oscuras. No es una
+   * excepción ni un truco; es la tercera respuesta posible a «¿de qué color es
+   * el fondo sobre el que dibujo?», y decirla explícitamente es lo contrario de
+   * adivinarla.
    */
-  surface: LogoSurface;
+  surface: LogoSurface | "theme" | "inverse";
   className?: string;
   /** Clases del nombre cuando no hay logo y hay que escribirlo. */
   wordmarkClassName?: string;
@@ -47,7 +61,14 @@ export function BrandLogo({
   wordmarkClassName = "",
 }: Props) {
   const { company, branding } = useStorefront();
-  const src = pickLogo(branding.logos, branding.logo_url, placement, surface);
+  const { resolved } = useTheme();
+  const actualSurface: LogoSurface =
+    surface === "theme"
+      ? resolved
+      : surface === "inverse"
+        ? (resolved === "dark" ? "light" : "dark")
+        : surface;
+  const src = pickLogo(branding.logos, branding.logo_url, placement, actualSurface);
 
   if (!src) {
     // Sin variante legible: el nombre. Nunca un logo del contraste equivocado y

@@ -73,6 +73,15 @@ from .customer_views import (
     AdminCustomerDetailView,
     AdminCustomerListView,
 )
+from .storefront_content_views import (
+    AdminStorefrontListContentDetailView,
+    AdminStorefrontListContentView,
+    AdminStorefrontCampaignActionView,
+    AdminStorefrontCampaignDetailView,
+    AdminStorefrontCampaignListView,
+    AdminStorefrontCampaignPreviewView,
+    AdminStorefrontPageView,
+)
 from .settings_views import (
     AdminCompanySettingsView, AdminSequenceDetailView, AdminSequenceListView,
     AdminSequenceScopeView, StorefrontConfigView,
@@ -188,6 +197,40 @@ urlpatterns = [
     # --- SaaS Phase 3: company configuration and branding ---
     path('storefront/config/', StorefrontConfigView.as_view(), name='storefront-config'),
     path('admin/company-settings/', AdminCompanySettingsView.as_view(), name='admin-company-settings'),
+    # M12F — contenido comercial del escaparate.
+    path(
+        'admin/storefront/page/',
+        AdminStorefrontPageView.as_view(), name='admin-storefront-page',
+    ),
+    path(
+        'admin/storefront/campaigns/',
+        AdminStorefrontCampaignListView.as_view(), name='admin-storefront-campaigns',
+    ),
+    path(
+        'admin/storefront/campaigns/<int:pk>/',
+        AdminStorefrontCampaignDetailView.as_view(),
+        name='admin-storefront-campaign',
+    ),
+    path(
+        'admin/storefront/campaigns/<int:pk>/preview/',
+        AdminStorefrontCampaignPreviewView.as_view(),
+        name='admin-storefront-campaign-preview',
+    ),
+    path(
+        'admin/storefront/<str:kind>/',
+        AdminStorefrontListContentView.as_view(),
+        name='admin-storefront-list-content',
+    ),
+    path(
+        'admin/storefront/<str:kind>/<int:pk>/',
+        AdminStorefrontListContentDetailView.as_view(),
+        name='admin-storefront-list-content-detail',
+    ),
+    path(
+        'admin/storefront/campaigns/<int:pk>/<str:action>/',
+        AdminStorefrontCampaignActionView.as_view(),
+        name='admin-storefront-campaign-action',
+    ),
 
     # --- Commercial Phase C1: point of sale + analytics ---
     # All internal control. `sales.pos.use` for the till, `sales.analytics.view`

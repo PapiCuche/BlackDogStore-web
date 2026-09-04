@@ -39,3 +39,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# M12F.1 — artefactos de Playwright. El navegador vive en la caché del sistema
+# y las capturas son para mirar, no para versionar: un repositorio con binarios
+# de navegador y capturas de cada corrida deja de poder clonarse en un minuto.
+/test-results
+/playwright-report
+/blob-report
+/playwright/.cache

@@ -181,3 +181,122 @@ describe('el gris secundario no es el acento', () => {
     expect(p.muted).not.toEqual(parseHex('#C8A45D'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// M12F.2 — superficies que NO siguen al tema
+// ---------------------------------------------------------------------------
+
+/**
+ * Aquí vivían 44 comprobaciones sobre una paleta secuestrada: M12F redefinió
+ * `--color-white` y toda la escala `zinc` para que cambiaran de significado
+ * según el tema. Medían bien lo que había, y lo que había estaba mal.
+ *
+ * El precio fue que `white` dejó de ser blanco, y con él se convirtió en crema
+ * el hero —que era una losa negra deliberada— y la marca desapareció de su
+ * propia portada. Los nombres de color estándar vuelven a significar su color;
+ * lo que cambia con el tema usa tokens, y lo que no debe cambiar usa éstos.
+ */
+
+const THEME_BLOCK = (() => {
+  const start = CSS.indexOf('@theme inline');
+  if (start < 0) throw new Error('no encuentro @theme inline');
+  const open = CSS.indexOf('{', start);
+  const close = CSS.indexOf('\n}', open);
+  const body = CSS.slice(open + 1, close).replace(/\/\*[\s\S]*?\*\//g, '');
+  const out: Record<string, string> = {};
+  for (const line of body.split(';')) {
+    const m = line.match(/(--[\w-]+)\s*:\s*([\s\S]+)/);
+    if (m) out[m[1]] = m[2].trim().replace(/\s+/g, ' ');
+  }
+  return out;
+})();
+
+function themeScope(brand: Record<string, string>, theme: 'light' | 'dark') {
+  return {
+    ...tokensIn(':root {'),
+    ...brand,
+    ...(theme === 'dark' ? tokensIn(':root[data-theme="dark"]') : {}),
+    ...THEME_BLOCK,
+  };
+}
+
+describe('los nombres de color estándar significan su color', () => {
+  it('la hoja no redefine la paleta de Tailwind', () => {
+    // La regla que M12F.2 estableció: `white` es WHITE. Redefinirla convierte
+    // cualquier `bg-white` del código en otra cosa según el tema, y eso
+    // alcanza a 2.779 utilidades a la vez sin que nadie lo vea venir.
+    const code = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const stolen of [
+      '--color-white:', '--color-black:',
+      '--color-zinc-', '--color-neutral-', '--color-slate-', '--color-stone-',
+      '--color-gray-',
+    ]) {
+      expect(code).not.toContain(stolen);
+    }
+  });
+});
+
+describe.each(SCENARIOS)('la losa de marca — %s', (_name, brand) => {
+  it.each(['light', 'dark'] as const)('es oscura también en tema %s', (theme) => {
+    // EL PUNTO ENTERO DE LA FASE. Una página clara con un hero negro no es una
+    // inconsistencia: es la decisión de marca. Si la losa siguiera al tema,
+    // volveríamos al hero crema que borró la identidad.
+    const scope = themeScope(brand, theme);
+    const slab = resolve(scope['--slab'], scope);
+    expect(luminance(slab)).toBeLessThan(0.2);
+  });
+
+  it.each(['light', 'dark'] as const)('su texto se lee encima en tema %s', (theme) => {
+    const scope = themeScope(brand, theme);
+    const slab = resolve(scope['--slab'], scope);
+    const surface = resolve(scope['--slab-surface'], scope);
+    for (const token of ['--slab-foreground', '--slab-muted']) {
+      const colour = resolve(scope[token], scope);
+      expect(contrast(colour, slab)).toBeGreaterThanOrEqual(AA_NORMAL);
+      expect(contrast(colour, surface)).toBeGreaterThanOrEqual(AA_NORMAL);
+    }
+  });
+
+  it('no depende del tema: los dos temas dan la misma losa', () => {
+    // Si divergieran, «la losa» serían dos losas y el logotipo elegido para
+    // una se pintaría sobre la otra.
+    const light = themeScope(brand, 'light');
+    const dark = themeScope(brand, 'dark');
+    expect(resolve(light['--slab'], light)).toEqual(resolve(dark['--slab'], dark));
+    expect(resolve(light['--slab-foreground'], light))
+      .toEqual(resolve(dark['--slab-foreground'], dark));
+  });
+});
+
+describe.each(SCENARIOS)('la superficie inversa — %s', (_name, brand) => {
+  it.each(['light', 'dark'] as const)('invierte de verdad en tema %s', (theme) => {
+    // Una banda pintada CON el color del texto. En oscuro sale clara; en claro,
+    // oscura. Es lo contrario del tema, y por eso su texto NO puede usar
+    // `muted`: la llamada del pie rendía 2.02:1 justamente por eso.
+    const scope = themeScope(brand, theme);
+    const page = resolve(scope['--background'], scope);
+    const inverse = resolve(scope['--inverse'], scope);
+    const flipped = luminance(page) < 0.5
+      ? luminance(inverse) > 0.5
+      : luminance(inverse) < 0.5;
+    expect(flipped).toBe(true);
+  });
+
+  it.each(['light', 'dark'] as const)('su texto se lee encima en tema %s', (theme) => {
+    const scope = themeScope(brand, theme);
+    const inverse = resolve(scope['--inverse'], scope);
+    for (const token of ['--inverse-foreground', '--inverse-muted']) {
+      const colour = resolve(scope[token], scope);
+      expect(contrast(colour, inverse)).toBeGreaterThanOrEqual(AA_NORMAL);
+    }
+  });
+});
+
+describe('la excepción de los rellenos saturados', () => {
+  it('el texto sobre un badge de color es blanco en los dos temas', () => {
+    for (const theme of ['light', 'dark'] as const) {
+      const scope = themeScope(PILOT, theme);
+      expect(resolve(scope['--color-on-status'], scope)).toEqual(parseHex('#ffffff'));
+    }
+  });
+});

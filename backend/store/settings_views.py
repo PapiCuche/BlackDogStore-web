@@ -39,6 +39,9 @@ from .company_settings import (
     get_company_settings,
 )
 from .models import AdminAuditLog, Company, CompanySettings
+from .storefront_content_services import (
+    public_campaigns, public_list_content, public_page_settings,
+)
 from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .serializers import (
@@ -127,6 +130,22 @@ def build_storefront_config_payload(company) -> dict:
             'terms_url': settings_row.terms_url if settings_row else '',
             'privacy_url': settings_row.privacy_url if settings_row else '',
         },
+        # M12F — contenido comercial, como dato del tenant y no compilado.
+        #
+        # `page` es lo estable; `campaigns` lo temporal. Ambos viajan en ESTA
+        # respuesta y no en un endpoint aparte porque la portada los necesita a
+        # la vez que la marca: dos peticiones serían dos momentos distintos y un
+        # instante con el titular nuevo y el logotipo viejo.
+        #
+        # `campaigns` sólo contiene lo PUBLICADO Y VIGENTE de esta empresa. Un
+        # borrador no llega aquí, y una campaña caducada tampoco: la caducidad
+        # es precisamente la defensa contra la preventa del año pasado.
+        'page': public_page_settings(company),
+        'campaigns': public_campaigns(company),
+        # M12F.1 — servicios, preguntas y métricas del tenant. Listas vacías son
+        # la respuesta normal: quien no ha escrito métricas no tiene métricas, y
+        # el escaparate no dibuja ese bloque.
+        **public_list_content(company),
     }
 
 

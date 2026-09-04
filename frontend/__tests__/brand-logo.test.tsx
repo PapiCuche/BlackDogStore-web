@@ -15,6 +15,8 @@ const FULL: StorefrontLogos = {
   primary_on_dark: '/v-blanca.png',
   horizontal_on_light: '/h-negra.png',
   horizontal_on_dark: '/h-blanca.png',
+  isotype_on_light: '/i-negra.png',
+  isotype_on_dark: '/i-blanca.png',
 };
 
 const NONE: StorefrontLogos = {
@@ -22,6 +24,8 @@ const NONE: StorefrontLogos = {
   primary_on_dark: '',
   horizontal_on_light: '',
   horizontal_on_dark: '',
+  isotype_on_light: '',
+  isotype_on_dark: '',
 };
 
 describe('el contraste manda', () => {

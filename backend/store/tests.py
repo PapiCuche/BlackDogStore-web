@@ -13279,7 +13279,13 @@ from .company_settings import (  # noqa: E402
     order_notification_recipient,
     order_pickup_location,
 )
-from .models import CompanySettings  # noqa: E402
+from .models import (  # noqa: E402
+    CompanySettings, StorefrontCampaign, StorefrontFaq, StorefrontPageSettings,
+    StorefrontServiceOffering, StorefrontTrustMetric,
+)
+from .storefront_content_services import (  # noqa: E402
+    public_campaigns, public_list_content, public_page_settings,
+)
 
 
 def _p3_company(slug, name, **identity):
@@ -22230,7 +22236,17 @@ class M5StorefrontConfigTest(TestCase):
     def test_it_carries_the_sections_the_app_needs(self):
         payload = self.client.get(_m5_config_url('m5-cfg-a')).json()
 
-        self.assertEqual(set(payload), {'company', 'branding', 'contact', 'policies'})
+        # EXACTO a propósito: lo que esta respuesta lleva se decide aquí, no se
+        # hereda de lo que alguien añadió al modelo. M12F suma `page` y
+        # `campaigns` —contenido comercial del tenant— y suma dos líneas a esta
+        # lista, que es exactamente el coste que debe tener.
+        self.assertEqual(
+            set(payload),
+            {
+                'company', 'branding', 'contact', 'policies',
+                'page', 'campaigns', 'services', 'faqs', 'metrics',
+            },
+        )
         self.assertIn('whatsapp_link', payload['contact'])
         self.assertIn('warranty_url', payload['policies'])
 
@@ -44885,22 +44901,35 @@ class M12EBrandingPayloadTest(TestCase):
 
     # -- las variantes ----------------------------------------------------
 
-    def test_the_four_questions_are_always_answered(self):
+    def test_every_question_is_always_answered(self):
         """
-        Las claves son las PREGUNTAS que hace un componente, y las cuatro
-        existen siempre, configuradas o no. Un `logos` incompleto obligaría a
-        cada consumidor a comprobar la clave antes de leerla, y el que se
-        olvide escribe `undefined` dentro de un `src`.
+        Las claves son las PREGUNTAS que hace un componente, y TODAS existen
+        siempre, configuradas o no. Un `logos` incompleto obligaría a cada
+        consumidor a comprobar la clave antes de leerla, y el que se olvide
+        escribe `undefined` dentro de un `src`.
+
+        Antes esto decía «las cuatro» y afirmaba el conjunto literal. Era el
+        mismo error que ya cometí en M12C: congelar un «hoy son cuatro» como si
+        fuera una invariante. M12F añadió el isotipo y el test se puso rojo por
+        una ampliación correcta. Lo permanente es que el catálogo declarado y
+        la respuesta coincidan — no cuántos elementos tiene.
         """
         logos = company_branding(self.bare).logos
-        self.assertEqual(
-            set(logos),
-            {
-                'primary_on_light', 'primary_on_dark',
-                'horizontal_on_light', 'horizontal_on_dark',
-            },
-        )
+        self.assertEqual(set(logos), set(LOGO_VARIANT_FIELDS))
         self.assertEqual(logos, EMPTY_LOGO_VARIANTS)
+
+    def test_the_composition_questions_never_disappear(self):
+        """
+        Esto SÍ es un contrato y no puede encogerse: el frontend pregunta por
+        estas cuatro por nombre. Ampliar el catálogo es aditivo; quitar una de
+        éstas deja un `pickLogo` leyendo `undefined`.
+        """
+        logos = company_branding(self.bare).logos
+        for question in (
+            'primary_on_light', 'primary_on_dark',
+            'horizontal_on_light', 'horizontal_on_dark',
+        ):
+            self.assertIn(question, logos)
 
     def test_no_variant_can_arrive_as_none(self):
         """
@@ -45035,3 +45064,799 @@ class M12EBrandingPayloadTest(TestCase):
         for question, column in LOGO_VARIANT_FIELDS.items():
             self.assertNotEqual(question, column)
             self.assertNotIn('_url', question)
+
+
+# ---------------------------------------------------------------------------
+# M12F — contenido comercial del escaparate
+# ---------------------------------------------------------------------------
+
+from django.core.exceptions import ValidationError as _M12FValidationError  # noqa: E402
+
+
+class M12FCampaignVisibilityTest(TestCase):
+    """
+    LA REGLA DE VISIBILIDAD, que es donde vive la seguridad de esta fase.
+
+    Cuatro condiciones —empresa, estado, inicio, fin— y las cuatro tienen que
+    cumplirse a la vez. Cada test de aquí retira UNA y comprueba que la campaña
+    desaparece: si alguno pasara con la condición retirada, esa condición no
+    estaría sujetando nada.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f-a', 'Empresa A')
+        self.b = _p3_company('m12f-b', 'Empresa B')
+        self.now = timezone.now()
+
+    def _campaign(self, company=None, **kw):
+        data = {
+            'company': company or self.a,
+            'slot': StorefrontCampaign.Slot.HOME_BOTTOM_PROMO,
+            'title': 'Preventa',
+            'status': StorefrontCampaign.Status.PUBLISHED,
+            'published_at': self.now,
+        }
+        data.update(kw)
+        return StorefrontCampaign.objects.create(**data)
+
+    def test_a_published_campaign_within_its_window_is_visible(self):
+        self._campaign()
+        self.assertIn('home_bottom_promo', public_campaigns(self.a, self.now))
+
+    def test_a_draft_is_invisible(self):
+        self._campaign(status=StorefrontCampaign.Status.DRAFT, published_at=None)
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_an_archived_campaign_is_invisible(self):
+        self._campaign(status=StorefrontCampaign.Status.ARCHIVED)
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_a_future_campaign_is_invisible(self):
+        self._campaign(starts_at=self.now + timedelta(hours=1))
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_an_expired_campaign_is_invisible(self):
+        """
+        ESTA ES LA DEFENSA CONTRA «PREVENTA IPHONE 17» UN AÑO DESPUÉS.
+
+        Nadie despliega para borrar algo que ya no existe, así que la campaña
+        tiene que desaparecer sola.
+        """
+        self._campaign(
+            starts_at=self.now - timedelta(days=30),
+            ends_at=self.now - timedelta(days=1),
+        )
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_ends_at_is_exclusive(self):
+        """
+        El instante que el editor escribió es el primero en el que YA NO está.
+        Un `<=` mal puesto deja la promoción viva un segundo de más; da igual el
+        segundo, importa que la regla sea la que el editor creyó escribir.
+        """
+        end = self.now + timedelta(hours=1)
+        self._campaign(ends_at=end)
+        self.assertIn('home_bottom_promo', public_campaigns(self.a, end - timedelta(seconds=1)))
+        self.assertEqual(public_campaigns(self.a, end), {})
+
+    def test_missing_dates_mean_no_limit_not_always_visible(self):
+        """Sin fechas manda el estado, no la ausencia de fechas."""
+        self._campaign(starts_at=None, ends_at=None)
+        self.assertIn('home_bottom_promo', public_campaigns(self.a, self.now))
+        StorefrontCampaign.objects.update(status=StorefrontCampaign.Status.DRAFT)
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_one_companys_campaign_never_reaches_another(self):
+        self._campaign(company=self.b, title='De la B')
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+        self.assertIn('home_bottom_promo', public_campaigns(self.b, self.now))
+
+    def test_no_company_means_no_campaigns_never_all(self):
+        """
+        `None` no puede significar «todas». Es el default peligroso que M12C
+        prohibió, aplicado al escaparate.
+        """
+        self._campaign()
+        self.assertEqual(public_campaigns(None, self.now), {})
+        self.assertEqual(list(StorefrontCampaign.objects.active(None)), [])
+
+    def test_the_slot_winner_is_deterministic(self):
+        """
+        Dos campañas publicadas en el mismo slot no pueden dar una portada
+        distinta según el plan de consulta.
+        """
+        self._campaign(title='Baja', priority=0)
+        self._campaign(title='Alta', priority=10)
+        for _ in range(5):
+            got = public_campaigns(self.a, self.now)['home_bottom_promo']
+            self.assertEqual(got['title'], 'Alta')
+
+    def test_is_active_agrees_with_the_queryset(self):
+        """
+        Dos respuestas a la misma pregunta que puedan divergir son un borrador
+        publicado esperando a ocurrir.
+        """
+        cases = [
+            {},
+            {'status': StorefrontCampaign.Status.DRAFT, 'published_at': None},
+            {'starts_at': self.now + timedelta(hours=1)},
+            {'ends_at': self.now - timedelta(hours=1),
+             'starts_at': self.now - timedelta(days=1)},
+        ]
+        for kw in cases:
+            with self.subTest(kw=kw):
+                StorefrontCampaign.objects.all().delete()
+                campaign = self._campaign(**kw)
+                in_queryset = 'home_bottom_promo' in public_campaigns(self.a, self.now)
+                self.assertEqual(campaign.is_active(self.now), in_queryset)
+
+
+class M12FPublicPayloadTest(TestCase):
+    """Lo que el público recibe, y sobre todo lo que NO."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f-pub', 'Empresa Pública')
+        self.user, _ = _p2d_member(self.a, 'm12f_pub_admin', ['company.manage'])
+        self.campaign = StorefrontCampaign.objects.create(
+            company=self.a, slot=StorefrontCampaign.Slot.HOME_HERO,
+            title='Título', status=StorefrontCampaign.Status.PUBLISHED,
+            published_at=timezone.now(), created_by=self.user, priority=7,
+        )
+
+    def test_internal_metadata_never_reaches_the_public(self):
+        """
+        Lista BLANCA, no negra: un campo nuevo en el modelo no puede aparecer
+        solo en la respuesta pública el día que alguien lo añada.
+        """
+        payload = public_campaigns(self.a)['home_hero']
+        for leaked in (
+            'created_by', 'updated_by', 'created_at', 'updated_at',
+            'status', 'priority', 'starts_at', 'ends_at', 'published_at', 'id',
+        ):
+            self.assertNotIn(leaked, payload)
+
+    def test_the_public_shape_is_fixed(self):
+        payload = public_campaigns(self.a)['home_hero']
+        self.assertEqual(
+            set(payload),
+            {
+                'slot', 'badge', 'title', 'subtitle', 'body', 'image_url',
+                'cta_label', 'cta_url', 'secondary_cta_label',
+                'secondary_cta_url', 'product',
+            },
+        )
+
+    def test_an_inactive_product_is_not_advertised(self):
+        """
+        Enlazar un producto retirado mandaría al cliente a una ficha que no
+        existe. La campaña sigue, el enlace no.
+        """
+        product = Product.objects.create(
+            company=self.a, name='Equipo', slug='equipo-m12f',
+            price=Decimal('100.00'), is_active=False,
+        )
+        self.campaign.product = product
+        self.campaign.save(update_fields=['product'])
+        self.assertIsNone(public_campaigns(self.a)['home_hero']['product'])
+
+
+class M12FCampaignValidationTest(TestCase):
+    """Lo que un panel de administración NO puede escribir."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f-val', 'Empresa Validación')
+        self.b = _p3_company('m12f-val-b', 'Otra Empresa')
+        self.user, _ = _p2d_member(self.a, 'm12f_val_admin', ['company.manage'])
+
+    def _campaign(self, **kw):
+        data = {
+            'company': self.a, 'slot': StorefrontCampaign.Slot.HOME_HERO,
+            'title': 'T', 'created_by': self.user,
+        }
+        data.update(kw)
+        return StorefrontCampaign(**data)
+
+    def test_dangerous_cta_schemes_are_rejected(self):
+        """
+        Esto acaba en el `href` de un enlace que alguien va a PULSAR.
+        `javascript:` ahí no es una URL rota: es ejecución de código elegida por
+        quien edita la campaña.
+        """
+        for bad in (
+            'javascript:alert(1)',
+            'JavaScript:alert(1)',
+            'data:text/html,<script>alert(1)</script>',
+            '//evil.example/promo',
+            'vbscript:msgbox(1)',
+            'file:///etc/passwd',
+        ):
+            with self.subTest(url=bad):
+                with self.assertRaises(_M12FValidationError):
+                    self._campaign(cta_label='Ir', cta_url=bad).full_clean()
+
+    def test_legitimate_cta_destinations_are_accepted(self):
+        for good in (
+            '/product', '/product/iphone-18',
+            'https://wa.me/51999888777', 'http://example.com/promo',
+            'tel:+51999888777', 'mailto:hola@example.com',
+        ):
+            with self.subTest(url=good):
+                self._campaign(cta_label='Ir', cta_url=good).full_clean()
+
+    def test_a_protocol_relative_url_is_not_an_internal_path(self):
+        """`//evil.example` empieza por «/» y no es del sitio."""
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(cta_label='Ir', cta_url='//evil.example').full_clean()
+
+    def test_a_product_of_another_company_cannot_be_advertised(self):
+        foreign = Product.objects.create(
+            company=self.b, name='Ajeno', slug='ajeno-m12f',
+            price=Decimal('10.00'),
+        )
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(product=foreign).full_clean()
+
+    def test_a_window_that_ends_before_it_starts_is_an_error(self):
+        now = timezone.now()
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(
+                starts_at=now, ends_at=now - timedelta(hours=1),
+            ).full_clean()
+
+    def test_a_button_needs_both_halves(self):
+        """Un botón sin destino no lleva a ningún sitio y uno sin texto no se lee."""
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(cta_url='/product').full_clean()
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(cta_label='Ir').full_clean()
+
+    def test_content_length_is_bounded(self):
+        """
+        Sin límite, veinte mil caracteres en un titular rompen la portada desde
+        el panel de administración.
+        """
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(title='x' * 500).full_clean()
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(body='x' * 5000).full_clean()
+
+    def test_markup_is_stored_as_text_not_interpreted(self):
+        """
+        No se rechaza `<script>` en un TÍTULO: rechazar texto por parecerse a
+        código es una lista negra que envejece. Se guarda como texto y el
+        frontend lo pinta como texto — sin `dangerouslySetInnerHTML`, que un
+        test del frontend comprueba por separado.
+        """
+        campaign = self._campaign(title='<script>alert(1)</script>')
+        campaign.full_clean()
+        campaign.save()
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.title, '<script>alert(1)</script>')
+
+
+class M12FContentApiTest(TestCase):
+    """
+    Quién puede tocar el contenido del escaparate, y qué ve cada uno.
+
+    La autoridad NO es nueva: es `company.manage`, la misma que ya gobierna la
+    configuración de la empresa. Estos tests comprueban que se aplica de verdad
+    y que el aislamiento entre empresas es el del resto de la plataforma.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f-api-a', 'Empresa A')
+        self.b = _p3_company('m12f-api-b', 'Empresa B')
+        self.admin_a, _ = _p2d_member(
+            self.a, 'm12f_admin_a', ['company.view', 'company.manage'],
+        )
+        self.viewer_a, _ = _p2d_member(self.a, 'm12f_viewer_a', ['company.view'])
+        self.admin_b, _ = _p2d_member(
+            self.b, 'm12f_admin_b', ['company.view', 'company.manage'],
+        )
+        self.master = User.objects.create_superuser(
+            username='m12f_master', password='x', email='m@example.com',
+        )
+        self.outsider = User.objects.create_user(username='m12f_out', password='x')
+
+        self.campaign_a = StorefrontCampaign.objects.create(
+            company=self.a, slot=StorefrontCampaign.Slot.HOME_HERO,
+            title='De A', created_by=self.admin_a,
+        )
+        self.campaign_b = StorefrontCampaign.objects.create(
+            company=self.b, slot=StorefrontCampaign.Slot.HOME_HERO,
+            title='De B', created_by=self.admin_b,
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # -- autoridad --------------------------------------------------------
+
+    def test_an_admin_lists_their_own_campaigns(self):
+        res = self._as(self.admin_a).get('/api/admin/storefront/campaigns/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([c['title'] for c in res.data['results']], ['De A'])
+
+    def test_a_viewer_reads_but_cannot_write(self):
+        client = self._as(self.viewer_a)
+        self.assertEqual(
+            client.get('/api/admin/storefront/campaigns/').status_code,
+            status.HTTP_200_OK,
+        )
+        res = client.post('/api/admin/storefront/campaigns/', {
+            'slot': 'home_promo', 'title': 'Intento',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_somebody_with_no_membership_gets_nothing(self):
+        res = self._as(self.outsider).get('/api/admin/storefront/campaigns/')
+        self.assertIn(
+            res.status_code,
+            (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND),
+        )
+
+    def test_anonymous_is_refused(self):
+        res = APIClient().get('/api/admin/storefront/campaigns/')
+        self.assertIn(res.status_code, (401, 403))
+
+    # -- aislamiento ------------------------------------------------------
+
+    def test_another_companys_campaign_answers_like_one_that_does_not_exist(self):
+        """
+        404, NO 403. Un 403 confirmaría que ese id existe en alguna parte, y esa
+        confirmación ya es información sobre otro tenant.
+        """
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/{self.campaign_b.pk}/',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_an_admin_cannot_patch_another_companys_campaign(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/storefront/campaigns/{self.campaign_b.pk}/',
+            {'title': 'Secuestrada'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.campaign_b.refresh_from_db()
+        self.assertEqual(self.campaign_b.title, 'De B')
+
+    def test_asking_for_another_company_by_id_does_not_widen_access(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/?company={self.b.pk}',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- master -----------------------------------------------------------
+
+    def test_master_must_name_the_company(self):
+        """
+        MASTER PUEDE LLEGAR A TODAS NO SIGNIFICA QUE «TODAS» SEA UN VALOR.
+        Sin `?company=` no hay difusión accidental: hay un error.
+        """
+        res = self._as(self.master).get('/api/admin/storefront/campaigns/')
+        self.assertIn(
+            res.status_code,
+            (status.HTTP_403_FORBIDDEN, status.HTTP_400_BAD_REQUEST),
+        )
+
+    def test_master_with_an_explicit_company_works(self):
+        res = self._as(self.master).get(
+            f'/api/admin/storefront/campaigns/?company={self.b.pk}',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([c['title'] for c in res.data['results']], ['De B'])
+
+    def test_master_writes_only_where_it_pointed(self):
+        res = self._as(self.master).post(
+            f'/api/admin/storefront/campaigns/?company={self.b.pk}',
+            {'slot': 'home_promo', 'title': 'Del master'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            StorefrontCampaign.objects.filter(company=self.a, title='Del master').count(),
+            0,
+        )
+
+    # -- ciclo de vida ----------------------------------------------------
+
+    def test_saving_a_draft_does_not_publish_it(self):
+        """GUARDAR ≠ PUBLICAR. Es la diferencia entre escribir y anunciar."""
+        self._as(self.admin_a).patch(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/',
+            {'title': 'Editada'}, format='json',
+        )
+        self.campaign_a.refresh_from_db()
+        self.assertEqual(self.campaign_a.status, StorefrontCampaign.Status.DRAFT)
+        self.assertEqual(public_campaigns(self.a), {})
+
+    def test_publishing_puts_it_on_the_storefront(self):
+        res = self._as(self.admin_a).post(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('home_hero', public_campaigns(self.a))
+
+    def test_publishing_twice_does_not_move_the_timestamp(self):
+        """
+        `published_at` desempata dos campañas del mismo slot. Si se moviera,
+        pulsar el botón otra vez reordenaría la portada sin que nadie hubiera
+        cambiado nada.
+        """
+        client = self._as(self.admin_a)
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/')
+        self.campaign_a.refresh_from_db()
+        first = self.campaign_a.published_at
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/')
+        self.campaign_a.refresh_from_db()
+        self.assertEqual(self.campaign_a.published_at, first)
+
+    def test_archiving_keeps_the_row(self):
+        """
+        ARCHIVAR, NO BORRAR. La campaña de hace tres años es el historial de lo
+        que esta tienda anunció; un DELETE deja el mismo vacío que dejaba el
+        código.
+        """
+        client = self._as(self.admin_a)
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/')
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/archive/')
+        self.campaign_a.refresh_from_db()
+        self.assertEqual(self.campaign_a.status, StorefrontCampaign.Status.ARCHIVED)
+        self.assertTrue(StorefrontCampaign.objects.filter(pk=self.campaign_a.pk).exists())
+        self.assertEqual(public_campaigns(self.a), {})
+
+    # -- vista previa -----------------------------------------------------
+
+    def test_preview_shows_a_draft_without_publishing_it(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/preview/',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['preview']['title'], 'De A')
+        self.assertFalse(res.data['would_be_visible_now'])
+        self.campaign_a.refresh_from_db()
+        self.assertEqual(self.campaign_a.status, StorefrontCampaign.Status.DRAFT)
+        self.assertEqual(public_campaigns(self.a), {})
+
+    def test_preview_is_not_a_public_url(self):
+        res = APIClient().get(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/preview/',
+        )
+        self.assertIn(res.status_code, (401, 403))
+
+    def test_preview_of_another_company_is_a_404(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/{self.campaign_b.pk}/preview/',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_preview_is_not_cached(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/preview/',
+        )
+        self.assertIn('no-store', res.headers.get('Cache-Control', ''))
+
+    # -- auditoría --------------------------------------------------------
+
+    def test_every_content_action_leaves_a_trace(self):
+        client = self._as(self.admin_a)
+        client.post('/api/admin/storefront/campaigns/', {
+            'slot': 'home_promo', 'title': 'Nueva',
+        }, format='json')
+        client.patch(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/',
+            {'title': 'Cambiada'}, format='json',
+        )
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/')
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/archive/')
+
+        actions = set(
+            AdminAuditLog.objects.filter(company=self.a)
+            .values_list('action', flat=True)
+        )
+        for expected in (
+            'storefront_campaign_created', 'storefront_campaign_updated',
+            'storefront_campaign_published', 'storefront_campaign_archived',
+        ):
+            self.assertIn(expected, actions)
+
+    def test_the_audit_entry_names_the_company_and_the_actor(self):
+        self._as(self.admin_a).post(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/',
+        )
+        entry = AdminAuditLog.objects.filter(
+            action='storefront_campaign_published',
+        ).first()
+        self.assertEqual(entry.company, self.a)
+        self.assertEqual(entry.actor, self.admin_a)
+
+    # -- contenido estable ------------------------------------------------
+
+    def test_page_settings_are_per_company(self):
+        client = self._as(self.admin_a)
+        res = client.patch('/api/admin/storefront/page/', {
+            'hero_title': 'Titular de A',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(public_page_settings(self.a)['hero_title'], 'Titular de A')
+        self.assertEqual(public_page_settings(self.b)['hero_title'], '')
+
+    def test_a_hero_cta_cannot_be_a_javascript_url(self):
+        res = self._as(self.admin_a).patch('/api/admin/storefront/page/', {
+            'hero_primary_cta_label': 'Ir',
+            'hero_primary_cta_url': 'javascript:alert(1)',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class M12F1ServicesContentTest(TestCase):
+    """
+    M12F.1 — el contenido de /services como dato del tenant.
+
+    Y sobre todo: lo que la reconciliación de claims tiene que impedir que
+    vuelva. Varias afirmaciones sobrevivieron a una fase entera por estar
+    compiladas; ahora que son datos, lo que las sujeta es que nadie las siembre.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f1-a', 'Taller A')
+        self.b = _p3_company('m12f1-b', 'Taller B')
+        self.admin_a, _ = _p2d_member(
+            self.a, 'm12f1_admin_a', ['company.view', 'company.manage'],
+        )
+        self.viewer_a, _ = _p2d_member(self.a, 'm12f1_viewer_a', ['company.view'])
+        self.admin_b, _ = _p2d_member(
+            self.b, 'm12f1_admin_b', ['company.view', 'company.manage'],
+        )
+        self.master = User.objects.create_superuser(
+            username='m12f1_master', password='x', email='m1@example.com',
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # -- visibilidad ------------------------------------------------------
+
+    def test_only_active_rows_reach_the_public(self):
+        StorefrontServiceOffering.objects.create(
+            company=self.a, title='Visible', sort_order=0,
+        )
+        StorefrontServiceOffering.objects.create(
+            company=self.a, title='Retirado', is_active=False, sort_order=1,
+        )
+        titles = [s['title'] for s in public_list_content(self.a)['services']]
+        self.assertEqual(titles, ['Visible'])
+
+    def test_order_is_deterministic(self):
+        for order, title in ((30, 'Tercero'), (10, 'Primero'), (20, 'Segundo')):
+            StorefrontServiceOffering.objects.create(
+                company=self.a, title=title, sort_order=order,
+            )
+        for _ in range(3):
+            titles = [s['title'] for s in public_list_content(self.a)['services']]
+            self.assertEqual(titles, ['Primero', 'Segundo', 'Tercero'])
+
+    def test_one_companys_content_never_reaches_another(self):
+        StorefrontFaq.objects.create(company=self.b, question='¿De B?', answer='Sí')
+        self.assertEqual(public_list_content(self.a)['faqs'], [])
+        self.assertEqual(len(public_list_content(self.b)['faqs']), 1)
+
+    def test_no_company_means_no_content_never_all(self):
+        StorefrontServiceOffering.objects.create(company=self.a, title='X')
+        content = public_list_content(None)
+        self.assertEqual(content['services'], [])
+        self.assertEqual(content['faqs'], [])
+        self.assertEqual(content['metrics'], [])
+
+    def test_a_tenant_without_metrics_gets_an_empty_list(self):
+        """
+        Y eso es lo correcto: el escaparate no dibuja el bloque.
+
+        Un bloque de cifras vacío es peor que ninguno, y una cifra inventada
+        peor que las dos cosas.
+        """
+        self.assertEqual(public_list_content(self.a)['metrics'], [])
+
+    # -- lo que el público NO recibe --------------------------------------
+
+    def test_internal_fields_never_reach_the_public(self):
+        row = StorefrontServiceOffering.objects.create(
+            company=self.a, title='Servicio', updated_by=self.admin_a,
+        )
+        payload = public_list_content(self.a)['services'][0]
+        for leaked in ('id', 'is_active', 'sort_order', 'updated_by',
+                       'created_at', 'updated_at', 'company'):
+            self.assertNotIn(leaked, payload)
+        self.assertEqual(row.updated_by, self.admin_a)
+
+    def test_the_public_shape_is_fixed(self):
+        StorefrontServiceOffering.objects.create(company=self.a, title='S')
+        StorefrontFaq.objects.create(company=self.a, question='P', answer='R')
+        StorefrontTrustMetric.objects.create(company=self.a, value='+1', label='L')
+        content = public_list_content(self.a)
+        self.assertEqual(
+            set(content['services'][0]),
+            {'title', 'description', 'devices_text', 'estimated_time_text', 'highlight'},
+        )
+        self.assertEqual(set(content['faqs'][0]), {'question', 'answer'})
+        self.assertEqual(set(content['metrics'][0]), {'value', 'label'})
+
+    # -- autoridad --------------------------------------------------------
+
+    def test_a_viewer_reads_but_cannot_write(self):
+        client = self._as(self.viewer_a)
+        self.assertEqual(
+            client.get('/api/admin/storefront/services/').status_code,
+            status.HTTP_200_OK,
+        )
+        res = client.post('/api/admin/storefront/services/',
+                          {'title': 'Intento'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_an_admin_cannot_touch_another_companys_content(self):
+        foreign = StorefrontFaq.objects.create(
+            company=self.b, question='¿De B?', answer='Sí',
+        )
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/storefront/faqs/{foreign.pk}/',
+            {'answer': 'Secuestrada'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.answer, 'Sí')
+
+    def test_a_row_cannot_be_created_for_another_company(self):
+        """
+        La empresa NUNCA sale del cuerpo. Mandarla ahí no cambia dónde se
+        escribe.
+        """
+        res = self._as(self.admin_a).post(
+            '/api/admin/storefront/services/',
+            {'title': 'Infiltrado', 'company': self.b.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            StorefrontServiceOffering.objects.filter(company=self.b).count(), 0,
+        )
+
+    def test_master_must_name_the_company(self):
+        res = self._as(self.master).get('/api/admin/storefront/services/')
+        self.assertIn(
+            res.status_code,
+            (status.HTTP_403_FORBIDDEN, status.HTTP_400_BAD_REQUEST),
+        )
+
+    def test_master_with_an_explicit_company_works(self):
+        StorefrontServiceOffering.objects.create(company=self.b, title='De B')
+        res = self._as(self.master).get(
+            f'/api/admin/storefront/services/?company={self.b.pk}',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([r['title'] for r in res.data['results']], ['De B'])
+
+    def test_an_unknown_kind_is_a_404(self):
+        res = self._as(self.admin_a).get('/api/admin/storefront/inventado/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- el panel ve lo que el público no ---------------------------------
+
+    def test_the_admin_list_includes_inactive_rows(self):
+        StorefrontFaq.objects.create(
+            company=self.a, question='Oculta', answer='R', is_active=False,
+        )
+        res = self._as(self.admin_a).get('/api/admin/storefront/faqs/')
+        self.assertEqual([r['question'] for r in res.data['results']], ['Oculta'])
+        self.assertEqual(public_list_content(self.a)['faqs'], [])
+
+    # -- auditoría --------------------------------------------------------
+
+    def test_writing_content_leaves_a_trace(self):
+        client = self._as(self.admin_a)
+        res = client.post('/api/admin/storefront/faqs/',
+                          {'question': 'P', 'answer': 'R'}, format='json')
+        client.delete(f'/api/admin/storefront/faqs/{res.data["id"]}/')
+        actions = set(
+            AdminAuditLog.objects.filter(company=self.a)
+            .values_list('action', flat=True)
+        )
+        self.assertIn('storefront_faqs_saved', actions)
+        self.assertIn('storefront_faqs_deleted', actions)
+
+    # -- límites ----------------------------------------------------------
+
+    def test_content_length_is_bounded(self):
+        res = self._as(self.admin_a).post(
+            '/api/admin/storefront/faqs/',
+            {'question': 'P', 'answer': 'x' * 5000}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class M12F1ClaimReconciliationTest(TestCase):
+    """
+    LAS AFIRMACIONES QUE NO PUEDEN VOLVER.
+
+    Cada una tiene un motivo concreto, y el motivo está en el proyecto:
+
+      «5.000+ dispositivos reparados»
+          Ninguna fuente. Mover una cifra de sitio no le da respaldo.
+
+      «Todos nuestros servicios incluyen 6 meses de garantía»
+          CONTRADICE al manual v3.0 del piloto, que dice que la cobertura de
+          servicios técnicos depende del producto o reparación. Los seis meses
+          son de los equipos seminuevos.
+
+      «Baterías Nasan Originales» y su certificado
+          El manual exige publicar «original» sólo con trazabilidad o
+          validación. No hay documento de Nasan en el proyecto.
+
+      «Sin msg / Pieza reparada»
+          Depende del firmware del equipo, que es de un tercero.
+
+      «Diagnóstico gratuito»
+          Sin política configurada que lo respalde.
+
+    Este test mira el CONTENIDO SEMBRADO, no el código: la fase entera consistió
+    en mover estas frases de un sitio al otro, y sembrarlas otra vez sería no
+    haber hecho nada.
+    """
+
+    RETIRED = (
+        '5,000', '5.000', 'Nasan Originales', 'certificado de autenticidad',
+        'Abril 2025', 'Sin msg', 'Diagnóstico gratuito', 'Diagnóstico Gratuito',
+        'incluyen 6 meses',
+    )
+
+    @staticmethod
+    def _seed_module():
+        import importlib
+        return importlib.import_module('store.migrations.0078_pilot_services_content')
+
+    def test_the_pilot_seed_carries_no_retired_claim(self):
+        module = self._seed_module()
+        blob = ' '.join(
+            [s['title'] + ' ' + s['description'] for s in module.SERVICES]
+            + [f['question'] + ' ' + f['answer'] for f in module.FAQS]
+            + list(module.PAGE.values())
+        )
+        for claim in self.RETIRED:
+            self.assertNotIn(claim, blob, f'la siembra volvió a incluir «{claim}»')
+
+    def test_the_seed_publishes_no_metric(self):
+        """
+        Ninguna cifra tiene respaldo, así que no se siembra ninguna. Un bloque
+        de métricas vacío es exactamente lo que debe verse.
+        """
+        self.assertFalse(hasattr(self._seed_module(), 'METRICS'))
+
+    def test_the_warranty_answer_distinguishes_product_from_repair(self):
+        """
+        La corrección central. La respuesta tiene que separar lo que el manual
+        separa: garantía de PRODUCTO —1 año equipos nuevos, 6 meses
+        seminuevos— de cobertura de REPARACIÓN, que depende del trabajo.
+        """
+        module = self._seed_module()
+        answer = next(
+            f['answer'] for f in module.FAQS if 'garantía' in f['question'].lower()
+        )
+        self.assertIn('seminuevos', answer)
+        self.assertIn('depende', answer)
+        self.assertNotIn('Todos nuestros servicios', answer)
+
+    def test_times_are_offered_as_estimates(self):
+        """
+        El manual pide informar que el tiempo puede variar. El campo se llama
+        `estimated_time_text` y no `time`, y eso no es cosmética: obliga a
+        quien lo pinta a decir qué es.
+        """
+        field_names = {f.name for f in StorefrontServiceOffering._meta.fields}
+        self.assertIn('estimated_time_text', field_names)
+        self.assertNotIn('time', field_names)

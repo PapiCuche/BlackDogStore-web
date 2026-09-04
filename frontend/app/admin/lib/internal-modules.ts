@@ -407,6 +407,20 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
     quickAction: true,
   },
+  {
+    id: "admin.storefront",
+    group: "administration",
+    label: "Escaparate",
+    description: "Portada y campañas de la tienda pública.",
+    // CON `href`, y por el mismo motivo que la consola de comunicados: un
+    // módulo registrado sin forma de llegar es un módulo que no existe.
+    href: "/admin/settings/storefront",
+    // Misma autoridad que la configuración: `company.view` para llegar, y el
+    // backend exige `company.manage` para escribir, con independencia de lo
+    // que esta pantalla decida enseñar.
+    requiredCapabilities: ["company.view"],
+    status: "implemented",
+  },
 ];
 
 // ---------------------------------------------------------------------------
