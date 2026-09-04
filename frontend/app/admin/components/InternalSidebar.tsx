@@ -12,6 +12,7 @@
  */
 
 import Link from "next/link";
+import { BrandLogo } from "../../components/BrandLogo";
 import { usePathname } from "next/navigation";
 import { IconClose, IconDashboard } from "./icons";
 import {
@@ -51,14 +52,30 @@ export function InternalSidebarContent({
 
   return (
     <div className="flex h-full flex-col">
+      {/*
+        LA MARCA VUELVE, EN SU SITIO.
+
+        El panel llevaba la cabecera del escaparate encima, y al retirarla se
+        quedó sin ninguna identidad: una consola gris que podría ser de
+        cualquiera. El isotipo aquí ocupa 28 px, no compite con nada y sale del
+        branding del TENANT — así que en otra empresa aparece la suya, no ésta.
+      */}
       <div className="flex items-center justify-between border-b border-bd-border px-5 py-4">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
-            Control interno
-          </p>
-          {companyName ? (
-            <p className="mt-0.5 text-sm font-semibold text-foreground">{companyName}</p>
-          ) : null}
+        <div className="flex min-w-0 items-center gap-3">
+          <BrandLogo
+            placement="compact"
+            surface="theme"
+            className="h-7 w-7 shrink-0 object-contain"
+            wordmarkClassName="sr-only"
+          />
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
+              Control interno
+            </p>
+            {companyName ? (
+              <p className="mt-0.5 truncate text-sm font-semibold text-foreground">{companyName}</p>
+            ) : null}
+          </div>
         </div>
         {onClose && (
           <button
@@ -115,15 +132,9 @@ export function InternalSidebarContent({
         })}
       </nav>
 
-      <div className="border-t border-bd-border px-3 py-3">
-        <Link
-          href="/"
-          onClick={onNavigate}
-          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted transition hover:bg-surface hover:text-foreground"
-        >
-          ← Volver a la tienda
-        </Link>
-      </div>
+      {/* El enlace de vuelta a la tienda vive en la barra superior. Estaba
+          también aquí abajo: dos caminos al mismo sitio, y el de abajo quedaba
+          fuera de vista cuando la lista de módulos crece. */}
     </div>
   );
 }

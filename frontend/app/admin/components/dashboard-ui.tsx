@@ -177,9 +177,9 @@ export function AlertsPanel({
       {alerts.map((alert) => {
         const tone =
           alert.level === "critical"
-            ? "border-red-500/25 bg-red-500/[0.07]"
+            ? "border-danger-border bg-red-500/[0.07]"
             : alert.level === "warning"
-              ? "border-amber-400/20 bg-amber-400/[0.05]"
+              ? "border-warning-border bg-amber-400/[0.05]"
               : "border-bd-border bg-surface";
         return (
           <div

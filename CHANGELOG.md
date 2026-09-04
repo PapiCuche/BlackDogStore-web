@@ -9,6 +9,62 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Accesos de desarrollo — la promesa que no se cumplía
+
+**Estado: IMPLEMENTADO.** Sin migraciones.
+
+`/auth` anunciaba seis cuentas con su contraseña. Ninguna existía: la base de
+desarrollo no tenía **ningún** usuario. El backend respondía «No active account
+found with the given credentials», que suena a contraseña incorrecta y manda a
+depurar el login — que funcionaba perfectamente.
+
+### Por qué la auditoría anterior no lo vio
+
+Capturó `/auth` 108 veces y nunca pulsó «Usar cuenta». Peor: su arnés se
+autenticaba con un usuario que ella misma creaba, así que el flujo de login se
+verificó de principio a fin **con una cuenta que no era ninguna de las seis
+anunciadas**. Se probó el mecanismo y se dio por buena la promesa.
+
+### Tres defectos, no uno
+
+1. **Entorno sin sembrar y una interfaz que no lo comprobaba.** La tarjeta traía
+   su propia lista escrita a mano y la mostraba siempre.
+2. **Dos listas que podían separarse en silencio** — la del comando y la del
+   componente.
+3. **`_upsert_user` no reactivaba.** Refrescaba correo, flags y contraseña, pero
+   no `is_active`: un demo desactivado desde el panel quedaba inservible para
+   siempre y volver a sembrar no lo arreglaba.
+
+### La corrección
+
+`GET /api/dev/demo-accounts/` — sólo con `DEBUG=True`, 404 con `DEBUG=False` —
+informa de qué cuentas existen y cuáles sirven. La tarjeta lo pinta: una cuenta
+que no se puede usar sale apagada y **sin botón**, con el comando exacto y el
+slug real de una empresa de esa base.
+
+No autentica ni crea nada: las seis siguen siendo usuarios ordinarios que entran
+por `/api/auth/login/` con el mismo JWT, cookies HttpOnly y CSRF.
+
+## Auditoría integral de frontend
+
+**Estado: IMPLEMENTADO.** Sin migraciones — el backend no cambia.
+
+| Hallazgo | Severidad |
+| --- | --- |
+| El panel montaba la cabecera, el pie y el WhatsApp de la tienda | P0 |
+| 13 pantallas del panel nunca cargaban para el master de plataforma | P0 |
+| La empresa elegida se perdía al navegar entre pantallas | P1 |
+| El checkout no mostraba el pedido ni el total | P1 |
+| 105 textos de estado invisibles en tema claro (1.02:1) | P1 |
+| 58 etiquetas de formulario sin asociar a su control | P1 |
+| 7 botones invertidos con texto a 2:1, uno de ellos «Continuar al pago» | P1 |
+| Desbordamiento de 308 px en inventario a 390 px | P2 |
+| 12 maquetas de un prototipo con un precio sin respaldo incrustado | P2 |
+| Formato de fecha estadounidense en una tienda peruana | P3 |
+
+Ninguno lo habría encontrado un test unitario: son propiedades de cómo encaja
+la aplicación entera, y salieron de abrirla en un navegador con sesión real.
+
 ## M12F.1 — Reconciliación: claims, contraste de logotipo y contenido de servicios
 
 **Estado: IMPLEMENTADO.** Migraciones **0077**–**0078**.

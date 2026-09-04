@@ -433,7 +433,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   if (fatal || !context) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+        <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
           {fatal ?? "No se pudo abrir el punto de venta."}
         </div>
       </AdminShell>
@@ -444,7 +444,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
         <div className="mx-auto max-w-lg space-y-5 py-10 text-center">
-          <p className="text-sm uppercase tracking-widest text-emerald-400/80">
+          <p className="text-sm uppercase tracking-widest text-success">
             Venta registrada
           </p>
           <p className="font-display text-3xl text-foreground">{money(done.total)}</p>
@@ -508,10 +508,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <label className="text-[11px] uppercase tracking-widest text-muted">
+            <label htmlFor="admin-sales-pos-page-sucursal" className="text-[11px] uppercase tracking-widest text-muted">
               Sucursal
             </label>
-            <select
+            <select id="admin-sales-pos-page-sucursal"
               value={branch ?? ""}
               onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
               className="rounded-lg border border-bd-border bg-background/40 px-3 py-1.5 text-sm text-foreground outline-none"
@@ -528,7 +528,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         </div>
 
         {branch === null ? (
-          <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-5 py-4 text-sm text-amber-300">
+          <p className="rounded-xl border border-warning-border bg-warning-surface px-5 py-4 text-sm text-warning">
             Selecciona la sucursal desde la que vas a vender. El stock se descuenta de
             esa sucursal y de ninguna otra.
           </p>
@@ -568,10 +568,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               <p
                 className={`rounded-lg px-4 py-2.5 text-sm ${
                   feedback.kind === "ok"
-                    ? "border border-emerald-500/20 bg-emerald-500/5 text-emerald-300"
+                    ? "border border-success-border bg-success-surface text-success"
                     : feedback.kind === "warn"
-                      ? "border border-amber-500/20 bg-amber-500/5 text-amber-300"
-                      : "border border-red-500/20 bg-red-500/5 text-red-400"
+                      ? "border border-warning-border bg-warning-surface text-warning"
+                      : "border border-danger-border bg-danger-surface text-danger"
                 }`}
                 role="status"
                 aria-live="polite"
@@ -642,11 +642,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       <span className="block font-mono text-foreground/85">
                         {money(combo.combo_amount)}
                       </span>
-                      <span className="block text-[11px] text-emerald-400/80">
+                      <span className="block text-[11px] text-success">
                         ahorro {money(combo.discount_amount)}
                       </span>
                       {combo.available_sets < 1 ? (
-                        <span className="block text-[11px] text-red-400/80">
+                        <span className="block text-[11px] text-danger">
                           sin stock para completarlo
                         </span>
                       ) : null}
@@ -676,7 +676,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                     <span className="text-foreground">{p.name}</span>
                     <span className="flex items-center gap-4 text-xs">
                       <span
-                        className={p.available > 0 ? "text-muted" : "text-red-400/80"}
+                        className={p.available > 0 ? "text-muted" : "text-danger"}
                       >
                         {p.available} disp.
                       </span>
@@ -724,7 +724,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         type="button"
                         onClick={() => setQuantity(l.product, 0)}
                         aria-label={`Quitar ${l.name}`}
-                        className="text-xs text-muted transition hover:text-red-400"
+                        className="text-xs text-muted transition hover:text-danger"
                       >
                         ✕
                       </button>
@@ -742,7 +742,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       </span>
                     </div>
                     {l.quantity > l.available ? (
-                      <p className="mt-1.5 text-[11px] text-amber-400/90">
+                      <p className="mt-1.5 text-[11px] text-warning">
                         Sólo hay {l.available} en esta sucursal.
                       </p>
                     ) : null}
@@ -762,7 +762,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                   <button
                     type="button"
                     onClick={() => setCustomer(null)}
-                    className="text-xs text-muted transition hover:text-red-400"
+                    className="text-xs text-muted transition hover:text-danger"
                   >
                     Quitar
                   </button>
@@ -866,7 +866,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 Descuento
               </p>
               {preview?.promotions?.length ? (
-                <p className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">
+                <p className="rounded-lg border border-success-border bg-success-surface px-3 py-2 text-xs text-success">
                   Una promoción automática ya está aplicada. No se combina con
                   códigos ni descuentos manuales.
                 </p>
@@ -920,7 +920,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 </>
               ) : null}
               {previewError ? (
-                <p className="text-xs text-red-400">{previewError}</p>
+                <p className="text-xs text-danger">{previewError}</p>
               ) : null}
             </div>
 
@@ -982,7 +982,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                     Vuelto: <span className="text-foreground">{money(change)}</span>
                   </p>
                 ) : received !== "" ? (
-                  <p className="mt-2 text-sm text-amber-400/90">
+                  <p className="mt-2 text-sm text-warning">
                     El efectivo no alcanza para el total.
                   </p>
                 ) : null}
@@ -1015,7 +1015,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                   till display is something an operator cannot answer for. */}
               {preview?.promotions?.length
                 ? preview.promotions.map((p) => (
-                    <div key={p.id} className="flex justify-between text-emerald-400/80">
+                    <div key={p.id} className="flex justify-between text-success">
                       <span>
                         ✓ {p.name}
                         {p.applications > 1 ? ` ×${p.applications}` : ""}
@@ -1024,7 +1024,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                     </div>
                   ))
                 : discount > 0 ? (
-                    <div className="flex justify-between text-emerald-400/80">
+                    <div className="flex justify-between text-success">
                       <span>
                         Descuento
                         {preview?.discount_source === "coupon" ? " (cupón)" : ""}
@@ -1091,7 +1091,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 (isCash && (received === "" || Number(received) < total))
               }
               onClick={() => void charge()}
-              className="w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:border-emerald-500/50 disabled:cursor-not-allowed disabled:border-bd-border disabled:bg-transparent disabled:text-muted"
+              className="w-full rounded-lg border border-success-border bg-success-surface px-4 py-3 text-sm font-medium text-success transition hover:border-success-border disabled:cursor-not-allowed disabled:border-bd-border disabled:bg-transparent disabled:text-muted"
             >
               {charging ? "Cobrando…" : "Cobrar"}
             </button>

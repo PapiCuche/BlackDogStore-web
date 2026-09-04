@@ -49,7 +49,7 @@ export default function ForgotPasswordPage() {
           ) : (
             <>
               {error && (
-                <div className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+                <div className="mb-5 rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger">
                   {error}
                 </div>
               )}
@@ -59,10 +59,10 @@ export default function ForgotPasswordPage() {
               </p>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-foreground/85">
+                  <label htmlFor="auth-forgot-password-page-correo-electronico" className="block text-sm font-medium text-foreground/85">
                     Correo electrónico
                   </label>
-                  <input
+                  <input id="auth-forgot-password-page-correo-electronico"
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}

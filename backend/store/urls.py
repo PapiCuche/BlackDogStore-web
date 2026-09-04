@@ -73,6 +73,7 @@ from .customer_views import (
     AdminCustomerDetailView,
     AdminCustomerListView,
 )
+from .dev_accounts_views import DevDemoAccountsView
 from .storefront_content_views import (
     AdminStorefrontListContentDetailView,
     AdminStorefrontListContentView,
@@ -113,6 +114,11 @@ urlpatterns = [
     path('auth/refresh/', RefreshView.as_view(), name='token_refresh'),
     path('auth/logout/', LogoutView.as_view(), name='auth-logout'),
     path('auth/csrf/', CsrfView.as_view(), name='auth-csrf'),
+    # Sólo con DEBUG=True; con DEBUG=False responde 404. Ver el módulo.
+    path(
+        'dev/demo-accounts/',
+        DevDemoAccountsView.as_view(), name='dev-demo-accounts',
+    ),
     path('auth/me/', UserDetailView.as_view(), name='auth-me'),
     path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='auth-resend-verification'),

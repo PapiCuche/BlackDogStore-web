@@ -2596,3 +2596,84 @@ Estado de clasificación tras la fase: tema global y contraste de logotipo
 IMPLEMENTADOS; responsive del escaparate IMPLEMENTADO con navegador; responsive
 del admin PARCIAL; contenido de servicios, preguntas y métricas editable por el
 tenant.
+
+
+## Auditoría integral de frontend
+
+Rama `audit/frontend-complete`, sobre `feat/storefront-cms-responsive`.
+
+**El runtime nunca sirvió otra rama.** Se verificó que el proceso de `:3000`
+corre desde el mismo árbol de trabajo y que su HTML contiene los marcadores del
+último commit. Lo que faltaba no eran los cambios: era su alcance. La fase
+anterior se detuvo deliberadamente en la portada, así que el resto de la web
+conservaba el lenguaje anterior.
+
+### El panel llevaba puesta la ropa de la tienda
+
+El layout raíz montaba cabecera, pie y botón de WhatsApp en TODAS las rutas. El
+control interno salía con «Catálogo · Servicios · Carrito» encima y el pie de
+marketing completo debajo. Se separa por ruta: `/admin` tiene su propio armazón
+y es el único que debe llevar.
+
+### Trece pantallas del panel no cargaban nunca
+
+Productos, inventario, movimientos, transferencias, recuentos y siete más usan
+`StaffGuard`, que resuelve empresa sólo por membresías. Un master de plataforma
+no tiene ninguna, así que veía «No tienes permisos» en las trece. La API ya
+aceptaba `?company=`; el arreglo es de frontend y no amplía autoridad, porque
+el backend sigue tratando ese parámetro como untrusted.
+
+Además, la empresa elegida vivía en un `useState` de un guard que se monta una
+vez por página: se perdía al navegar.
+
+### Colores de estado
+
+105 textos de estado usaban el extremo claro de cada escala, herencia de cuando
+sólo había tema oscuro. En claro rendían 1.02:1. Se separan dos familias:
+
+    danger / warning / success / info    texto sobre la página — giran
+    *-solid                              relleno con texto encima — no giran
+
+Confundirlas produjo dos defectos seguidos, ambos encontrados midiendo.
+
+### Formularios
+
+58 etiquetas sin asociar a su control, checkout la peor con 11. El lector de
+pantalla anunciaba el campo sin nombre. Lo descubrió el arnés de auditoría al
+no poder iniciar sesión.
+
+### Checkout
+
+No mostraba nada del pedido: ni artículos, ni cantidades, ni total. Se pagaba a
+ciegas.
+
+### Estado
+
+Escaparate y panel comparten sistema visual; 22 rutas × 2 temas sin un solo
+texto por debajo de AA; sin desbordamiento en 320–1440; verificado en Chromium
+y WebKit.
+
+
+## Accesos de desarrollo
+
+La tarjeta de `/auth` anunciaba seis cuentas que no existían, porque la base de
+desarrollo no tenía ningún usuario y nadie había ejecutado `seed_demo_users`.
+
+**La causa de que no se detectara importa más que el defecto.** La auditoría
+anterior capturó esa pantalla 108 veces sin pulsar un solo botón, y su arnés
+entraba con un usuario propio: verificó el mecanismo de login y dio por buena la
+promesa de la interfaz sin comprobarla. Una captura demuestra que algo se pinta,
+no que funcione.
+
+Ahora la interfaz no puede prometer de más: pregunta a
+`GET /api/dev/demo-accounts/` —sólo en desarrollo, 404 en producción— qué
+cuentas existen y cuáles están activas, y no dibuja botón para las que no
+sirven. Eso elimina además la segunda lista escrita a mano.
+
+Y `seed_demo_users` reactiva al refrescar. No lo hacía, y el mensaje que
+producía —«No active account found with the given credentials»— apunta al sitio
+equivocado.
+
+Los seis accesos están cubiertos por un E2E que pulsa el botón, envía el
+formulario, comprueba la sesión por la interfaz y verifica destino y módulos
+visibles. El limitador de 5 intentos por minuto se espera, no se desactiva.

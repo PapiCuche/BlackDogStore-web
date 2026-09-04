@@ -164,7 +164,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
       <Stepper labels={STEP_LABELS_STOCK} current={step} />
 
       {error && (
-        <p className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+        <p className="rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
           {error}
         </p>
       )}
@@ -184,7 +184,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 const selected = event.target.files?.[0];
                 if (selected) void onFile(selected);
               }}
-              className="block w-full text-sm text-muted file:mr-4 file:rounded-lg file:border-0 file:bg-foreground file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
+              className="block w-full text-sm text-background file:mr-4 file:rounded-lg file:border-0 file:bg-foreground file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
             />
           </DashboardSection>
 
@@ -251,7 +251,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
         >
           <div className="space-y-3">
             {warehouses.length === 0 && (
-              <p className="text-sm text-amber-300">
+              <p className="text-sm text-warning">
                 No se reconoció ninguna columna de almacén en «{sheet.name}».
                 Revisa que los encabezados incluyan una columna que empiece por
                 ALMACEN, DEPOSITO, SUCURSAL o TIENDA.
@@ -363,13 +363,13 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
           <Notices job={job} />
 
           <p className="mb-4 rounded-lg border border-bd-border bg-background/30 px-4 py-2 text-xs text-muted">
-            Las filas marcadas <strong className="text-amber-300">Omitir</strong>{" "}
+            Las filas marcadas <strong className="text-warning">Omitir</strong>{" "}
             tienen la celda de cantidad vacía: su stock no cambia. Un cero escrito
             explícitamente sí baja el stock a cero.
           </p>
 
           {job.counts.error > 0 && (
-            <div className="mb-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            <div className="mb-4 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
               Hay {job.counts.error} fila(s) con error y no se aplicará nada.{" "}
               <a className="underline" href={importErrorReportUrl(companyId, job.id)}>
                 Descargar el detalle
@@ -404,7 +404,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
           />
 
           {step === 4 && (
-            <p className="mt-4 rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+            <p className="mt-4 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning">
               Esta operación generará movimientos de Kardex. Quedan registrados de
               forma permanente y sólo se pueden revertir con movimientos
               compensatorios, que también quedan registrados. La diferencia se
@@ -444,7 +444,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
 
       {step === 5 && job && (
         <DashboardSection title="6 · Resultado">
-          <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+          <p className="mb-4 rounded-lg border border-success-border bg-success-surface px-4 py-3 text-sm text-success">
             Inventario aplicado. Se generaron {job.summary?.applied?.movements ?? 0}{" "}
             movimiento(s) de Kardex; {job.summary?.applied?.already_matching ?? 0}{" "}
             fila(s) ya coincidían.

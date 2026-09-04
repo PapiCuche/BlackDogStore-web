@@ -97,7 +97,7 @@ function Panel({ ctx }: { ctx: InternalContext }) {
             setSelected(null);
             setComposing(true);
           }}
-          className="rounded-lg bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-on-status hover:bg-sky-500"
+          className="rounded-lg bg-info-solid px-3 py-1.5 text-xs font-medium text-on-status hover:opacity-90"
         >
           Nuevo comunicado
         </button>
@@ -121,7 +121,7 @@ function Panel({ ctx }: { ctx: InternalContext }) {
       </nav>
 
       {error ? (
-        <p className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-300">
+        <p className="rounded-lg border border-danger-border bg-danger-surface px-3 py-2 text-xs text-danger">
           {error}
         </p>
       ) : null}
@@ -310,14 +310,14 @@ function Composer({
       </div>
 
       {error ? (
-        <p className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-300">
+        <p className="rounded-lg border border-danger-border bg-danger-surface px-3 py-2 text-xs text-danger">
           {error}
         </p>
       ) : null}
 
       {preview ? (
-        <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-          <p className="text-xs font-medium text-amber-200">
+        <div className="space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
+          <p className="text-xs font-medium text-warning">
             Confirma antes de publicar
           </p>
           <dl className="space-y-1 text-[11px] text-foreground/85">
@@ -350,7 +350,7 @@ function Composer({
             type="button"
             disabled={busy || preview.recipient_count === 0}
             onClick={() => void confirmPublish()}
-            className="rounded-lg bg-amber-500/90 px-3 py-1.5 text-xs font-medium text-background disabled:opacity-40"
+            className="rounded-lg bg-warning-surface px-3 py-1.5 text-xs font-medium text-background disabled:opacity-40"
           >
             Publicar a {preview.recipient_count} personas
           </button>
@@ -453,7 +453,7 @@ function Detail({
       ) : null}
 
       {error ? (
-        <p className="text-xs text-red-300">{error}</p>
+        <p className="text-xs text-danger">{error}</p>
       ) : null}
 
       {announcement.status === "draft" ? (

@@ -133,8 +133,8 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
           )}
 
           {error ? (
-            <div className="mb-4 rounded-lg border border-red-500/25 bg-red-500/[0.07] px-4 py-3">
-              <p className="text-sm text-red-300">{error}</p>
+            <div className="mb-4 rounded-lg border border-danger-border bg-red-500/[0.07] px-4 py-3">
+              <p className="text-sm text-danger">{error}</p>
             </div>
           ) : null}
 

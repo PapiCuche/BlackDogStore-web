@@ -152,7 +152,7 @@ export function NotificationBell({ slug }: { slug: string | null }) {
                 const inner = (
                   <div className={`rounded-lg px-2 py-2 ${n.read_at ? "opacity-60" : "bg-surface"}`}>
                     {sourceLabel(n) ? (
-                      <span className="mb-0.5 inline-block rounded bg-sky-500/15 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-sky-300">
+                      <span className="mb-0.5 inline-block rounded bg-info-surface px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-info">
                         {sourceLabel(n)}
                       </span>
                     ) : null}

@@ -101,10 +101,53 @@ async function tryRefresh(): Promise<boolean> {
   }
 }
 
+/**
+ * La clave donde el panel guarda la empresa que el master está mirando.
+ *
+ * Duplicada a propósito en vez de importada: `auth.ts` es infraestructura del
+ * escaparate y no debe depender de un componente del panel. Un test comprueba
+ * que las dos cadenas coinciden.
+ */
+export const SELECTED_COMPANY_KEY = "internal-selected-company";
+
+/**
+ * Añade la empresa seleccionada a las llamadas del PANEL que no la traigan.
+ *
+ * EL DEFECTO. Trece pantallas del panel —productos, inventario, movimientos,
+ * transferencias, recuentos…— resuelven su empresa sólo por las membresías de
+ * quien llama. Un master de plataforma no tiene ninguna, así que veía «No
+ * tienes permisos» en las trece aunque acabara de elegir empresa en el panel.
+ *
+ * NO ES UNA ESCALADA DE PRIVILEGIOS. El backend trata este parámetro como
+ * UNTRUSTED: sólo lo usa para SELECCIONAR entre las empresas que quien llama ya
+ * alcanza, y una empresa ajena responde como una inexistente. Aquí sólo se
+ * transporta una elección que el propio backend ofreció.
+ *
+ * Sólo se toca `/admin/`: el escaparate público resuelve su tenant por el host,
+ * y meterle un parámetro de empresa sería justo lo contrario de eso.
+ */
+function withSelectedCompany(url: string): string {
+  if (typeof window === "undefined") return url;
+  // Las DOS superficies internas. `/me/internal-dashboard/` no lleva «admin»
+  // en la ruta y quedaba fuera: el selector de empresa seguía diciendo «elige
+  // una» mientras los módulos ya cargaban con la elegida.
+  if (!url.includes("/admin/") && !url.includes("/me/internal-")) return url;
+  if (/[?&]company=/.test(url)) return url;
+  let id: string | null = null;
+  try {
+    id = window.localStorage.getItem(SELECTED_COMPANY_KEY);
+  } catch {
+    return url;
+  }
+  if (!id || !/^\d+$/.test(id)) return url;
+  return url + (url.includes("?") ? "&" : "?") + `company=${encodeURIComponent(id)}`;
+}
+
 export async function fetchWithAuth(
-  url: string,
+  rawUrl: string,
   options: RequestInit = {}
 ): Promise<Response> {
+  const url = withSelectedCompany(rawUrl);
   const method = ((options.method as string) || "GET").toUpperCase();
   const needsCsrf = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
 

@@ -1,119 +1,154 @@
 "use client";
 
 /**
- * Development-only quick logins — TEMPORARY, REMOVE BEFORE PRODUCTION.
+ * Accesos rápidos de desarrollo — TEMPORAL, RETIRAR ANTES DE PRODUCCIÓN.
  *
- * This is a convenience widget, not an authentication path. Pressing "Usar
- * cuenta" only FILLS the username and password fields; the operator still has to
- * press "Iniciar sesión" and go through the real login() → JWT + HttpOnly cookie
- * + CSRF flow. No token is stored, nothing is bypassed.
+ * NO ES UNA VÍA DE AUTENTICACIÓN. «Usar cuenta» sólo RELLENA los campos; quien
+ * los use sigue pulsando «Iniciar sesión» y pasando por el mismo `login()` →
+ * JWT + cookie HttpOnly + CSRF que cualquiera. No se guarda ningún token y no
+ * se salta nada.
  *
- * The whole component returns null outside development, so it is not merely
- * hidden with CSS — it never renders, and `next build` folds the branch away.
+ * Fuera de desarrollo el componente devuelve `null`, así que no está meramente
+ * oculto con CSS: no llega a existir, y `next build` pliega la rama.
  *
- * The accounts come from:
- *     python manage.py seed_demo_users --company-slug <slug>
- * and are removed with:
- *     python manage.py seed_demo_users --purge
+ * EL DEFECTO QUE ESTE FICHERO TENÍA
+ * ---------------------------------
+ * Traía su PROPIA lista de seis cuentas y la contraseña escritas a mano, y las
+ * anunciaba incondicionalmente. Si nadie había ejecutado `seed_demo_users` —el
+ * caso normal en un entorno recién clonado— la pantalla ofrecía seis
+ * credenciales que el backend rechazaba con «No active account found with the
+ * given credentials». Prometer una credencial que no existe es peor que no
+ * ofrecer ninguna: manda a depurar el login, que funciona.
  *
- * The login screen belongs to the EXTERNAL PORTAL. This block is a development
- * tool sitting on it, not an administrative surface: nothing here implies that
- * /admin is the definitive Platform Control.
+ * Y eran DOS listas —ésta y la del comando— que podían separarse en silencio.
+ *
+ * Ahora hay UNA. `/api/dev/demo-accounts/` pregunta al propio comando qué
+ * cuentas existen y cuáles sirven, y esto pinta esa respuesta. Una cuenta que
+ * no se puede usar se muestra apagada y sin botón, con el comando exacto para
+ * crearla — con el slug real de una empresa de esta base, no un marcador.
  */
 
-const DEMO_PASSWORD = "Demo123!";
+import { useEffect, useState } from "react";
+import { API_BASE } from "../../lib/api";
 
 type DemoAccount = {
   username: string;
   label: string;
   destination: string;
-  pending?: boolean;
+  authority: string;
+  exists: boolean;
+  /** Existe Y está activa. Existir sin poder entrar no sirve de nada. */
+  usable: boolean;
 };
 
-const DEMO_ACCOUNTS: DemoAccount[] = [
-  { username: "dev_customer", label: "Cliente", destination: "E-commerce" },
-  { username: "dev_sales", label: "Ventas", destination: "Pedidos / ventas" },
-  { username: "dev_inventory", label: "Inventario", destination: "Inventario" },
-  {
-    username: "dev_technician",
-    label: "Técnico",
-    destination: "Servicio Técnico",
-    pending: true,
-  },
-  { username: "dev_admin", label: "Admin empresa", destination: "Control Interno" },
-  {
-    username: "dev_master",
-    label: "MASTER",
-    destination: "Control MASTER",
-    pending: true,
-  },
-];
+type DemoAccountsResponse = {
+  password: string;
+  accounts: DemoAccount[];
+  ready: boolean;
+  seed_command: string;
+};
 
 type Props = {
   onUse: (username: string, password: string) => void;
 };
 
 export function DevQuickLogin({ onUse }: Props) {
-  // Not a CSS hide: in a production build this component renders nothing at all.
-  if (process.env.NODE_ENV !== "development") return null;
+  const [data, setData] = useState<DemoAccountsResponse | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/dev/demo-accounts/`, { cache: "no-store" });
+        // 404 es la respuesta normal cuando el backend corre con DEBUG=False:
+        // esta superficie no existe allí, y no hay nada que enseñar.
+        if (!res.ok) throw new Error(String(res.status));
+        const json = (await res.json()) as DemoAccountsResponse;
+        if (!cancelled) setData(json);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (process.env.NODE_ENV === "production") return null;
+  if (failed || !data) return null;
 
   return (
-    <section className="mt-8 rounded-xl border border-dashed border-bd-border bg-surface p-5">
-      <div className="mb-1 flex items-center gap-2">
-        <span className="rounded border border-bd-border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-foreground/85">
-          Solo desarrollo
-        </span>
-        <h2 className="text-sm font-semibold text-foreground">Accesos de desarrollo</h2>
-      </div>
-      <p className="mb-4 text-xs text-muted">
-        Usuarios temporales para probar roles durante el desarrollo. Rellenan el
-        formulario; el inicio de sesión sigue siendo el real.
-      </p>
+    <section className="mt-8 rounded-xl border border-bd-border bg-surface p-4">
+      <header className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-xs font-bold uppercase tracking-widest text-muted">
+          Accesos de desarrollo
+        </h2>
+        <p className="font-mono text-[11px] text-muted">{data.password}</p>
+      </header>
 
-      <div className="grid gap-2 sm:grid-cols-2">
-        {DEMO_ACCOUNTS.map((account) => (
-          <div
+      {!data.ready ? (
+        <div className="mt-3 rounded-lg border border-warning-border bg-warning-surface px-3 py-2.5">
+          <p className="text-xs text-warning">
+            Faltan cuentas por crear. Las apagadas no se pueden usar todavía.
+          </p>
+          <code className="mt-1.5 block break-all font-mono text-[11px] text-muted">
+            {data.seed_command}
+          </code>
+        </div>
+      ) : null}
+
+      <ul className="mt-3 min-w-0 space-y-1.5">
+        {data.accounts.map((account) => (
+          <li
             key={account.username}
-            className="rounded-lg border border-bd-border bg-background/30 p-3"
+            className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-bd-border px-2.5 py-2"
           >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-foreground">{account.label}</p>
-                <p className="truncate font-mono text-[11px] text-muted">
-                  {account.username}
-                </p>
-                <p className="font-mono text-[11px] text-muted">{DEMO_PASSWORD}</p>
-                <p className="mt-1 text-[11px] text-muted">
-                  → {account.destination}
-                  {account.pending ? (
-                    <span className="ml-1 text-muted">(UI pendiente)</span>
-                  ) : null}
-                </p>
-              </div>
+            <div className="min-w-0">
+              <p className="truncate text-xs font-semibold text-foreground">
+                {account.label}
+                {!account.usable ? (
+                  <span className="ml-1.5 font-normal text-muted">
+                    {account.exists ? "(inactiva)" : "(sin crear)"}
+                  </span>
+                ) : null}
+              </p>
+              <p className="truncate font-mono text-[11px] text-muted">
+                {account.username}
+              </p>
+              <p className="mt-0.5 truncate text-[11px] text-muted">
+                → {account.destination}
+              </p>
+            </div>
+            {/*
+              Sin botón cuando la cuenta no sirve. Un botón que rellena unas
+              credenciales que van a fallar es la promesa falsa otra vez, sólo
+              que con un clic de por medio.
+            */}
+            {account.usable ? (
               <button
                 type="button"
-                onClick={() => onUse(account.username, DEMO_PASSWORD)}
-                className="shrink-0 rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-medium text-foreground/85 transition hover:border-bd-border hover:text-foreground"
+                onClick={() => onUse(account.username, data.password)}
+                className="min-h-11 shrink-0 whitespace-nowrap rounded-lg border border-bd-border px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
               >
                 Usar cuenta
               </button>
-            </div>
-          </div>
+            ) : null}
+          </li>
         ))}
-      </div>
+      </ul>
 
-      <p className="mt-4 text-[11px] leading-relaxed text-muted">
-        Crear con{" "}
-        <code className="text-muted">
-          python manage.py seed_demo_users --company-slug &lt;slug&gt;
-        </code>
-        , eliminar con{" "}
-        <code className="text-muted">
+      {/*
+        `break-words` en el comando: es una cadena larga sin puntos de corte
+        naturales, y a 320 px empujaba la tarjeta 58 px fuera de la pantalla.
+        Un bloque de código dentro de un párrafo estrecho tiene que poder
+        partirse, o parte la página.
+      */}
+      <p className="mt-3 text-[11px] leading-relaxed text-muted">
+        Sólo desarrollo. Se eliminan con{" "}
+        <code className="break-words font-mono">
           python manage.py seed_demo_users --purge
         </code>
-        . El módulo de Servicio Técnico y la UI de Platform Control todavía no
-        existen; <code className="text-muted">/admin</code> sigue siendo el
-        panel legacy.
+        .
       </p>
     </section>
   );

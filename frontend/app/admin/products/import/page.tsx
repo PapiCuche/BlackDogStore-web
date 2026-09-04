@@ -152,7 +152,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
       <Stepper labels={STEP_LABELS_PRODUCTS} current={step} />
 
       {error && (
-        <p className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+        <p className="rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
           {error}
         </p>
       )}
@@ -172,7 +172,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 const selected = event.target.files?.[0];
                 if (selected) void onFile(selected);
               }}
-              className="block w-full text-sm text-muted file:mr-4 file:rounded-lg file:border-0 file:bg-foreground file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
+              className="block w-full text-sm text-background file:mr-4 file:rounded-lg file:border-0 file:bg-foreground file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
             />
             <p className="text-xs text-muted">
               ¿No tienes un archivo? Descarga la plantilla, complétala y vuelve aquí.
@@ -209,12 +209,12 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold text-foreground">{entry.name}</span>
                   {entry.detected && (
-                    <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                    <span className="rounded-full bg-success-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-success">
                       Formato reconocido
                     </span>
                   )}
                   {entry.profile && (
-                    <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-sky-300">
+                    <span className="rounded-full bg-info-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-info">
                       Mapeo recordado
                     </span>
                   )}
@@ -264,7 +264,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 <label key={field} className="block text-xs">
                   <span className="mb-1 block uppercase tracking-widest text-muted">
                     {meta.label}
-                    {meta.required && <span className="text-rose-400"> *</span>}
+                    {meta.required && <span className="text-danger"> *</span>}
                   </span>
                   <select
                     value={mapping[field] ?? ""}
@@ -344,7 +344,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
           <Notices job={job} />
 
           {job.counts.error > 0 && (
-            <div className="mb-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            <div className="mb-4 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
               Hay {job.counts.error} fila(s) con error. No se aplica una
               importación a medias: corrige el archivo y vuelve a subirlo.{" "}
               <a
@@ -397,7 +397,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
 
       {step === 5 && job && (
         <DashboardSection title="6 · Resultado">
-          <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+          <p className="mb-4 rounded-lg border border-success-border bg-success-surface px-4 py-3 text-sm text-success">
             Importación aplicada. Se crearon {job.summary?.applied?.created ?? 0} y
             se actualizaron {job.summary?.applied?.updated ?? 0} producto(s).
           </p>

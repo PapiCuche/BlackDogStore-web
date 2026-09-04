@@ -256,8 +256,8 @@ export default function ProductDetail({ product }: { product: Product }) {
               <p className="mt-1 text-[10px] uppercase tracking-widest text-muted">Precio incluye IGV</p>
 
               <div className="mt-5 flex items-center gap-3">
-                <label className="text-sm font-medium text-muted">Cantidad</label>
-                <div className="flex items-center">
+                <span id="qty-label" className="text-sm font-medium text-muted">Cantidad</span>
+                <div className="flex items-center" role="group" aria-labelledby="qty-label">
                   <button
                     type="button"
                     onClick={() => setQuantity(Math.max(1, quantity - 1))}
@@ -301,7 +301,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                   className={`mt-4 rounded-xl border p-3 text-sm ${
                     statusType === "success"
                       ? "border-bd-border bg-surface text-foreground"
-                      : "border-red-500/30 bg-red-500/10 text-red-300"
+                      : "border-danger-border bg-danger-surface text-danger"
                   }`}
                 >
                   {status}
@@ -374,12 +374,18 @@ export default function ProductDetail({ product }: { product: Product }) {
             ) : (
               <form onSubmit={handleReviewSubmit} className="space-y-4">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-muted">Calificación</label>
-                  <StarPicker rating={reviewRating} onChange={setReviewRating} />
+                  {/* Un grupo de botones no es un campo: `<label>` no lo
+                      nombra. `role="group"` + `aria-labelledby` sí. */}
+                  <span id="review-rating-label" className="mb-2 block text-sm font-medium text-muted">
+                    Calificación
+                  </span>
+                  <div role="group" aria-labelledby="review-rating-label">
+                    <StarPicker rating={reviewRating} onChange={setReviewRating} />
+                  </div>
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-muted">Comentario (opcional)</label>
-                  <textarea
+                  <label htmlFor="review-comment" className="mb-1 block text-sm font-medium text-muted">Comentario (opcional)</label>
+                  <textarea id="review-comment"
                     value={reviewComment}
                     onChange={(e) => setReviewComment(e.target.value)}
                     placeholder="¿Qué te pareció el producto?"
@@ -388,7 +394,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                   />
                 </div>
                 {reviewError && (
-                  <p className="text-sm text-rose-300">{reviewError}</p>
+                  <p className="text-sm text-danger">{reviewError}</p>
                 )}
                 <button
                   type="submit"

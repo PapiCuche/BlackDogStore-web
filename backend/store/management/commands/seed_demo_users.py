@@ -258,6 +258,19 @@ class Command(BaseCommand):
         user.email = demo_email(username)
         user.is_superuser = is_superuser
         user.is_staff = is_staff
+        # REACTIVAR ES PARTE DE REFRESCAR.
+        #
+        # Esto no estaba, y el hueco era silencioso: un demo desactivado desde
+        # el módulo de usuarios del panel se quedaba desactivado para siempre,
+        # porque volver a sembrar refrescaba correo, flags y contraseña pero no
+        # esto. El login respondía «No active account found with the given
+        # credentials» — un mensaje que suena a contraseña incorrecta y manda a
+        # buscar en el sitio equivocado.
+        #
+        # Una cuenta demo no tiene estado que preservar: existe para poder
+        # entrar. Si no se puede entrar con ella, no está cumpliendo su única
+        # función. Desactivarla de verdad es `--purge`.
+        user.is_active = True
         user.set_password(DEMO_PASSWORD)
         user.save()
 

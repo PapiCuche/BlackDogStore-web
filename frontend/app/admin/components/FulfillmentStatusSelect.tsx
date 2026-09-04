@@ -76,7 +76,7 @@ export function FulfillmentStatusSelect({ orderId, current, currentUser, onChang
           {saving ? "Guardando…" : "Guardar"}
         </button>
       </div>
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
       {success && <p className="text-sm text-muted">Estado de despacho actualizado.</p>}
     </div>
   );

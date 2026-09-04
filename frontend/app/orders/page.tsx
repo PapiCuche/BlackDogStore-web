@@ -63,7 +63,7 @@ export default function OrdersPage() {
     <div className="min-h-screen bg-background px-6 py-12">
       <div className="mx-auto max-w-4xl">
         <div className="mb-8">
-          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-emerald-400/60">Cuenta</p>
+          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-success">Cuenta</p>
           <h1 className="mt-1 text-4xl font-bold text-foreground">Mis pedidos</h1>
         </div>
 
@@ -97,9 +97,9 @@ export default function OrdersPage() {
                   >
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="flex items-center gap-4">
-                        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${order.paid ? "border-emerald-500/40 bg-emerald-500/10" : "border-bd-border bg-surface-2"}`}>
+                        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${order.paid ? "border-success-border bg-success-surface" : "border-bd-border bg-surface-2"}`}>
                           {order.paid ? (
-                            <svg className="h-5 w-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <svg className="h-5 w-5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                             </svg>
                           ) : (
@@ -120,10 +120,10 @@ export default function OrdersPage() {
                         <div className="text-right">
                           <p className="font-bold text-foreground">S/ {formatMoney(order.total)}</p>
                           {hasDiscount && (
-                            <p className="text-xs text-emerald-400">Ahorraste S/ {formatMoney(order.discount_amount)}</p>
+                            <p className="text-xs text-success">Ahorraste S/ {formatMoney(order.discount_amount)}</p>
                           )}
                         </div>
-                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${order.paid ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"}`}>
+                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${order.paid ? "bg-success-surface text-success border border-success-border" : "bg-warning-surface text-warning border border-warning-border"}`}>
                           {order.paid ? "Pagado" : "Pendiente"}
                         </span>
                         <svg className={`h-4 w-4 text-muted transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -136,7 +136,7 @@ export default function OrdersPage() {
                   {isExpanded && (
                     <div className="border-t border-bd-border px-6 pb-5 pt-4">
                       {order.coupon_code && (
-                        <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 text-xs font-medium text-emerald-400">
+                        <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-success-surface border border-success-border px-3 py-1 text-xs font-medium text-success">
                           🏷️ Cupón: {order.coupon_code} (−{formatMoney(order.discount_amount)} S/)
                         </div>
                       )}
@@ -150,7 +150,7 @@ export default function OrdersPage() {
                                 </svg>
                               </div>
                               <div>
-                                <Link href={`/product/${item.product.slug}`} className="text-sm font-medium text-foreground hover:text-emerald-400 transition">
+                                <Link href={`/product/${item.product.slug}`} className="text-sm font-medium text-foreground hover:text-success transition">
                                   {item.product.name}
                                 </Link>
                                 <p className="text-xs text-muted">Cant.: {item.quantity} × S/ {formatMoney(item.price)}</p>
@@ -162,7 +162,7 @@ export default function OrdersPage() {
                       </div>
 
                       {!order.paid && (
-                        <div className="mt-4 rounded-xl border border-yellow-500/20 bg-yellow-500/10 p-3 text-xs text-yellow-300">
+                        <div className="mt-4 rounded-xl border border-warning-border bg-warning-surface p-3 text-xs text-warning">
                           Este pedido está pendiente de pago. Si tienes dudas, contáctanos por WhatsApp.
                         </div>
                       )}
@@ -176,7 +176,7 @@ export default function OrdersPage() {
 
         <div className="mt-8 flex gap-4">
           <Link href="/product" className="text-sm text-muted hover:text-foreground transition">← Seguir comprando</Link>
-          <a href={whatsappLink || "#"} className="text-sm text-emerald-400 hover:text-emerald-300 transition">¿Problemas con tu pedido? WhatsApp →</a>
+          <a href={whatsappLink || "#"} className="text-sm text-success hover:text-success transition">¿Problemas con tu pedido? WhatsApp →</a>
         </div>
       </div>
     </div>
