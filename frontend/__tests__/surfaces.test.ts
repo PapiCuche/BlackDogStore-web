@@ -143,8 +143,8 @@ describe('cada etiqueta nombra a su campo', () => {
     const offenders: string[] = [];
     for (const file of FILES) {
       const src = code(file);
-      for (const m of src.matchAll(/<label(?<attrs>[^>]*)>(?<body>[\s\S]*?)<\/label>/g)) {
-        const { attrs = '', body = '' } = m.groups ?? {};
+      for (const m of src.matchAll(/<label([^>]*)>([\s\S]*?)<\/label>/g)) {
+        const [, attrs = '', body = ''] = m;
         if (attrs.includes('htmlFor')) continue;
         if (/<(input|select|textarea)(?![\w-])/.test(body)) continue;
         const text = body.replace(/\{[^}]*\}/g, '').replace(/<[^>]+>/g, '').trim();

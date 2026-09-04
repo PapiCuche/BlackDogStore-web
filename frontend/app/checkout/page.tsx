@@ -5,7 +5,21 @@ import Link from "next/link";
 import Script from "next/script";
 import { useRouter } from "next/navigation";
 import { getSessionKey } from "../lib/cart";
-import { API_BASE } from "../lib/api";
+
+/**
+ * Lo que el cliente está a punto de pagar.
+ *
+ * EL DEFECTO. Esta pantalla no mostraba NADA del pedido: ni artículos, ni
+ * cantidades, ni total. Se pulsaba «Continuar al pago» a ciegas y el importe
+ * aparecía por primera vez en la pasarela. En una tienda eso no es un problema
+ * de composición: es pedir dinero sin decir cuánto.
+ */
+type CheckoutItem = {
+  id: number;
+  quantity: number;
+  product: { id: number; name: string; price: number | string; slug: string };
+};
+import { API_BASE, fetcher } from "../lib/api";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import {
   deliveryDescriptions,
@@ -101,8 +115,34 @@ export default function CheckoutPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [cancelled, setCancelled] = useState(false);
   const [coupon, setCoupon] = useState<Coupon | null>(null);
+  const [items, setItems] = useState<CheckoutItem[] | null>(null);
 
   const sessionKey = getSessionKey();
+
+  // El resumen se carga aparte del formulario: si el carrito falla, el
+  // formulario sigue siendo usable y el resumen dice qué pasó, en vez de dejar
+  // la pantalla en blanco.
+  useEffect(() => {
+    if (!sessionKey) return;
+    let cancelledFetch = false;
+    void (async () => {
+      try {
+        const data = await fetcher<CheckoutItem[]>(
+          `${API_BASE}/cart/?session_key=${encodeURIComponent(sessionKey)}`,
+        );
+        if (!cancelledFetch) setItems(Array.isArray(data) ? data : []);
+      } catch {
+        if (!cancelledFetch) setItems([]);
+      }
+    })();
+    return () => { cancelledFetch = true; };
+  }, [sessionKey]);
+
+  const subtotal = (items ?? []).reduce(
+    (sum, item) => sum + Number(item.product.price) * item.quantity, 0,
+  );
+  const discount = coupon ? subtotal * (coupon.discount_percent / 100) : 0;
+  const total = subtotal - discount;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -247,7 +287,7 @@ export default function CheckoutPage() {
           }}
         />
       )}
-      <div className="mx-auto max-w-xl">
+      <div className="mx-auto max-w-6xl">
 
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-foreground">Checkout</h1>
@@ -280,6 +320,16 @@ export default function CheckoutPage() {
           </div>
         )}
 
+        {/*
+          DOS COLUMNAS: formulario y resumen.
+
+          El formulario ocupaba 576 px centrados en 1440 y el resumen no
+          existía. Ahora el pedido está a la vista mientras se rellenan los
+          datos, que es cuando importa — y en móvil el resumen va primero, para
+          que lo primero que se lea sea qué se está pagando.
+        */}
+        <div className="grid gap-8 lg:grid-cols-12 lg:items-start">
+          <div className="order-2 lg:order-1 lg:col-span-7">
         <form onSubmit={handleSubmit} className="space-y-5">
 
           {/* 1. Datos personales */}
@@ -580,10 +630,71 @@ export default function CheckoutPage() {
           </div>
         </form>
 
-        <div className="mt-6 flex justify-center gap-6 text-xs text-muted">
-          <span>SSL Encriptado</span>
-          <span>Pago seguro</span>
-          <span>Compra protegida</span>
+          {/*
+            «SSL Encriptado · Pago seguro · Compra protegida» eran tres sellos
+            que no dicen nada comprobable. Lo que sí es un hecho es quién
+            procesa el cobro y que los datos van cifrados, y eso ya lo dice la
+            declaración de más arriba con el nombre y el RUC de la empresa.
+          */}
+          </div>
+
+          <aside className="order-1 lg:order-2 lg:sticky lg:top-24 lg:col-span-5">
+            <h2 className="text-sm font-semibold text-foreground">Tu pedido</h2>
+            {items === null ? (
+              <p className="mt-3 text-sm text-muted">Cargando el pedido…</p>
+            ) : items.length === 0 ? (
+              <div className="mt-3 rounded-xl border border-bd-border p-5">
+                <p className="text-sm text-muted">
+                  No pudimos leer tu carrito. Revísalo antes de pagar.
+                </p>
+                <Link
+                  href="/cart"
+                  className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold text-foreground underline underline-offset-4"
+                >
+                  Ir al carrito
+                </Link>
+              </div>
+            ) : (
+              <div className="mt-3 rounded-xl border border-bd-border">
+                <ul className="divide-y divide-bd-border">
+                  {items.map((item) => (
+                    <li key={item.id} className="flex items-start gap-3 px-4 py-3">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-foreground">
+                          {item.product.name}
+                        </span>
+                        <span className="mt-0.5 block text-xs text-muted">
+                          {item.quantity} × S/ {Number(item.product.price).toFixed(2)}
+                        </span>
+                      </span>
+                      {/* `tabular-nums` para que los importes alineen en columna. */}
+                      <span className="shrink-0 text-sm tabular-nums text-foreground">
+                        S/ {(Number(item.product.price) * item.quantity).toFixed(2)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <dl className="space-y-2 border-t border-bd-border px-4 py-4 text-sm">
+                  <div className="flex justify-between">
+                    <dt className="text-muted">Subtotal</dt>
+                    <dd className="tabular-nums text-foreground">S/ {subtotal.toFixed(2)}</dd>
+                  </div>
+                  {coupon ? (
+                    <div className="flex justify-between">
+                      <dt className="text-muted">Cupón {coupon.code}</dt>
+                      <dd className="tabular-nums text-success">−S/ {discount.toFixed(2)}</dd>
+                    </div>
+                  ) : null}
+                  <div className="flex justify-between border-t border-bd-border pt-2">
+                    <dt className="font-semibold text-foreground">Total</dt>
+                    <dd className="font-display text-lg font-black tabular-nums text-foreground">
+                      S/ {total.toFixed(2)}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            )}
+          </aside>
         </div>
       </div>
     </div>
