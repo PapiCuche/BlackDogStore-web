@@ -77,9 +77,15 @@ export default async function RootLayout({
   // reach a style attribute.
   const theme = brandingStyle(config);
 
+  /*
+    `es-PE`, no `es` a secas. El navegador formatea `<input type="date">` según
+    el idioma del documento, y con «es» los filtros de fecha del panel pedían
+    `mm/dd/yyyy` — formato estadounidense en una tienda peruana, que además se
+    lee mal justo los doce primeros días de cada mes.
+  */
   return (
     <html
-      lang="es"
+      lang="es-PE"
       className={`${inter.variable} ${unbounded.variable} h-full antialiased`}
       style={theme}
       // El script de abajo escribe `data-theme` y `style.colorScheme` antes de

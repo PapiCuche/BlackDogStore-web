@@ -9,6 +9,26 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## Auditoría integral de frontend
+
+**Estado: IMPLEMENTADO.** Sin migraciones — el backend no cambia.
+
+| Hallazgo | Severidad |
+| --- | --- |
+| El panel montaba la cabecera, el pie y el WhatsApp de la tienda | P0 |
+| 13 pantallas del panel nunca cargaban para el master de plataforma | P0 |
+| La empresa elegida se perdía al navegar entre pantallas | P1 |
+| El checkout no mostraba el pedido ni el total | P1 |
+| 105 textos de estado invisibles en tema claro (1.02:1) | P1 |
+| 58 etiquetas de formulario sin asociar a su control | P1 |
+| 7 botones invertidos con texto a 2:1, uno de ellos «Continuar al pago» | P1 |
+| Desbordamiento de 308 px en inventario a 390 px | P2 |
+| 12 maquetas de un prototipo con un precio sin respaldo incrustado | P2 |
+| Formato de fecha estadounidense en una tienda peruana | P3 |
+
+Ninguno lo habría encontrado un test unitario: son propiedades de cómo encaja
+la aplicación entera, y salieron de abrirla en un navegador con sesión real.
+
 ## M12F.1 — Reconciliación: claims, contraste de logotipo y contenido de servicios
 
 **Estado: IMPLEMENTADO.** Migraciones **0077**–**0078**.
