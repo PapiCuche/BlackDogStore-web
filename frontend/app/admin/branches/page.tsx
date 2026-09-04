@@ -67,20 +67,20 @@ function BranchEditor({
   }
 
   const field =
-    "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
+    "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
 
   return (
     <>
-      <tr className="border-b border-white/[0.03]">
-        <td className="px-4 py-3 text-zinc-200">{branch.name}</td>
-        <td className="px-4 py-3 text-zinc-500">{branch.address || "—"}</td>
-        <td className="px-4 py-3 text-zinc-500">{branch.phone || "—"}</td>
+      <tr className="border-b border-bd-border">
+        <td className="px-4 py-3 text-foreground">{branch.name}</td>
+        <td className="px-4 py-3 text-muted">{branch.address || "—"}</td>
+        <td className="px-4 py-3 text-muted">{branch.phone || "—"}</td>
         <td className="px-4 py-3">
           <span
             className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] ${
               branch.is_active
-                ? "border-white/20 text-zinc-300"
-                : "border-white/[0.06] text-zinc-600"
+                ? "border-bd-border text-foreground/85"
+                : "border-bd-border text-muted"
             }`}
           >
             {branch.is_active ? "Activa" : "Inactiva"}
@@ -91,7 +91,7 @@ function BranchEditor({
             type="button"
             disabled={disabled}
             onClick={() => setOpen((v) => !v)}
-            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 transition hover:border-white/20 hover:text-white disabled:opacity-40"
+            className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-foreground/85 transition hover:border-bd-border hover:text-foreground disabled:opacity-40"
           >
             {open ? "Cerrar" : "Editar"}
           </button>
@@ -99,7 +99,7 @@ function BranchEditor({
       </tr>
 
       {open ? (
-        <tr className="border-b border-white/[0.06] bg-white/[0.02]">
+        <tr className="border-b border-bd-border bg-surface">
           <td colSpan={5} className="px-4 py-5">
             <div className="grid gap-4 sm:grid-cols-2">
               {(
@@ -112,7 +112,7 @@ function BranchEditor({
               ).map(([label, key]) => (
                 <div key={key}>
                   <label
-                    className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                    className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                     htmlFor={`br-${branch.id}-${key}`}
                   >
                     {label}
@@ -135,7 +135,7 @@ function BranchEditor({
                 type="button"
                 disabled={busy}
                 onClick={() => void run(draft)}
-                className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
               >
                 Guardar
               </button>
@@ -151,7 +151,7 @@ function BranchEditor({
                       `la tienda dejará de poder cerrar pedidos hasta que elijas otra.`;
                   if (window.confirm(warning)) void run({ is_active: next });
                 }}
-                className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-400 transition hover:border-white/20 hover:text-white disabled:opacity-40"
+                className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground disabled:opacity-40"
               >
                 {branch.is_active ? "Desactivar" : "Reactivar"}
               </button>
@@ -241,28 +241,28 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
   }
 
   const field =
-    "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
+    "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">Sucursales</h1>
-            <p className="mt-1 text-sm text-zinc-500">
+            <h1 className="text-xl font-semibold text-foreground">Sucursales</h1>
+            <p className="mt-1 text-sm text-muted">
               Ubicaciones de la empresa. Sus datos aparecen como punto de retiro en
               los documentos de los pedidos que despachan.
             </p>
           </div>
           <Link
             href="/admin/settings"
-            className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
           >
             ← Configuración
           </Link>
         </div>
 
-        {loading ? <p className="py-10 text-center text-zinc-600">Cargando…</p> : null}
+        {loading ? <p className="py-10 text-center text-muted">Cargando…</p> : null}
         {error ? (
           <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
             {error}
@@ -270,9 +270,9 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
         ) : null}
 
         {config ? (
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+          <div className="rounded-xl border border-bd-border bg-surface p-5">
             <label
-              className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+              className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
               htmlFor="fulfillment-branch"
             >
               Sucursal de despacho de la tienda online
@@ -293,7 +293,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   </option>
                 ))}
             </select>
-            <p className="mt-2 text-[11px] text-zinc-600">
+            <p className="mt-2 text-[11px] text-muted">
               De aquí sale el stock de las ventas online, y su dirección es el punto
               de retiro. Cambiarla afecta a los pedidos FUTUROS: los ya existentes
               conservan la sucursal con la que se vendieron.
@@ -307,13 +307,13 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
         {canManage ? (
           <form
             onSubmit={handleCreate}
-            className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5"
+            className="rounded-xl border border-bd-border bg-surface p-5"
           >
-            <p className="mb-4 text-sm font-medium text-zinc-300">Nueva sucursal</p>
+            <p className="mb-4 text-sm font-medium text-foreground/85">Nueva sucursal</p>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label
-                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                   htmlFor="new-branch-name"
                 >
                   Nombre
@@ -328,7 +328,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
               </div>
               <div>
                 <label
-                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                   htmlFor="new-branch-address"
                 >
                   Dirección
@@ -348,7 +348,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
             <button
               type="submit"
               disabled={busy || !newName.trim()}
-              className="mt-4 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+              className="mt-4 rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
             >
               Crear sucursal
             </button>
@@ -356,16 +356,16 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
         ) : null}
 
         {!loading && branches.length === 0 ? (
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] py-10 text-center text-zinc-500">
+          <div className="rounded-xl border border-bd-border bg-surface py-10 text-center text-muted">
             Esta empresa todavía no tiene sucursales.
           </div>
         ) : null}
 
         {branches.length > 0 ? (
-          <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+          <div className="overflow-x-auto rounded-xl border border-bd-border">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] bg-white/[0.02] text-left text-xs font-semibold uppercase tracking-wider text-zinc-500">
+                <tr className="border-b border-bd-border bg-surface text-left text-xs font-semibold uppercase tracking-wider text-muted">
                   <th className="px-4 py-3">Sucursal</th>
                   <th className="px-4 py-3">Dirección</th>
                   <th className="px-4 py-3">Teléfono</th>

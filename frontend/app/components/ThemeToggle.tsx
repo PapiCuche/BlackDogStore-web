@@ -71,7 +71,7 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
         aria-label={`Tema: ${THEME_LABELS[choice]}`}
         // 44px de lado: el mínimo táctil razonable. Un icono de 32 en móvil se
         // falla con el pulgar más veces de las que se acierta.
-        className="flex h-11 w-11 items-center justify-center rounded-full border border-bd-border text-foreground/70 transition hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        className="flex h-11 w-11 items-center justify-center rounded-full border border-bd-border text-muted transition hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
       >
         <Icon choice={choice} className="h-5 w-5" />
       </button>

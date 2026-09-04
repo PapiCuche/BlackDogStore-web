@@ -172,15 +172,15 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
 
   return (
     <div className="space-y-5">
-      <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+      <div className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={stage}
             onChange={(e) => setStage(e.target.value)}
-            className="rounded-lg border border-white/10 bg-transparent px-2 py-1.5 text-xs text-zinc-200"
+            className="rounded-lg border border-bd-border bg-transparent px-2 py-1.5 text-xs text-foreground"
           >
             {EVIDENCE_STAGES.map((s) => (
-              <option key={s.value} value={s.value} className="bg-zinc-900">
+              <option key={s.value} value={s.value} className="bg-surface">
                 {s.label}
               </option>
             ))}
@@ -189,7 +189,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
             type="file"
             accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            className="text-xs text-zinc-400 file:mr-2 file:rounded-lg file:border file:border-white/10 file:bg-white/5 file:px-2 file:py-1 file:text-xs file:text-zinc-200"
+            className="text-xs text-muted file:mr-2 file:rounded-lg file:border file:border-bd-border file:bg-surface file:px-2 file:py-1 file:text-xs file:text-foreground"
           />
           <button
             type="button"
@@ -212,11 +212,11 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
           <img
             src={preview}
             alt="Vista previa"
-            className="max-h-40 rounded-lg border border-white/10"
+            className="max-h-40 rounded-lg border border-bd-border"
           />
         ) : null}
 
-        <p className="text-[11px] leading-5 text-zinc-600">
+        <p className="text-[11px] leading-5 text-muted">
           La plataforma optimiza la imagen automáticamente: se reorienta, se le
           quita la metadata —incluida la ubicación— y se guarda comprimida. No se
           conserva el archivo original de la cámara.
@@ -230,13 +230,13 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
       ) : null}
 
       {rows === null ? (
-        <p className="text-xs text-zinc-600">Cargando…</p>
+        <p className="text-xs text-muted">Cargando…</p>
       ) : rows.length === 0 ? (
-        <p className="text-xs text-zinc-600">Todavía no hay evidencias.</p>
+        <p className="text-xs text-muted">Todavía no hay evidencias.</p>
       ) : (
         groups.map(({ stage: s, items }) => (
           <section key={s.value} className="space-y-2">
-            <h4 className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+            <h4 className="text-[11px] font-medium uppercase tracking-wide text-muted">
               {s.label} · {items.length}
             </h4>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
@@ -245,15 +245,15 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                   key={e.id}
                   className={`overflow-hidden rounded-xl border ${
                     e.voided_at
-                      ? "border-white/5 opacity-50"
-                      : "border-white/10"
+                      ? "border-bd-border opacity-50"
+                      : "border-bd-border"
                   }`}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={`${base}/${e.id}/content/`}
                     alt={`${s.label} · ${new Date(e.created_at).toLocaleDateString("es-PE")}`}
-                    className="h-32 w-full bg-black/40 object-cover"
+                    className="h-32 w-full bg-background/40 object-cover"
                     loading="lazy"
                   />
                   <figcaption className="space-y-1.5 px-2 py-2">
@@ -267,17 +267,17 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                           Visible al cliente
                         </span>
                       ) : (
-                        <span className="rounded bg-white/5 px-1.5 py-px text-[10px] text-zinc-400">
+                        <span className="rounded bg-surface px-1.5 py-px text-[10px] text-muted">
                           Interna
                         </span>
                       )}
                     </div>
-                    <p className="text-[10px] text-zinc-600">
+                    <p className="text-[10px] text-muted">
                       {new Date(e.created_at).toLocaleString("es-PE")} ·{" "}
                       {e.width}×{e.height} · {humanBytes(e.byte_size)}
                     </p>
                     {e.void_reason ? (
-                      <p className="text-[10px] text-zinc-500">{e.void_reason}</p>
+                      <p className="text-[10px] text-muted">{e.void_reason}</p>
                     ) : null}
 
                     {!e.voided_at && may(s.capability) ? (
@@ -287,7 +287,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                             type="button"
                             disabled={busy}
                             onClick={() => void act(e.id, "publish-to-customer")}
-                            className="rounded border border-white/10 px-1.5 py-px text-[10px] text-zinc-300 disabled:opacity-40"
+                            className="rounded border border-bd-border px-1.5 py-px text-[10px] text-foreground/85 disabled:opacity-40"
                           >
                             Compartir con cliente
                           </button>
@@ -296,7 +296,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                             type="button"
                             disabled={busy}
                             onClick={() => void act(e.id, "hide-from-customer")}
-                            className="rounded border border-white/10 px-1.5 py-px text-[10px] text-zinc-300 disabled:opacity-40"
+                            className="rounded border border-bd-border px-1.5 py-px text-[10px] text-foreground/85 disabled:opacity-40"
                           >
                             Ocultar al cliente
                           </button>
@@ -305,7 +305,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                           type="button"
                           disabled={busy}
                           onClick={() => setVoiding(e.id)}
-                          className="rounded border border-white/10 px-1.5 py-px text-[10px] text-zinc-400 disabled:opacity-40"
+                          className="rounded border border-bd-border px-1.5 py-px text-[10px] text-muted disabled:opacity-40"
                         >
                           Anular
                         </button>
@@ -318,7 +318,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                           value={reason}
                           onChange={(ev) => setReason(ev.target.value)}
                           placeholder="Motivo de la anulación"
-                          className="w-full rounded border border-white/10 bg-transparent px-1.5 py-1 text-[10px] text-zinc-200"
+                          className="w-full rounded border border-bd-border bg-transparent px-1.5 py-1 text-[10px] text-foreground"
                         />
                         <div className="flex gap-1">
                           <button
@@ -335,12 +335,12 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                               setVoiding(null);
                               setReason("");
                             }}
-                            className="rounded px-1.5 py-px text-[10px] text-zinc-500"
+                            className="rounded px-1.5 py-px text-[10px] text-muted"
                           >
                             Cancelar
                           </button>
                         </div>
-                        <p className="text-[10px] text-zinc-600">
+                        <p className="text-[10px] text-muted">
                           La evidencia se conserva; deja de estar disponible.
                         </p>
                       </div>

@@ -100,8 +100,8 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
       <div className="space-y-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">Inventario</h1>
-            <p className="mt-1 text-sm text-zinc-500">
+            <h1 className="text-xl font-semibold text-foreground">Inventario</h1>
+            <p className="mt-1 text-sm text-muted">
               Stock por sucursal, movimientos y rotación.
             </p>
           </div>
@@ -116,31 +116,31 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
             />
             <Link
               href="/admin/inventory/movements"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
             >
               Movimientos
             </Link>
             <Link
               href="/admin/inventory/transfers"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
             >
               Transferencias
             </Link>
             <Link
               href="/admin/inventory/counts"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
             >
               Recuentos
             </Link>
             <Link
               href="/admin/inventory/replenishment"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
             >
               Reposición
             </Link>
             <Link
               href="/admin/inventory/reports"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
             >
               Reportes
             </Link>
@@ -240,7 +240,7 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
                 action={
                   <Link
                     href="/admin/inventory/movements"
-                    className="text-xs text-zinc-500 transition hover:text-white"
+                    className="text-xs text-muted transition hover:text-foreground"
                   >
                     Ver todos →
                   </Link>
@@ -251,7 +251,7 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
                 ) : (
                   <TableWrap>
                     <thead>
-                      <tr className="border-b border-white/[0.06]">
+                      <tr className="border-b border-bd-border">
                         <Th>Fecha</Th>
                         <Th>Sucursal</Th>
                         <Th>Producto</Th>
@@ -262,7 +262,7 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
                     </thead>
                     <tbody>
                       {data.movements.map((m) => (
-                        <tr key={m.id} className="border-b border-white/[0.03]">
+                        <tr key={m.id} className="border-b border-bd-border">
                           <Td muted>{formatDateTime(m.created_at)}</Td>
                           <Td muted>{m.branch_name}</Td>
                           <Td>{m.product_name}</Td>

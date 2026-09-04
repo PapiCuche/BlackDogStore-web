@@ -93,10 +93,10 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
       <div className="space-y-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">
+            <h1 className="text-xl font-semibold text-foreground">
               Kardex {data ? `— ${data.product.name}` : ""}
             </h1>
-            <p className="mt-1 text-sm text-zinc-500">
+            <p className="mt-1 text-sm text-muted">
               Historial completo de entradas y salidas del producto.
             </p>
           </div>
@@ -111,13 +111,13 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
             />
             <Link
               href={`/admin/products/${productId}`}
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
             >
               Ver producto
             </Link>
             <Link
               href="/admin/inventory/movements"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
             >
               Movimientos
             </Link>
@@ -160,7 +160,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
               <Panel title="Stock por sucursal" description="Dónde están las unidades">
                 <TableWrap>
                   <thead>
-                    <tr className="border-b border-white/[0.06]">
+                    <tr className="border-b border-bd-border">
                       <Th>Sucursal</Th>
                       <Th right>Stock</Th>
                       <Th right>Mínimo</Th>
@@ -169,7 +169,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
                   </thead>
                   <tbody>
                     {data.stock_by_branch.map((row) => (
-                      <tr key={row.id} className="border-b border-white/[0.03]">
+                      <tr key={row.id} className="border-b border-bd-border">
                         <Td>{row.branch_name}</Td>
                         <Td right>{row.quantity}</Td>
                         <Td right muted>{row.minimum_stock || "—"}</Td>
@@ -190,7 +190,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
               ) : (
                 <TableWrap>
                   <thead>
-                    <tr className="border-b border-white/[0.06]">
+                    <tr className="border-b border-bd-border">
                       <Th>Fecha</Th>
                       <Th>Sucursal</Th>
                       <Th>Tipo</Th>
@@ -204,7 +204,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
                   </thead>
                   <tbody>
                     {data.movements.map((m) => (
-                      <tr key={m.id} className="border-b border-white/[0.03]">
+                      <tr key={m.id} className="border-b border-bd-border">
                         <Td muted>{formatDateTime(m.created_at)}</Td>
                         <Td muted>{m.branch_name}</Td>
                         <Td><MovementBadge movement={m} /></Td>

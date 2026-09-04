@@ -32,7 +32,7 @@ function StockBadge({ inventory }: { inventory?: number }) {
     );
   }
   return (
-    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+    <span className="rounded-full border border-bd-border bg-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-muted">
       En stock
     </span>
   );
@@ -54,7 +54,7 @@ export function ProductCard({
   return (
     <Link
       href={`/product/${slug}`}
-      className="group flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-surface transition-all duration-300 hover:border-white/20 hover:bg-surface"
+      className="group flex flex-col overflow-hidden rounded-2xl border border-bd-border bg-surface transition-all duration-300 hover:border-bd-border hover:bg-surface"
     >
       {/* Image */}
       <div className="relative h-52 overflow-hidden bg-surface">
@@ -88,33 +88,33 @@ export function ProductCard({
         {/* Category + rating row */}
         <div className="mb-2 flex items-center justify-between gap-2">
           {category ? (
-            <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-600">
+            <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-muted">
               {category.name}
             </span>
           ) : (
             <span />
           )}
           {average_rating !== null && average_rating !== undefined && review_count ? (
-            <span className="text-[9px] text-zinc-600">
+            <span className="text-[9px] text-muted">
               ★ {average_rating.toFixed(1)} ({review_count})
             </span>
           ) : null}
         </div>
 
         <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-black uppercase leading-tight text-white transition group-hover:text-zinc-200 line-clamp-2">
+          <h2 className="font-display text-lg font-black uppercase leading-tight text-foreground transition group-hover:text-foreground line-clamp-2">
             {name}
           </h2>
-          <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-sm font-black text-white">
+          <span className="shrink-0 rounded-full border border-bd-border bg-surface-2 px-3 py-1 text-sm font-black text-foreground">
             S/ {formatMoney(price)}
           </span>
         </div>
 
-        <p className="mt-2 flex-1 text-sm leading-6 text-zinc-600 line-clamp-2">
+        <p className="mt-2 flex-1 text-sm leading-6 text-muted line-clamp-2">
           {description || "Producto Apple de calidad premium con garantía."}
         </p>
 
-        <div className="mt-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-zinc-500 transition group-hover:text-white">
+        <div className="mt-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-muted transition group-hover:text-foreground">
           {outOfStock ? "Ver producto" : "Ver detalles"}
           <span className="transition group-hover:translate-x-1">→</span>
         </div>

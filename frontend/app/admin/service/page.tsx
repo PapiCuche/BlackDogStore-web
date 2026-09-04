@@ -30,7 +30,7 @@ import {
 
 function Panel({ children }: { children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-6">
+    <section className="rounded-2xl border border-bd-border bg-surface p-6">
       {children}
     </section>
   );
@@ -38,7 +38,7 @@ function Panel({ children }: { children: React.ReactNode }) {
 
 function StatusPill({ label }: { label: string }) {
   return (
-    <span className="rounded-full border border-white/[0.12] px-2.5 py-1 text-[11px] text-white/70">
+    <span className="rounded-full border border-bd-border px-2.5 py-1 text-[11px] text-muted">
       {label}
     </span>
   );
@@ -102,7 +102,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
         <Panel>
-          <p className="text-sm text-white/60">
+          <p className="text-sm text-muted">
             Selecciona una empresa para ver sus órdenes de servicio.
           </p>
         </Panel>
@@ -115,7 +115,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
         <Panel>
           <h1 className="text-lg font-semibold">Servicio técnico</h1>
-          <p className="mt-2 text-sm text-white/60">
+          <p className="mt-2 text-sm text-muted">
             Tu cuenta no tiene permiso para ver las órdenes de servicio de esta
             empresa.
           </p>
@@ -130,7 +130,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-xl font-semibold">Órdenes de servicio</h1>
-            <p className="mt-1 text-sm text-white/50">
+            <p className="mt-1 text-sm text-muted">
               {count} orden(es) en el alcance que tu cuenta alcanza.
             </p>
           </div>
@@ -151,29 +151,29 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
                 onClick={() => { setMine(option.value); setPage(1); }}
                 className={`rounded-lg border px-4 py-2 text-sm transition ${
                   mine === option.value
-                    ? "border-white/30 bg-white/[0.07] text-white"
-                    : "border-white/[0.07] text-white/50 hover:text-white/80"
+                    ? "border-bd-border bg-surface-2 text-foreground"
+                    : "border-bd-border text-muted hover:text-foreground/85"
                 }`}
               >
                 {option.label}
               </button>
             ))}
             {mine ? (
-              <span className="text-xs text-white/40">
+              <span className="text-xs text-muted">
                 Órdenes donde figuras como técnico asignado.
               </span>
             ) : null}
           </div>
 
           <div className="grid gap-3 md:grid-cols-4">
-            <label className="text-xs text-white/50">
+            <label className="text-xs text-muted">
               Estado
               {/* The list comes from the SERVER, per tenant. A company that
                   renamed "Recibido" sees its own word here. */}
               <select
                 value={status}
                 onChange={(e) => { setStatus(e.target.value); setPage(1); }}
-                className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+                className="mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
               >
                 <option value="">Todos</option>
                 {(context?.statuses ?? []).map((s) => (
@@ -182,7 +182,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
               </select>
             </label>
 
-            <label className="text-xs text-white/50">
+            <label className="text-xs text-muted">
               Sucursal
               <select
                 value={branchId ?? ""}
@@ -190,7 +190,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
                   setBranchId(e.target.value ? Number(e.target.value) : null);
                   setPage(1);
                 }}
-                className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+                className="mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
               >
                 {/* Only the branches this member reaches — the server decides
                     that, and an id outside it is not found rather than
@@ -202,13 +202,13 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
               </select>
             </label>
 
-            <label className="text-xs text-white/50 md:col-span-2">
+            <label className="text-xs text-muted md:col-span-2">
               Buscar
               <input
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                 placeholder="Número, cliente o equipo"
-                className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+                className="mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
               />
             </label>
           </div>
@@ -222,9 +222,9 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
 
         <Panel>
           {loading ? (
-            <p className="text-sm text-white/50">Cargando…</p>
+            <p className="text-sm text-muted">Cargando…</p>
           ) : rows.length === 0 ? (
-            <p className="text-sm text-white/50">
+            <p className="text-sm text-muted">
               {mine
                 ? "No tienes órdenes asignadas con ese filtro. Prueba «Todo el taller»."
                 : "No hay órdenes que coincidan con ese filtro."}
@@ -232,7 +232,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead className="text-xs uppercase tracking-wide text-white/40">
+                <thead className="text-xs uppercase tracking-wide text-muted">
                   <tr>
                     <th className="py-2 pr-4">Número</th>
                     <th className="py-2 pr-4">Cliente</th>
@@ -244,19 +244,19 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
                 </thead>
                 <tbody>
                   {rows.map((row) => (
-                    <tr key={row.id} className="border-t border-white/[0.06]">
+                    <tr key={row.id} className="border-t border-bd-border">
                       <td className="py-3 pr-4">
                         <Link
                           href={`/admin/service/orders/${row.id}`}
-                          className="font-medium text-white hover:underline"
+                          className="font-medium text-foreground hover:underline"
                         >
                           {row.number}
                         </Link>
                       </td>
-                      <td className="py-3 pr-4 text-white/70">{row.customer_name}</td>
-                      <td className="py-3 pr-4 text-white/70">{row.device_summary}</td>
-                      <td className="py-3 pr-4 text-white/50">{row.branch_name}</td>
-                      <td className="py-3 pr-4 text-white/50">
+                      <td className="py-3 pr-4 text-muted">{row.customer_name}</td>
+                      <td className="py-3 pr-4 text-muted">{row.device_summary}</td>
+                      <td className="py-3 pr-4 text-muted">{row.branch_name}</td>
+                      <td className="py-3 pr-4 text-muted">
                         {row.technician_name || "—"}
                       </td>
                       <td className="py-3 pr-4">
@@ -275,16 +275,16 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
                 type="button"
                 disabled={page <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs disabled:opacity-30"
+                className="rounded-lg border border-bd-border px-3 py-1.5 text-xs disabled:opacity-30"
               >
                 Anterior
               </button>
-              <span className="text-xs text-white/40">Página {page}</span>
+              <span className="text-xs text-muted">Página {page}</span>
               <button
                 type="button"
                 disabled={rows.length === 0}
                 onClick={() => setPage((p) => p + 1)}
-                className="rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs disabled:opacity-30"
+                className="rounded-lg border border-bd-border px-3 py-1.5 text-xs disabled:opacity-30"
               >
                 Siguiente
               </button>

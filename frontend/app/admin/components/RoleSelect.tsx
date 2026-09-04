@@ -51,7 +51,7 @@ export function RoleSelect({ userId, currentRole, isSelf, onRoleChange }: Props)
 
   if (isSelf) {
     return (
-      <span className="text-xs text-zinc-500 italic">Propio rol</span>
+      <span className="text-xs text-muted italic">Propio rol</span>
     );
   }
 
@@ -61,7 +61,7 @@ export function RoleSelect({ userId, currentRole, isSelf, onRoleChange }: Props)
         value={selected}
         onChange={handleChange}
         disabled={saving}
-        className="rounded-lg border border-white/10 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 focus:border-white/30 focus:outline-none disabled:opacity-50"
+        className="rounded-lg border border-bd-border bg-surface px-2 py-1.5 text-xs text-foreground focus:border-bd-border focus:outline-none disabled:opacity-50"
       >
         {ALL_ROLES.map((r) => (
           <option key={r.value} value={r.value}>
@@ -74,21 +74,21 @@ export function RoleSelect({ userId, currentRole, isSelf, onRoleChange }: Props)
         <div className="flex gap-1">
           <button
             onClick={handleConfirm}
-            className="rounded px-2 py-1 text-[10px] font-semibold bg-white text-black transition hover:bg-zinc-200"
+            className="rounded px-2 py-1 text-[10px] font-semibold bg-foreground text-background transition hover:bg-foreground/90"
           >
             Guardar
           </button>
           <button
             onClick={handleCancel}
-            className="rounded px-2 py-1 text-[10px] font-semibold border border-white/10 text-zinc-400 transition hover:text-white"
+            className="rounded px-2 py-1 text-[10px] font-semibold border border-bd-border text-muted transition hover:text-foreground"
           >
             Cancelar
           </button>
         </div>
       )}
-      {saving && <p className="text-[10px] text-zinc-500">Guardando…</p>}
+      {saving && <p className="text-[10px] text-muted">Guardando…</p>}
       {feedback && !pending && (
-        <p className={`text-[10px] ${feedback.type === "success" ? "text-zinc-300" : "text-red-400"}`}>
+        <p className={`text-[10px] ${feedback.type === "success" ? "text-foreground/85" : "text-red-400"}`}>
           {feedback.msg}
         </p>
       )}

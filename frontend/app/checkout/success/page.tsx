@@ -86,11 +86,11 @@ export default function CheckoutSuccessPage() {
   // Loading / polling state
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
+      <div className="flex min-h-screen items-center justify-center bg-background px-6">
         <div className="text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-white/5">
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-bd-border bg-surface">
             <svg
-              className="h-6 w-6 animate-spin text-zinc-400"
+              className="h-6 w-6 animate-spin text-muted"
               fill="none"
               viewBox="0 0 24 24"
             >
@@ -109,7 +109,7 @@ export default function CheckoutSuccessPage() {
               />
             </svg>
           </div>
-          <p className="text-sm text-zinc-400">Verificando pago...</p>
+          <p className="text-sm text-muted">Verificando pago...</p>
         </div>
       </div>
     );
@@ -118,18 +118,18 @@ export default function CheckoutSuccessPage() {
   // Generic error or missing reference
   if (error) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
+      <div className="flex min-h-screen items-center justify-center bg-background px-6">
         <div className="mx-auto max-w-lg text-center">
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10">
             <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </div>
-          <h1 className="mb-2 text-3xl font-bold text-white">Error</h1>
-          <p className="mb-8 text-zinc-400">{error}</p>
+          <h1 className="mb-2 text-3xl font-bold text-foreground">Error</h1>
+          <p className="mb-8 text-muted">{error}</p>
           <Link
             href="/checkout"
-            className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
+            className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-muted transition hover:bg-foreground/90"
           >
             Volver al checkout
           </Link>
@@ -141,25 +141,25 @@ export default function CheckoutSuccessPage() {
   // Payment confirmed
   if (statusData?.status === "paid") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
+      <div className="flex min-h-screen items-center justify-center bg-background px-6">
         <div className="mx-auto max-w-lg text-center">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border border-white/20 bg-white/5">
-            <svg className="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border border-bd-border bg-surface">
+            <svg className="h-10 w-10 text-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
 
-          <h1 className="mb-2 text-4xl font-bold text-white">¡Pago confirmado!</h1>
-          <p className="mb-1 text-zinc-400">Tu orden #{statusData.order_id} ha sido registrada.</p>
-          <p className="mb-8 text-zinc-400">
+          <h1 className="mb-2 text-4xl font-bold text-foreground">¡Pago confirmado!</h1>
+          <p className="mb-1 text-muted">Tu orden #{statusData.order_id} ha sido registrada.</p>
+          <p className="mb-8 text-muted">
             Total pagado:{" "}
-            <span className="font-semibold text-white">
+            <span className="font-semibold text-foreground">
               S/ {Number(statusData.total).toFixed(2)}
             </span>
           </p>
 
-          <div className="mb-8 rounded-2xl border border-white/10 bg-white/5 p-6 text-left text-sm text-zinc-400">
-            <p className="mb-2 font-medium text-white">¿Qué sigue?</p>
+          <div className="mb-8 rounded-2xl border border-bd-border bg-surface p-6 text-left text-sm text-muted">
+            <p className="mb-2 font-medium text-foreground">¿Qué sigue?</p>
             <ul className="space-y-1 list-disc list-inside">
               <li>Recibirás la confirmación de tu pedido al correo registrado.</li>
               <li>Nuestro equipo se comunicará contigo para coordinar la entrega.</li>
@@ -170,13 +170,13 @@ export default function CheckoutSuccessPage() {
           <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
             <Link
               href="/product"
-              className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
+              className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-muted transition hover:bg-foreground/90"
             >
               Seguir comprando
             </Link>
             <a
               href={whatsappLink || "#"}
-              className="rounded-full border border-white/20 px-8 py-3 text-sm font-semibold text-white transition hover:border-white/40"
+              className="rounded-full border border-bd-border px-8 py-3 text-sm font-semibold text-foreground transition hover:border-bd-border"
             >
               Contactar por WhatsApp
             </a>
@@ -189,21 +189,21 @@ export default function CheckoutSuccessPage() {
   // Pending after max retries (webhook delayed)
   if (statusData?.status === "pending_payment") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
+      <div className="flex min-h-screen items-center justify-center bg-background px-6">
         <div className="mx-auto max-w-lg text-center">
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-yellow-500/30 bg-yellow-500/10">
             <svg className="h-8 w-8 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h1 className="mb-2 text-3xl font-bold text-white">Verificando pago</h1>
-          <p className="mb-8 text-zinc-400">
+          <h1 className="mb-2 text-3xl font-bold text-foreground">Verificando pago</h1>
+          <p className="mb-8 text-muted">
             Tu pago está siendo procesado. Si ya completaste el pago,
             espera unos segundos y recarga la página.
           </p>
           <button
             onClick={() => { setLoading(true); setRetryCount(0); }}
-            className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
+            className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-muted transition hover:bg-foreground/90"
           >
             Verificar de nuevo
           </button>
@@ -221,27 +221,27 @@ export default function CheckoutSuccessPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
+    <div className="flex min-h-screen items-center justify-center bg-background px-6">
       <div className="mx-auto max-w-lg text-center">
         <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10">
           <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </div>
-        <h1 className="mb-2 text-3xl font-bold text-white">Pago no completado</h1>
-        <p className="mb-8 text-zinc-400">
+        <h1 className="mb-2 text-3xl font-bold text-foreground">Pago no completado</h1>
+        <p className="mb-8 text-muted">
           {statusData ? failureMessages[statusData.status] ?? statusData.message : "Estado desconocido."}
         </p>
         <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
           <Link
             href="/checkout"
-            className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
+            className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-muted transition hover:bg-foreground/90"
           >
             Intentar de nuevo
           </Link>
           <Link
             href="/cart"
-            className="rounded-full border border-white/20 px-8 py-3 text-sm font-semibold text-white transition hover:border-white/40"
+            className="rounded-full border border-bd-border px-8 py-3 text-sm font-semibold text-foreground transition hover:border-bd-border"
           >
             Ver carrito
           </Link>

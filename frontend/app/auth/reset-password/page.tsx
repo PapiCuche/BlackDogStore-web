@@ -16,16 +16,16 @@ function ResetPasswordContent() {
 
   if (!token) {
     return (
-      <div className="min-h-screen bg-zinc-950 px-6 py-12">
+      <div className="min-h-screen bg-background px-6 py-12">
         <div className="mx-auto max-w-md text-center">
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-10">
-            <h1 className="text-2xl font-bold text-white">Enlace inválido</h1>
-            <p className="mt-4 text-slate-400">
+          <div className="rounded-2xl border border-bd-border bg-surface p-10">
+            <h1 className="text-2xl font-bold text-foreground">Enlace inválido</h1>
+            <p className="mt-4 text-muted">
               No se encontró el token. Usa el enlace del correo de recuperación.
             </p>
             <a
               href="/auth/forgot-password"
-              className="mt-6 inline-block text-sm text-slate-400 hover:text-white transition"
+              className="mt-6 inline-block text-sm text-muted hover:text-foreground transition"
             >
               Solicitar nuevo enlace
             </a>
@@ -54,26 +54,26 @@ function ResetPasswordContent() {
   }
 
   const inputClass =
-    "mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder-slate-500 focus:border-white/30 focus:outline-none";
+    "mt-2 w-full rounded-xl border border-bd-border bg-surface px-4 py-3 text-foreground placeholder-muted focus:border-bd-border focus:outline-none";
 
   return (
-    <div className="min-h-screen bg-zinc-950 px-6 py-12">
+    <div className="min-h-screen bg-background px-6 py-12">
       <div className="mx-auto max-w-md">
         <div className="mb-8 text-center">
-          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-white/40">Cuenta</p>
-          <h1 className="mt-2 text-3xl font-bold text-white">Nueva contraseña</h1>
+          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-muted">Cuenta</p>
+          <h1 className="mt-2 text-3xl font-bold text-foreground">Nueva contraseña</h1>
         </div>
 
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-8">
+        <div className="rounded-2xl border border-bd-border bg-surface p-8">
           {success ? (
             <div className="text-center">
-              <p className="font-semibold text-white">Contraseña restablecida</p>
-              <p className="mt-3 text-sm text-slate-400">
+              <p className="font-semibold text-foreground">Contraseña restablecida</p>
+              <p className="mt-3 text-sm text-muted">
                 Tu contraseña fue actualizada. Ya puedes iniciar sesión con tu nueva contraseña.
               </p>
               <a
                 href="/auth"
-                className="mt-6 inline-block rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200"
+                className="mt-6 inline-block rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90"
               >
                 Iniciar sesión
               </a>
@@ -87,7 +87,7 @@ function ResetPasswordContent() {
               )}
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-300">Nueva contraseña</label>
+                  <label className="block text-sm font-medium text-foreground/85">Nueva contraseña</label>
                   <input
                     type="password"
                     value={newPassword}
@@ -99,7 +99,7 @@ function ResetPasswordContent() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-300">
+                  <label className="block text-sm font-medium text-foreground/85">
                     Confirmar contraseña
                   </label>
                   <input
@@ -114,7 +114,7 @@ function ResetPasswordContent() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-50"
+                  className="w-full rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-50"
                 >
                   {loading ? "Guardando…" : "Guardar nueva contraseña"}
                 </button>
@@ -131,8 +131,8 @@ export default function ResetPasswordPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-zinc-950">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent" />
+        <div className="flex min-h-screen items-center justify-center bg-background">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
         </div>
       }
     >

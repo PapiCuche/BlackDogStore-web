@@ -48,7 +48,7 @@ const RISK_LABEL: Record<string, { text: string; className: string }> = {
   critical: { text: "Crítico", className: "text-red-400" },
   reorder: { text: "Reponer", className: "text-amber-300" },
   low: { text: "Bajo", className: "text-amber-400/80" },
-  insufficient_data: { text: "Sin historial", className: "text-zinc-600" },
+  insufficient_data: { text: "Sin historial", className: "text-muted" },
   ok: { text: "OK", className: "text-emerald-400/70" },
 };
 
@@ -61,10 +61,10 @@ const TREND_MARK: Record<string, string> = {
 
 function Kpi({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-      <p className="text-[11px] uppercase tracking-widest text-zinc-500">{label}</p>
-      <p className="mt-1 font-display text-xl text-white">{value}</p>
-      {hint ? <p className="mt-0.5 text-[11px] text-zinc-600">{hint}</p> : null}
+    <div className="rounded-xl border border-bd-border bg-surface p-4">
+      <p className="text-[11px] uppercase tracking-widest text-muted">{label}</p>
+      <p className="mt-1 font-display text-xl text-foreground">{value}</p>
+      {hint ? <p className="mt-0.5 text-[11px] text-muted">{hint}</p> : null}
     </div>
   );
 }
@@ -83,7 +83,7 @@ function Sparkline({ points }: { points: { date: string; revenue: string }[] }) 
           key={p.date}
           title={`${p.date}: ${money(p.revenue)}`}
           style={{ height: `${Math.max((Number(p.revenue) / max) * 100, 1.5)}%` }}
-          className="flex-1 rounded-t bg-white/15"
+          className="flex-1 rounded-t bg-surface-2"
         />
       ))}
     </div>
@@ -137,7 +137,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
   if (loading) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <p className="py-8 text-sm text-zinc-600">Cargando analítica…</p>
+        <p className="py-8 text-sm text-muted">Cargando analítica…</p>
       </AdminShell>
     );
   }
@@ -161,13 +161,13 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
       <div className="space-y-8">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <label className="text-[11px] uppercase tracking-widest text-zinc-500">
+            <label className="text-[11px] uppercase tracking-widest text-muted">
               Sucursal
             </label>
             <select
               value={branch ?? ""}
               onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
-              className="rounded-lg border border-white/[0.08] bg-black/40 px-3 py-1.5 text-sm text-zinc-200 outline-none"
+              className="rounded-lg border border-bd-border bg-background/40 px-3 py-1.5 text-sm text-foreground outline-none"
             >
               <option value="">Todas las sucursales</option>
               {data.branches.map((b) => (
@@ -179,7 +179,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
           </div>
           <Link
             href="/admin/sales/pos"
-            className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-zinc-200 transition hover:border-white/30 hover:text-white"
+            className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-bd-border hover:text-foreground"
           >
             Punto de venta
           </Link>
@@ -204,7 +204,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
           {data.trend.some((p) => Number(p.revenue) > 0) ? (
             <Sparkline points={data.trend} />
           ) : (
-            <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-8 text-center text-sm text-zinc-500">
+            <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">
               No hay ventas en este periodo.
             </p>
           )}
@@ -219,13 +219,13 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
               ([label, c]) => (
                 <div
                   key={label}
-                  className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"
+                  className="rounded-xl border border-bd-border bg-surface p-4"
                 >
-                  <p className="text-[11px] uppercase tracking-widest text-zinc-500">
+                  <p className="text-[11px] uppercase tracking-widest text-muted">
                     {label}
                   </p>
-                  <p className="mt-1 font-display text-xl text-white">{money(c.revenue)}</p>
-                  <p className="mt-0.5 text-xs text-zinc-500">
+                  <p className="mt-1 font-display text-xl text-foreground">{money(c.revenue)}</p>
+                  <p className="mt-0.5 text-xs text-muted">
                     {c.orders} pedidos · {c.units} unidades
                   </p>
                 </div>
@@ -239,13 +239,13 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
           description={`Unidades que salieron de estante, últimos ${data.top_products.window_days} días.`}
         >
           {data.top_products.results.length === 0 ? (
-            <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-8 text-center text-sm text-zinc-500">
+            <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">
               Todavía no hay ventas registradas en este periodo.
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+            <div className="overflow-x-auto rounded-xl border border-bd-border">
               <table className="w-full min-w-[40rem] text-left text-sm">
-                <thead className="border-b border-white/[0.06] text-[11px] uppercase tracking-widest text-zinc-500">
+                <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                   <tr>
                     <th className="px-4 py-3 font-semibold">Producto</th>
                     <th className="px-4 py-3 text-right font-semibold">Unidades</th>
@@ -256,18 +256,18 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
                 </thead>
                 <tbody>
                   {data.top_products.results.map((p) => (
-                    <tr key={p.product_id} className="border-b border-white/[0.04] last:border-0">
-                      <td className="px-4 py-3 text-zinc-200">{p.product_name}</td>
-                      <td className="px-4 py-3 text-right font-mono text-zinc-300">
+                    <tr key={p.product_id} className="border-b border-bd-border last:border-0">
+                      <td className="px-4 py-3 text-foreground">{p.product_name}</td>
+                      <td className="px-4 py-3 text-right font-mono text-foreground/85">
                         {p.units_sold}
                       </td>
-                      <td className="px-4 py-3 text-right font-mono text-zinc-400">
+                      <td className="px-4 py-3 text-right font-mono text-muted">
                         {money(p.revenue)}
                       </td>
-                      <td className="px-4 py-3 text-right font-mono text-zinc-400">
+                      <td className="px-4 py-3 text-right font-mono text-muted">
                         {p.current_stock}
                       </td>
-                      <td className="px-4 py-3 text-right text-xs text-zinc-500">
+                      <td className="px-4 py-3 text-right text-xs text-muted">
                         {p.days_of_cover === null
                           ? "sin consumo reciente"
                           : `${p.days_of_cover} días`}
@@ -306,19 +306,19 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
           }
         >
           {planDenied ? (
-            <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-6 text-sm text-zinc-500">
+            <p className="rounded-xl border border-bd-border bg-surface px-5 py-6 text-sm text-muted">
               No tienes permiso para ver el detalle de inventario. El resto del resumen
               comercial sigue disponible.
             </p>
           ) : acting.length === 0 ? (
-            <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-8 text-center text-sm text-zinc-500">
+            <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">
               Sin alertas de reposición.
             </p>
           ) : (
             <>
-              <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+              <div className="overflow-x-auto rounded-xl border border-bd-border">
                 <table className="w-full min-w-[62rem] text-left text-sm">
-                  <thead className="border-b border-white/[0.06] text-[11px] uppercase tracking-widest text-zinc-500">
+                  <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                     <tr>
                       <th className="px-3 py-3 font-semibold">Producto</th>
                       <th className="px-3 py-3 font-semibold">Sucursal</th>
@@ -337,49 +337,49 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
                       return (
                         <tr
                           key={`${r.branch_id}-${r.product_id}`}
-                          className="border-b border-white/[0.04] last:border-0"
+                          className="border-b border-bd-border last:border-0"
                         >
-                          <td className="px-3 py-3 text-zinc-200">
+                          <td className="px-3 py-3 text-foreground">
                             {r.product_name}
                             {r.transfer_options?.length ? (
-                              <span className="block text-[11px] text-zinc-600">
+                              <span className="block text-[11px] text-muted">
                                 {r.transfer_options[0].branch_name} podría transferir{" "}
                                 {r.transfer_options[0].can_transfer}
                               </span>
                             ) : null}
                           </td>
-                          <td className="px-3 py-3 text-zinc-500">{r.branch_name}</td>
-                          <td className="px-3 py-3 text-right font-mono text-zinc-300">
+                          <td className="px-3 py-3 text-muted">{r.branch_name}</td>
+                          <td className="px-3 py-3 text-right font-mono text-foreground/85">
                             {r.quantity}
                           </td>
-                          <td className="px-3 py-3 text-right font-mono text-zinc-400">
+                          <td className="px-3 py-3 text-right font-mono text-muted">
                             {r.forecast.sufficient ? (
                               <>
                                 {r.forecast.daily.toFixed(2)}{" "}
-                                <span className="text-zinc-600">
+                                <span className="text-muted">
                                   {TREND_MARK[r.forecast.trend]}
                                 </span>
                               </>
                             ) : (
-                              <span className="text-zinc-600">—</span>
+                              <span className="text-muted">—</span>
                             )}
                           </td>
-                          <td className="px-3 py-3 text-right text-xs text-zinc-500">
+                          <td className="px-3 py-3 text-right text-xs text-muted">
                             {r.days_of_cover === null ? "—" : `${r.days_of_cover} d`}
                           </td>
-                          <td className="px-3 py-3 text-right text-xs text-zinc-500">
+                          <td className="px-3 py-3 text-right text-xs text-muted">
                             {r.lead_time_days > 0 ? `${r.lead_time_days} d` : "sin configurar"}
                           </td>
-                          <td className="px-3 py-3 text-right font-mono text-zinc-400">
+                          <td className="px-3 py-3 text-right font-mono text-muted">
                             {r.reorder_point ?? (
-                              <span className="text-[11px] text-zinc-600">
+                              <span className="text-[11px] text-muted">
                                 {r.reorder_state === "configuration_required"
                                   ? "falta entrega"
                                   : "sin historial"}
                               </span>
                             )}
                           </td>
-                          <td className="px-3 py-3 text-right font-mono text-white">
+                          <td className="px-3 py-3 text-right font-mono text-foreground">
                             {r.suggested_quantity || "—"}
                           </td>
                           <td className={`px-3 py-3 text-xs ${risk.className}`}>{risk.text}</td>
@@ -389,7 +389,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
                   </tbody>
                 </table>
               </div>
-              <p className="text-[11px] text-zinc-600">
+              <p className="text-[11px] text-muted">
                 {plan?.method.formula} · demanda desde {plan?.method.demand_source}. La
                 sugerencia no compra nada: la decisión es tuya.
               </p>

@@ -61,6 +61,39 @@
      El acento PURO sigue disponible en `--accent` para rellenos decorativos,
      donde el umbral de texto no aplica. */
   --primary: color-mix(in srgb, var(--brand-accent, #18181b) 50%, #0a0a0a);
+
+  /* ------------------------------------------------------------------ */
+  /* LA LOSA DE MARCA                                                    */
+  /*                                                                     */
+  /* Los seis campos que el tenant configura se diseñaron cuando el       */
+  /* escaparate tenía UN tema, y ese tema era oscuro. Siguen siendo eso:  */
+  /* la paleta oscura de esta tienda. Aquí se usan tal cual, IGUAL en los */
+  /* dos temas, para las superficies que llevan la identidad — el hero,   */
+  /* una banda de campaña, el pie.                                        */
+  /*                                                                     */
+  /* No es «el tema invertido»: es la marca, que no se invierte.          */
+  /* ------------------------------------------------------------------ */
+  --slab: var(--brand-background, #0a0a0a);
+  --slab-surface: var(--brand-surface, #141414);
+  --slab-foreground: var(--brand-text, #fafafa);
+  --slab-muted: color-mix(in srgb, var(--slab-foreground) 70%, var(--slab));
+  --slab-border: color-mix(in srgb, var(--slab-foreground) 14%, var(--slab));
+
+  /* ------------------------------------------------------------------ */
+  /* SUPERFICIE INVERSA                                                  */
+  /*                                                                     */
+  /* Una banda pintada CON el color del texto —para destacar— tiene el    */
+  /* contraste al revés que la página: en tema oscuro sale clara y en     */
+  /* claro, oscura. Su texto no puede usar `muted`, que está calculado    */
+  /* para la superficie normal: la llamada del pie rendía 2.02:1.         */
+  /*                                                                     */
+  /* No es lo mismo que la losa de marca: la losa es SIEMPRE oscura, y    */
+  /* esto es siempre lo contrario del tema.                               */
+  /* ------------------------------------------------------------------ */
+  --inverse: var(--foreground);
+  --inverse-foreground: var(--background);
+  --inverse-muted: color-mix(in srgb, var(--background) 72%, var(--foreground));
+  --inverse-border: color-mix(in srgb, var(--background) 20%, var(--foreground));
   --accent: var(--brand-accent, #a1a1aa);
 }
 
@@ -109,77 +142,36 @@
   --color-accent: var(--accent);
 
   /* ------------------------------------------------------------------ */
-  /* M12F — LA PALETA GRIS HEREDADA, REINTERPRETADA                      */
-  /*                                                                    */
-  /* Esta aplicación se escribió con UN tema, y ese tema era oscuro. Por */
-  /* eso hay 2.779 utilidades de color literales repartidas en 87        */
-  /* ficheros: `text-white` para el texto, `text-zinc-500` para el       */
-  /* secundario, `bg-white/[0.02]` para una superficie apenas elevada.   */
-  /*                                                                    */
-  /* No son colores arbitrarios: son ROLES escritos con el vocabulario   */
-  /* de un tema único. `white` no significaba blanco, significaba «el    */
-  /* color que se lee»; `zinc-500` no significaba ese gris concreto,     */
-  /* significaba «menos importante que el resto».                       */
-  /*                                                                    */
-  /* Redefinir los tokens de la paleta traduce ese vocabulario de una    */
-  /* vez, en un sitio, en vez de reescribir 2.779 clases a mano — que    */
-  /* sería 2.779 oportunidades de equivocarse y una revisión imposible.  */
-  /* Es una decisión de CLASIFICACIÓN, no un reemplazo automático: cada  */
-  /* nivel de abajo dice a qué rol corresponde y por qué.                */
-  /*                                                                    */
-  /* LAS EXCEPCIONES SE ARREGLAN A MANO. Un `text-white` sobre un badge  */
-  /* rojo tiene que seguir siendo blanco: ahí «white» sí significaba     */
-  /* blanco. Son cinco en todo el código y llevan su propio token.       */
+  /* SUPERFICIES DE MARCA — no siguen al tema, y ése es el punto          */
+  /*                                                                     */
+  /* M12F cometió aquí un error de arquitectura: redefinió `--color-white`*/
+  /* y toda la escala `zinc` para que cambiaran de significado según el   */
+  /* tema. Traducía 2.779 utilidades de una vez, sí, pero al precio de    */
+  /* que `white` dejara de ser blanco — y con él se llevó por delante el  */
+  /* hero, que era una losa negra DELIBERADA y pasó a ser crema en modo   */
+  /* claro. La marca desapareció de su propia portada.                    */
+  /*                                                                     */
+  /* Los nombres de color estándar vuelven a significar su color. Lo que  */
+  /* cambia con el tema usa tokens semánticos, y lo que NO debe cambiar   */
+  /* usa estos: la paleta oscura que el tenant ya tenía configurada,      */
+  /* aplicada igual en los dos temas.                                     */
+  /*                                                                     */
+  /* Una página clara con un hero negro no es una inconsistencia: es una  */
+  /* decisión de marca. Lo que sería un fallo es que el sistema no sepa   */
+  /* qué contraste usar encima.                                           */
   /* ------------------------------------------------------------------ */
+  --color-slab: var(--slab);
+  --color-slab-surface: var(--slab-surface);
+  --color-slab-foreground: var(--slab-foreground);
+  --color-slab-muted: var(--slab-muted);
+  --color-slab-border: var(--slab-border);
+  --color-inverse: var(--inverse);
+  --color-inverse-foreground: var(--inverse-foreground);
+  --color-inverse-muted: var(--inverse-muted);
+  --color-inverse-border: var(--inverse-border);
 
-  /* «El color que se lee» y «el fondo sobre el que se lee». */
-  --color-white: var(--foreground);
-  --color-black: var(--background);
-
-  /* Grados de énfasis. Todos miden >= 4.5:1 sobre fondo, superficie y
-     superficie elevada, en los tres escenarios que el test comprueba. */
-  --color-zinc-50: var(--foreground);
-  --color-zinc-100: color-mix(in srgb, var(--foreground) 96%, var(--background));
-  --color-zinc-200: color-mix(in srgb, var(--foreground) 92%, var(--background));
-  --color-zinc-300: color-mix(in srgb, var(--foreground) 86%, var(--background));
-  --color-zinc-400: color-mix(in srgb, var(--foreground) 78%, var(--background));
-  --color-zinc-500: var(--muted);
-  /* 70 y 68 y no menos: por debajo del 68 % estos grises dejan de medir 4.5:1
-     sobre la superficie elevada del tema oscuro. El diseño original los usaba
-     más apagados porque nunca se midieron; la gradación se comprime aquí
-     porque lo que había debajo no se leía. */
-  --color-zinc-600: color-mix(in srgb, var(--foreground) 70%, var(--background));
-  --color-zinc-700: color-mix(in srgb, var(--foreground) 68%, var(--background));
-  /* A partir de aquí dejan de ser texto y pasan a ser superficies. */
-  --color-zinc-800: var(--surface-2);
-  --color-zinc-900: var(--surface);
-  --color-zinc-950: var(--background);
-
-  /* Las otras escalas neutras que el código usa de vez en cuando. Mismo
-     razonamiento; se traducen para que no queden tres ficheros con el tema
-     puesto al revés. */
-  --color-neutral-100: var(--color-zinc-100);
-  --color-neutral-200: var(--color-zinc-200);
-  --color-neutral-300: var(--color-zinc-300);
-  --color-neutral-400: var(--color-zinc-400);
-  --color-neutral-500: var(--muted);
-  --color-neutral-600: var(--color-zinc-600);
-  --color-neutral-700: var(--color-zinc-700);
-  --color-neutral-800: var(--surface-2);
-  --color-neutral-900: var(--surface);
-  --color-neutral-950: var(--background);
-  --color-slate-300: var(--color-zinc-300);
-  --color-slate-400: var(--color-zinc-400);
-  --color-slate-500: var(--muted);
-  --color-slate-600: var(--color-zinc-600);
-  --color-stone-400: var(--color-zinc-400);
-  --color-stone-500: var(--muted);
-  --color-gray-400: var(--color-zinc-400);
-  --color-gray-500: var(--muted);
-
-  /* LA EXCEPCIÓN. Sobre un relleno saturado —un badge rojo, un botón
-     verde— el texto blanco es blanco en los dos temas, porque el fondo no
-     cambia con el tema. Cinco sitios en todo el código. */
+  /* Sobre un relleno saturado —un badge rojo, un botón verde— el texto es
+     blanco en los dos temas, porque el fondo no cambia con el tema. */
   --color-on-status: #ffffff;
   --font-sans: var(--font-body);
   --font-display: var(--font-display);
@@ -198,7 +190,9 @@ body {
 
 /* Dot grid pattern — used as decorative corner elements */
 .dot-grid {
-  background-image: radial-gradient(circle, rgba(255,255,255,0.22) 1.5px, transparent 1.5px);
+  /* La textura se apoya en el color del texto del contexto, así que funciona
+     igual sobre una losa oscura que sobre una página clara. */
+  background-image: radial-gradient(circle, color-mix(in srgb, currentColor 22%, transparent) 1.5px, transparent 1.5px);
   background-size: 18px 18px;
 }
 
@@ -226,17 +220,42 @@ body {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #9ca3af;
+  color: var(--muted);
 }
 
 /* Black section label (like "REPARACIONES" labels in the flyers) */
-.section-label {
-  display: inline-block;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.25em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.45);
+/*
+  LA ETIQUETA DE SECCIÓN. Estaba escrita como blanco al 45 % —de cuando el
+  escaparate sólo tenía tema oscuro— y en tema claro rendía 1.11:1: invisible.
+  Lo encontró la auditoría de contraste con navegador, no una aserción sobre el
+  código: la clase vive en el CSS y ninguna utilidad de Tailwind la nombra.
+
+  `currentColor` heredado no sirve aquí porque la etiqueta debe ser MÁS tenue
+  que el texto que acompaña. Se deriva del token, que sí sabe en qué tema está.
+*/
+@layer components {
+  /*
+    EN `@layer components` Y NO SUELTA, y eso importa: una clase suelta tiene la
+    misma especificidad que una utilidad de Tailwind y gana por orden de hoja.
+    Al ponerle `text-accent` a la etiqueta de una campaña, el color dorado
+    perdía contra este `color` y la etiqueta salía gris sobre la losa negra —
+    1.26:1. Dentro de la capa, cualquier utilidad la sobrescribe, que es como
+    debe comportarse un valor por defecto.
+  */
+  .section-label {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* NO hay regla `.bg-slab .section-label`. La hubo, y era un selector
+     descendiente: especificidad 0,2,0 contra el 0,1,0 de una utilidad. Ganaba
+     a `text-accent` y pintaba de gris la etiqueta dorada de la campaña —
+     1.26:1 sobre la losa negra. Cuando una superficie necesita otro color,
+     lo dice en el elemento, no desde un ancestro. */
 }
 
 img { display: block; max-width: 100%; }

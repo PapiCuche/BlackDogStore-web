@@ -25,7 +25,7 @@ function Pagination({
   const totalPages = Math.max(1, Math.ceil(count / pageSize));
   if (totalPages <= 1) return null;
   return (
-    <div className="mt-4 flex items-center justify-between text-xs text-zinc-500">
+    <div className="mt-4 flex items-center justify-between text-xs text-muted">
       <span>
         Página {page} de {totalPages} ({count} registros)
       </span>
@@ -33,14 +33,14 @@ function Pagination({
         <button
           onClick={() => onPage(page - 1)}
           disabled={page <= 1}
-          className="rounded border border-white/10 px-3 py-1.5 transition hover:border-white/20 hover:text-white disabled:opacity-30"
+          className="rounded border border-bd-border px-3 py-1.5 transition hover:border-bd-border hover:text-foreground disabled:opacity-30"
         >
           ← Anterior
         </button>
         <button
           onClick={() => onPage(page + 1)}
           disabled={page >= totalPages}
-          className="rounded border border-white/10 px-3 py-1.5 transition hover:border-white/20 hover:text-white disabled:opacity-30"
+          className="rounded border border-bd-border px-3 py-1.5 transition hover:border-bd-border hover:text-foreground disabled:opacity-30"
         >
           Siguiente →
         </button>
@@ -86,8 +86,8 @@ function AuditLogsContent({ user }: { user: AuthUser }) {
     <AdminShell user={user}>
       <div className="space-y-6">
         <div>
-          <h1 className="text-xl font-semibold text-white">Auditoría</h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <h1 className="text-xl font-semibold text-foreground">Auditoría</h1>
+          <p className="mt-1 text-sm text-muted">
             Historial de acciones administrativas.
           </p>
         </div>
@@ -99,25 +99,25 @@ function AuditLogsContent({ user }: { user: AuthUser }) {
             value={actor}
             onChange={(e) => setActor(e.target.value)}
             placeholder="Filtrar por actor…"
-            className="min-w-[180px] flex-1 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:border-white/20 focus:outline-none"
+            className="min-w-[180px] flex-1 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm text-foreground placeholder-muted focus:border-bd-border focus:outline-none"
           />
           <input
             type="search"
             value={action}
             onChange={(e) => setAction(e.target.value)}
             placeholder="Filtrar por acción…"
-            className="min-w-[180px] flex-1 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:border-white/20 focus:outline-none"
+            className="min-w-[180px] flex-1 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm text-foreground placeholder-muted focus:border-bd-border focus:outline-none"
           />
           <button
             type="submit"
-            className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:border-white/20 hover:text-white"
+            className="rounded-lg border border-bd-border px-4 py-2 text-sm font-semibold text-foreground/85 transition hover:border-bd-border hover:text-foreground"
           >
             Filtrar
           </button>
         </form>
 
         {loading && (
-          <div className="py-12 text-center text-zinc-600">Cargando…</div>
+          <div className="py-12 text-center text-muted">Cargando…</div>
         )}
         {error && !loading && (
           <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">

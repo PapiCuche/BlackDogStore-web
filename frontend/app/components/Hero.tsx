@@ -4,12 +4,19 @@ import Link from "next/link";
 import { useStorefront } from "./StorefrontProvider";
 import { BrandLogo } from "./BrandLogo";
 
-const REPAIR_HIGHLIGHTS = [
-  { icon: "📱", label: "Cambio de Pantalla" },
-  { icon: "🔋", label: "Cambio de Batería" },
-  { icon: "🔲", label: "Tapa Trasera" },
-  { icon: "🔍", label: "Cambio de Glass" },
-];
+/*
+  AQUÍ HABÍA UNA FRANJA DE CUATRO SERVICIOS CON EMOJIS, y sobraba por tres
+  motivos a la vez.
+
+  Repetía la lista de servicios que ya está más abajo y en el pie —tres sitios
+  para lo mismo—, competía visualmente con los pilares que venían justo debajo
+  con la misma forma de rejilla, y usaba emojis como lenguaje visual de una
+  marca cuyo manual no los contempla. Un emoji se dibuja distinto en cada
+  sistema operativo: no es un icono, es una cita a la tipografía de otro.
+
+  El hero pasa de cinco bandas apiladas a una.
+*/
+
 
 export default function Hero() {
   // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
@@ -31,7 +38,17 @@ export default function Hero() {
   const primaryHref = page.hero_primary_cta_url || "/product";
 
   return (
-    <section className="relative overflow-hidden bg-background">
+    /*
+      LA LOSA DE MARCA. Oscura en los dos temas, a propósito.
+
+      M12F convirtió esto en `bg-background` al traducir la paleta, y en modo
+      claro el hero pasó a ser crema: la marca desapareció de su propia
+      portada. Una página clara con un hero negro no es una inconsistencia —
+      es la decisión de diseño que este manual tomó. Lo que sería un fallo es
+      que el sistema no supiera qué contraste usar encima, y para eso están
+      los tokens `slab-*`.
+    */
+    <section className="relative overflow-hidden bg-slab text-slab-foreground">
       {/* Topographic texture */}
       <div className="topo-bg absolute inset-0 pointer-events-none" />
 
@@ -40,16 +57,19 @@ export default function Hero() {
       {/* Dot decoration — bottom left */}
       <div className="dot-grid absolute left-0 bottom-0 h-48 w-48 opacity-30 pointer-events-none" />
 
-      <div className="relative mx-auto max-w-7xl px-6 pt-16 pb-0 lg:px-8 lg:pt-24">
+      <div className="relative mx-auto max-w-7xl px-6 pb-20 pt-16 lg:px-8 lg:pb-28 lg:pt-24">
         <div className="grid gap-12 lg:grid-cols-2 lg:items-center">
 
           {/* Left: copy */}
           <div>
             {/* Label */}
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-4 py-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-white" />
-              <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-400">
-                {[company.name, contact.city].filter(Boolean).join(" · ")}
+            <div className="inline-flex items-center gap-2 rounded-full border border-slab-border bg-slab-surface px-4 py-1.5">
+              {/* EL PUNTO DORADO. Uno de los usos que el manual reserva al
+                  acento: pequeño, sobre negro, donde rinde 8.4:1. No es
+                  decoración perdida — es el 3–5 % puesto donde se ve. */}
+              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+              <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-slab-muted">
+                {eyebrow}
               </span>
             </div>
 
@@ -66,14 +86,18 @@ export default function Hero() {
               La frase principal y el descriptor salen literalmente del manual.
             */}
             {/*
-              `clamp()` en vez de tres saltos de breakpoint: el titular escala de
-              forma continua entre 320 y 1440 px, así que no hay un ancho donde
-              se quede grande justo antes de saltar. `text-balance` reparte las
-              líneas cuando el tenant escribe un titular de una sola línea larga.
+              SIN `break-words`. Partir «ESPECIALIZADO» a mitad de palabra no
+              es responsive: es un titular roto. El tamaño se elige para que la
+              palabra más larga quepa en la columna —medido con navegador— y el
+              ancho máximo evita la línea de sesenta caracteres que ningún
+              titular debería tener.
+
+              `clamp()` escala de forma continua, así que no hay un ancho donde
+              se quede grande justo antes de saltar.
             */}
             <h1
-              className="font-display mt-5 font-black uppercase leading-[0.92] tracking-tight text-foreground text-balance break-words"
-              style={{ fontSize: "clamp(1.75rem, 5.5vw, 4.5rem)" }}
+              className="font-display mt-5 max-w-[15ch] font-black uppercase leading-[0.95] tracking-tight text-slab-foreground text-balance"
+              style={{ fontSize: "clamp(2rem, 4.6vw, 4.25rem)" }}
             >
               {titleLines.map((line, i) => (
                 <span key={i} className="block">
@@ -94,7 +118,7 @@ export default function Hero() {
               ))}
             </h1>
 
-            <p className="mt-8 max-w-md text-base leading-7 text-muted text-pretty">
+            <p className="mt-8 max-w-md text-base leading-7 text-slab-muted text-pretty">
               {subtitle}
               {policies.warranty_text ? `${subtitle ? " " : ""}${policies.warranty_text}` : ""}
             </p>
@@ -103,7 +127,7 @@ export default function Hero() {
             <div className="mt-8 flex flex-wrap gap-3">
               <Link
                 href={primaryHref}
-                className="inline-flex min-h-11 items-center gap-2 rounded-full bg-foreground px-7 py-3.5 text-sm font-black uppercase tracking-widest text-background transition-colors hover:bg-foreground/85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                className="inline-flex min-h-11 items-center gap-2 rounded-full bg-slab-foreground px-7 py-3.5 text-sm font-black uppercase tracking-widest text-slab transition-colors hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
               >
                 {primaryLabel}
               </Link>
@@ -111,7 +135,7 @@ export default function Hero() {
                 href={whatsappLink || "#"}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.05] px-7 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:border-white/30 hover:bg-white/10"
+                className="inline-flex min-h-11 items-center gap-2 rounded-full border border-slab-border bg-slab-surface px-7 py-3.5 text-sm font-bold uppercase tracking-widest text-slab-foreground transition-colors hover:bg-slab-surface/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
@@ -122,7 +146,7 @@ export default function Hero() {
 
             {/* Location — hidden entirely when this tenant published none. */}
             <p
-              className="mt-6 flex items-center gap-2 text-xs text-zinc-600"
+              className="mt-6 flex items-center gap-2 text-xs text-slab-muted"
               hidden={!contact.address && !contact.city}
             >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -133,91 +157,34 @@ export default function Hero() {
             </p>
           </div>
 
-          {/* Right: dog mascot graphic */}
-          <div className="relative flex items-center justify-center lg:justify-end">
-            {/*
-              FLUIDO, NO FIJO. Esto medía 340 px de lado. Con el `px-6` del
-              contenedor, en un viewport de 320 px el espacio disponible son
-              272 px: el cuadro desbordaba 68 px y la portada tenía scroll
-              horizontal en el móvil más estrecho que soportamos.
+          {/*
+            EL ISOTIPO, NO EL LOCKUP.
 
-              `aspect-square` mantiene la proporción sin fijar el lado, y
-              `max-w` conserva el tamaño de siempre en cuanto hay sitio.
-            */}
-            <div className="relative flex aspect-square w-full max-w-[340px] items-center justify-center sm:max-w-[420px]">
-              {/* Subtle glow rings */}
-              <div className="absolute inset-8 rounded-full border border-white/[0.04]" />
-              <div className="absolute inset-20 rounded-full border border-white/[0.03]" />
+            Aquí había un lockup vertical enorme —perro + «BLACK DOG STORE»—
+            que repetía la marca que la cabecera ya lleva, competía con el
+            titular y, cuando el hero se volvió crema, desapareció. Tres
+            problemas de una pieza que además duplicaba la identidad dentro del
+            mismo viewport.
 
-              {/*
-                LA SUPERFICIE MANDA, NO EL TEMA — y esta superficie CAMBIA con
-                el tema, porque la sección de arriba es `bg-background`.
-
-                Composición VERTICAL: el manual la asigna a piezas principales,
-                y aquí se dibuja a 256-320 px, muy por encima de sus 140 px de
-                ancho mínimo.
-              */}
-              {/*
-                LA SUPERFICIE REAL, NO EL NOMBRE DEL BLOQUE.
-
-                Este hero era `bg-[#080808]` —negro fijo— y por eso pedía la
-                variante blanca. M12F lo pasó a `bg-background`, que SIGUE AL
-                TEMA, y el `surface="dark"` se quedó: en tema claro pintaba el
-                logotipo blanco sobre fondo crema. Invisible. El mismo defecto
-                que abrió M12E, reintroducido por el propio cambio que hacía
-                global el tema.
-
-                `surface="theme"` es una afirmación sobre esta superficie —«la
-                mía cambia con el tema»—, no una consulta al tema desde un
-                componente que no sabe sobre qué se dibuja. Un bloque que sí
-                fuera negro fijo seguiría diciendo `surface="dark"`.
-              */}
+            El manual da el isotipo como recurso auxiliar para exactamente
+            esto. Se usa sin deformar, sin recolorear y sin rotar, en su
+            variante para fondo oscuro, muy por encima de sus 48 px mínimos.
+          */}
+          <div className="relative hidden items-center justify-center lg:flex lg:justify-end">
+            <div className="relative flex aspect-square w-full max-w-[380px] items-center justify-center">
+              {/* Anillos: textura de segundo plano, no protagonista. */}
+              <div className="absolute inset-6 rounded-full border border-slab-border" />
+              <div className="absolute inset-20 rounded-full border border-slab-border opacity-60" />
               <BrandLogo
-                placement="hero"
-                surface="theme"
-                className="relative z-10 h-64 w-64 object-contain drop-shadow-[0_8px_48px_rgba(255,255,255,0.1)] sm:h-80 sm:w-80"
-                wordmarkClassName="relative z-10 font-display text-5xl font-black uppercase tracking-tight text-foreground/90"
+                placement="compact"
+                surface="dark"
+                className="relative z-10 h-44 w-44 object-contain xl:h-52 xl:w-52"
+                wordmarkClassName="relative z-10 font-display text-4xl font-black uppercase tracking-tight text-slab-foreground"
               />
-
-              {/*
-                AQUÍ HABÍA DOS TARJETAS FLOTANTES, Y LAS DOS SOBRABAN.
-
-                La primera repetía `policies.warranty_text` — la misma frase
-                que ya está en el párrafo de la izquierda, palabra por palabra.
-                Una política de garantía de cien caracteres dentro de una
-                tarjeta de 11 rem se desbordaba encima del logotipo: en la
-                revisión con navegador tapaba el lockup entero.
-
-                La segunda decía «Baterías NASAN · Certificadas ✓». Es la misma
-                afirmación de certificación que M12F.1 retiró de /services, en
-                otro fichero: no hay documento de Nasan en el proyecto, y el
-                manual exige trazabilidad o validación para publicarla. El dato
-                comprobable —con qué marca se trabaja— vive en el servicio
-                correspondiente, que el taller edita.
-
-                Lo que queda es el logotipo, sin nada encima.
-              */}
             </div>
           </div>
         </div>
 
-        {/* Bottom: repair services strip */}
-        <div className="mt-12 border-t border-white/[0.06]">
-          <div className="grid grid-cols-2 divide-x divide-white/[0.06] sm:grid-cols-4">
-            {REPAIR_HIGHLIGHTS.map((item) => (
-              <Link
-                key={item.label}
-                href="/services"
-                className="group flex items-center gap-3 px-6 py-5 transition hover:bg-white/[0.03]"
-              >
-                <span className="text-xl">{item.icon}</span>
-                <span className="text-sm font-semibold text-zinc-400 transition group-hover:text-white">
-                  {item.label}
-                </span>
-              </Link>
-            ))}
-          </div>
-        </div>
       </div>
     </section>
   );

@@ -111,7 +111,7 @@ export function ServicesContent() {
                   key={service.title}
                   className="group flex flex-col gap-4 py-8 sm:flex-row sm:items-start sm:gap-8 lg:items-center"
                 >
-                  <p className="font-display shrink-0 text-4xl font-black text-muted/40 lg:text-5xl">
+                  <p className="font-display shrink-0 text-4xl font-black text-muted lg:text-5xl">
                     {String(i + 1).padStart(2, "0")}
                   </p>
 

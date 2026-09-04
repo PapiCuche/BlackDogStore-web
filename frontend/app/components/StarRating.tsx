@@ -17,7 +17,7 @@ export function StarRating({ rating, onChange, size = "md" }: StarRatingProps) {
           aria-label={`${star} estrella${star !== 1 ? "s" : ""}`}
           className={`leading-none transition-transform ${
             onChange ? "cursor-pointer hover:scale-125" : "cursor-default"
-          } ${star <= rating ? "text-amber-400" : "text-slate-700"}`}
+          } ${star <= rating ? "text-amber-400" : "text-muted"}`}
         >
           ★
         </button>

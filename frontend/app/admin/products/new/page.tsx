@@ -26,12 +26,12 @@ function NewProductContent({ user }: { user: AuthUser }) {
     <AdminShell user={user}>
       <div className="space-y-6 max-w-2xl">
         <div>
-          <h1 className="text-xl font-semibold text-white">Nuevo producto</h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <h1 className="text-xl font-semibold text-foreground">Nuevo producto</h1>
+          <p className="mt-1 text-sm text-muted">
             Completa los datos del producto. El slug se genera automáticamente si lo dejas vacío.
           </p>
         </div>
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
+        <div className="rounded-xl border border-bd-border bg-surface p-6">
           <ProductForm categories={categories} onSaved={handleSaved} />
         </div>
       </div>
@@ -46,7 +46,7 @@ export default function NewProductPage() {
         if (user.role !== "admin" && user.role !== "superadmin") {
           return (
             <AdminShell user={user}>
-              <p className="text-zinc-400 text-sm">
+              <p className="text-muted text-sm">
                 Solo los administradores pueden crear productos.
               </p>
             </AdminShell>

@@ -63,7 +63,7 @@ function View({ ctx, id }: { ctx: InternalContext; id: string }) {
         </p>
         <Link
           href="/admin/notifications"
-          className="text-xs text-zinc-500 hover:text-zinc-300"
+          className="text-xs text-muted hover:text-foreground/85"
         >
           Volver a la bandeja
         </Link>
@@ -72,7 +72,7 @@ function View({ ctx, id }: { ctx: InternalContext; id: string }) {
   }
 
   if (!announcement) {
-    return <p className="text-xs text-zinc-600">Cargando…</p>;
+    return <p className="text-xs text-muted">Cargando…</p>;
   }
 
   return (
@@ -81,10 +81,10 @@ function View({ ctx, id }: { ctx: InternalContext; id: string }) {
         <span className="inline-block rounded bg-sky-500/15 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-sky-300">
           Comunicado
         </span>
-        <h1 className="text-lg font-semibold text-zinc-100">
+        <h1 className="text-lg font-semibold text-foreground">
           {announcement.title}
         </h1>
-        <p className="text-[11px] text-zinc-500">
+        <p className="text-[11px] text-muted">
           {announcement.author}
           {announcement.published_at
             ? ` · ${new Date(announcement.published_at).toLocaleString("es-PE")}`
@@ -94,13 +94,13 @@ function View({ ctx, id }: { ctx: InternalContext; id: string }) {
         </p>
       </header>
 
-      <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">
         {announcement.body}
       </p>
 
       <Link
         href="/admin/notifications"
-        className="inline-block text-xs text-zinc-500 hover:text-zinc-300"
+        className="inline-block text-xs text-muted hover:text-foreground/85"
       >
         Volver a la bandeja
       </Link>

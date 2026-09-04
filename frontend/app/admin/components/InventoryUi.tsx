@@ -22,15 +22,15 @@ export function StatCard({
     <div
       className={`rounded-xl border p-5 ${
         emphasis
-          ? "border-white/15 bg-white/[0.06]"
-          : "border-white/[0.06] bg-white/[0.02]"
+          ? "border-bd-border bg-surface-2"
+          : "border-bd-border bg-surface"
       }`}
     >
-      <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+      <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
         {label}
       </p>
-      <p className="mt-2 text-2xl font-semibold tabular-nums text-white">{value}</p>
-      {hint ? <p className="mt-1 text-xs text-zinc-500">{hint}</p> : null}
+      <p className="mt-2 text-2xl font-semibold tabular-nums text-foreground">{value}</p>
+      {hint ? <p className="mt-1 text-xs text-muted">{hint}</p> : null}
     </div>
   );
 }
@@ -47,12 +47,12 @@ export function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-xl border border-white/[0.06] bg-white/[0.02]">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-4">
+    <section className="rounded-xl border border-bd-border bg-surface">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-bd-border px-5 py-4">
         <div>
-          <h2 className="text-sm font-semibold text-white">{title}</h2>
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
           {description ? (
-            <p className="mt-0.5 text-xs text-zinc-500">{description}</p>
+            <p className="mt-0.5 text-xs text-muted">{description}</p>
           ) : null}
         </div>
         {action}
@@ -64,8 +64,8 @@ export function Panel({
 
 export function Spinner({ label = "Cargando…" }: { label?: string }) {
   return (
-    <div className="flex items-center gap-3 py-8 text-sm text-zinc-500">
-      <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-600 border-t-transparent" />
+    <div className="flex items-center gap-3 py-8 text-sm text-muted">
+      <div className="h-4 w-4 animate-spin rounded-full border-2 border-bd-border border-t-transparent" />
       {label}
     </div>
   );
@@ -81,8 +81,8 @@ export function ErrorBox({ message }: { message: string }) {
 
 export function EmptyBox({ message }: { message: string }) {
   return (
-    <div className="rounded-lg border border-dashed border-white/10 px-4 py-8 text-center">
-      <p className="text-sm text-zinc-500">{message}</p>
+    <div className="rounded-lg border border-dashed border-bd-border px-4 py-8 text-center">
+      <p className="text-sm text-muted">{message}</p>
     </div>
   );
 }
@@ -90,10 +90,10 @@ export function EmptyBox({ message }: { message: string }) {
 export function StockBadge({ value, threshold = 5 }: { value: number; threshold?: number }) {
   const tone =
     value <= 0
-      ? "border-white/25 bg-white/[0.10] text-white"
+      ? "border-bd-border bg-surface-2 text-foreground"
       : value <= threshold
-        ? "border-white/15 bg-white/[0.05] text-zinc-200"
-        : "border-white/[0.08] bg-transparent text-zinc-400";
+        ? "border-bd-border bg-surface text-foreground"
+        : "border-bd-border bg-transparent text-muted";
   const label = value <= 0 ? "Agotado" : `${value} u.`;
   return (
     <span
@@ -109,8 +109,8 @@ export function MovementBadge({ movement }: { movement: StockMovement }) {
     <span
       className={`inline-block whitespace-nowrap rounded border px-2 py-0.5 text-[11px] font-medium ${
         movement.is_entry
-          ? "border-white/20 bg-white/[0.07] text-white"
-          : "border-white/[0.08] bg-transparent text-zinc-400"
+          ? "border-bd-border bg-surface-2 text-foreground"
+          : "border-bd-border bg-transparent text-muted"
       }`}
       title={movement.movement_type_label}
     >
@@ -123,7 +123,7 @@ export function SignedQty({ movement }: { movement: StockMovement }) {
   return (
     <span
       className={`tabular-nums font-medium ${
-        movement.is_entry ? "text-white" : "text-zinc-400"
+        movement.is_entry ? "text-foreground" : "text-muted"
       }`}
     >
       {movement.is_entry ? "+" : "−"}
@@ -135,7 +135,7 @@ export function SignedQty({ movement }: { movement: StockMovement }) {
 export function Th({ children, right = false }: { children: React.ReactNode; right?: boolean }) {
   return (
     <th
-      className={`whitespace-nowrap px-3 py-2.5 text-[11px] font-semibold uppercase tracking-widest text-zinc-500 ${
+      className={`whitespace-nowrap px-3 py-2.5 text-[11px] font-semibold uppercase tracking-widest text-muted ${
         right ? "text-right" : "text-left"
       }`}
     >
@@ -156,7 +156,7 @@ export function Td({
   return (
     <td
       className={`px-3 py-2.5 text-sm ${right ? "text-right" : "text-left"} ${
-        muted ? "text-zinc-500" : "text-zinc-300"
+        muted ? "text-muted" : "text-foreground/85"
       }`}
     >
       {children}
@@ -223,7 +223,7 @@ export function BranchStockTable({
   return (
     <TableWrap>
       <thead>
-        <tr className="border-b border-white/[0.06]">
+        <tr className="border-b border-bd-border">
           <Th>Producto</Th>
           {multiBranch ? <Th>Sucursal</Th> : null}
           <Th right>Precio</Th>
@@ -234,11 +234,11 @@ export function BranchStockTable({
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={row.id} className="border-b border-white/[0.03]">
+          <tr key={row.id} className="border-b border-bd-border">
             <Td>
               <Link
                 href={`/admin/products/${row.product}/stock-card`}
-                className="transition hover:text-white"
+                className="transition hover:text-foreground"
               >
                 {row.product_name}
               </Link>
@@ -254,7 +254,7 @@ export function BranchStockTable({
             <Td right muted>{row.minimum_stock || "—"}</Td>
             {showSuggested ? (
               <Td right>
-                <span className="tabular-nums text-zinc-300">
+                <span className="tabular-nums text-foreground/85">
                   {row.suggested_quantity || "—"}
                 </span>
               </Td>

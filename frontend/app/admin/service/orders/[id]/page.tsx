@@ -197,7 +197,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
   if (!slug) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <Panel><p className="text-sm text-white/60">Selecciona una empresa.</p></Panel>
+        <Panel><p className="text-sm text-muted">Selecciona una empresa.</p></Panel>
       </AdminShell>
     );
   }
@@ -205,7 +205,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
         <Panel>
-          <p className="text-sm text-white/60">
+          <p className="text-sm text-muted">
             Tu cuenta no tiene permiso para ver el servicio técnico de esta empresa.
           </p>
         </Panel>
@@ -215,7 +215,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
   if (loading && !data) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <Panel><p className="text-sm text-white/50">Cargando orden…</p></Panel>
+        <Panel><p className="text-sm text-muted">Cargando orden…</p></Panel>
       </AdminShell>
     );
   }
@@ -227,7 +227,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
             {error instanceof Error ? error.message : "No se encontró la orden."}
           </p>
           <div className="mt-3">
-            <Link href="/admin/service" className="text-xs text-white/60 hover:underline">
+            <Link href="/admin/service" className="text-xs text-muted hover:underline">
               ← Volver a las órdenes
             </Link>
           </div>
@@ -243,11 +243,11 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
       <div className="space-y-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <Link href="/admin/service" className="text-xs text-white/40 hover:underline">
+            <Link href="/admin/service" className="text-xs text-muted hover:underline">
               ← Órdenes de servicio
             </Link>
             <h1 className="mt-1 text-xl font-semibold">{order.number}</h1>
-            <p className="mt-1 text-sm text-white/50">
+            <p className="mt-1 text-sm text-muted">
               {order.customer_name} · {order.device_summary} · {order.branch_name}
             </p>
           </div>
@@ -285,24 +285,24 @@ function OrderSummary({ order }: { order: ServiceOrderDetail }) {
     <Panel title="Recepción">
       <dl className="grid gap-4 text-sm md:grid-cols-2">
         <div>
-          <dt className="text-xs text-white/40">Falla reportada</dt>
-          <dd className="mt-1 text-white/80">{order.reported_issue || "—"}</dd>
+          <dt className="text-xs text-muted">Falla reportada</dt>
+          <dd className="mt-1 text-foreground/85">{order.reported_issue || "—"}</dd>
         </div>
         <div>
-          <dt className="text-xs text-white/40">Condición física</dt>
-          <dd className="mt-1 text-white/80">{order.physical_condition || "—"}</dd>
+          <dt className="text-xs text-muted">Condición física</dt>
+          <dd className="mt-1 text-foreground/85">{order.physical_condition || "—"}</dd>
         </div>
         <div>
-          <dt className="text-xs text-white/40">Accesorios recibidos</dt>
-          <dd className="mt-1 text-white/80">{order.received_accessories || "—"}</dd>
+          <dt className="text-xs text-muted">Accesorios recibidos</dt>
+          <dd className="mt-1 text-foreground/85">{order.received_accessories || "—"}</dd>
         </div>
         <div>
-          <dt className="text-xs text-white/40">Notas internas</dt>
-          <dd className="mt-1 text-white/80">{order.internal_notes || "—"}</dd>
+          <dt className="text-xs text-muted">Notas internas</dt>
+          <dd className="mt-1 text-foreground/85">{order.internal_notes || "—"}</dd>
         </div>
         <div>
-          <dt className="text-xs text-white/40">Recibido</dt>
-          <dd className="mt-1 text-white/60">
+          <dt className="text-xs text-muted">Recibido</dt>
+          <dd className="mt-1 text-muted">
             {dateTime(order.received_at)}
             {order.received_by_name ? ` · ${order.received_by_name}` : ""}
           </dd>
@@ -334,7 +334,7 @@ function LifecycleSection({
                 tienen su propia operación, más abajo."
     >
       {order.available_transitions.length === 0 ? (
-        <p className="text-sm text-white/50">
+        <p className="text-sm text-muted">
           Esta orden no tiene movimientos genéricos disponibles.
         </p>
       ) : (
@@ -372,16 +372,16 @@ function AssignmentSection({ data, may, busy, run, slug, orderId }: SectionProps
       subtitle="Los candidatos los da el servidor: esta pantalla no puede averiguar
                 quién es personal de una empresa."
     >
-      <p className="mb-3 text-sm text-white/70">
+      <p className="mb-3 text-sm text-muted">
         Actual: {data.order.technician_name || "sin asignar"}
       </p>
       <div className="flex flex-wrap items-end gap-2">
-        <label className="text-xs text-white/50">
+        <label className="text-xs text-muted">
           Asignar a
           <select
             value={technicianId}
             onChange={(e) => setTechnicianId(e.target.value)}
-            className="mt-1 rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+            className="mt-1 rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
           >
             <option value="">—</option>
             {data.technicians.map((t) => (
@@ -421,26 +421,26 @@ function DiagnosticSection({ data, may, busy, run, slug, orderId }: SectionProps
   return (
     <Panel title="Diagnóstico" subtitle="La revisión más reciente, y las anteriores intactas.">
       {data.diagnostics.length === 0 ? (
-        <p className="text-sm text-white/50">Todavía no hay diagnóstico.</p>
+        <p className="text-sm text-muted">Todavía no hay diagnóstico.</p>
       ) : (
         <div className="space-y-3">
           {data.diagnostics.map((d) => (
-            <div key={d.id} className="rounded-xl border border-white/[0.06] p-4">
+            <div key={d.id} className="rounded-xl border border-bd-border p-4">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-white/40">
+                <span className="text-xs text-muted">
                   Revisión {d.revision} · {dateTime(d.created_at)}
                   {d.diagnosed_by_name ? ` · ${d.diagnosed_by_name}` : ""}
                 </span>
                 <Pill label={d.status_label} tone={d.finalized_at ? "good" : "neutral"} />
               </div>
-              <p className="mt-2 text-sm text-white/80">{d.description}</p>
+              <p className="mt-2 text-sm text-foreground/85">{d.description}</p>
               {d.recommended_action ? (
-                <p className="mt-1 text-sm text-white/60">
+                <p className="mt-1 text-sm text-muted">
                   Acción recomendada: {d.recommended_action}
                 </p>
               ) : null}
               {d.internal_notes ? (
-                <p className="mt-1 text-xs text-white/40">{d.internal_notes}</p>
+                <p className="mt-1 text-xs text-muted">{d.internal_notes}</p>
               ) : null}
             </div>
           ))}
@@ -448,7 +448,7 @@ function DiagnosticSection({ data, may, busy, run, slug, orderId }: SectionProps
       )}
 
       {canManage ? (
-        <div className="mt-4 space-y-3 border-t border-white/[0.06] pt-4">
+        <div className="mt-4 space-y-3 border-t border-bd-border pt-4">
           <Field label="Qué se encontró" value={description} onChange={setDescription} textarea />
           <Field label="Acción recomendada" value={action} onChange={setAction} textarea />
           <Field label="Notas internas" value={notes} onChange={setNotes} placeholder="No las ve el cliente" />
@@ -488,13 +488,13 @@ function QuoteSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                 ni siquiera para previsualizar."
     >
       {data.quotes.length === 0 ? (
-        <p className="text-sm text-white/50">Todavía no hay cotización.</p>
+        <p className="text-sm text-muted">Todavía no hay cotización.</p>
       ) : (
         <div className="space-y-4">
           {data.quotes.map((q) => (
-            <div key={q.id} className="rounded-xl border border-white/[0.06] p-4">
+            <div key={q.id} className="rounded-xl border border-bd-border p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs text-white/40">
+                <span className="text-xs text-muted">
                   Revisión {q.revision} · {q.created_by_name || "—"}
                   {q.sent_at ? ` · enviada ${dateTime(q.sent_at)}` : ""}
                 </span>
@@ -508,18 +508,18 @@ function QuoteSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                 <table className="mt-3 w-full text-left text-sm">
                   <tbody>
                     {q.items.map((item) => (
-                      <tr key={item.id} className="border-t border-white/[0.05]">
-                        <td className="py-2 pr-3 text-white/70">
+                      <tr key={item.id} className="border-t border-bd-border">
+                        <td className="py-2 pr-3 text-muted">
                           {item.description}
-                          <span className="ml-2 text-[11px] text-white/30">
+                          <span className="ml-2 text-[11px] text-muted">
                             {item.item_type_label}
                           </span>
                         </td>
-                        <td className="py-2 pr-3 text-right text-white/50">
+                        <td className="py-2 pr-3 text-right text-muted">
                           {item.quantity} × {item.unit_price}
                         </td>
                         {/* Server-computed. Never recalculated here. */}
-                        <td className="py-2 text-right text-white/80">{item.line_total}</td>
+                        <td className="py-2 text-right text-foreground/85">{item.line_total}</td>
                         {canManage && q.is_editable ? (
                           <td className="py-2 pl-3 text-right">
                             <Confirm
@@ -536,14 +536,14 @@ function QuoteSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                   </tbody>
                 </table>
               ) : (
-                <p className="mt-3 text-sm text-white/40">Sin líneas todavía.</p>
+                <p className="mt-3 text-sm text-muted">Sin líneas todavía.</p>
               )}
 
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-3">
-                <span className="text-xs text-white/40">
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-bd-border pt-3">
+                <span className="text-xs text-muted">
                   Subtotal {q.subtotal} · descuento {q.discount_amount}
                 </span>
-                <span className="text-sm font-semibold text-white">
+                <span className="text-sm font-semibold text-foreground">
                   {/* The quote carries its OWN currency, frozen when it was
                       created. Rendering it with the company's current setting
                       would restate an old price in a unit nobody agreed. */}
@@ -552,21 +552,21 @@ function QuoteSection({ data, may, busy, run, slug, orderId }: SectionProps) {
               </div>
 
               {q.decision ? (
-                <p className="mt-2 text-xs text-white/50">
+                <p className="mt-2 text-xs text-muted">
                   El cliente respondió {dateTime(q.decision.decided_at)}
                   {q.decision.reason ? ` — “${q.decision.reason}”` : ""}
                 </p>
               ) : null}
 
               {canManage && q.is_editable ? (
-                <div className="mt-3 space-y-3 border-t border-white/[0.06] pt-3">
+                <div className="mt-3 space-y-3 border-t border-bd-border pt-3">
                   <div className="grid gap-2 md:grid-cols-4">
-                    <label className="text-xs text-white/50">
+                    <label className="text-xs text-muted">
                       Tipo
                       <select
                         value={itemType}
                         onChange={(e) => setItemType(e.target.value)}
-                        className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+                        className="mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
                       >
                         {ITEM_TYPES.map((t) => (
                           <option key={t.value} value={t.value}>{t.label}</option>
@@ -620,7 +620,7 @@ function QuoteSection({ data, may, busy, run, slug, orderId }: SectionProps) {
       )}
 
       {canManage ? (
-        <div className="mt-4 border-t border-white/[0.06] pt-4">
+        <div className="mt-4 border-t border-bd-border pt-4">
           <Button
             disabled={busy}
             onClick={() => void run(() => createQuote(slug, orderId, {
@@ -663,7 +663,7 @@ function ExecutionSection({ data, may, busy, run, slug, orderId }: SectionProps)
     >
       {execution === null ? (
         <>
-          <p className="text-sm text-white/50">Nadie ha empezado todavía.</p>
+          <p className="text-sm text-muted">Nadie ha empezado todavía.</p>
           {canManage && status === "approved" ? (
             <div className="mt-3">
               <Confirm
@@ -679,7 +679,7 @@ function ExecutionSection({ data, may, busy, run, slug, orderId }: SectionProps)
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs text-white/40">
+            <span className="text-xs text-muted">
               Iniciado {dateTime(execution.started_at)}
               {execution.started_by_name ? ` · ${execution.started_by_name}` : ""}
             </span>
@@ -691,7 +691,7 @@ function ExecutionSection({ data, may, busy, run, slug, orderId }: SectionProps)
             ) : null}
           </div>
           {execution.completed_at ? (
-            <p className="text-xs text-white/40">
+            <p className="text-xs text-muted">
               Finalizado {dateTime(execution.completed_at)}
               {execution.completed_by_name ? ` · ${execution.completed_by_name}` : ""}
             </p>
@@ -699,21 +699,21 @@ function ExecutionSection({ data, may, busy, run, slug, orderId }: SectionProps)
 
           {execution.is_completed || !canManage ? (
             <>
-              <p className="text-sm text-white/80">{execution.work_performed || "—"}</p>
+              <p className="text-sm text-foreground/85">{execution.work_performed || "—"}</p>
               {execution.internal_notes ? (
-                <p className="text-xs text-white/40">{execution.internal_notes}</p>
+                <p className="text-xs text-muted">{execution.internal_notes}</p>
               ) : null}
             </>
           ) : (
             <div className="space-y-3">
               <Field label="Trabajo realizado" value={work} onChange={setWork} textarea />
               <Field label="Notas internas" value={notes} onChange={setNotes} textarea />
-              <label className="block text-xs text-white/50">
+              <label className="block text-xs text-muted">
                 Resultado
                 <select
                   value={result}
                   onChange={(e) => setResult(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white md:w-64"
+                  className="mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground md:w-64"
                 >
                   <option value="">—</option>
                   {RESULTS.map((r) => (
@@ -745,7 +745,7 @@ function ExecutionSection({ data, may, busy, run, slug, orderId }: SectionProps)
               </div>
 
               {status === "in_repair" ? (
-                <div className="space-y-2 border-t border-white/[0.06] pt-3">
+                <div className="space-y-2 border-t border-bd-border pt-3">
                   <Field
                     label="Pausar por repuestos — motivo (opcional)"
                     value={pauseNote}
@@ -762,7 +762,7 @@ function ExecutionSection({ data, may, busy, run, slug, orderId }: SectionProps)
                   </Button>
                 </div>
               ) : status === "waiting_parts" ? (
-                <div className="border-t border-white/[0.06] pt-3">
+                <div className="border-t border-bd-border pt-3">
                   <Button
                     tone="primary"
                     disabled={busy}
@@ -811,28 +811,28 @@ function PartsSection({ data, may, busy, run, slug, orderId }: SectionProps) {
             const qty = quantities[c.quote_item_id] ?? "1";
             const shape = `${c.quote_item_id}x${qty}`;
             return (
-              <div key={c.quote_item_id} className="rounded-xl border border-white/[0.06] p-4">
-                <p className="text-sm text-white/80">{c.description}</p>
-                <p className="mt-1 text-xs text-white/40">
+              <div key={c.quote_item_id} className="rounded-xl border border-bd-border p-4">
+                <p className="text-sm text-foreground/85">{c.description}</p>
+                <p className="mt-1 text-xs text-muted">
                   Aprobados {c.approved_quantity} · usados {c.used_quantity} ·
                   {" "}disponibles aquí {c.available_in_branch}
                 </p>
                 {c.outstanding_quantity === 0 ? (
-                  <p className="mt-2 text-xs text-white/40">Ya se usó todo lo aprobado.</p>
+                  <p className="mt-2 text-xs text-muted">Ya se usó todo lo aprobado.</p>
                 ) : c.available_in_branch === 0 ? (
                   <p className="mt-2 text-xs text-rose-300">
                     Sin stock en la sucursal de esta reparación.
                   </p>
                 ) : (
                   <div className="mt-2 flex flex-wrap items-end gap-2">
-                    <label className="text-xs text-white/50">
+                    <label className="text-xs text-muted">
                       Cantidad
                       <input
                         value={qty}
                         onChange={(e) =>
                           setQuantities((q) => ({ ...q, [c.quote_item_id]: e.target.value }))
                         }
-                        className="mt-1 w-24 rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+                        className="mt-1 w-24 rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
                       />
                     </label>
                     <Confirm
@@ -854,17 +854,17 @@ function PartsSection({ data, may, busy, run, slug, orderId }: SectionProps) {
         </div>
       ) : null}
 
-      <div className="mt-4 border-t border-white/[0.06] pt-4">
-        <h3 className="text-xs uppercase tracking-wide text-white/40">Consumidos</h3>
+      <div className="mt-4 border-t border-bd-border pt-4">
+        <h3 className="text-xs uppercase tracking-wide text-muted">Consumidos</h3>
         {active.length === 0 ? (
-          <p className="mt-2 text-sm text-white/50">Todavía no se usó ningún repuesto.</p>
+          <p className="mt-2 text-sm text-muted">Todavía no se usó ningún repuesto.</p>
         ) : (
           <ul className="mt-2 space-y-2">
             {active.map((usage) => (
               <li key={usage.id} className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-sm text-white/80">
-                  {usage.description} <span className="text-white/40">×{usage.quantity}</span>
-                  <span className="ml-2 text-[11px] text-white/30">
+                <span className="text-sm text-foreground/85">
+                  {usage.description} <span className="text-muted">×{usage.quantity}</span>
+                  <span className="ml-2 text-[11px] text-muted">
                     {dateTime(usage.created_at)}
                     {usage.actor_name ? ` · ${usage.actor_name}` : ""}
                   </span>
@@ -885,10 +885,10 @@ function PartsSection({ data, may, busy, run, slug, orderId }: SectionProps) {
 
         {reversed.length > 0 ? (
           <div className="mt-3">
-            <h3 className="text-xs uppercase tracking-wide text-white/30">Deshechos</h3>
+            <h3 className="text-xs uppercase tracking-wide text-muted">Deshechos</h3>
             <ul className="mt-1 space-y-1">
               {reversed.map((usage) => (
-                <li key={usage.id} className="text-xs text-white/40">
+                <li key={usage.id} className="text-xs text-muted">
                   {usage.description} ×{usage.quantity} — devuelto {dateTime(usage.reversed_at)}
                   {usage.reversed_by_name ? ` · ${usage.reversed_by_name}` : ""}
                 </li>
@@ -925,7 +925,7 @@ function QualitySection({ data, may, busy, run, slug, orderId }: SectionProps) {
     >
       {check === null ? (
         <>
-          <p className="text-sm text-white/50">Este equipo no ha pasado control de calidad.</p>
+          <p className="text-sm text-muted">Este equipo no ha pasado control de calidad.</p>
           {canManage && status === "repaired" ? (
             <div className="mt-3">
               <Confirm
@@ -941,23 +941,23 @@ function QualitySection({ data, may, busy, run, slug, orderId }: SectionProps) {
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm text-white/70">{check.template_name}</span>
+            <span className="text-sm text-muted">{check.template_name}</span>
             <Pill
               label={check.status_label}
               tone={check.status === "passed" ? "good" : check.status === "failed" ? "bad" : "neutral"}
             />
           </div>
-          <p className="text-xs text-white/40">
+          <p className="text-xs text-muted">
             Iniciado {dateTime(check.started_at)}
             {check.checked_by_name ? ` · ${check.checked_by_name}` : ""}
           </p>
 
-          <ul className="space-y-3 border-t border-white/[0.06] pt-3">
+          <ul className="space-y-3 border-t border-bd-border pt-3">
             {check.items.map((item) => (
               <li key={item.id} className="space-y-2">
-                <p className="text-sm text-white/80">
+                <p className="text-sm text-foreground/85">
                   {item.label}
-                  {item.is_required ? "" : <span className="text-white/30"> (opcional)</span>}
+                  {item.is_required ? "" : <span className="text-muted"> (opcional)</span>}
                 </p>
                 {canManage && check.is_open ? (
                   <div className="flex flex-wrap gap-2">
@@ -976,7 +976,7 @@ function QualitySection({ data, may, busy, run, slug, orderId }: SectionProps) {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-white/40">
+                  <p className="text-xs text-muted">
                     {QUALITY_RESULTS.find((r) => r.value === item.result)?.label ?? "Sin responder"}
                   </p>
                 )}
@@ -989,15 +989,15 @@ function QualitySection({ data, may, busy, run, slug, orderId }: SectionProps) {
                   />
                 ) : null}
                 {!check.is_open && item.notes ? (
-                  <p className="text-xs text-white/30">{item.notes}</p>
+                  <p className="text-xs text-muted">{item.notes}</p>
                 ) : null}
               </li>
             ))}
           </ul>
 
           {canManage && check.is_open ? (
-            <div className="space-y-3 border-t border-white/[0.06] pt-3">
-              <p className="text-xs text-white/40">
+            <div className="space-y-3 border-t border-bd-border pt-3">
+              <p className="text-xs text-muted">
                 {pending > 0
                   ? `Faltan ${pending} punto(s) obligatorio(s).`
                   : failures > 0
@@ -1033,11 +1033,11 @@ function QualitySection({ data, may, busy, run, slug, orderId }: SectionProps) {
       )}
 
       {data.qualityHistory.length > 1 ? (
-        <div className="mt-4 border-t border-white/[0.06] pt-4">
-          <h3 className="text-xs uppercase tracking-wide text-white/30">Controles anteriores</h3>
+        <div className="mt-4 border-t border-bd-border pt-4">
+          <h3 className="text-xs uppercase tracking-wide text-muted">Controles anteriores</h3>
           <ul className="mt-2 space-y-1">
             {data.qualityHistory.slice(1).map((past) => (
-              <li key={past.id} className="flex items-center justify-between gap-2 text-xs text-white/40">
+              <li key={past.id} className="flex items-center justify-between gap-2 text-xs text-muted">
                 <span>{dateTime(past.started_at)}{past.completed_by_name ? ` · ${past.completed_by_name}` : ""}</span>
                 <Pill label={past.status_label} tone={past.status === "passed" ? "good" : "bad"} />
               </li>
@@ -1105,22 +1105,22 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <dl className="grid flex-1 gap-3 text-sm sm:grid-cols-3">
           <div>
-            <dt className="text-xs text-white/40">Total aprobado</dt>
-            <dd className="mt-0.5 text-white/80">
+            <dt className="text-xs text-muted">Total aprobado</dt>
+            <dd className="mt-0.5 text-foreground/85">
               {summary.quoted_total === null
                 ? "Sin cotización aprobada"
                 : `${summary.currency} ${summary.quoted_total}`}
             </dd>
           </div>
           <div>
-            <dt className="text-xs text-white/40">Pagado</dt>
-            <dd className="mt-0.5 text-white/80">
+            <dt className="text-xs text-muted">Pagado</dt>
+            <dd className="mt-0.5 text-foreground/85">
               {summary.currency} {summary.confirmed_paid}
             </dd>
           </div>
           <div>
-            <dt className="text-xs text-white/40">Saldo pendiente</dt>
-            <dd className="mt-0.5 text-white/80">
+            <dt className="text-xs text-muted">Saldo pendiente</dt>
+            <dd className="mt-0.5 text-foreground/85">
               {summary.outstanding === null
                 ? "—"
                 : `${summary.currency} ${summary.outstanding}`}
@@ -1138,15 +1138,15 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
       ) : null}
 
       {canManage && canPayMore ? (
-        <div className="mt-4 space-y-3 border-t border-white/[0.06] pt-4">
+        <div className="mt-4 space-y-3 border-t border-bd-border pt-4">
           <div className="grid gap-3 sm:grid-cols-3">
             <Field label={`Importe (${summary.currency})`} value={amount} onChange={setAmount} />
-            <label className="text-xs text-white/50">
+            <label className="text-xs text-muted">
               Medio
               <select
                 value={method}
                 onChange={(e) => setMethod(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+                className="mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
               >
                 {PAYMENT_METHODS.map((m) => (
                   <option key={m.value} value={m.value}>{m.label}</option>
@@ -1176,18 +1176,18 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
       ) : null}
 
       {data.payments.length > 0 ? (
-        <ul className="mt-4 space-y-2 border-t border-white/[0.06] pt-4">
+        <ul className="mt-4 space-y-2 border-t border-bd-border pt-4">
           {data.payments.map((payment) => (
             <li key={payment.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span className={payment.is_reversed ? "text-white/30 line-through" : "text-white/80"}>
+              <span className={payment.is_reversed ? "text-muted line-through" : "text-foreground/85"}>
                 {payment.currency} {payment.amount}
-                <span className="text-white/40">
+                <span className="text-muted">
                   {" · "}
                   {PAYMENT_METHODS.find((m) => m.value === payment.method)?.label ?? payment.method}
                   {payment.reference ? ` · ${payment.reference}` : ""}
                 </span>
               </span>
-              <span className="flex items-center gap-2 text-xs text-white/30">
+              <span className="flex items-center gap-2 text-xs text-muted">
                 {dateTime(payment.received_at)}
                 {payment.received_by_name ? ` · ${payment.received_by_name}` : ""}
                 {payment.is_reversed ? (
@@ -1209,7 +1209,7 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
         </ul>
       ) : null}
 
-      <p className="mt-4 border-t border-white/[0.06] pt-3 text-xs text-white/30">
+      <p className="mt-4 border-t border-bd-border pt-3 text-xs text-muted">
         Un pago no se edita ni se borra: se reversa, y ambos hechos quedan.
         Reversar NO devuelve dinero — esta plataforma no puede hacerlo.
       </p>
@@ -1260,20 +1260,20 @@ function DeliverySection({ data, may, busy, run, slug, orderId }: SectionProps) 
       {delivery !== null ? (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm text-white/80">{delivery.recipient_name}</span>
+            <span className="text-sm text-foreground/85">{delivery.recipient_name}</span>
             <Pill label="Entregado" tone="good" />
           </div>
-          <p className="text-xs text-white/40">
+          <p className="text-xs text-muted">
             {dateTime(delivery.delivered_at)}
             {delivery.delivered_by_name ? ` · ${delivery.delivered_by_name}` : ""}
           </p>
-          {delivery.notes ? <p className="text-xs text-white/30">{delivery.notes}</p> : null}
-          <p className="pt-2 text-xs text-white/30">
+          {delivery.notes ? <p className="text-xs text-muted">{delivery.notes}</p> : null}
+          <p className="pt-2 text-xs text-muted">
             El registro no se puede editar ni borrar. Una entrega es un hecho con fecha.
           </p>
         </div>
       ) : !ready ? (
-        <p className="text-sm text-white/50">
+        <p className="text-sm text-muted">
           Solo se entrega un equipo que aprobó el control de calidad.
         </p>
       ) : blockedByBalance ? (
@@ -1282,13 +1282,13 @@ function DeliverySection({ data, may, busy, run, slug, orderId }: SectionProps) 
             Esta empresa exige el pago antes de entregar. Saldo pendiente:{" "}
             {data.paymentSummary.currency} {data.paymentSummary.outstanding ?? "—"}.
           </p>
-          <p className="text-xs text-white/40">
+          <p className="text-xs text-muted">
             El servidor vuelve a comprobarlo al entregar, así que registrar el pago
             arriba es lo que habilita esta acción — ocultar el botón no bastaría.
           </p>
         </div>
       ) : !canManage ? (
-        <p className="text-sm text-white/50">
+        <p className="text-sm text-muted">
           Este equipo está listo. Tu cuenta no tiene permiso para registrar la entrega.
         </p>
       ) : (
@@ -1326,16 +1326,16 @@ function HistorySection({ history }: { history: ServiceHistoryEntry[] }) {
   return (
     <Panel title="Historial" subtitle="Inmutable. Escrito por el servidor en cada cambio.">
       {history.length === 0 ? (
-        <p className="text-sm text-white/50">Sin eventos.</p>
+        <p className="text-sm text-muted">Sin eventos.</p>
       ) : (
         <ul className="space-y-2">
           {[...history].reverse().map((event) => (
             <li key={event.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span className="text-white/70">
+              <span className="text-muted">
                 {event.status_label}
-                {event.comment ? <span className="text-white/40"> — {event.comment}</span> : null}
+                {event.comment ? <span className="text-muted"> — {event.comment}</span> : null}
               </span>
-              <span className="text-xs text-white/30">
+              <span className="text-xs text-muted">
                 {dateTime(event.created_at)}
                 {event.actor_name ? ` · ${event.actor_name}` : ""}
                 {event.is_customer_visible ? "" : " · interno"}

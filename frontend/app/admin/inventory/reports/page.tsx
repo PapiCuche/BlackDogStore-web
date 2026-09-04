@@ -100,15 +100,15 @@ function ReportsContent({ user }: { user: AuthUser }) {
   }, [load, reloadKey, scope.ready]);
 
   const fieldClass =
-    "w-24 rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25";
+    "w-24 rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border";
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">Reportes de inventario</h1>
-            <p className="mt-1 text-sm text-zinc-500">
+            <h1 className="text-xl font-semibold text-foreground">Reportes de inventario</h1>
+            <p className="mt-1 text-sm text-muted">
               Stock crítico, rotación y ventas por producto.
             </p>
           </div>
@@ -123,7 +123,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
             />
             <Link
               href="/admin/inventory"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
             >
               ← Inventario
             </Link>
@@ -132,9 +132,9 @@ function ReportsContent({ user }: { user: AuthUser }) {
 
         <ScopeNote scope={data?.scope} />
 
-        <div className="flex flex-wrap items-end gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+        <div className="flex flex-wrap items-end gap-4 rounded-xl border border-bd-border bg-surface p-5">
           <div>
-            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500" htmlFor="r-threshold">
+            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted" htmlFor="r-threshold">
               Umbral por defecto
             </label>
             <input
@@ -147,7 +147,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
             />
           </div>
           <div>
-            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500" htmlFor="r-days">
+            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted" htmlFor="r-days">
               Días sin movimiento
             </label>
             <input
@@ -165,7 +165,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
               setLoading(true);
               setReloadKey((k) => k + 1);
             }}
-            className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200"
+            className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90"
           >
             Actualizar
           </button>
@@ -221,7 +221,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
               ) : (
                 <TableWrap>
                   <thead>
-                    <tr className="border-b border-white/[0.06]">
+                    <tr className="border-b border-bd-border">
                       <Th>Producto</Th>
                       <Th right>Unidades vendidas</Th>
                       <Th right>Ingresos</Th>
@@ -229,7 +229,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
                   </thead>
                   <tbody>
                     {data.best.map((row) => (
-                      <tr key={row.product_id} className="border-b border-white/[0.03]">
+                      <tr key={row.product_id} className="border-b border-bd-border">
                         <Td>{row.product_name}</Td>
                         <Td right>{row.units_sold}</Td>
                         <Td right muted>{formatSoles(row.revenue)}</Td>

@@ -57,14 +57,14 @@ export function InternalTopbar({
         : `${reachable.length} sucursales`;
 
   return (
-    <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-background/95 backdrop-blur">
+    <header className="sticky top-0 z-40 border-b border-bd-border bg-background/95 backdrop-blur">
       <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
             onClick={onOpenMenu}
             aria-label="Abrir menú de módulos"
-            className="rounded-lg p-2 text-zinc-400 transition hover:bg-white/5 hover:text-white lg:hidden"
+            className="rounded-lg p-2 text-muted transition hover:bg-surface hover:text-foreground lg:hidden"
           >
             <IconMenu />
           </button>
@@ -72,15 +72,15 @@ export function InternalTopbar({
           <div className="min-w-0">
             {hasCompany ? (
               <>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-zinc-600">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
                   Empresa
                 </p>
                 <div className="flex items-center gap-2">
-                  <p className="truncate text-sm font-medium text-zinc-200">
+                  <p className="truncate text-sm font-medium text-foreground">
                     {dashboard?.company?.name}
                   </p>
                   <span
-                    className="hidden items-center gap-1 text-xs text-zinc-500 sm:flex"
+                    className="hidden items-center gap-1 text-xs text-muted sm:flex"
                     title={
                       reachable.length > 0
                         ? reachable.map((b) => b.name).join(" · ")
@@ -93,7 +93,7 @@ export function InternalTopbar({
                 </div>
               </>
             ) : (
-              <p className="text-sm text-zinc-400">Panel administrativo</p>
+              <p className="text-sm text-muted">Panel administrativo</p>
             )}
           </div>
         </div>
@@ -105,7 +105,7 @@ export function InternalTopbar({
           {isMaster && (
             <span
               title="Administrador de plataforma (User.is_superuser)"
-              className="hidden items-center gap-1.5 rounded-lg border border-white/25 bg-white/[0.08] px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-white sm:flex"
+              className="hidden items-center gap-1.5 rounded-lg border border-bd-border bg-surface-2 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-foreground sm:flex"
             >
               <IconShield className="h-3.5 w-3.5" />
               Master
@@ -121,10 +121,10 @@ export function InternalTopbar({
           )}
 
           <div className="hidden text-right md:block">
-            <p className="truncate text-sm text-zinc-300">
+            <p className="truncate text-sm text-foreground/85">
               {user.first_name || user.username}
             </p>
-            <p className="truncate text-[11px] text-zinc-600">
+            <p className="truncate text-[11px] text-muted">
               {access?.roles.length
                 ? access.roles.map((r) => r.name).join(" · ")
                 : roleLabel(access?.legacy_role ?? user.role)}
@@ -133,7 +133,7 @@ export function InternalTopbar({
 
           <Link
             href="/"
-            className="hidden rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-400 transition hover:border-white/20 hover:text-white sm:block"
+            className="hidden rounded-lg border border-bd-border px-3 py-2 text-xs text-muted transition hover:border-bd-border hover:text-foreground sm:block"
           >
             Volver a la tienda
           </Link>

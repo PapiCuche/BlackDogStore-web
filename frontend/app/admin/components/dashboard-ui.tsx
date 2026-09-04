@@ -33,30 +33,30 @@ export function DashboardHeader({
   isPlatformAdmin: boolean;
 }) {
   return (
-    <header className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-surface px-6 py-7 sm:px-8">
+    <header className="relative overflow-hidden rounded-2xl border border-bd-border bg-surface px-6 py-7 sm:px-8">
       {/* Brand texture, already part of the visual language (globals.css) */}
       <div
         aria-hidden="true"
         className="dot-grid pointer-events-none absolute -right-6 -top-6 h-32 w-32 opacity-[0.35]"
       />
       <div className="relative">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-zinc-500">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-muted">
           Control interno
         </p>
-        <h1 className="mt-1.5 font-display text-2xl font-bold text-white sm:text-3xl">
+        <h1 className="mt-1.5 font-display text-2xl font-bold text-foreground sm:text-3xl">
           {greeting}, {name}
         </h1>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {companyName ? (
-            <span className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-zinc-300">
+            <span className="rounded-lg border border-bd-border bg-surface px-2.5 py-1 text-xs text-foreground/85">
               {companyName}
             </span>
           ) : null}
-          <span className="rounded-lg border border-white/[0.06] px-2.5 py-1 text-xs text-zinc-500">
+          <span className="rounded-lg border border-bd-border px-2.5 py-1 text-xs text-muted">
             {scope}
           </span>
           {isPlatformAdmin ? (
-            <span className="rounded-lg border border-white/25 bg-white/[0.08] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-widest text-white">
+            <span className="rounded-lg border border-bd-border bg-surface-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-widest text-foreground">
               Master
             </span>
           ) : null}
@@ -81,11 +81,11 @@ export function DashboardSection({
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="font-display text-base font-semibold tracking-wide text-white">
+          <h2 className="font-display text-base font-semibold tracking-wide text-foreground">
             {title}
           </h2>
           {description ? (
-            <p className="mt-0.5 text-xs text-zinc-500">{description}</p>
+            <p className="mt-0.5 text-xs text-muted">{description}</p>
           ) : null}
         </div>
         {action}
@@ -111,21 +111,21 @@ export function SummaryStatCard({
   icon?: IconComponent;
 }) {
   return (
-    <div className="group rounded-xl border border-white/[0.07] bg-surface p-5 transition hover:border-white/15">
+    <div className="group rounded-xl border border-bd-border bg-surface p-5 transition hover:border-bd-border">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
           {label}
         </p>
         {Icon ? (
-          <span className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-1.5 text-zinc-500 transition group-hover:text-zinc-300">
+          <span className="rounded-lg border border-bd-border bg-surface p-1.5 text-muted transition group-hover:text-foreground/85">
             <Icon className="h-4 w-4" />
           </span>
         ) : null}
       </div>
-      <p className="mt-3 font-display text-3xl font-bold tabular-nums leading-none text-white">
+      <p className="mt-3 font-display text-3xl font-bold tabular-nums leading-none text-foreground">
         {value}
       </p>
-      {hint ? <p className="mt-2 text-xs text-zinc-500">{hint}</p> : null}
+      {hint ? <p className="mt-2 text-xs text-muted">{hint}</p> : null}
     </div>
   );
 }
@@ -142,16 +142,16 @@ export function ChartCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col rounded-xl border border-white/[0.07] bg-surface p-5 sm:p-6">
+    <div className="flex flex-col rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
       <div className="mb-5">
-        <h3 className="text-sm font-semibold text-white">{title}</h3>
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
         {description ? (
-          <p className="mt-0.5 text-xs text-zinc-500">{description}</p>
+          <p className="mt-0.5 text-xs text-muted">{description}</p>
         ) : null}
       </div>
       <div className="flex-1">{children}</div>
       {footnote ? (
-        <p className="mt-5 border-t border-white/[0.06] pt-3 text-[11px] leading-relaxed text-zinc-600">
+        <p className="mt-5 border-t border-bd-border pt-3 text-[11px] leading-relaxed text-muted">
           {footnote}
         </p>
       ) : null}
@@ -166,8 +166,8 @@ export function AlertsPanel({
 }) {
   if (alerts.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-white/10 px-4 py-7 text-center">
-        <p className="text-sm text-zinc-500">Sin avisos pendientes.</p>
+      <div className="rounded-xl border border-dashed border-bd-border px-4 py-7 text-center">
+        <p className="text-sm text-muted">Sin avisos pendientes.</p>
       </div>
     );
   }
@@ -180,16 +180,16 @@ export function AlertsPanel({
             ? "border-red-500/25 bg-red-500/[0.07]"
             : alert.level === "warning"
               ? "border-amber-400/20 bg-amber-400/[0.05]"
-              : "border-white/[0.07] bg-surface";
+              : "border-bd-border bg-surface";
         return (
           <div
             key={alert.code + alert.title}
             className={`flex gap-3 rounded-xl border p-4 ${tone}`}
           >
-            <IconAlert className="mt-0.5 h-4 w-4 shrink-0 text-zinc-400" />
+            <IconAlert className="mt-0.5 h-4 w-4 shrink-0 text-muted" />
             <div className="min-w-0">
-              <p className="text-sm font-medium text-zinc-200">{alert.title}</p>
-              <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">
+              <p className="text-sm font-medium text-foreground">{alert.title}</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-muted">
                 {alert.detail}
               </p>
             </div>
@@ -202,7 +202,7 @@ export function AlertsPanel({
 
 export function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-block rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-xs text-zinc-300">
+    <span className="inline-block rounded-lg border border-bd-border bg-surface px-2.5 py-1 text-xs text-foreground/85">
       {children}
     </span>
   );
@@ -220,8 +220,8 @@ export function formatSoles(value: string | number): string {
 
 export function EmptyState({ message }: { message: string }) {
   return (
-    <div className="rounded-xl border border-dashed border-white/10 px-4 py-8 text-center">
-      <p className="text-sm text-zinc-500">{message}</p>
+    <div className="rounded-xl border border-dashed border-bd-border px-4 py-8 text-center">
+      <p className="text-sm text-muted">{message}</p>
     </div>
   );
 }
@@ -229,15 +229,15 @@ export function EmptyState({ message }: { message: string }) {
 export function DashboardSkeleton() {
   return (
     <div className="space-y-8" aria-busy="true" aria-label="Cargando dashboard">
-      <div className="h-32 animate-pulse rounded-2xl bg-white/[0.03]" />
+      <div className="h-32 animate-pulse rounded-2xl bg-surface" />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {[0, 1, 2, 3, 4, 5].map((i) => (
-          <div key={i} className="h-28 animate-pulse rounded-xl bg-white/[0.03]" />
+          <div key={i} className="h-28 animate-pulse rounded-xl bg-surface" />
         ))}
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         {[0, 1].map((i) => (
-          <div key={i} className="h-72 animate-pulse rounded-xl bg-white/[0.03]" />
+          <div key={i} className="h-72 animate-pulse rounded-xl bg-surface" />
         ))}
       </div>
     </div>

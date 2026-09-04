@@ -13,7 +13,7 @@ type Props = {
 export function OrdersTable({ orders }: Props) {
   if (orders.length === 0) {
     return (
-      <p className="text-zinc-500 text-sm py-6 text-center">
+      <p className="text-muted text-sm py-6 text-center">
         No hay órdenes que coincidan.
       </p>
     );
@@ -23,7 +23,7 @@ export function OrdersTable({ orders }: Props) {
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-white/[0.08] text-zinc-400">
+          <tr className="border-b border-bd-border text-muted">
             <th className="text-left pb-3 pr-4 font-medium">#</th>
             <th className="text-left pb-3 pr-4 font-medium">Cliente</th>
             <th className="text-right pb-3 pr-4 font-medium hidden md:table-cell">Total</th>
@@ -37,14 +37,14 @@ export function OrdersTable({ orders }: Props) {
           {orders.map((o) => (
             <tr
               key={o.id}
-              className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors"
+              className="border-b border-bd-border hover:bg-surface transition-colors"
             >
-              <td className="py-3 pr-4 text-zinc-400 font-mono text-xs">#{o.id}</td>
+              <td className="py-3 pr-4 text-muted font-mono text-xs">#{o.id}</td>
               <td className="py-3 pr-4">
-                <p className="text-zinc-100 font-medium leading-tight">{o.customer_name || "—"}</p>
-                <p className="text-zinc-500 text-xs mt-0.5">{o.customer_email}</p>
+                <p className="text-foreground font-medium leading-tight">{o.customer_name || "—"}</p>
+                <p className="text-muted text-xs mt-0.5">{o.customer_email}</p>
               </td>
-              <td className="py-3 pr-4 text-right text-zinc-200 hidden md:table-cell">
+              <td className="py-3 pr-4 text-right text-foreground hidden md:table-cell">
                 S/ {parseFloat(o.total).toFixed(2)}
               </td>
               <td className="py-3 pr-4">
@@ -53,13 +53,13 @@ export function OrdersTable({ orders }: Props) {
               <td className="py-3 pr-4">
                 <FulfillmentStatusBadge status={o.fulfillment_status} />
               </td>
-              <td className="py-3 pr-4 text-zinc-500 text-xs hidden lg:table-cell">
+              <td className="py-3 pr-4 text-muted text-xs hidden lg:table-cell">
                 {formatAdminDate(o.created_at)}
               </td>
               <td className="py-3 text-right">
                 <Link
                   href={`/admin/orders/${o.id}`}
-                  className="text-zinc-400 hover:text-zinc-100 text-xs hover:underline"
+                  className="text-muted hover:text-foreground text-xs hover:underline"
                 >
                   Detalle
                 </Link>

@@ -82,17 +82,17 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
   }
 
   return (
-    <section className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
-      <h2 className="mb-1 text-sm font-semibold text-white">Nota de venta interna</h2>
-      <p className="mb-4 text-xs text-zinc-500">{SALES_NOTE_NOTICE}</p>
+    <section className="rounded-xl border border-bd-border bg-surface p-6">
+      <h2 className="mb-1 text-sm font-semibold text-foreground">Nota de venta interna</h2>
+      <p className="mb-4 text-xs text-muted">{SALES_NOTE_NOTICE}</p>
 
       {!isPaid ? (
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-muted">
           Solo se puede emitir una nota de venta interna para órdenes pagadas.
         </p>
       ) : loading ? (
-        <div className="flex items-center gap-3 text-sm text-zinc-500">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-600 border-t-transparent" />
+        <div className="flex items-center gap-3 text-sm text-muted">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-bd-border border-t-transparent" />
           Cargando…
         </div>
       ) : (
@@ -100,34 +100,34 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
           {note ? (
             <dl className="mb-4 grid gap-x-6 gap-y-2 sm:grid-cols-2">
               <div>
-                <dt className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Número interno
                 </dt>
-                <dd className="mt-0.5 font-mono text-sm text-white">{note.number}</dd>
+                <dd className="mt-0.5 font-mono text-sm text-foreground">{note.number}</dd>
               </div>
               <div>
-                <dt className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Emitida
                 </dt>
-                <dd className="mt-0.5 text-sm text-zinc-300">{formatWhen(note.issued_at)}</dd>
+                <dd className="mt-0.5 text-sm text-foreground/85">{formatWhen(note.issued_at)}</dd>
               </div>
               <div>
-                <dt className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Estado
                 </dt>
-                <dd className="mt-0.5 text-sm text-zinc-300">{note.status_label}</dd>
+                <dd className="mt-0.5 text-sm text-foreground/85">{note.status_label}</dd>
               </div>
               <div>
-                <dt className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Emitida por
                 </dt>
-                <dd className="mt-0.5 text-sm text-zinc-300">
+                <dd className="mt-0.5 text-sm text-foreground/85">
                   {note.created_by_username ?? "—"}
                 </dd>
               </div>
             </dl>
           ) : (
-            <p className="mb-4 text-sm text-zinc-500">
+            <p className="mb-4 text-sm text-muted">
               Esta orden todavía no tiene nota de venta interna.
             </p>
           )}
@@ -144,7 +144,7 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
                 type="button"
                 onClick={() => void handleIssue()}
                 disabled={issuing}
-                className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {issuing ? "Emitiendo…" : "Generar nota de venta"}
               </button>
@@ -153,7 +153,7 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
                 type="button"
                 onClick={() => void handleDownload()}
                 disabled={downloading}
-                className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {downloading ? "Generando PDF…" : "Descargar PDF"}
               </button>

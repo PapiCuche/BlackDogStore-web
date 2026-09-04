@@ -58,9 +58,9 @@ import {
 
 const BUTTON =
   "rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40";
-const PRIMARY = `${BUTTON} bg-white text-black hover:bg-zinc-200`;
-const DANGER = `${BUTTON} bg-amber-400 text-black hover:bg-amber-300`;
-const GHOST = `${BUTTON} border border-white/[0.12] text-zinc-300 hover:bg-white/[0.06]`;
+const PRIMARY = `${BUTTON} bg-foreground text-background hover:bg-foreground/90`;
+const DANGER = `${BUTTON} bg-amber-400 text-background hover:bg-amber-300`;
+const GHOST = `${BUTTON} border border-bd-border text-foreground/85 hover:bg-surface-2`;
 
 function text(row: { data: Record<string, unknown> }, key: string) {
   const value = row.data?.[key];
@@ -184,7 +184,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 const selected = event.target.files?.[0];
                 if (selected) void onFile(selected);
               }}
-              className="block w-full text-sm text-zinc-400 file:mr-4 file:rounded-lg file:border-0 file:bg-white file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black"
+              className="block w-full text-sm text-muted file:mr-4 file:rounded-lg file:border-0 file:bg-foreground file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
             />
           </DashboardSection>
 
@@ -195,7 +195,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2">
                 {branches.length === 0 && (
-                  <p className="text-xs text-zinc-500">
+                  <p className="text-xs text-muted">
                     Elige un archivo primero, o descarga todas las sucursales a las
                     que tienes acceso.
                   </p>
@@ -203,7 +203,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 {branches.map((branch) => (
                   <label
                     key={branch.id}
-                    className="flex items-center gap-2 rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs text-zinc-300"
+                    className="flex items-center gap-2 rounded-lg border border-bd-border px-3 py-1.5 text-xs text-foreground/85"
                   >
                     <input
                       type="checkbox"
@@ -234,7 +234,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                   En blanco, para conteo físico
                 </a>
               </div>
-              <p className="text-xs text-zinc-500">
+              <p className="text-xs text-muted">
                 Para un conteo real conviene la hoja en blanco: con las cantidades
                 ya escritas es fácil leer «14», ver catorce más o menos y no
                 corregir nada.
@@ -259,7 +259,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
             )}
             {warehouses.map((column) => (
               <label key={column.index} className="block text-xs">
-                <span className="mb-1 block uppercase tracking-widest text-zinc-500">
+                <span className="mb-1 block uppercase tracking-widest text-muted">
                   {column.header}
                 </span>
                 <select
@@ -270,7 +270,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                     else next[String(column.index)] = Number(event.target.value);
                     setBranchMap(next);
                   }}
-                  className="w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200"
+                  className="w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
                 >
                   <option value="">— no importar esta columna —</option>
                   {branches.map((branch) => (
@@ -325,12 +325,12 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 className={
                   "w-full rounded-xl border px-4 py-3 text-left transition " +
                   (mode === value
-                    ? "border-white/30 bg-white/[0.06]"
-                    : "border-white/[0.06] hover:bg-white/[0.03]")
+                    ? "border-bd-border bg-surface-2"
+                    : "border-bd-border hover:bg-surface")
                 }
               >
-                <span className="font-semibold text-zinc-100">{label}</span>
-                <p className="mt-1 text-xs text-zinc-500">{help}</p>
+                <span className="font-semibold text-foreground">{label}</span>
+                <p className="mt-1 text-xs text-muted">{help}</p>
               </button>
             ))}
             <div className="flex gap-2 pt-2">
@@ -362,7 +362,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
           <CountsBar job={job} />
           <Notices job={job} />
 
-          <p className="mb-4 rounded-lg border border-white/[0.08] bg-black/30 px-4 py-2 text-xs text-zinc-400">
+          <p className="mb-4 rounded-lg border border-bd-border bg-background/30 px-4 py-2 text-xs text-muted">
             Las filas marcadas <strong className="text-amber-300">Omitir</strong>{" "}
             tienen la celda de cantidad vacía: su stock no cambia. Un cero escrito
             explícitamente sí baja el stock a cero.
@@ -481,10 +481,10 @@ export default function StockImportPage() {
         >
           <div className="space-y-6">
             <header>
-              <h1 className="text-xl font-semibold text-zinc-100">
+              <h1 className="text-xl font-semibold text-foreground">
                 Carga masiva de inventario
               </h1>
-              <p className="text-sm text-zinc-500">
+              <p className="text-sm text-muted">
                 Una celda vacía deja el stock como está. Un cero escrito lo pone en
                 cero.
               </p>

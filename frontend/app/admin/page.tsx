@@ -79,13 +79,13 @@ function CompanySelectionPrompt({
 }) {
   return (
     <div className="mx-auto max-w-lg py-10 text-center">
-      <span className="inline-flex rounded-xl border border-white/15 bg-white/[0.05] p-3 text-white">
+      <span className="inline-flex rounded-xl border border-bd-border bg-surface p-3 text-foreground">
         <IconShield />
       </span>
-      <h1 className="mt-4 font-display text-xl font-bold text-white">
+      <h1 className="mt-4 font-display text-xl font-bold text-foreground">
         Selecciona una empresa
       </h1>
-      <p className="mt-2 text-sm text-zinc-500">
+      <p className="mt-2 text-sm text-muted">
         Selecciona una empresa para abrir su control interno. Las herramientas
         globales de plataforma son una superficie distinta y están pendientes.
       </p>
@@ -99,14 +99,14 @@ function CompanySelectionPrompt({
               key={company.id}
               type="button"
               onClick={() => onSelect(company.id)}
-              className="flex w-full items-center gap-3 rounded-xl border border-white/[0.07] bg-surface p-4 text-left transition hover:border-white/20"
+              className="flex w-full items-center gap-3 rounded-xl border border-bd-border bg-surface p-4 text-left transition hover:border-bd-border"
             >
-              <IconStore className="h-4 w-4 shrink-0 text-zinc-500" />
+              <IconStore className="h-4 w-4 shrink-0 text-muted" />
               <span className="min-w-0">
-                <span className="block truncate text-sm font-medium text-zinc-200">
+                <span className="block truncate text-sm font-medium text-foreground">
                   {company.name}
                 </span>
-                <span className="block truncate font-mono text-[11px] text-zinc-600">
+                <span className="block truncate font-mono text-[11px] text-muted">
                   {company.slug}
                 </span>
               </span>
@@ -455,10 +455,10 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
           title="Mi acceso"
           description="Lo que tu cuenta puede hacer en esta empresa."
         >
-          <div className="rounded-xl border border-white/[0.07] bg-surface p-5 sm:p-6">
+          <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
             <div className="grid gap-6 sm:grid-cols-3">
               <div>
-                <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Roles
                 </p>
                 <div className="flex flex-wrap gap-1.5">
@@ -470,7 +470,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
                       </Chip>
                     ))
                   ) : (
-                    <span className="text-xs text-zinc-600">
+                    <span className="text-xs text-muted">
                       Rol heredado: {dashboard.access.legacy_role ?? "—"}
                     </span>
                   )}
@@ -478,26 +478,26 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
               </div>
 
               <div>
-                <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Áreas
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {areas.length > 0 ? (
                     areas.map((area) => <Chip key={area.id}>{area.name}</Chip>)
                   ) : (
-                    <span className="text-xs text-zinc-600">Sin área asignada</span>
+                    <span className="text-xs text-muted">Sin área asignada</span>
                   )}
                 </div>
               </div>
 
               <div>
-                <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Permisos
                 </p>
-                <p className="font-display text-2xl font-bold tabular-nums text-white">
+                <p className="font-display text-2xl font-bold tabular-nums text-foreground">
                   {capabilities.length}
                 </p>
-                <p className="mt-0.5 text-[11px] text-zinc-600">
+                <p className="mt-0.5 text-[11px] text-muted">
                   habilitado{capabilities.length === 1 ? "" : "s"} · origen:{" "}
                   {dashboard.access.is_platform_admin
                     ? "plataforma"
@@ -536,16 +536,16 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
                 <Link
                   key={module.id}
                   href={module.href!}
-                  className="group flex items-start gap-3.5 rounded-xl border border-white/[0.07] bg-surface p-5 transition hover:border-white/20"
+                  className="group flex items-start gap-3.5 rounded-xl border border-bd-border bg-surface p-5 transition hover:border-bd-border"
                 >
-                  <span className="mt-0.5 rounded-lg border border-white/[0.06] bg-white/[0.03] p-2 text-zinc-400 transition group-hover:text-white">
+                  <span className="mt-0.5 rounded-lg border border-bd-border bg-surface p-2 text-muted transition group-hover:text-foreground">
                     <Icon />
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold text-white">
+                    <span className="block text-sm font-semibold text-foreground">
                       {module.label}
                     </span>
-                    <span className="mt-0.5 block text-xs leading-relaxed text-zinc-500">
+                    <span className="mt-0.5 block text-xs leading-relaxed text-muted">
                       {module.description}
                     </span>
                   </span>
@@ -565,7 +565,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
             type="button"
             onClick={() => setShowRoadmap((v) => !v)}
             aria-expanded={showRoadmap}
-            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-400 transition hover:border-white/20 hover:text-white"
+            className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-muted transition hover:border-bd-border hover:text-foreground"
           >
             {showRoadmap ? "Ocultar mapa" : "Ver mapa completo"}
           </button>
@@ -584,7 +584,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
               const GroupIcon = group.icon;
               return (
                 <div key={group.id}>
-                  <p className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                  <p className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
                     <GroupIcon className="h-3.5 w-3.5" />
                     {group.label}
                   </p>

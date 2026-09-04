@@ -78,8 +78,8 @@ function ReplenishmentContent({ user }: { user: AuthUser }) {
       <div className="space-y-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">Reposición sugerida</h1>
-            <p className="mt-1 text-sm text-zinc-500">
+            <h1 className="text-xl font-semibold text-foreground">Reposición sugerida</h1>
+            <p className="mt-1 text-sm text-muted">
               Productos en o por debajo de su mínimo, con la cantidad que faltaría
               para alcanzar el objetivo de esa sucursal.
             </p>
@@ -95,7 +95,7 @@ function ReplenishmentContent({ user }: { user: AuthUser }) {
             />
             <Link
               href="/admin/inventory"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
             >
               ← Inventario
             </Link>
@@ -128,7 +128,7 @@ function ReplenishmentContent({ user }: { user: AuthUser }) {
               ) : (
                 <TableWrap>
                   <thead>
-                    <tr className="border-b border-white/[0.06]">
+                    <tr className="border-b border-bd-border">
                       <Th>Producto</Th>
                       <Th>Sucursal</Th>
                       <Th right>Actual</Th>
@@ -142,12 +142,12 @@ function ReplenishmentContent({ user }: { user: AuthUser }) {
                     {rows.map((row) => (
                       <tr
                         key={`${row.branch_id}-${row.product_id}`}
-                        className="border-b border-white/[0.03]"
+                        className="border-b border-bd-border"
                       >
                         <Td>
                           <Link
                             href={`/admin/products/${row.product_id}/stock-card`}
-                            className="transition hover:text-white"
+                            className="transition hover:text-foreground"
                           >
                             {row.product_name}
                           </Link>
@@ -157,7 +157,7 @@ function ReplenishmentContent({ user }: { user: AuthUser }) {
                         <Td right muted>{row.minimum}</Td>
                         <Td right muted>{row.target || "—"}</Td>
                         <Td right>
-                          <span className="tabular-nums font-medium text-white">
+                          <span className="tabular-nums font-medium text-foreground">
                             {row.suggested_quantity || "—"}
                           </span>
                         </Td>
@@ -176,13 +176,13 @@ function ReplenishmentContent({ user }: { user: AuthUser }) {
             </Panel>
 
             {rows.some((r) => (r.surplus_branches?.length ?? 0) > 0) ? (
-              <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-                <p className="text-sm text-zinc-400">
+              <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+                <p className="text-sm text-muted">
                   Algunas de estas unidades ya están en otra sucursal de la empresa.
                   Para moverlas, abre una{" "}
                   <Link
                     href="/admin/inventory/transfers"
-                    className="text-zinc-200 underline underline-offset-4 transition hover:text-white"
+                    className="text-foreground underline underline-offset-4 transition hover:text-foreground"
                   >
                     transferencia
                   </Link>
