@@ -29,8 +29,8 @@ export function CartItemCard({ quantity, product, onQuantityChange, onRemove }: 
 
         <div className="flex items-center justify-between gap-4 sm:justify-end">
           <div className="flex items-center gap-2">
-            <label className="text-xs uppercase tracking-widest text-muted">Cant.</label>
-            <input
+            <label htmlFor="components-cartitemcard-cant" className="text-xs uppercase tracking-widest text-muted">Cant.</label>
+            <input id="components-cartitemcard-cant"
               type="number"
               min={1}
               value={quantity}

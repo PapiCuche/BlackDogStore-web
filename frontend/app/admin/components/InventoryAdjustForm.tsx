@@ -58,10 +58,10 @@ export function InventoryAdjustForm({
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="flex gap-4">
         <div className="flex-1">
-          <label className="block text-xs text-muted mb-1.5">
+          <label htmlFor="mponents-inventoryadjustform-delta-positivo-ingreso-negativo-salida" className="block text-xs text-muted mb-1.5">
             Delta (positivo = ingreso, negativo = salida)
           </label>
-          <input
+          <input id="mponents-inventoryadjustform-delta-positivo-ingreso-negativo-salida"
             type="number"
             value={delta}
             onChange={(e) => setDelta(e.target.value)}
@@ -87,8 +87,8 @@ export function InventoryAdjustForm({
           )}
         </div>
         <div className="flex-[2]">
-          <label className="block text-xs text-muted mb-1.5">Motivo</label>
-          <input
+          <label htmlFor="mponents-inventoryadjustform-motivo" className="block text-xs text-muted mb-1.5">Motivo</label>
+          <input id="mponents-inventoryadjustform-motivo"
             type="text"
             value={reason}
             onChange={(e) => setReason(e.target.value)}

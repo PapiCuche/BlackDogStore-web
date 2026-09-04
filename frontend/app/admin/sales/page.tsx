@@ -161,10 +161,10 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
       <div className="space-y-8">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <label className="text-[11px] uppercase tracking-widest text-muted">
+            <label htmlFor="admin-sales-page-sucursal" className="text-[11px] uppercase tracking-widest text-muted">
               Sucursal
             </label>
-            <select
+            <select id="admin-sales-page-sucursal"
               value={branch ?? ""}
               onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
               className="rounded-lg border border-bd-border bg-background/40 px-3 py-1.5 text-sm text-foreground outline-none"

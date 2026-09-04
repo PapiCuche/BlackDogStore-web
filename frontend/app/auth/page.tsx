@@ -199,8 +199,8 @@ export default function AuthPage() {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className={labelClass}>Usuario</label>
-                <input
+                <label htmlFor="auth-page-usuario" className={labelClass}>Usuario</label>
+                <input id="auth-page-usuario"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   className={inputClass}
@@ -212,8 +212,8 @@ export default function AuthPage() {
 
               {!isLogin && (
                 <div>
-                  <label className={labelClass}>Correo electrónico</label>
-                  <input
+                  <label htmlFor="auth-page-correo-electronico" className={labelClass}>Correo electrónico</label>
+                  <input id="auth-page-correo-electronico"
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -226,8 +226,8 @@ export default function AuthPage() {
               )}
 
               <div>
-                <label className={labelClass}>Contraseña</label>
-                <input
+                <label htmlFor="auth-page-contrasena" className={labelClass}>Contraseña</label>
+                <input id="auth-page-contrasena"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -240,8 +240,8 @@ export default function AuthPage() {
 
               {!isLogin && (
                 <div>
-                  <label className={labelClass}>Confirmar contraseña</label>
-                  <input
+                  <label htmlFor="auth-page-confirmar-contrasena" className={labelClass}>Confirmar contraseña</label>
+                  <input id="auth-page-confirmar-contrasena"
                     type="password"
                     value={passwordConfirm}
                     onChange={(e) => setPasswordConfirm(e.target.value)}

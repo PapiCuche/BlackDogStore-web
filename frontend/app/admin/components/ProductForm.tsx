@@ -91,10 +91,10 @@ export function ProductForm({ product, categories, onSaved }: Props) {
     <form onSubmit={handleSubmit} className="space-y-5">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <div>
-          <label className="block text-xs text-muted mb-1.5">
+          <label htmlFor="admin-components-productform-nombre" className="block text-xs text-muted mb-1.5">
             Nombre <span className="text-red-400">*</span>
           </label>
-          <input
+          <input id="admin-components-productform-nombre"
             type="text"
             value={form.name}
             onChange={(e) => set("name", e.target.value)}
@@ -104,10 +104,10 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           />
         </div>
         <div>
-          <label className="block text-xs text-muted mb-1.5">
+          <label htmlFor="admin-components-productform-slug-opcional-se-genera-automaticamente" className="block text-xs text-muted mb-1.5">
             Slug (opcional — se genera automáticamente)
           </label>
-          <input
+          <input id="admin-components-productform-slug-opcional-se-genera-automaticamente"
             type="text"
             value={form.slug}
             onChange={(e) => set("slug", e.target.value)}
@@ -116,10 +116,10 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           />
         </div>
         <div>
-          <label className="block text-xs text-muted mb-1.5">
+          <label htmlFor="admin-components-productform-precio-s" className="block text-xs text-muted mb-1.5">
             Precio (S/) <span className="text-red-400">*</span>
           </label>
-          <input
+          <input id="admin-components-productform-precio-s"
             type="number"
             step="0.01"
             min="0.01"
@@ -163,8 +163,8 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           </p>
         </div>
         <div>
-          <label className="block text-xs text-muted mb-1.5">Categoría</label>
-          <select
+          <label htmlFor="admin-components-productform-categoria" className="block text-xs text-muted mb-1.5">Categoría</label>
+          <select id="admin-components-productform-categoria"
             value={form.category}
             onChange={(e) => set("category", e.target.value)}
             disabled={saving}
@@ -179,8 +179,8 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           </select>
         </div>
         <div>
-          <label className="block text-xs text-muted mb-1.5">URL de imagen</label>
-          <input
+          <label htmlFor="admin-components-productform-url-de-imagen" className="block text-xs text-muted mb-1.5">URL de imagen</label>
+          <input id="admin-components-productform-url-de-imagen"
             type="url"
             value={form.image_url}
             onChange={(e) => set("image_url", e.target.value)}
@@ -190,8 +190,8 @@ export function ProductForm({ product, categories, onSaved }: Props) {
         </div>
       </div>
       <div>
-        <label className="block text-xs text-muted mb-1.5">Descripción</label>
-        <textarea
+        <label htmlFor="admin-components-productform-descripcion" className="block text-xs text-muted mb-1.5">Descripción</label>
+        <textarea id="admin-components-productform-descripcion"
           value={form.description}
           onChange={(e) => set("description", e.target.value)}
           rows={3}

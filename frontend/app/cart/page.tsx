@@ -178,7 +178,7 @@ export default function CartPage() {
 
                 {/* Coupon input */}
                 <div className="mt-5">
-                  <label className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-muted">Cupón de descuento</label>
+                  <label htmlFor="cart-page-cupon-de-descuento" className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-muted">Cupón de descuento</label>
                   {coupon ? (
                     <div className="flex items-center justify-between rounded-xl border border-bd-border bg-surface-2 px-4 py-3">
                       <div>
@@ -189,7 +189,7 @@ export default function CartPage() {
                     </div>
                   ) : (
                     <div className="flex gap-2">
-                      <input
+                      <input id="cart-page-cupon-de-descuento"
                         type="text"
                         value={couponInput}
                         onChange={(e) => setCouponInput(e.target.value.toUpperCase())}

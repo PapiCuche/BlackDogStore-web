@@ -287,8 +287,8 @@ export default function CheckoutPage() {
             <h2 className="text-sm font-semibold text-foreground">Datos personales</h2>
 
             <div>
-              <label className={labelClass}>Nombre completo *</label>
-              <input
+              <label htmlFor="checkout-page-nombre-completo" className={labelClass}>Nombre completo *</label>
+              <input id="checkout-page-nombre-completo"
                 value={form.customer_name}
                 onChange={(e) => dispatch({ type: "set_str", field: "customer_name", value: e.target.value })}
                 className={inputClass}
@@ -301,8 +301,8 @@ export default function CheckoutPage() {
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className={labelClass}>Correo electrónico *</label>
-                <input
+                <label htmlFor="checkout-page-correo-electronico" className={labelClass}>Correo electrónico *</label>
+                <input id="checkout-page-correo-electronico"
                   type="email"
                   value={form.customer_email}
                   onChange={(e) => dispatch({ type: "set_str", field: "customer_email", value: e.target.value })}
@@ -314,8 +314,8 @@ export default function CheckoutPage() {
                 <FieldError msg={fe.customer_email} />
               </div>
               <div>
-                <label className={labelClass}>Teléfono *</label>
-                <input
+                <label htmlFor="checkout-page-telefono" className={labelClass}>Teléfono *</label>
+                <input id="checkout-page-telefono"
                   type="tel"
                   value={form.customer_phone}
                   onChange={(e) => dispatch({ type: "set_str", field: "customer_phone", value: e.target.value })}
@@ -330,8 +330,8 @@ export default function CheckoutPage() {
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className={labelClass}>Tipo de documento *</label>
-                <select
+                <label htmlFor="checkout-page-tipo-de-documento" className={labelClass}>Tipo de documento *</label>
+                <select id="checkout-page-tipo-de-documento"
                   value={form.document_type}
                   onChange={(e) => dispatch({ type: "set_str", field: "document_type", value: e.target.value })}
                   className={inputClass}
@@ -344,8 +344,8 @@ export default function CheckoutPage() {
                 <FieldError msg={fe.document_type} />
               </div>
               <div>
-                <label className={labelClass}>Número de documento *</label>
-                <input
+                <label htmlFor="checkout-page-numero-de-documento" className={labelClass}>Número de documento *</label>
+                <input id="checkout-page-numero-de-documento"
                   value={form.document_number}
                   onChange={(e) => dispatch({ type: "set_str", field: "document_number", value: e.target.value })}
                   className={inputClass}
@@ -406,8 +406,8 @@ export default function CheckoutPage() {
             {needsAddress && (
               <div className="space-y-4 pt-1">
                 <div>
-                  <label className={labelClass}>Dirección *</label>
-                  <input
+                  <label htmlFor="checkout-page-direccion" className={labelClass}>Dirección *</label>
+                  <input id="checkout-page-direccion"
                     value={form.address_line}
                     onChange={(e) => dispatch({ type: "set_str", field: "address_line", value: e.target.value })}
                     className={inputClass}
@@ -419,8 +419,8 @@ export default function CheckoutPage() {
 
                 {needsCity && (
                   <div>
-                    <label className={labelClass}>Ciudad *</label>
-                    <input
+                    <label htmlFor="checkout-page-ciudad" className={labelClass}>Ciudad *</label>
+                    <input id="checkout-page-ciudad"
                       value={form.city}
                       onChange={(e) => dispatch({ type: "set_str", field: "city", value: e.target.value })}
                       className={inputClass}
@@ -446,8 +446,8 @@ export default function CheckoutPage() {
                 </div>
 
                 <div>
-                  <label className={labelClass}>Referencia (opcional)</label>
-                  <input
+                  <label htmlFor="checkout-page-referencia-opcional" className={labelClass}>Referencia (opcional)</label>
+                  <input id="checkout-page-referencia-opcional"
                     value={form.reference}
                     onChange={(e) => dispatch({ type: "set_str", field: "reference", value: e.target.value })}
                     className={inputClass}
