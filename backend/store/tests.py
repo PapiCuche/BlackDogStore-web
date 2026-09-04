@@ -45860,3 +45860,236 @@ class M12F1ClaimReconciliationTest(TestCase):
         field_names = {f.name for f in StorefrontServiceOffering._meta.fields}
         self.assertIn('estimated_time_text', field_names)
         self.assertNotIn('time', field_names)
+
+
+@override_settings(DEBUG=True)
+class DemoUsersActivationTest(TestCase):
+    """
+    Lo que faltaba: que la cuenta demo se pueda USAR.
+
+    La batería anterior comprobaba que el comando crea los seis usuarios, sus
+    membresías, sus roles y sus capacidades — todo menos lo único que hace falta
+    para entrar. `_upsert_user` refrescaba correo, flags y contraseña, y no
+    tocaba `is_active`.
+
+    El hueco era silencioso porque el mensaje que produce es engañoso: el
+    backend responde «No active account found with the given credentials», que
+    suena a contraseña incorrecta y manda a mirar al sitio equivocado.
+    """
+
+    DEMO_COMPANY_SLUG = 'demo-activation-co'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Demo Activación SA', self.DEMO_COMPANY_SLUG)
+
+    def _seed(self):
+        call_command(
+            'seed_demo_users',
+            company_slug=self.DEMO_COMPANY_SLUG,
+            stdout=StringIO(),
+        )
+
+    def test_every_demo_user_can_actually_log_in(self):
+        """
+        Existir no es suficiente: activo Y con la contraseña que se anuncia.
+        Cualquiera de las dos mitades sola deja una cuenta que no sirve.
+        """
+        self._seed()
+        for username in ALL_DEMO_USERNAMES:
+            with self.subTest(username=username):
+                user = User.objects.get(username=username)
+                self.assertTrue(user.is_active, f'{username} quedó inactivo')
+                self.assertTrue(
+                    user.check_password(DEMO_PASSWORD),
+                    f'{username} no acepta la contraseña que la interfaz anuncia',
+                )
+
+    def test_reseeding_reactivates_a_disabled_demo_user(self):
+        """
+        EL DEFECTO, EXACTAMENTE.
+
+        Un demo desactivado desde el módulo de usuarios del panel se quedaba
+        desactivado para siempre: volver a sembrar no lo reactivaba, y el único
+        camino era borrarlo a mano.
+
+        Una cuenta demo no tiene estado que preservar — existe para poder
+        entrar. Desactivarla de verdad es `--purge`.
+        """
+        self._seed()
+        user = User.objects.get(username='dev_admin')
+        user.is_active = False
+        user.save(update_fields=['is_active'])
+
+        self._seed()
+
+        user.refresh_from_db()
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password(DEMO_PASSWORD))
+
+    def test_reseeding_restores_a_changed_password(self):
+        """La otra mitad: si alguien la cambió, vuelve a la que se anuncia."""
+        self._seed()
+        user = User.objects.get(username='dev_sales')
+        user.set_password('otra-cosa-distinta')
+        user.save(update_fields=['password'])
+
+        self._seed()
+
+        user.refresh_from_db()
+        self.assertTrue(user.check_password(DEMO_PASSWORD))
+
+    def test_reactivation_does_not_touch_a_foreign_account(self):
+        """
+        La reactivación no puede convertirse en una vía para revivir la cuenta
+        de otra persona que se llame igual. La firma sigue siendo el correo.
+        """
+        intruder = User.objects.create_user(
+            username='dev_inventory', email='persona.real@example.com',
+            password='su-propia-clave', is_active=False,
+        )
+        with self.assertRaises(CommandError):
+            self._seed()
+        intruder.refresh_from_db()
+        self.assertFalse(intruder.is_active)
+        self.assertTrue(intruder.check_password('su-propia-clave'))
+
+
+@override_settings(DEBUG=True)
+class DemoAccountsEndpointTest(TestCase):
+    """
+    La interfaz de desarrollo dice la VERDAD sobre lo que existe.
+
+    El defecto que cierra: `/auth` anunciaba seis cuentas con su contraseña,
+    incondicionalmente, desde su propia lista escrita a mano. En un entorno sin
+    sembrar ofrecía seis credenciales que el backend rechazaba — y mandaba a
+    depurar el login, que funcionaba perfectamente.
+
+    Prometer una credencial que no existe es peor que no ofrecer ninguna.
+    """
+
+    URL = '/api/dev/demo-accounts/'
+    DEMO_COMPANY_SLUG = 'demo-endpoint-co'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Demo Endpoint SA', self.DEMO_COMPANY_SLUG)
+        self.client = APIClient()
+
+    def test_an_unseeded_environment_promises_nothing(self):
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['ready'])
+        for account in res.data['accounts']:
+            self.assertFalse(account['exists'])
+            self.assertFalse(account['usable'])
+
+    def test_after_seeding_every_account_is_usable(self):
+        call_command(
+            'seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG, stdout=StringIO(),
+        )
+        res = self.client.get(self.URL)
+        self.assertTrue(res.data['ready'])
+        self.assertEqual(len(res.data['accounts']), len(ALL_DEMO_USERNAMES))
+        for account in res.data['accounts']:
+            self.assertTrue(account['usable'], account['username'])
+
+    def test_a_disabled_account_is_reported_as_unusable(self):
+        """
+        Existe pero no sirve. La interfaz tiene que poder distinguirlo, porque
+        el remedio es distinto: una hay que crearla y la otra reactivarla.
+        """
+        call_command(
+            'seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG, stdout=StringIO(),
+        )
+        User.objects.filter(username='dev_sales').update(is_active=False)
+
+        res = self.client.get(self.URL)
+        row = next(a for a in res.data['accounts'] if a['username'] == 'dev_sales')
+        self.assertTrue(row['exists'])
+        self.assertFalse(row['usable'])
+        self.assertFalse(res.data['ready'])
+
+    def test_a_real_account_with_the_same_name_is_never_described(self):
+        """
+        Un usuario real llamado `dev_admin` no es una cuenta demo. La firma es
+        el dominio `.invalid` del correo, que ninguna dirección real puede usar.
+        """
+        User.objects.create_user(
+            username='dev_admin', email='persona.real@example.com', password='x',
+        )
+        res = self.client.get(self.URL)
+        row = next(a for a in res.data['accounts'] if a['username'] == 'dev_admin')
+        self.assertFalse(row['exists'])
+        self.assertFalse(row['usable'])
+
+    def test_production_does_not_expose_this_surface(self):
+        # 404 y no 403: en producción esta ruta no existe, y su ausencia no
+        # confirma que exista en otra parte.
+        with override_settings(DEBUG=False):
+            self.assertEqual(
+                self.client.get(self.URL).status_code, status.HTTP_404_NOT_FOUND,
+            )
+
+    def test_the_seed_command_it_suggests_names_a_real_company(self):
+        """
+        Decir «--company-slug <slug>» obliga a ir a buscarlo, y quien lo busca
+        ya está depurando. Se nombra una empresa que EXISTE en esta base — cuál
+        de ellas da igual mientras el comando funcione al copiarlo.
+        """
+        res = self.client.get(self.URL)
+        command = res.data['seed_command']
+        self.assertIn('seed_demo_users', command)
+        suggested = command.rsplit(' ', 1)[-1]
+        self.assertTrue(
+            Company.objects.filter(slug=suggested, is_active=True).exists(),
+            f'sugiere «{suggested}», que no es una empresa activa de esta base',
+        )
+
+
+class DemoAccountsSingleSourceTest(TestCase):
+    """
+    UNA sola lista, no dos que puedan separarse en silencio.
+
+    El componente de `/auth` traía su propia copia de los seis nombres y de la
+    contraseña. Dos listas escritas a mano que describen lo mismo divergen: la
+    del comando cambia, la de la interfaz no, y la pantalla empieza a ofrecer
+    cuentas que ya no se crean.
+    """
+
+    def test_the_frontend_holds_no_list_of_its_own(self):
+        import os
+        import re
+
+        component = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            'frontend', 'app', 'auth', 'components', 'DevQuickLogin.tsx',
+        )
+        if not os.path.exists(component):
+            self.skipTest('El componente no está en este árbol.')
+        source = open(component, encoding='utf-8').read()
+        # Sin comentarios: el fichero EXPLICA el defecto y casaría consigo mismo.
+        code = re.sub(r'/\*[\s\S]*?\*/', '', source)
+        code = re.sub(r'^\s*//.*$', '', code, flags=re.MULTILINE)
+
+        for username in ALL_DEMO_USERNAMES:
+            self.assertNotIn(
+                f'"{username}"', code,
+                f'{username} vuelve a estar escrito a mano en el frontend',
+            )
+        self.assertNotIn(
+            DEMO_PASSWORD, code,
+            'la contraseña demo vuelve a estar escrita a mano en el frontend',
+        )
+        # Y sí pregunta por la única fuente.
+        self.assertIn('dev/demo-accounts', code)
+
+    def test_the_endpoint_describes_every_account_the_command_creates(self):
+        """
+        Si el comando añade una cuenta y nadie la describe, la interfaz la
+        mostraría sin destino ni autoridad. La lista de destinos tiene que
+        cubrir exactamente las que el comando crea.
+        """
+        from .dev_accounts_views import DEMO_DESTINATIONS
+
+        self.assertEqual(set(DEMO_DESTINATIONS), set(ALL_DEMO_USERNAMES))
