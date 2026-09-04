@@ -22242,7 +22242,10 @@ class M5StorefrontConfigTest(TestCase):
         # lista, que es exactamente el coste que debe tener.
         self.assertEqual(
             set(payload),
-            {'company', 'branding', 'contact', 'policies', 'page', 'campaigns'},
+            {
+                'company', 'branding', 'contact', 'policies',
+                'page', 'campaigns', 'services', 'faqs', 'metrics',
+            },
         )
         self.assertIn('whatsapp_link', payload['contact'])
         self.assertIn('warranty_url', payload['policies'])

@@ -2566,3 +2566,33 @@ en segundo plano (**PROPUESTA**, sin Celery) · upload directo a R2
 Mobile (**PENDIENTE**, no auditado en esta fase) · avisos por foto
 (**PROPUESTA**, deliberadamente no implementados: una notificación por imagen
 subida sería ruido).
+
+
+## M12F.1 — Reconciliación del escaparate
+
+**Lo que esta fase corrigió no es una omisión: es una contradicción.** La página
+de servicios afirmaba que todos los servicios llevan seis meses de garantía, y
+tanto el manual de marca v3.0 del piloto como la fila de configuración del
+propio tenant dicen lo contrario — los seis meses son de los equipos seminuevos,
+y la cobertura de una reparación depende del trabajo y del repuesto.
+
+Las afirmaciones sin respaldo se retiran; las que el manual sí sostiene se
+conservan con su forma: los tiempos pasan a llamarse `estimated_time_text` y la
+página los rotula «Estimado:», porque el manual pide informar que pueden variar.
+
+**Segundo hallazgo, y es de arquitectura.** La traducción de paleta de M12F
+convirtió superficies de color fijo en superficies que siguen el tema, y las
+declaraciones `surface="dark"` de tres bloques se quedaron atrás. El logotipo
+blanco acabó sobre fondo crema. La lección se guarda como defensa: un fichero
+que pinta con tokens del tema no puede declarar un contraste fijo, y un test
+estructural lo comprueba.
+
+**Tercero: el navegador encuentra lo que el código no dice.** 194 px de
+desbordamiento en la portada a 320 px, celdas de 112 px útiles y un titular
+partido a mitad de palabra — ninguno era visible en una aserción sobre el
+código. La matriz de viewports pasa a comprobarse con Chromium de verdad.
+
+Estado de clasificación tras la fase: tema global y contraste de logotipo
+IMPLEMENTADOS; responsive del escaparate IMPLEMENTADO con navegador; responsive
+del admin PARCIAL; contenido de servicios, preguntas y métricas editable por el
+tenant.

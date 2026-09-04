@@ -9,6 +9,46 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## M12F.1 — Reconciliación: claims, contraste de logotipo y contenido de servicios
+
+**Estado: IMPLEMENTADO.** Migraciones **0077**–**0078**.
+
+### Los claims no contradecían a la evidencia: contradecían al manual del propio taller
+
+| Claim | Qué dice el proyecto |
+| --- | --- |
+| «Todos nuestros servicios incluyen 6 meses de garantía» | El manual v3.0 dice 1 año para equipos **nuevos**, 6 meses para **seminuevos**, y que la cobertura de servicios técnicos **depende del producto o reparación** |
+| «Baterías Nasan **Originales**» | El manual exige publicar «original» **únicamente** con trazabilidad o validación |
+| «Certificado Nasan — Abril 2025» | No hay ningún documento de Nasan en el proyecto |
+| «5.000+ dispositivos reparados» | Ninguna fuente |
+| «Sin msg / Pieza reparada» | Depende del firmware del equipo, que es de un tercero |
+
+Y la fila del propio tenant ya decía que la garantía «se aplicará **según la condición** del producto y los términos informados». La página contradecía el dato autoritativo del sistema.
+
+Los tiempos **sí** se conservan, como estimaciones, porque el manual pide informar que pueden variar. El campo se llama `estimated_time_text` y la página rotula «Estimado:» — no es cosmética: obliga a quien lo pinta a decir qué es.
+
+### El tema global rompió el contraste del logotipo
+
+M12F tradujo `bg-[#080808]` a `bg-background`. Tres bloques pasaron así a **seguir al tema** y su `surface="dark"` se quedó: en tema claro pedían la variante blanca sobre fondo crema. **Invisible** — el defecto que abrió M12E, reintroducido por el propio cambio que hacía global el tema.
+
+Sobrevivió a 215 pruebas porque ninguna miraba la relación entre la superficie **declarada** y la **real**.
+
+### `surface="inverse"`
+
+La banda de llamada del pie se pinta con `bg-white`, que tras la traducción de paleta **es** el color del texto: su contraste es el contrario al de la página. No es una excepción — es la tercera respuesta posible a «¿de qué color es el fondo sobre el que dibujo?», y decirla explícitamente es lo contrario de adivinarla.
+
+### Revisión con navegador: disponible
+
+`@playwright/test` como dependencia de desarrollo. **63 comprobaciones** sobre 4 anchos × 2 temas × 7 rutas. Encontró **194 px de desbordamiento** en la portada a 320 px, celdas de 112 px útiles en el bloque de pilares y un titular que se partía a mitad de palabra en escritorio — tres defectos que ninguna aserción estructural podía ver.
+
+### Una sola fuente de servicios
+
+El pie tenía su propia lista, más corta que la de `/services` y ya divergente. Dos listas de lo mismo divergen siempre.
+
+### Métricas: ninguna
+
+No se siembra ni una. Un bloque de cifras vacío es exactamente lo que debe verse mientras nadie responda por ellas.
+
 ## M12F — Escaparate editable, tema global y responsive
 
 **Estado: IMPLEMENTADO.** Migraciones **0072**–**0076**.
