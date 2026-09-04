@@ -139,14 +139,17 @@ describe('ningún bloque declara una superficie que no tiene', () => {
      * declara `surface="dark"` o `surface="light"`, alguien está afirmando un
      * contraste que su propia superficie no garantiza.
      *
-     * Un bloque legítimamente fijo existe: se pinta con un color que no depende
-     * del tema, y entonces este test no lo ve porque no usa esos tokens.
+     * LA EXCEPCIÓN ES `bg-slab`, y no es una escapatoria: una losa de marca es
+     * oscura en los dos temas por definición, así que `surface="dark"` encima
+     * de ella es exactamente la afirmación correcta. Un fichero que usa la losa
+     * puede fijar el contraste; uno que sólo usa tokens del tema, no.
      */
     const offenders: string[] = [];
     for (const file of walk(APP)) {
       const src = code(file);
       const fixed = src.match(/surface="(dark|light)"/g);
       if (!fixed) continue;
+      if (/\bbg-slab\b/.test(src)) continue;
       const themed = /\bbg-(background|surface|surface-2)\b/.test(src);
       if (themed) {
         offenders.push(

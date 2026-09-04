@@ -49,21 +49,45 @@ export default function Hero() {
       los tokens `slab-*`.
     */
     <section className="relative overflow-hidden bg-slab text-slab-foreground">
-      {/* Topographic texture */}
-      <div className="topo-bg absolute inset-0 pointer-events-none" />
+      {/*
+        EL ISOTIPO SANGRANDO — el device de la tarjeta de presentación.
 
-      {/* Dot decoration — top right */}
-      <div className="dot-grid absolute right-0 top-0 h-56 w-56 opacity-40 pointer-events-none" />
-      {/* Dot decoration — bottom left */}
-      <div className="dot-grid absolute left-0 bottom-0 h-48 w-48 opacity-30 pointer-events-none" />
+        En las dos caras de la tarjeta el bulldog aparece enorme, en un tono
+        apenas separado del fondo, cortado por el borde. No es contenido: es la
+        textura de la marca. Aquí hace lo mismo y ocupa el sitio que antes
+        llenaban una malla de puntos, una topografía, dos anillos, dos tarjetas
+        flotantes y un lockup gigante — seis elementos compitiendo por una zona
+        que la referencia deja casi vacía.
 
-      <div className="relative mx-auto max-w-7xl px-6 pb-20 pt-16 lg:px-8 lg:pb-28 lg:pt-24">
-        <div className="grid gap-12 lg:grid-cols-2 lg:items-center">
+        `aria-hidden` porque es textura. Quien no ve la página no se pierde nada.
+      */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -right-28 top-1/2 hidden w-[44rem] -translate-y-1/2 opacity-[0.05] lg:block"
+      >
+        <BrandLogo
+          placement="compact"
+          surface="dark"
+          className="h-auto w-full object-contain"
+          wordmarkClassName="sr-only"
+        />
+      </div>
 
-          {/* Left: copy */}
-          <div>
+      {/*
+        EL MARCO. Las dos caras de la tarjeta llevan un rectángulo de una línea
+        separado del borde. Es lo que hace que la pieza se lea como impresa y no
+        como una pantalla, y cuesta un borde.
+      */}
+      <div className="relative mx-auto max-w-7xl px-6 py-10 lg:px-8 lg:py-14">
+        <div className="border border-slab-border px-6 py-16 sm:px-10 lg:px-14 lg:py-24">
+          {/* 7/5, no mitad y mitad: la tarjeta es asimétrica y ésa es la mitad
+              de su carácter. */}
+          <div className="grid gap-12 lg:grid-cols-12 lg:items-center">
+
+            {/* Left: copy */}
+            <div className="lg:col-span-7">
             {/* Label */}
-            <div className="inline-flex items-center gap-2 rounded-full border border-slab-border bg-slab-surface px-4 py-1.5">
+            <div className="inline-flex items-center gap-2.5 border border-slab-border px-3.5 py-1.5">
               {/* EL PUNTO DORADO. Uno de los usos que el manual reserva al
                   acento: pequeño, sobre negro, donde rinde 8.4:1. No es
                   decoración perdida — es el 3–5 % puesto donde se ve. */}
@@ -97,7 +121,7 @@ export default function Hero() {
             */}
             <h1
               className="font-display mt-5 max-w-[15ch] font-black uppercase leading-[0.95] tracking-tight text-slab-foreground text-balance"
-              style={{ fontSize: "clamp(2rem, 4.6vw, 4.25rem)" }}
+              style={{ fontSize: "clamp(2.25rem, 4.2vw, 4rem)" }}
             >
               {titleLines.map((line, i) => (
                 <span key={i} className="block">
@@ -106,9 +130,12 @@ export default function Hero() {
                       {line}
                       {/* El subrayado acompaña a la ÚLTIMA línea, sea cual sea:
                           es composición, no una palabra concreta del piloto. */}
+                      {/* Una regla fina y dorada, no una barra. El acento del
+                          manual va en detalles como éste: pequeño, sobre negro,
+                          señalando dónde termina la frase. */}
                       <span
                         aria-hidden="true"
-                        className="absolute -bottom-1 left-0 right-0 h-[5px] rounded-full bg-foreground opacity-80"
+                        className="absolute -bottom-1.5 left-0 right-0 h-px bg-accent"
                       />
                     </span>
                   ) : (
@@ -157,31 +184,20 @@ export default function Hero() {
             </p>
           </div>
 
-          {/*
-            EL ISOTIPO, NO EL LOCKUP.
+            {/*
+              LA COLUMNA DERECHA SE VACÍA A PROPÓSITO.
 
-            Aquí había un lockup vertical enorme —perro + «BLACK DOG STORE»—
-            que repetía la marca que la cabecera ya lleva, competía con el
-            titular y, cuando el hero se volvió crema, desapareció. Tres
-            problemas de una pieza que además duplicaba la identidad dentro del
-            mismo viewport.
+              Tenía un isotipo de 44 rem dentro de dos anillos concéntricos.
+              Antes de eso, un lockup vertical gigante con dos tarjetas
+              flotantes encima. La referencia hace lo contrario: en la tarjeta,
+              la zona que no lleva texto está VACÍA, y el bulldog vive detrás
+              de todo, cortado por el borde.
 
-            El manual da el isotipo como recurso auxiliar para exactamente
-            esto. Se usa sin deformar, sin recolorear y sin rotar, en su
-            variante para fondo oscuro, muy por encima de sus 48 px mínimos.
-          */}
-          <div className="relative hidden items-center justify-center lg:flex lg:justify-end">
-            <div className="relative flex aspect-square w-full max-w-[380px] items-center justify-center">
-              {/* Anillos: textura de segundo plano, no protagonista. */}
-              <div className="absolute inset-6 rounded-full border border-slab-border" />
-              <div className="absolute inset-20 rounded-full border border-slab-border opacity-60" />
-              <BrandLogo
-                placement="compact"
-                surface="dark"
-                className="relative z-10 h-44 w-44 object-contain xl:h-52 xl:w-52"
-                wordmarkClassName="relative z-10 font-display text-4xl font-black uppercase tracking-tight text-slab-foreground"
-              />
-            </div>
+              El isotipo ya está — sangrando por la derecha, al 7 %. Aquí no va
+              nada. Ése es el espacio negativo que la composición pedía y que
+              cinco elementos apilados le habían quitado.
+            */}
+            <div className="hidden lg:col-span-5 lg:block" aria-hidden="true" />
           </div>
         </div>
 

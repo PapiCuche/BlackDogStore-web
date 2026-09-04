@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useStoreName, useStorefront } from "./components/StorefrontProvider";
 import { ProductCard } from "./components/ProductCard";
+import { BrandLogo } from "./components/BrandLogo";
 import Hero from "./components/Hero";
 import { fetcher, apiUrl } from "./lib/api";
 
@@ -20,13 +21,51 @@ type Product = {
   category?: { id: number; name: string; slug: string };
 };
 
+/*
+  ICONOS DE TRAZO, NO EMOJIS.
+
+  Aquí había 📱 ⌚ 🖥 💻 🎧 🎵. Un emoji no es un icono: es una cita a la
+  tipografía de otro sistema, y se dibuja distinto en macOS, en Windows y en
+  Android — tres identidades visuales que la marca no eligió. Además mezclaba
+  dos lenguajes en la misma página, porque el resto de la web ya usa trazo de
+  1.5 px.
+
+  Una sola familia, un solo grosor, la misma caja de 24.
+*/
+const STROKE = {
+  fill: "none" as const,
+  viewBox: "0 0 24 24",
+  stroke: "currentColor",
+  strokeWidth: 1.4,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+};
+
 const CATALOG_SECTIONS = [
-  { label: "iPhone", slug: "iphone", icon: "📱" },
-  { label: "Apple Watch", slug: "apple-watch", icon: "⌚" },
-  { label: "iPad", slug: "ipad", icon: "🖥" },
-  { label: "Mac", slug: "mac", icon: "💻" },
-  { label: "Accesorios", slug: "accesorios", icon: "🎧" },
-  { label: "Audífonos", slug: "audifonos", icon: "🎵" },
+  {
+    label: "iPhone", slug: "iphone",
+    path: <><rect x="7" y="2.5" width="10" height="19" rx="2.2" /><path d="M10.6 5.4h2.8" /></>,
+  },
+  {
+    label: "Apple Watch", slug: "apple-watch",
+    path: <><rect x="7.5" y="6.5" width="9" height="11" rx="2.4" /><path d="M9.6 6.5 10 3h4l.4 3.5M9.6 17.5 10 21h4l.4-3.5" /></>,
+  },
+  {
+    label: "iPad", slug: "ipad",
+    path: <><rect x="4.5" y="2.5" width="15" height="19" rx="2" /><path d="M10.4 5.2h3.2" /></>,
+  },
+  {
+    label: "Mac", slug: "mac",
+    path: <><rect x="3" y="4.5" width="18" height="11.5" rx="1.6" /><path d="M2 19.5h20" /></>,
+  },
+  {
+    label: "Accesorios", slug: "accesorios",
+    path: <><path d="M5 12.5a7 7 0 0 1 14 0" /><rect x="3" y="12" width="4" height="7" rx="1.6" /><rect x="17" y="12" width="4" height="7" rx="1.6" /></>,
+  },
+  {
+    label: "Audífonos", slug: "audifonos",
+    path: <><path d="M9 4.5v10.2" /><circle cx="7" cy="16.5" r="2.4" /><path d="M9 7.5 18 5.5v9" /><circle cx="16" cy="16.5" r="2.4" /></>,
+  },
 ];
 
 /*
@@ -52,50 +91,18 @@ const PILLARS = [
   { title: "Experiencia", label: "Atención antes, durante y después" },
 ];
 
-const REPAIR_SERVICES = [
-  {
-    title: "Cambio de Pantalla",
-    desc: "Pantallas OLED/LCD con calibración de color y brillo. Te confirmamos el costo antes de reparar.",
-    badge: "Más solicitado",
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
-      </svg>
-    ),
-  },
-  {
-    title: "Cambio de Batería",
-    // "Originales" y una marca de terceros en la misma frase se contradicen:
-    // una batería Nasan es de Nasan, no original de Apple. Se dice lo que es.
-    desc: "Baterías Nasan. Recupera la autonomía de tu iPhone.",
-    badge: "Nasan",
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h2a2 2 0 002-2V8a2 2 0 00-2-2h-2M3 8h14v12H3V8zM9 4h6v4H9V4z" />
-      </svg>
-    ),
-  },
-  {
-    title: "Tapa Trasera",
-    desc: "Cambio de tapa trasera con acabado cuidado. Revisamos el equipo y explicamos el alcance.",
-    badge: null,
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4h16v16H4zM9 9h6v6H9z" />
-      </svg>
-    ),
-  },
-  {
-    title: "Cambio de Glass",
-    desc: "Protector de vidrio templado premium. Instalación sin burbujas ni polvo.",
-    badge: null,
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-      </svg>
-    ),
-  },
-];
+/*
+  AQUÍ HABÍA UNA CUARTA LISTA DE SERVICIOS.
+
+  Compilada, con su propia redacción y su propio badge: «Más solicitado» — una
+  métrica que nadie ha medido, del mismo tipo que las que M12F.1 retiró de
+  /services. Sobrevivió porque estaba en otro fichero.
+
+  Es el mismo defecto que ya se cerró dos veces: el pie tenía su lista, la
+  página de servicios la suya, y la portada ésta. Ahora las tres leen los
+  servicios ACTIVOS del tenant. Desactivar uno lo quita de los tres sitios.
+*/
+
 
 /**
  * M12F — la tira sale del CATÁLOGO, no de una lista escrita a mano.
@@ -168,6 +175,8 @@ export default function Home() {
   // vigente en este slot, la sección no se dibuja: mejor nada que la preventa
   // del año pasado.
   const bottomPromo = useStorefront().campaigns.home_bottom_promo;
+  // La MISMA fuente que /services y el pie. Tres listas de lo mismo divergen.
+  const services = useStorefront().services;
 
   useEffect(() => {
     fetcher<Product[]>(apiUrl("/products?ordering=newest"))
@@ -180,27 +189,43 @@ export default function Home() {
     <div className="min-h-screen bg-background text-foreground">
       <Hero />
 
-      {/* Pilares — reemplazan a las cuatro cifras que nadie podía respaldar */}
-      <section className="border-y border-bd-border bg-surface">
-        {/*
-          UNA COLUMNA HASTA 400 px. Con dos columnas en un móvil de 320, cada
-          celda tiene 112 px útiles tras el `px-6` — y «Especialización» no cabe
-          en 112 px a ningún tamaño legible. El navegador no lo encoge: lo
-          desborda, y la portada entera se desplazaba a lo ancho.
+      {/*
+        LOS PILARES, EN LENGUAJE DE TARJETA.
 
-          `min-w-0` en las celdas porque una celda de rejilla no baja de su
-          ancho intrínseco por defecto, y ése es el mecanismo exacto del
-          desbordamiento.
-        */}
-        <div className="mx-auto grid max-w-7xl grid-cols-1 divide-y divide-bd-border xs:grid-cols-2 xs:divide-x xs:divide-y-0 lg:grid-cols-4">
-          {PILLARS.map((item) => (
-            <div key={item.title} className="min-w-0 px-6 py-8 text-center sm:px-8">
-              <p className="font-display text-[clamp(0.95rem,2.2vw,1.25rem)] font-black uppercase tracking-tight text-foreground break-words">
-                {item.title}
-              </p>
-              <p className="mt-1.5 text-xs leading-5 text-muted text-pretty">{item.label}</p>
-            </div>
-          ))}
+        Eran cuatro celdas centradas con borde a los lados: la forma de un panel
+        de control. El reverso de la tarjeta resuelve una lista exactamente así:
+        un punto pequeño, una línea que los une, y el texto alineado a la
+        izquierda. Nada de cajas.
+
+        En móvil la línea es vertical y la lista se lee como una enumeración; en
+        escritorio se tumba y los cuatro se reparten. Es la misma pieza girada,
+        no dos diseños distintos.
+
+        (Sustituyen a las cuatro cifras que nadie podía respaldar.)
+      */}
+      <section className="border-b border-bd-border">
+        <div className="mx-auto max-w-7xl px-6 py-14 lg:px-8 lg:py-16">
+          <ol className="relative grid gap-8 sm:grid-cols-2 lg:grid-cols-4 lg:gap-10">
+            {/* La línea conectora: un hairline que atraviesa los cuatro puntos. */}
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute left-[3px] top-2 hidden h-[calc(100%-1rem)] w-px bg-bd-border sm:block lg:left-0 lg:top-[3px] lg:h-px lg:w-full"
+            />
+            {PILLARS.map((item) => (
+              <li key={item.title} className="relative min-w-0 pl-6 lg:pl-0 lg:pt-8">
+                <span
+                  aria-hidden="true"
+                  className="absolute left-0 top-[7px] h-[7px] w-[7px] rounded-full bg-primary lg:left-0 lg:top-0"
+                />
+                <p className="font-display text-[clamp(0.95rem,1.6vw,1.15rem)] font-black uppercase tracking-tight text-foreground">
+                  {item.title}
+                </p>
+                <p className="mt-1.5 max-w-[28ch] text-xs leading-5 text-muted text-pretty">
+                  {item.label}
+                </p>
+              </li>
+            ))}
+          </ol>
         </div>
       </section>
 
@@ -222,13 +247,21 @@ export default function Home() {
           </div>
           <div className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {CATALOG_SECTIONS.map((section) => (
+              /*
+                MENOS CARD, MÁS CELDA. Seis rectángulos redondeados idénticos
+                con borde y fondo es el aspecto de cualquier panel de control.
+                Aquí basta una celda con una línea: el borde superior se enciende
+                al pasar, y ésa es toda la interacción que necesita.
+              */
               <Link
                 key={section.slug}
                 href={`/product?category=${section.slug}`}
-                className="group flex flex-col items-center gap-3 rounded-2xl border border-bd-border bg-surface p-5 text-center transition hover:border-bd-border hover:bg-surface"
+                className="group relative flex flex-col items-start gap-4 border-t border-bd-border px-1 py-6 transition-colors hover:border-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
               >
-                <span className="text-2xl">{section.icon}</span>
-                <span className="font-display text-xs font-black uppercase tracking-widest text-muted transition group-hover:text-foreground">
+                <svg {...STROKE} className="h-7 w-7 text-muted transition-colors group-hover:text-foreground" aria-hidden="true">
+                  {section.path}
+                </svg>
+                <span className="font-display text-xs font-black uppercase tracking-widest text-foreground">
                   {section.label}
                 </span>
               </Link>
@@ -255,49 +288,73 @@ export default function Home() {
             </a>
           </div>
 
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {REPAIR_SERVICES.map((s) => (
-              <a
-                key={s.title}
-                href="/services"
-                className="group relative overflow-hidden rounded-2xl border border-bd-border bg-surface p-6 transition hover:border-bd-border hover:bg-surface"
-              >
-                {/* Badge */}
-                {s.badge && (
-                  <div className="mb-4 inline-flex rounded-full border border-bd-border bg-surface-2 px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-muted">
-                    {s.badge}
-                  </div>
-                )}
-                {!s.badge && <div className="mb-4 h-5" />}
-
-                {/* Icon */}
-                <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl border border-bd-border bg-surface text-foreground">
-                  {s.icon}
-                </div>
-
-                <h3 className="font-display text-xl font-black uppercase text-foreground">{s.title}</h3>
-                <p className="mt-2 text-sm leading-6 text-muted">{s.desc}</p>
-
-                <div className="mt-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-muted transition group-hover:text-foreground">
-                  Consultar precio
-                  <span className="transition group-hover:translate-x-1">→</span>
-                </div>
-              </a>
+          {/*
+            LISTA, NO CUATRO CARDS. Un servicio no es una unidad que haya que
+            encajonar: es una fila de un catálogo de trabajos. La regla de
+            arriba lo separa del anterior y el número da el orden, que aquí sí
+            significa algo — es el que el taller decidió en el panel.
+          */}
+          <ol className="mt-10 grid gap-x-10 gap-y-0 sm:grid-cols-2">
+            {services.slice(0, 4).map((s, i) => (
+              <li key={s.title} className="border-t border-bd-border">
+                <Link
+                  href="/services"
+                  className="group flex min-h-11 items-start gap-5 py-6 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                >
+                  {/*
+                    `primary`, no `accent`. Sobre el crema del tema claro el
+                    dorado puro rinde 2.12:1: §24 del encargo lo dice y la
+                    medición lo confirma. `primary` es ese mismo dorado
+                    oscurecido conservando el tono, calculado para leerse.
+                    Sobre la losa oscura sí va el dorado puro.
+                  */}
+                  <span className="font-display shrink-0 text-sm font-black tabular-nums text-primary">
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="font-display block text-lg font-black uppercase tracking-tight text-foreground">
+                      {s.title}
+                    </span>
+                    {s.description ? (
+                      <span className="mt-1.5 block max-w-[46ch] text-sm leading-6 text-muted text-pretty">
+                        {s.description}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className="shrink-0 pt-1 text-muted transition-transform group-hover:translate-x-1"
+                  >
+                    →
+                  </span>
+                </Link>
+              </li>
             ))}
-          </div>
+          </ol>
         </section>
 
-        {/* Guarantee strip */}
-        <section className="relative overflow-hidden rounded-3xl border border-bd-border bg-surface">
-          <div className="topo-bg absolute inset-0 opacity-60 pointer-events-none" />
-          <div className="dot-grid absolute right-0 top-0 h-64 w-64 opacity-30 pointer-events-none" />
-          <div className="relative grid gap-8 px-8 py-12 sm:px-12 sm:py-16 lg:grid-cols-2 lg:items-center">
-            <div>
-              <span className="section-label">Confianza</span>
-              <h2 className="font-display mt-2 text-[clamp(1.75rem,8vw,3.75rem)] font-black uppercase leading-none tracking-tight text-foreground break-words">
-                ¿Tu iPhone<br />No Funciona?
+        {/*
+          EL PROCESO, COMO PROCESO.
+
+          Era una card redondeada con textura, malla de puntos y cuatro cards
+          más dentro: seis cajas para explicar cuatro pasos. El reverso de la
+          tarjeta resuelve esto con una losa oscura, una lista y nada más.
+
+          Aquí los números SÍ significan algo —es la secuencia real de una
+          reparación, en orden— así que numerar informa en vez de decorar.
+
+          Retirado: «Baterías Nasan · Con certificado». Es la cuarta vez que
+          aparece esa certificación en un fichero distinto, y sigue sin haber
+          documento en el proyecto. Queda el repuesto, que sí es comprobable.
+        */}
+        <section className="-mx-6 my-20 bg-slab px-6 py-16 text-slab-foreground sm:px-10 lg:-mx-8 lg:px-14 lg:py-20">
+          <div className="grid gap-12 lg:grid-cols-12 lg:items-start lg:gap-16">
+            <div className="lg:col-span-5">
+              <span className="section-label text-slab-muted">Cómo trabajamos</span>
+              <h2 className="font-display mt-3 text-[clamp(1.75rem,3.4vw,2.75rem)] font-black uppercase leading-[1.05] tracking-tight text-slab-foreground">
+                ¿Tu iPhone no funciona?
               </h2>
-              <p className="mt-5 max-w-md text-base leading-7 text-muted">
+              <p className="mt-5 max-w-[46ch] text-base leading-7 text-slab-muted text-pretty">
                 En {storeName} ofrecemos servicio técnico especializado en
                 equipos Apple, con diagnóstico previo y condiciones claras
                 antes de empezar.
@@ -305,42 +362,49 @@ export default function Home() {
               <div className="mt-8 flex flex-wrap gap-3">
                 <a
                   href={whatsappLink || "#"}
-                  className="inline-flex items-center gap-2.5 rounded-full bg-foreground px-7 py-3.5 text-sm font-black uppercase tracking-widest text-background transition hover:bg-foreground/90"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex min-h-11 items-center gap-2.5 rounded-full bg-slab-foreground px-7 py-3.5 text-sm font-black uppercase tracking-widest text-slab transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 >
-                  <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
                   </svg>
                   Consultar por WhatsApp
                 </a>
-                <a
+                <Link
                   href="/services"
-                  className="inline-flex items-center gap-2 rounded-full border border-bd-border bg-surface px-7 py-3.5 text-sm font-bold uppercase tracking-widest text-foreground transition hover:border-bd-border hover:bg-surface-2"
+                  className="inline-flex min-h-11 items-center gap-2 rounded-full border border-slab-border px-7 py-3.5 text-sm font-bold uppercase tracking-widest text-slab-foreground transition-colors hover:bg-slab-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 >
                   Ver servicios
-                </a>
+                </Link>
               </div>
             </div>
 
-            {/* Right: guarantee cards */}
-            <div className="grid grid-cols-2 gap-4">
+            <ol className="lg:col-span-7">
               {[
-                { label: "Diagnóstico", sub: "Antes de reparar", num: "01" },
-                { label: "Baterías Nasan", sub: "Con certificado", num: "02" },
-                { label: "Costo confirmado", sub: "Antes de empezar", num: "03" },
-                { label: "Explicación\nclara", sub: "Del diagnóstico", num: "04" },
-              ].map((card) => (
-                <div
-                  key={card.num}
-                  className="rounded-2xl border border-bd-border bg-surface p-5"
+                { label: "Diagnóstico", sub: "Antes de tocar nada." },
+                { label: "Repuesto acordado", sub: "Te decimos cuál se usa y en qué condiciones." },
+                { label: "Costo confirmado", sub: "Antes de empezar el trabajo." },
+                { label: "Explicación clara", sub: "Qué se hizo y qué cubre." },
+              ].map((step, i) => (
+                <li
+                  key={step.label}
+                  className="flex items-baseline gap-6 border-t border-slab-border py-5 last:border-b"
                 >
-                  <p className="font-display text-xs font-black text-muted">{card.num}</p>
-                  <p className="mt-2 font-display text-sm font-black uppercase leading-tight text-foreground whitespace-pre-line">
-                    {card.label}
-                  </p>
-                  <p className="mt-1 text-[10px] text-muted">{card.sub}</p>
-                </div>
+                  <span className="font-display shrink-0 text-sm font-black tabular-nums text-accent">
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="font-display block text-base font-black uppercase tracking-tight text-slab-foreground">
+                      {step.label}
+                    </span>
+                    <span className="mt-1 block text-sm leading-6 text-slab-muted text-pretty">
+                      {step.sub}
+                    </span>
+                  </span>
+                </li>
               ))}
-            </div>
+            </ol>
           </div>
         </section>
 
@@ -495,12 +559,24 @@ export default function Home() {
                     loading="lazy"
                   />
                 ) : (
-                  <p
-                    className="font-display font-black uppercase tracking-tight text-slab-foreground text-balance"
-                    style={{ fontSize: "clamp(1.75rem, 7vw, 4.5rem)" }}
-                  >
-                    {bottomPromo.badge || bottomPromo.title}
-                  </p>
+                  /*
+                    SIN IMAGEN, EL ISOTIPO. Aquí se repetía la etiqueta de la
+                    campaña como titular gigante —«PREVENTA» dos veces en el
+                    mismo bloque— y competía con el título real del producto,
+                    que está a la izquierda.
+
+                    El manual reserva el isotipo justo para esto: ocupar un
+                    espacio de marca cuando no hay contenido que poner. En
+                    cuanto el taller suba una imagen, ésa manda.
+                  */
+                  <div aria-hidden="true" className="w-full max-w-[190px] opacity-25">
+                    <BrandLogo
+                      placement="compact"
+                      surface="dark"
+                      className="h-auto w-full object-contain"
+                      wordmarkClassName="sr-only"
+                    />
+                  </div>
                 )}
                 {bottomPromo.product ? (
                   <Link
