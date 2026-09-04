@@ -22235,7 +22235,14 @@ class M5StorefrontConfigTest(TestCase):
     def test_it_carries_the_sections_the_app_needs(self):
         payload = self.client.get(_m5_config_url('m5-cfg-a')).json()
 
-        self.assertEqual(set(payload), {'company', 'branding', 'contact', 'policies'})
+        # EXACTO a propósito: lo que esta respuesta lleva se decide aquí, no se
+        # hereda de lo que alguien añadió al modelo. M12F suma `page` y
+        # `campaigns` —contenido comercial del tenant— y suma dos líneas a esta
+        # lista, que es exactamente el coste que debe tener.
+        self.assertEqual(
+            set(payload),
+            {'company', 'branding', 'contact', 'policies', 'page', 'campaigns'},
+        )
         self.assertIn('whatsapp_link', payload['contact'])
         self.assertIn('warranty_url', payload['policies'])
 
@@ -44890,22 +44897,35 @@ class M12EBrandingPayloadTest(TestCase):
 
     # -- las variantes ----------------------------------------------------
 
-    def test_the_four_questions_are_always_answered(self):
+    def test_every_question_is_always_answered(self):
         """
-        Las claves son las PREGUNTAS que hace un componente, y las cuatro
-        existen siempre, configuradas o no. Un `logos` incompleto obligaría a
-        cada consumidor a comprobar la clave antes de leerla, y el que se
-        olvide escribe `undefined` dentro de un `src`.
+        Las claves son las PREGUNTAS que hace un componente, y TODAS existen
+        siempre, configuradas o no. Un `logos` incompleto obligaría a cada
+        consumidor a comprobar la clave antes de leerla, y el que se olvide
+        escribe `undefined` dentro de un `src`.
+
+        Antes esto decía «las cuatro» y afirmaba el conjunto literal. Era el
+        mismo error que ya cometí en M12C: congelar un «hoy son cuatro» como si
+        fuera una invariante. M12F añadió el isotipo y el test se puso rojo por
+        una ampliación correcta. Lo permanente es que el catálogo declarado y
+        la respuesta coincidan — no cuántos elementos tiene.
         """
         logos = company_branding(self.bare).logos
-        self.assertEqual(
-            set(logos),
-            {
-                'primary_on_light', 'primary_on_dark',
-                'horizontal_on_light', 'horizontal_on_dark',
-            },
-        )
+        self.assertEqual(set(logos), set(LOGO_VARIANT_FIELDS))
         self.assertEqual(logos, EMPTY_LOGO_VARIANTS)
+
+    def test_the_composition_questions_never_disappear(self):
+        """
+        Esto SÍ es un contrato y no puede encogerse: el frontend pregunta por
+        estas cuatro por nombre. Ampliar el catálogo es aditivo; quitar una de
+        éstas deja un `pickLogo` leyendo `undefined`.
+        """
+        logos = company_branding(self.bare).logos
+        for question in (
+            'primary_on_light', 'primary_on_dark',
+            'horizontal_on_light', 'horizontal_on_dark',
+        ):
+            self.assertIn(question, logos)
 
     def test_no_variant_can_arrive_as_none(self):
         """
