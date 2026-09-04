@@ -124,15 +124,18 @@ export default function AuthPage() {
               belongs to the shop the customer came to, even though the ACCOUNT
               behind it is global; see store/emails.py for the other half of
               that distinction. */}
-          {/* Panel oscuro fijo: la superficie no sigue al tema, así que el
-              logotipo tampoco. El nombre en tipografía sólo aparece si no hay
-              variante — el lockup ya lo contiene. */}
+          {/* Este panel es `bg-background`, que SIGUE al tema: la superficie
+              cambia, y el logotipo con ella. El comentario anterior decía
+              «panel oscuro fijo» y era cierto cuando el fondo era un negro
+              literal; la migración de M12F lo convirtió en token y dejó atrás
+              la declaración de superficie. El nombre en tipografía sólo
+              aparece si no hay variante — el lockup ya lo contiene. */}
           <div className="relative flex items-center gap-3">
             <BrandLogo
               placement="header"
-              surface="dark"
+              surface="theme"
               className="h-11 w-auto object-contain"
-              wordmarkClassName="font-display text-lg font-black uppercase tracking-tight text-white"
+              wordmarkClassName="font-display text-lg font-black uppercase tracking-tight text-foreground"
             />
             <div>
               {contact.city ? (
@@ -169,10 +172,10 @@ export default function AuthPage() {
             {/* Mobile logo */}
             <div className="mb-8 flex items-center gap-3 lg:hidden">
               <BrandLogo
-                placement="header"
-                surface="dark"
+                placement="compact"
+                surface="theme"
                 className="h-10 w-auto object-contain"
-                wordmarkClassName="font-display text-base font-black uppercase tracking-tight text-white"
+                wordmarkClassName="font-display text-base font-black uppercase tracking-tight text-foreground"
               />
             </div>
 

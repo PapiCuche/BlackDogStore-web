@@ -149,23 +149,34 @@ export default function Hero() {
               <div className="absolute inset-8 rounded-full border border-white/[0.04]" />
               <div className="absolute inset-20 rounded-full border border-white/[0.03]" />
 
-              {/* Dog icon — white on dark */}
               {/*
-                LA SUPERFICIE MANDA, NO EL TEMA. Este hero es negro en los dos
-                temas —`bg-background` más abajo—, así que su logotipo es SIEMPRE
-                la versión blanca. Si aquí se leyera el tema resuelto, el tema
-                claro pondría el logo negro sobre este fondo negro: el mismo
-                defecto que M12E vino a cerrar, reintroducido por otra puerta.
+                LA SUPERFICIE MANDA, NO EL TEMA — y esta superficie CAMBIA con
+                el tema, porque la sección de arriba es `bg-background`.
 
                 Composición VERTICAL: el manual la asigna a piezas principales,
                 y aquí se dibuja a 256-320 px, muy por encima de sus 140 px de
                 ancho mínimo.
               */}
+              {/*
+                LA SUPERFICIE REAL, NO EL NOMBRE DEL BLOQUE.
+
+                Este hero era `bg-[#080808]` —negro fijo— y por eso pedía la
+                variante blanca. M12F lo pasó a `bg-background`, que SIGUE AL
+                TEMA, y el `surface="dark"` se quedó: en tema claro pintaba el
+                logotipo blanco sobre fondo crema. Invisible. El mismo defecto
+                que abrió M12E, reintroducido por el propio cambio que hacía
+                global el tema.
+
+                `surface="theme"` es una afirmación sobre esta superficie —«la
+                mía cambia con el tema»—, no una consulta al tema desde un
+                componente que no sabe sobre qué se dibuja. Un bloque que sí
+                fuera negro fijo seguiría diciendo `surface="dark"`.
+              */}
               <BrandLogo
                 placement="hero"
-                surface="dark"
+                surface="theme"
                 className="relative z-10 h-64 w-64 object-contain drop-shadow-[0_8px_48px_rgba(255,255,255,0.1)] sm:h-80 sm:w-80"
-                wordmarkClassName="relative z-10 font-display text-5xl font-black uppercase tracking-tight text-white/90"
+                wordmarkClassName="relative z-10 font-display text-5xl font-black uppercase tracking-tight text-foreground/90"
               />
 
               {/*

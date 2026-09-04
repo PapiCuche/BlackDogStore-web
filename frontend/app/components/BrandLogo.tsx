@@ -40,8 +40,15 @@ type Props = {
    * tema resuelto. Sigue siendo una afirmación sobre la superficie —«ésta
    * cambia con el tema»— y no una consulta al tema desde un componente que no
    * sabe sobre qué se dibuja.
+   *
+   * `"inverse"` es para las bandas que se pintan CON el color del texto —
+   * `bg-foreground`— para destacar. Su contraste es el contrario al de la
+   * página: en tema oscuro son claras y en tema claro son oscuras. No es una
+   * excepción ni un truco; es la tercera respuesta posible a «¿de qué color es
+   * el fondo sobre el que dibujo?», y decirla explícitamente es lo contrario de
+   * adivinarla.
    */
-  surface: LogoSurface | "theme";
+  surface: LogoSurface | "theme" | "inverse";
   className?: string;
   /** Clases del nombre cuando no hay logo y hay que escribirlo. */
   wordmarkClassName?: string;
@@ -55,7 +62,12 @@ export function BrandLogo({
 }: Props) {
   const { company, branding } = useStorefront();
   const { resolved } = useTheme();
-  const actualSurface: LogoSurface = surface === "theme" ? resolved : surface;
+  const actualSurface: LogoSurface =
+    surface === "theme"
+      ? resolved
+      : surface === "inverse"
+        ? (resolved === "dark" ? "light" : "dark")
+        : surface;
   const src = pickLogo(branding.logos, branding.logo_url, placement, actualSurface);
 
   if (!src) {

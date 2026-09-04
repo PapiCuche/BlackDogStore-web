@@ -14,6 +14,7 @@
 
 import Link from "next/link";
 import { useStorefront } from "./StorefrontProvider";
+import { BrandLogo } from "./BrandLogo";
 
 const WHATSAPP_SVG = (
   <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
@@ -22,27 +23,32 @@ const WHATSAPP_SVG = (
 );
 
 export function Footer() {
-  const { company, branding, contact } = useStorefront();
+  const { company, contact } = useStorefront();
   const storeName = company.name;
-  const logo = branding.logo_url;
 
   return (
     <footer className="relative border-t border-white/[0.06] bg-background">
       {/* Top CTA band */}
       <div className="relative overflow-hidden bg-white px-6 py-12 text-center topo-bg">
         <div className="relative z-10 mx-auto max-w-2xl">
-          {logo ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={logo}
-              alt={storeName}
-              className="mx-auto mb-6 h-28 w-auto object-contain"
+          {/*
+            Esta banda se pinta con `bg-white`, que tras la traducción de paleta
+            de M12F ES el color del texto: su contraste es el CONTRARIO al de la
+            página. En tema oscuro sale clara; en tema claro, oscura. Por eso
+            `surface="inverse"` y no `"theme"`.
+
+            Antes leía `branding.logo_url` directamente y se saltaba las seis
+            variantes por contraste: sobre esta banda invertida, eso ponía el
+            logotipo del contraste equivocado exactamente la mitad del tiempo.
+          */}
+          <div className="mb-6 flex justify-center">
+            <BrandLogo
+              placement="hero"
+              surface="inverse"
+              className="h-28 w-auto object-contain"
+              wordmarkClassName="font-display text-3xl font-black uppercase tracking-tight text-background"
             />
-          ) : storeName ? (
-            <p className="mx-auto mb-6 font-display text-3xl font-black uppercase tracking-tight text-background">
-              {storeName}
-            </p>
-          ) : null}
+          </div>
           <p className="font-display text-4xl font-black uppercase tracking-tight text-background sm:text-5xl">
             ¿Necesitas ayuda?
           </p>
@@ -77,18 +83,22 @@ export function Footer() {
           {/* Brand */}
           <div className="lg:col-span-2">
             <div className="flex items-center gap-4">
-              {logo ? (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img
-                  src={logo}
-                  alt={storeName}
-                  className="h-11 w-auto object-contain"
-                />
-              ) : null}
+              {/*
+                Sobre `bg-background`, que sigue al tema.
+
+                El nombre YA NO se escribe al lado: el lockup lo contiene, y
+                repetirlo junto a él duplica la marca dentro de su propia área de
+                protección. `BrandLogo` sólo escribe el nombre cuando NO hay
+                logotipo, que es cuando el nombre ES la identidad. La ciudad se
+                queda: es otra información, no la marca otra vez.
+              */}
+              <BrandLogo
+                placement="header"
+                surface="theme"
+                className="h-11 w-auto object-contain"
+                wordmarkClassName="font-display text-lg font-black uppercase tracking-tight text-foreground"
+              />
               <div>
-                <p className="font-display text-lg font-black uppercase tracking-tight text-white">
-                  {storeName}
-                </p>
                 {contact.city ? (
                   <p className="mt-1 text-[10px] uppercase tracking-[0.25em] text-zinc-500">
                     {contact.city}
