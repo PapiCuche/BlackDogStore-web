@@ -19,14 +19,14 @@ function StockBadge({ inventory }: { inventory?: number }) {
   if (inventory === undefined) return null;
   if (inventory === 0) {
     return (
-      <span className="rounded-full border border-red-500/20 bg-red-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-red-400">
+      <span className="rounded-full border border-danger-border bg-danger-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-danger">
         Sin stock
       </span>
     );
   }
   if (inventory <= 3) {
     return (
-      <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-400">
+      <span className="rounded-full border border-warning-border bg-warning-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-warning">
         Últimas {inventory}
       </span>
     );

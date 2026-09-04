@@ -301,7 +301,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                   className={`mt-4 rounded-xl border p-3 text-sm ${
                     statusType === "success"
                       ? "border-bd-border bg-surface text-foreground"
-                      : "border-red-500/30 bg-red-500/10 text-red-300"
+                      : "border-danger-border bg-danger-surface text-danger"
                   }`}
                 >
                   {status}
@@ -394,7 +394,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                   />
                 </div>
                 {reviewError && (
-                  <p className="text-sm text-rose-300">{reviewError}</p>
+                  <p className="text-sm text-danger">{reviewError}</p>
                 )}
                 <button
                   type="submit"

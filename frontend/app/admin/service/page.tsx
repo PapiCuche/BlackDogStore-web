@@ -216,7 +216,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
 
         {error ? (
           <Panel>
-            <p className="text-sm text-rose-300">{error}</p>
+            <p className="text-sm text-danger">{error}</p>
           </Panel>
         ) : null}
 

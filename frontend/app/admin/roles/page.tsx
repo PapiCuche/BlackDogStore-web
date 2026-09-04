@@ -112,7 +112,7 @@ function CapabilityMatrix({
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-foreground">{capability.name}</span>
-                      <span className={`rounded px-1.5 py-0.5 text-[9px] ${capability.status === "active" ? "bg-surface-2 text-muted" : capability.status === "available" ? "bg-amber-500/10 text-amber-300/70" : "bg-surface-2 text-muted"}`}>
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] ${capability.status === "active" ? "bg-surface-2 text-muted" : capability.status === "available" ? "bg-warning-surface text-warning" : "bg-surface-2 text-muted"}`}>
                         {capability.status === "active" ? "Activo" : capability.status === "available" ? "Transición" : "Reservado"}
                       </span>
                     </span>
@@ -198,7 +198,7 @@ function RoleCard({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-medium text-foreground">{role.name}</h2>
-            <span className={`rounded-full px-2 py-0.5 text-[10px] ${role.is_active ? "bg-surface-2 text-foreground/85" : "bg-red-500/10 text-red-400"}`}>{role.is_active ? "Activo" : "Inactivo"}</span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] ${role.is_active ? "bg-surface-2 text-foreground/85" : "bg-danger-surface text-danger"}`}>{role.is_active ? "Activo" : "Inactivo"}</span>
           </div>
           <p className="mt-1 truncate text-xs text-muted">{role.description || "Sin descripción"}</p>
         </div>
@@ -212,7 +212,7 @@ function RoleCard({
       {open ? (
         <div className="border-t border-bd-border px-5 py-5">
           {roleExceedsMyAuthority ? (
-            <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/[0.05] px-4 py-3 text-xs text-amber-200/75">Este rol contiene permisos superiores a tu autoridad. Puedes revisarlo, pero no modificarlo ni conservar esos privilegios mediante una edición indirecta.</div>
+            <div className="mb-4 rounded-lg border border-warning-border bg-amber-500/[0.05] px-4 py-3 text-xs text-warning">Este rol contiene permisos superiores a tu autoridad. Puedes revisarlo, pero no modificarlo ni conservar esos privilegios mediante una edición indirecta.</div>
           ) : null}
           {role.assignment_count > 0 ? (
             <div className="mb-4 rounded-lg border border-bd-border bg-surface px-4 py-3 text-xs leading-5 text-muted">
@@ -226,14 +226,14 @@ function RoleCard({
           </div>
 
           <CapabilityMatrix catalog={catalog} selected={selected} disabled={!editable || busy} onToggle={toggle} />
-          {error ? <p className="mt-4 text-sm text-red-400">{error}</p> : null}
+          {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
           {canManage && !roleExceedsMyAuthority ? (
             <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => void toggleActive()}
-                className={`rounded-lg border px-4 py-2.5 text-sm disabled:opacity-40 ${role.is_active ? "border-bd-border text-foreground/85 hover:border-red-500/40 hover:text-red-300" : "border-emerald-500/30 text-emerald-300 hover:border-emerald-400/60"}`}
+                className={`rounded-lg border px-4 py-2.5 text-sm disabled:opacity-40 ${role.is_active ? "border-bd-border text-foreground/85 hover:border-danger-border hover:text-danger" : "border-success-border text-success hover:border-success-border"}`}
               >
                 {role.is_active ? "Desactivar rol" : "Reactivar rol"}
               </button>
@@ -299,7 +299,7 @@ function NewRole({ companyId, catalog, onCreated }: { companyId: number; catalog
         <label className="text-xs text-muted">Descripción<input value={description} onChange={(event) => setDescription(event.target.value)} className="mt-1.5 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2.5 text-sm text-foreground" placeholder="Responsabilidades del rol" /></label>
       </div>
       <CapabilityMatrix catalog={catalog} selected={selected} disabled={busy} onToggle={toggle} />
-      {error ? <p className="mt-4 text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
       <div className="mt-5 flex justify-end"><button type="button" onClick={() => void create()} disabled={busy || !name.trim()} className="rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background disabled:opacity-40">Crear rol</button></div>
     </section>
   );
@@ -365,9 +365,9 @@ function RolesContent({ ctx }: { ctx: InternalContext }) {
           </div>
         </header>
 
-        {!companyId ? <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.05] p-5 text-sm text-amber-200/80">Selecciona una empresa. El master de plataforma tiene autoridad global, pero debe escoger el tenant antes de editarlo.</div> : null}
+        {!companyId ? <div className="rounded-xl border border-warning-border bg-amber-500/[0.05] p-5 text-sm text-warning">Selecciona una empresa. El master de plataforma tiene autoridad global, pero debe escoger el tenant antes de editarlo.</div> : null}
         {loading ? <p className="py-12 text-center text-sm text-muted">Cargando roles…</p> : null}
-        {error ? <div className="rounded-xl border border-red-500/20 bg-red-500/[0.05] p-4 text-sm text-red-400">{error}</div> : null}
+        {error ? <div className="rounded-xl border border-danger-border bg-red-500/[0.05] p-4 text-sm text-danger">{error}</div> : null}
 
         {companyId && catalog && !loading && !error ? (
           <>

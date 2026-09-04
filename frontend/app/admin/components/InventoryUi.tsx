@@ -47,7 +47,7 @@ export function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-xl border border-bd-border bg-surface">
+    <section className="min-w-0 rounded-xl border border-bd-border bg-surface">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-bd-border px-5 py-4">
         <div>
           <h2 className="text-sm font-semibold text-foreground">{title}</h2>
@@ -73,8 +73,8 @@ export function Spinner({ label = "Cargando…" }: { label?: string }) {
 
 export function ErrorBox({ message }: { message: string }) {
   return (
-    <div className="rounded-lg border border-red-500/25 bg-red-500/[0.07] px-4 py-3">
-      <p className="text-sm text-red-300">{message}</p>
+    <div className="rounded-lg border border-danger-border bg-red-500/[0.07] px-4 py-3">
+      <p className="text-sm text-danger">{message}</p>
     </div>
   );
 }

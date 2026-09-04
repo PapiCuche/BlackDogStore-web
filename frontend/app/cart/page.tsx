@@ -133,7 +133,7 @@ export default function CartPage() {
         </div>
 
         {error && (
-          <div className="mb-6 rounded-2xl border border-red-500/20 bg-red-500/[0.08] p-4 text-sm text-red-400">{error}</div>
+          <div className="mb-6 rounded-2xl border border-danger-border bg-red-500/[0.08] p-4 text-sm text-danger">{error}</div>
         )}
 
         {loading ? (
@@ -185,7 +185,7 @@ export default function CartPage() {
                         <span className="text-sm font-bold text-foreground">{coupon.code}</span>
                         <span className="ml-2 text-sm text-muted">−{coupon.discount_percent}%</span>
                       </div>
-                      <button onClick={removeCoupon} className="text-xs text-muted transition hover:text-red-400">✕ Quitar</button>
+                      <button onClick={removeCoupon} className="text-xs text-muted transition hover:text-danger">✕ Quitar</button>
                     </div>
                   ) : (
                     <div className="flex gap-2">
@@ -206,7 +206,7 @@ export default function CartPage() {
                       </button>
                     </div>
                   )}
-                  {couponError && <p className="mt-1.5 text-xs text-red-400">{couponError}</p>}
+                  {couponError && <p className="mt-1.5 text-xs text-danger">{couponError}</p>}
                 </div>
 
                 {/* Totals */}

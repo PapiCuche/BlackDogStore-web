@@ -92,7 +92,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <div>
           <label htmlFor="admin-components-productform-nombre" className="block text-xs text-muted mb-1.5">
-            Nombre <span className="text-red-400">*</span>
+            Nombre <span className="text-danger">*</span>
           </label>
           <input id="admin-components-productform-nombre"
             type="text"
@@ -117,7 +117,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
         </div>
         <div>
           <label htmlFor="admin-components-productform-precio-s" className="block text-xs text-muted mb-1.5">
-            Precio (S/) <span className="text-red-400">*</span>
+            Precio (S/) <span className="text-danger">*</span>
           </label>
           <input id="admin-components-productform-precio-s"
             type="number"
@@ -213,7 +213,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
         </label>
       </div>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
 
       <button
         type="submit"

@@ -78,8 +78,8 @@ export function Button({
 }) {
   const tones = {
     default: "border-bd-border text-foreground/85 hover:border-bd-border",
-    primary: "border-emerald-400/40 bg-emerald-400/10 text-emerald-200 hover:border-emerald-400/70",
-    danger: "border-rose-400/40 text-rose-200 hover:border-rose-400/70",
+    primary: "border-success-border bg-success-surface text-success hover:border-success-border",
+    danger: "border-danger-border text-danger hover:border-danger-border",
   } as const;
   return (
     <button
@@ -96,9 +96,9 @@ export function Button({
 export function Pill({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "good" | "warn" | "bad" }) {
   const tones = {
     neutral: "border-bd-border text-muted",
-    good: "border-emerald-400/40 text-emerald-200",
-    warn: "border-amber-400/40 text-amber-200",
-    bad: "border-rose-400/40 text-rose-200",
+    good: "border-success-border text-success",
+    warn: "border-warning-border text-warning",
+    bad: "border-danger-border text-danger",
   } as const;
   return (
     <span className={`rounded-full border px-2.5 py-1 text-[11px] ${tones[tone]}`}>
@@ -110,7 +110,7 @@ export function Pill({ label, tone = "neutral" }: { label: string; tone?: "neutr
 export function ErrorNote({ error }: { error: unknown }) {
   if (!error) return null;
   return (
-    <p className="mt-3 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2 text-xs text-rose-200">
+    <p className="mt-3 rounded-lg border border-danger-border bg-danger-surface px-3 py-2 text-xs text-danger">
       {error instanceof Error ? error.message : String(error)}
     </p>
   );

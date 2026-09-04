@@ -43,7 +43,7 @@ export function CartItemCard({ quantity, product, onQuantityChange, onRemove }: 
             <button
               type="button"
               onClick={onRemove}
-              className="rounded-full border border-red-500/20 bg-red-500/[0.08] px-3 py-1.5 text-xs font-medium text-red-400 transition hover:bg-red-500/15"
+              className="rounded-full border border-danger-border bg-red-500/[0.08] px-3 py-1.5 text-xs font-medium text-danger transition hover:bg-danger-surface"
             >
               Eliminar
             </button>

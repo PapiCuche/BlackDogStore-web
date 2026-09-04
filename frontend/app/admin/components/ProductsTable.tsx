@@ -42,7 +42,7 @@ export function ProductsTable({ products, currentUser, onChanged }: Props) {
   return (
     <div>
       {toggleError && (
-        <p className="text-sm text-red-400 mb-3">{toggleError}</p>
+        <p className="text-sm text-danger mb-3">{toggleError}</p>
       )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -84,9 +84,9 @@ export function ProductsTable({ products, currentUser, onChanged }: Props) {
                 <td
                   className={`py-3 pr-4 text-right font-medium ${
                     p.inventory === 0
-                      ? "text-red-400"
+                      ? "text-danger"
                       : p.inventory <= 5
-                        ? "text-yellow-400"
+                        ? "text-warning"
                         : "text-foreground"
                   }`}
                 >

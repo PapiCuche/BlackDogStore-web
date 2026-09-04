@@ -80,7 +80,7 @@ const initialForm: FormState = {
 
 function FieldError({ msg }: { msg?: string }) {
   if (!msg) return null;
-  return <p className="mt-1 text-xs text-red-400">{msg}</p>;
+  return <p className="mt-1 text-xs text-danger">{msg}</p>;
 }
 
 export default function CheckoutPage() {
@@ -262,7 +262,7 @@ export default function CheckoutPage() {
           </div>
         )}
         {message && (
-          <div className="mb-5 rounded-xl border border-red-500/20 bg-red-500/[0.06] p-4 text-sm text-red-300">
+          <div className="mb-5 rounded-xl border border-danger-border bg-red-500/[0.06] p-4 text-sm text-danger">
             {message}
           </div>
         )}
@@ -564,7 +564,7 @@ export default function CheckoutPage() {
 
           <button
             type="submit"
-            className="w-full rounded-xl bg-foreground px-6 py-3.5 text-sm font-semibold text-muted transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded-xl bg-foreground px-6 py-3.5 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={loading}
           >
             {loading ? "Abriendo el pago…" : "Continuar al pago →"}

@@ -189,7 +189,7 @@ export function AlertsPanel({
       {alerts.map((alert) => {
         const tone =
           alert.level === "critical"
-            ? "border-red-500/25 bg-red-500/[0.07]"
+            ? "border-danger-border bg-red-500/[0.07]"
             : alert.level === "warning"
               ? "border-bd-border bg-surface"
               : "border-bd-border bg-surface";

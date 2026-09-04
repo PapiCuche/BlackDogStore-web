@@ -120,7 +120,7 @@ function AuditLogsContent({ user }: { user: AuthUser }) {
           <div className="py-12 text-center text-muted">Cargando…</div>
         )}
         {error && !loading && (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+          <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
             {error}
           </div>
         )}

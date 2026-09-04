@@ -135,7 +135,7 @@ export function ListContentEditor({
   return (
     <div>
       {error ? (
-        <p role="alert" className="mb-4 rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-300">
+        <p role="alert" className="mb-4 rounded-xl border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
           {error}
         </p>
       ) : null}
@@ -203,7 +203,7 @@ export function ListContentEditor({
                   <button
                     type="button"
                     onClick={() => remove(row)}
-                    className="min-h-11 rounded-full border border-bd-border px-4 text-xs font-semibold text-muted transition-colors hover:text-red-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    className="min-h-11 rounded-full border border-bd-border px-4 text-xs font-semibold text-muted transition-colors hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                   >
                     Borrar
                   </button>
@@ -287,7 +287,7 @@ function RowForm({
               <span id={`${id}-hint`} className="mt-1 block text-xs text-muted">{f.hint}</span>
             ) : null}
             {problem ? (
-              <span id={`${id}-error`} className="mt-1 block text-xs text-red-300">
+              <span id={`${id}-error`} className="mt-1 block text-xs text-danger">
                 {problem.join(" ")}
               </span>
             ) : null}
@@ -307,7 +307,7 @@ function RowForm({
       </label>
 
       {errors.__all__ ? (
-        <p role="alert" className="text-sm text-red-300 sm:col-span-2">{errors.__all__.join(" ")}</p>
+        <p role="alert" className="text-sm text-danger sm:col-span-2">{errors.__all__.join(" ")}</p>
       ) : null}
 
       <div className="flex flex-wrap gap-3 sm:col-span-2">

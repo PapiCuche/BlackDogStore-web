@@ -75,9 +75,9 @@ export function InventoryAdjustForm({
               <span
                 className={
                   preview < 0
-                    ? "text-red-400"
+                    ? "text-danger"
                     : preview === 0
-                      ? "text-yellow-400"
+                      ? "text-warning"
                       : "text-foreground"
                 }
               >
@@ -100,7 +100,7 @@ export function InventoryAdjustForm({
         </div>
       </div>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
       {success && <p className="text-sm text-foreground/85">{success}</p>}
 
       <button

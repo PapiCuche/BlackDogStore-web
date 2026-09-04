@@ -206,9 +206,9 @@ export function InternalControlGuard({ children }: Props) {
   if (error) {
     return (
       <Centered>
-        <div className="rounded-2xl border border-red-500/25 bg-red-500/[0.07] p-8">
+        <div className="rounded-2xl border border-danger-border bg-red-500/[0.07] p-8">
           <h1 className="text-lg font-semibold text-foreground">No se pudo cargar</h1>
-          <p className="mt-3 text-sm text-red-300">{error}</p>
+          <p className="mt-3 text-sm text-danger">{error}</p>
           <button
             type="button"
             onClick={reload}
