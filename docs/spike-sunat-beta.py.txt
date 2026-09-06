@@ -1,0 +1,277 @@
+"""
+Espolón: la cadena completa contra SUNAT BETA, sin tocar el proyecto.
+
+Genera certificado autofirmado -> arma UBL 2.1 -> firma -> ZIP -> sendBill -> CDR.
+
+Existe para averiguar si la arquitectura es viable ANTES de escribir el dominio.
+Un fallo aquí es barato; el mismo fallo después de dos mil líneas de modelos, no.
+
+Credenciales: las PÚBLICAS de prueba que SUNAT publica en su Manual del
+programador (RUC 20100066603, usuario MODDATOS, clave moddatos). No hay ningún
+secreto real en este archivo.
+"""
+import base64
+import datetime as dt
+import io
+import zipfile
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+from lxml import etree
+from signxml import XMLSigner, SignatureMethod, CanonicalizationMethod
+
+RUC = '20100066603'
+SOL_USER = 'MODDATOS'
+SOL_PASS = 'moddatos'
+BETA = 'https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService'
+
+SERIE, CORRELATIVO, TIPO = 'F001', '1', '01'
+
+NS = {
+    'inv': 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2',
+    'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2',
+    'cbc': 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2',
+    'ext': 'urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2',
+    'ds': 'http://www.w3.org/2000/09/xmldsig#',
+    'sac': 'urn:sunat:names:specification:ubl:peru:schema:xsd:SunatAggregateComponents-1',
+}
+
+
+def self_signed():
+    """Certificado autofirmado. Sólo vale para BETA; producción exige uno acreditado."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, 'PE'),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'PRUEBA BETA'),
+        x509.NameAttribute(NameOID.COMMON_NAME, RUC),
+    ])
+    now = dt.datetime.now(dt.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=365))
+        .sign(key, hashes.SHA256())
+    )
+    return key, cert
+
+
+def build_invoice():
+    """
+    Una factura gravada mínima pero completa, según la guía UBL 2.1 de SUNAT.
+
+    Importes elegidos para que el desglose sea reconocible a simple vista:
+    base 100.00 + IGV 18.00 = 118.00.
+    """
+    E = lambda t: '{%s}%s' % (NS[t.split(':')[0]], t.split(':')[1])
+    root = etree.Element(E('inv:Invoice'), nsmap={
+        None: NS['inv'], 'cac': NS['cac'], 'cbc': NS['cbc'],
+        'ext': NS['ext'], 'ds': NS['ds'], 'sac': NS['sac'],
+    })
+
+    def sub(parent, tag, text=None, **attrs):
+        el = etree.SubElement(parent, E(tag), **{k.replace('_', ''): v for k, v in attrs.items()})
+        if text is not None:
+            el.text = text
+        return el
+
+    exts = sub(root, 'ext:UBLExtensions')
+
+    # PRIMERA extensión: el tipo de operación. SUNAT lo exige y su ausencia
+    # produce el error 3244 «Debe consignar la informacion del tipo de
+    # transaccion del comprobante» — comprobado contra BETA, no supuesto.
+    ext_info = sub(exts, 'ext:UBLExtension')
+    content_info = sub(ext_info, 'ext:ExtensionContent')
+    addinfo = sub(content_info, 'sac:AdditionalInformation')
+    trx = sub(addinfo, 'sac:SUNATTransaction')
+    sub(trx, 'cbc:ID', '01')   # Catálogo 17: venta interna
+
+    # SEGUNDA extensión: el hueco donde irá la firma. SUNAT la exige AQUÍ, no al
+    # final del documento.
+    ext = sub(exts, 'ext:UBLExtension')
+    sub(ext, 'ext:ExtensionContent')
+
+    sub(root, 'cbc:UBLVersionID', '2.1')
+    sub(root, 'cbc:CustomizationID', '2.0')
+    sub(root, 'cbc:ID', f'{SERIE}-{CORRELATIVO}')
+    hoy = dt.date.today().isoformat()
+    sub(root, 'cbc:IssueDate', hoy)
+    sub(root, 'cbc:IssueTime', '12:00:00')
+    sub(root, 'cbc:InvoiceTypeCode', TIPO, listID='0101')
+    sub(root, 'cbc:Note', 'CIENTO DIECIOCHO CON 00/100 SOLES', languageLocaleID='1000')
+    sub(root, 'cbc:DocumentCurrencyCode', 'PEN')
+
+    # Firma declarada (cac:Signature) — distinta del bloque criptográfico.
+    sig = sub(root, 'cac:Signature')
+    sub(sig, 'cbc:ID', f'{SERIE}-{CORRELATIVO}')
+    sp = sub(sig, 'cac:SignatoryParty')
+    pid = sub(sp, 'cac:PartyIdentification')
+    sub(pid, 'cbc:ID', RUC)
+    pn = sub(sp, 'cac:PartyName')
+    sub(pn, 'cbc:Name', 'PRUEBA BETA')
+    dr = sub(sig, 'cac:DigitalSignatureAttachment')
+    er = sub(dr, 'cac:ExternalReference')
+    sub(er, 'cbc:URI', '#SignatureSP')
+
+    # Emisor
+    sup = sub(root, 'cac:AccountingSupplierParty')
+    party = sub(sup, 'cac:Party')
+    pid = sub(party, 'cac:PartyIdentification')
+    sub(pid, 'cbc:ID', RUC, schemeID='6')
+    pn = sub(party, 'cac:PartyName')
+    sub(pn, 'cbc:Name', 'PRUEBA BETA')
+    ple = sub(party, 'cac:PartyLegalEntity')
+    sub(ple, 'cbc:RegistrationName', 'PRUEBA BETA SAC')
+    addr = sub(ple, 'cac:RegistrationAddress')
+    sub(addr, 'cbc:AddressTypeCode', '0000')
+
+    # Receptor — factura: RUC obligatorio (Catálogo 06, código 6)
+    cus = sub(root, 'cac:AccountingCustomerParty')
+    party = sub(cus, 'cac:Party')
+    pid = sub(party, 'cac:PartyIdentification')
+    sub(pid, 'cbc:ID', '20000000001', schemeID='6')
+    ple = sub(party, 'cac:PartyLegalEntity')
+    sub(ple, 'cbc:RegistrationName', 'CLIENTE DE PRUEBA SAC')
+
+    # Totales del impuesto
+    tt = sub(root, 'cac:TaxTotal')
+    sub(tt, 'cbc:TaxAmount', '18.00', currencyID='PEN')
+    ts = sub(tt, 'cac:TaxSubtotal')
+    sub(ts, 'cbc:TaxableAmount', '100.00', currencyID='PEN')
+    sub(ts, 'cbc:TaxAmount', '18.00', currencyID='PEN')
+    tc = sub(ts, 'cac:TaxCategory')
+    tsch = sub(tc, 'cac:TaxScheme')
+    sub(tsch, 'cbc:ID', '1000')          # Catálogo 05
+    sub(tsch, 'cbc:Name', 'IGV')
+    sub(tsch, 'cbc:TaxTypeCode', 'VAT')  # UN/ECE 5153
+
+    lmt = sub(root, 'cac:LegalMonetaryTotal')
+    sub(lmt, 'cbc:LineExtensionAmount', '100.00', currencyID='PEN')
+    sub(lmt, 'cbc:TaxInclusiveAmount', '118.00', currencyID='PEN')
+    sub(lmt, 'cbc:PayableAmount', '118.00', currencyID='PEN')
+
+    # Una línea
+    line = sub(root, 'cac:InvoiceLine')
+    sub(line, 'cbc:ID', '1')
+    sub(line, 'cbc:InvoicedQuantity', '1', unitCode='NIU')
+    sub(line, 'cbc:LineExtensionAmount', '100.00', currencyID='PEN')
+    pr = sub(line, 'cac:PricingReference')
+    acp = sub(pr, 'cac:AlternativeConditionPrice')
+    sub(acp, 'cbc:PriceAmount', '118.00', currencyID='PEN')
+    sub(acp, 'cbc:PriceTypeCode', '01')   # Catálogo 16
+    ltt = sub(line, 'cac:TaxTotal')
+    sub(ltt, 'cbc:TaxAmount', '18.00', currencyID='PEN')
+    lts = sub(ltt, 'cac:TaxSubtotal')
+    sub(lts, 'cbc:TaxableAmount', '100.00', currencyID='PEN')
+    sub(lts, 'cbc:TaxAmount', '18.00', currencyID='PEN')
+    ltc = sub(lts, 'cac:TaxCategory')
+    sub(ltc, 'cbc:Percent', '18.00')
+    sub(ltc, 'cbc:TaxExemptionReasonCode', '10')  # Catálogo 07: gravado onerosa
+    lsch = sub(ltc, 'cac:TaxScheme')
+    sub(lsch, 'cbc:ID', '1000')
+    sub(lsch, 'cbc:Name', 'IGV')
+    sub(lsch, 'cbc:TaxTypeCode', 'VAT')
+    item = sub(line, 'cac:Item')
+    sub(item, 'cbc:Description', 'ARTICULO DE PRUEBA')
+    price = sub(line, 'cac:Price')
+    sub(price, 'cbc:PriceAmount', '100.00', currencyID='PEN')
+    return root
+
+
+def sign(root, key, cert):
+    """Firma envuelta dentro de ext:ExtensionContent, C14N 1.0 como exige SUNAT."""
+    signer = XMLSigner(
+        method=__import__('signxml').methods.enveloped,
+        signature_algorithm=SignatureMethod.RSA_SHA256,
+        digest_algorithm='sha256',
+        c14n_algorithm=CanonicalizationMethod.CANONICAL_XML_1_0,
+    )
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    signed = signer.sign(root, key=key_pem, cert=cert_pem)
+    # La firma sale al final del documento; SUNAT la quiere dentro del hueco.
+    sig_el = signed.find('.//{http://www.w3.org/2000/09/xmldsig#}Signature')
+    sig_el.set('Id', 'SignatureSP')
+    contents = signed.findall(
+        './/{urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2}ExtensionContent'
+    )
+    contents[-1].append(sig_el)
+    return signed
+
+
+def main():
+    key, cert = self_signed()
+    root = build_invoice()
+    signed = sign(root, key, cert)
+    xml = etree.tostring(signed, xml_declaration=True, encoding='UTF-8')
+
+    digest = signed.find('.//{http://www.w3.org/2000/09/xmldsig#}DigestValue').text
+    print(f'DigestValue: {digest}')
+
+    name = f'{RUC}-{TIPO}-{SERIE}-{CORRELATIVO}'
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f'{name}.XML', xml)
+    zip_b64 = base64.b64encode(buf.getvalue()).decode()
+    print(f'ZIP: {name}.ZIP  ({len(buf.getvalue())} bytes)')
+
+    envelope = f"""<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+ xmlns:ser="http://service.sunat.gob.pe">
+<soapenv:Header>
+<wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+<wsse:UsernameToken>
+<wsse:Username>{RUC}{SOL_USER}</wsse:Username>
+<wsse:Password>{SOL_PASS}</wsse:Password>
+</wsse:UsernameToken>
+</wsse:Security>
+</soapenv:Header>
+<soapenv:Body>
+<ser:sendBill>
+<fileName>{name}.ZIP</fileName>
+<contentFile>{zip_b64}</contentFile>
+</ser:sendBill>
+</soapenv:Body>
+</soapenv:Envelope>"""
+
+    import requests
+    print(f'\nPOST {BETA}')
+    r = requests.post(
+        BETA, data=envelope.encode('utf-8'),
+        headers={'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'urn:sendBill'},
+        timeout=60,
+    )
+    print(f'HTTP {r.status_code}  ({len(r.content)} bytes)')
+
+    body = r.content
+    if b'applicationResponse' in body:
+        b64 = etree.fromstring(body).find('.//applicationResponse')
+        if b64 is None:
+            b64 = [e for e in etree.fromstring(body).iter() if e.tag.endswith('applicationResponse')][0]
+        cdr_zip = base64.b64decode(b64.text)
+        with zipfile.ZipFile(io.BytesIO(cdr_zip)) as z:
+            for n in z.namelist():
+                print(f'  CDR: {n}')
+                cdr = etree.fromstring(z.read(n))
+                for tag in ('ResponseCode', 'Description'):
+                    for e in cdr.iter():
+                        if e.tag.endswith(tag):
+                            print(f'    {tag}: {e.text}')
+                            break
+    else:
+        txt = body.decode('utf-8', 'replace')
+        for tag in ('faultcode', 'faultstring', 'message'):
+            i = txt.find('<' + tag)
+            if i > 0:
+                print(f'  {tag}: {txt[i:i+220]}')
+
+
+if __name__ == '__main__':
+    main()
