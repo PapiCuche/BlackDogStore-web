@@ -75,3 +75,17 @@ openpyxl==3.1.5
 # this line a fresh install resolves to whatever is current and the fix is not
 # guaranteed.
 sqlparse==0.6.0
+
+# Firma XMLDSig y validación contra el esquema oficial de SUNAT (C2.2A.1)
+#
+# La biblioteca estándar NO basta: `xml.etree.ElementTree.canonicalize`
+# implementa C14N 2.0 y SUNAT exige `REC-xml-c14n-20010315`, que es la 1.0. No
+# son intercambiables en un documento con prefijos de espacio de nombres, que es
+# exactamente lo que es un UBL.
+#
+# Firmar a mano queda descartado: lo que se firma es el documento CANONICALIZADO,
+# y una canonicalización propia que acierte el 99 % de los casos falla en el 1 %
+# restante de forma indistinguible de una firma falsificada.
+lxml==6.1.3            # BSD-3-Clause — árbol XML y canonicalización C14N 1.0
+signxml==5.1.0         # Apache-2.0 — XMLDSig sobre lxml + cryptography
+cryptography==50.0.1   # Apache-2.0 / BSD — RSA y X.509

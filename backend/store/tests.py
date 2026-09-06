@@ -47082,3 +47082,353 @@ class C21CheckoutQuoteTest(TestCase):
         self.assertEqual(str(order.taxable_amount), quoted['taxable_amount'])
         self.assertEqual(str(order.tax_amount), quoted['tax_amount'])
         self.assertEqual(str(order.total), quoted['total'])
+
+
+# ---------------------------------------------------------------------------
+# C2.2A.1 — el vertical técnico de la factura electrónica
+# ---------------------------------------------------------------------------
+
+import dataclasses  # noqa: E402
+import io  # noqa: E402
+
+from lxml import etree as _LET  # noqa: E402
+
+from .fiscal import builder as _fb  # noqa: E402
+from .fiscal import packaging as _fp  # noqa: E402
+from .fiscal import rules as _fr  # noqa: E402
+from .fiscal import schema as _fs  # noqa: E402
+from .fiscal import signing as _fsign  # noqa: E402
+from .fiscal.data import InvoiceData, Line, Party  # noqa: E402
+from .fiscal.testing import minimal_invoice, self_signed_pem  # noqa: E402
+
+
+def _signed(data=None):
+    """Construye y firma el caso mínimo. Devuelve (bytes, cert)."""
+    data = data or minimal_invoice()
+    key, cert = self_signed_pem()
+    root = _LET.fromstring(_fb.build_invoice_xml(data))
+    signed = _fsign.sign_invoice(root, key_pem=key, cert_pem=cert)
+    return _LET.tostring(signed, xml_declaration=True, encoding='UTF-8'), cert
+
+
+class C22A1RulesTest(TestCase):
+    """
+    Las reglas tributarias que se comprueban SIN RED.
+
+    Cada una existe para que un incumplimiento se sepa en microsegundos, con el
+    dato señalado, en vez de minutos después como un código numérico devuelto
+    por un servidor.
+    """
+
+    def test_the_minimal_case_passes(self):
+        _fr.validate(minimal_invoice())
+
+    def test_an_invoice_series_must_start_with_f(self):
+        """Anexo N.º 1, campo 8. Una serie B en una factura no existe."""
+        with self.assertRaises(_fr.FiscalRuleError):
+            _fr.validate(minimal_invoice(serie='B001'))
+
+    def test_the_series_is_exactly_four_characters(self):
+        for serie in ('F01', 'F0001', '', 'f001'):
+            with self.subTest(serie=serie), self.assertRaises(_fr.FiscalRuleError):
+                _fr.validate(minimal_invoice(serie=serie))
+
+    def test_the_correlativo_starts_at_one_and_fits_in_eight_digits(self):
+        for numero in (0, -1, 100_000_000):
+            with self.subTest(numero=numero), self.assertRaises(_fr.FiscalRuleError):
+                _fr.validate(minimal_invoice(correlativo=numero))
+
+    def test_an_invoice_demands_a_ruc_from_the_customer(self):
+        """
+        Anexo N.º 1, campo 11: «El Tipo de documento será 6 - RUC».
+
+        Una venta sin RUC no es una factura mal hecha: es una boleta. Por eso el
+        mensaje lo dice, en vez de limitarse a rechazar.
+        """
+        con_dni = Party(doc_type='1', doc_number='12345678', legal_name='JUAN PEREZ')
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(minimal_invoice(customer=con_dni))
+        self.assertIn('boleta', str(ctx.exception).lower())
+
+    def test_a_malformed_ruc_is_refused(self):
+        for ruc in ('2010006660', '30100066603', 'ABCDEFGHIJK', ''):
+            with self.subTest(ruc=ruc), self.assertRaises(_fr.FiscalRuleError):
+                _fr.validate(minimal_invoice(
+                    customer=Party('6', ruc, 'CLIENTE SAC'),
+                ))
+
+    def test_an_unsupported_tax_treatment_fails_closed(self):
+        """
+        NO SE INVENTA UN CÓDIGO DE AFECTACIÓN.
+
+        Generar un XML con un código que nadie comprobó presentaría ante SUNAT
+        una declaración falsa. Se prefiere negarse.
+        """
+        exonerada = minimal_invoice()
+        linea = dataclasses.replace(exonerada.lines[0], tax_affectation='20')
+        with self.assertRaises(_fr.FiscalRuleError):
+            _fr.validate(dataclasses.replace(exonerada, lines=(linea,)))
+
+    def test_the_amounts_must_add_up(self):
+        with self.assertRaises(ValueError):
+            _fr.validate(minimal_invoice(total=Decimal('119.00')))
+
+
+class C22A1XmlTest(TestCase):
+    """El XML: esquema oficial, orden, catálogos y cifras."""
+
+    def test_the_signed_invoice_validates_against_the_official_schema(self):
+        """
+        `UBL-Invoice-2.1.xsd`, el de SUNAT, versionado en el repositorio.
+
+        Se valida el documento FIRMADO y no el borrador: el hueco de firma vacío
+        no es válido contra el esquema, y tiene que dejar de serlo sólo cuando
+        la firma lo llena.
+        """
+        xml, _cert = _signed()
+        _fs.validate_invoice(xml)
+
+    def test_the_unsigned_draft_is_not_yet_schema_valid(self):
+        """
+        Lo dice el esquema, y conviene que un test lo fije: un comprobante sin
+        firmar NO es un comprobante.
+        """
+        with self.assertRaises(_fs.SchemaError):
+            _fs.validate_invoice(_fb.build_invoice_xml(minimal_invoice()))
+
+    def test_element_order_is_not_negotiable(self):
+        """
+        UBL ES UNA SECUENCIA XSD.
+
+        Un documento con todos los campos correctos en el orden equivocado es
+        inválido. Se demuestra moviendo un nodo y comprobando que el esquema lo
+        rechaza — así el generador no puede tratar el XML como un diccionario.
+        """
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        cbc = _fb.NS['cbc']
+        moneda = doc.find(f'{{{cbc}}}DocumentCurrencyCode')
+        doc.remove(moneda)
+        doc.insert(0, moneda)
+        with self.assertRaises(_fs.SchemaError):
+            _fs.validate_invoice(_LET.tostring(doc, xml_declaration=True, encoding='UTF-8'))
+
+    def test_the_payment_terms_block_is_present(self):
+        """
+        LA CAUSA DEL ERROR 3244, ahora vigilada.
+
+        SUNAT exige `cac:PaymentTerms` con `cbc:ID = 'FormaPago'` desde el
+        01/01/2022. Su ausencia devuelve «Debe consignar la informacion del tipo
+        de transaccion del comprobante» — un mensaje que suena a «tipo de
+        operación» y no lo es. Costó tres envíos a BETA moviendo un nodo que no
+        intervenía en la regla.
+
+        Fuente: hoja `Factura2_0` del archivo oficial «Reglas de validación»,
+        líneas 174-177.
+        """
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        cac, cbc = _fb.NS['cac'], _fb.NS['cbc']
+        terms = doc.findall(f'{{{cac}}}PaymentTerms')
+        self.assertEqual(len(terms), 1)
+        self.assertEqual(terms[0].find(f'{{{cbc}}}ID').text, 'FormaPago')
+        # Regla 3245, encadenada: hay que decir si es al contado o al crédito.
+        self.assertEqual(terms[0].find(f'{{{cbc}}}PaymentMeansID').text, 'Contado')
+
+    def test_the_official_catalogue_codes_are_the_ones_emitted(self):
+        """Los códigos van del Anexo N.º 8, no de la memoria de nadie."""
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        cac, cbc = _fb.NS['cac'], _fb.NS['cbc']
+
+        # Catálogo 01: 01 = factura.
+        self.assertEqual(doc.find(f'{{{cbc}}}InvoiceTypeCode').text, '01')
+        # Catálogo 05: el IGV.
+        scheme = doc.find(f'.//{{{cac}}}TaxScheme')
+        self.assertEqual(scheme.find(f'{{{cbc}}}ID').text, '1000')
+        self.assertEqual(scheme.find(f'{{{cbc}}}Name').text, 'IGV')
+        self.assertEqual(scheme.find(f'{{{cbc}}}TaxTypeCode').text, 'VAT')
+        # Catálogo 07: gravado, operación onerosa.
+        afectacion = doc.find(f'.//{{{cbc}}}TaxExemptionReasonCode')
+        self.assertEqual(afectacion.text, '10')
+        # Catálogo 16: precio unitario que incluye el IGV.
+        self.assertEqual(doc.find(f'.//{{{cbc}}}PriceTypeCode').text, '01')
+        # Catálogo 06: el RUC identifica a ambas partes. Se miran el emisor y el
+        # receptor en concreto — el `PartyIdentification` del bloque de firma
+        # lleva el RUC del firmante sin `schemeID`, y meterlo en el mismo bucle
+        # convertía este test en uno que fallaba por su propia imprecisión.
+        for parte in ('AccountingSupplierParty', 'AccountingCustomerParty'):
+            ident = doc.find(
+                f'{{{cac}}}{parte}/{{{cac}}}Party/{{{cac}}}PartyIdentification/{{{cbc}}}ID'
+            )
+            self.assertEqual(ident.get('schemeID'), '6', parte)
+
+    def test_the_xml_carries_exactly_the_frozen_amounts(self):
+        """
+        C2.1 MANDA. El generador transcribe; no recalcula.
+
+        Si esto fallara, el XML presentado ante SUNAT diría un importe distinto
+        del que el cliente pagó y del que dice el papel que se llevó.
+        """
+        data = minimal_invoice()
+        xml, _cert = _signed(data)
+        doc = _LET.fromstring(xml)
+        cac, cbc = _fb.NS['cac'], _fb.NS['cbc']
+
+        totales = doc.find(f'{{{cac}}}LegalMonetaryTotal')
+        self.assertEqual(totales.find(f'{{{cbc}}}LineExtensionAmount').text,
+                         f'{data.taxable_amount:.2f}')
+        self.assertEqual(totales.find(f'{{{cbc}}}PayableAmount').text,
+                         f'{data.total:.2f}')
+        impuesto = doc.find(f'{{{cac}}}TaxTotal/{{{cbc}}}TaxAmount')
+        self.assertEqual(impuesto.text, f'{data.tax_amount:.2f}')
+
+    def test_no_amount_is_written_in_scientific_notation(self):
+        """
+        `str(Decimal)` puede producir `1E+2`, que es un número válido y un
+        importe inválido. Se comprueba sobre un importe redondo, que es donde
+        aparece.
+        """
+        redondo = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('1'), 'NIU', Decimal('100.00'),
+                        Decimal('118.00'), Decimal('100.00'), Decimal('18.00'),
+                        Decimal('18.00')),),
+        )
+        xml, _cert = _signed(redondo)
+        doc = _LET.fromstring(xml)
+        cbc = _fb.NS['cbc']
+        # Se miran los IMPORTES, no el documento entero: el base64 de la firma y
+        # del certificado contiene «E+» con frecuencia, y además cambia en cada
+        # ejecución — un test que lo mirase fallaría unas veces sí y otras no,
+        # que es la peor clase de test.
+        for tag in ('LineExtensionAmount', 'TaxInclusiveAmount', 'PayableAmount',
+                    'TaxAmount', 'TaxableAmount', 'PriceAmount'):
+            for nodo in doc.iter(f'{{{cbc}}}{tag}'):
+                self.assertRegex(nodo.text, r'^\d+\.\d{2}$', f'{tag}={nodo.text!r}')
+
+
+class C22A1SignatureTest(TestCase):
+    """La firma: que exista, que verifique y que se rompa al alterar el documento."""
+
+    def test_the_signature_verifies(self):
+        xml, cert = _signed()
+        self.assertTrue(_fsign.verify(xml, cert_pem=cert))
+
+    def test_changing_an_amount_after_signing_breaks_the_signature(self):
+        """
+        EL SABOTAJE QUE JUSTIFICA FIRMAR.
+
+        Si esto pasara, la firma no estaría protegiendo nada.
+        """
+        xml, cert = _signed()
+        alterado = xml.replace(b'>118.00<', b'>999.00<')
+        self.assertNotEqual(alterado, xml, 'el sabotaje no llegó a aplicarse')
+        self.assertFalse(_fsign.verify(alterado, cert_pem=cert))
+
+    def test_a_different_certificate_does_not_verify(self):
+        xml, _cert = _signed()
+        _key, otro = self_signed_pem(ruc='20999999999')
+        self.assertFalse(_fsign.verify(xml, cert_pem=otro))
+
+    def test_the_signature_sits_where_sunat_looks_for_it(self):
+        """Dentro del último `ext:ExtensionContent`, no al final del documento."""
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        huecos = doc.findall(f'.//{{{_fsign.EXT_NS}}}ExtensionContent')
+        firma = huecos[-1].find(f'{{{_fsign.DS_NS}}}Signature')
+        self.assertIsNotNone(firma, 'la firma no está en la última extensión')
+        self.assertEqual(firma.get('Id'), _fsign.SIGNATURE_ID)
+
+    def test_the_emitted_algorithms_are_the_declared_profile(self):
+        """
+        «RSA-SHA256 funciona» y «cumple el perfil de SUNAT» son dos preguntas.
+
+        Esto fija la respuesta a la segunda, para que un cambio del valor por
+        defecto de la librería no pase inadvertido.
+        """
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        ds = _fsign.DS_NS
+        perfil = _fsign.SUNAT_PROFILE
+        self.assertEqual(
+            doc.find(f'.//{{{ds}}}CanonicalizationMethod').get('Algorithm'),
+            perfil.canonicalization,
+        )
+        self.assertEqual(
+            doc.find(f'.//{{{ds}}}SignatureMethod').get('Algorithm'),
+            perfil.signature_method,
+        )
+        self.assertEqual(
+            doc.find(f'.//{{{ds}}}DigestMethod').get('Algorithm'),
+            perfil.digest_method,
+        )
+
+    def test_the_digest_value_is_read_not_recomputed(self):
+        """
+        Es el «Valor Resumen» del QR. SUNAT dice que corresponde «al valor del
+        elemento <ds:DigestValue> del documento», así que se lee de ahí.
+        """
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        self.assertEqual(
+            _fsign.digest_value(doc),
+            doc.find(f'.//{{{_fsign.DS_NS}}}DigestValue').text,
+        )
+
+
+class C22A1PackagingTest(TestCase):
+    """El nombre del archivo y el ZIP: SUNAT los usa antes de abrir el XML."""
+
+    def test_the_official_naming_convention(self):
+        """Ejemplo del Manual del programador: `20100066603-01-F001-1.ZIP`."""
+        self.assertEqual(
+            _fp.document_name('20100066603', '01', 'F001', 1),
+            '20100066603-01-F001-1',
+        )
+
+    def test_the_correlativo_carries_no_leading_zeros(self):
+        """
+        El ejemplo oficial termina en `-1`, no en `-00000001`. Rellenar a ocho
+        dígitos produce un nombre que SUNAT no reconoce como el mismo documento.
+        """
+        self.assertTrue(
+            _fp.document_name('20100066603', '01', 'F001', 42).endswith('-42')
+        )
+
+    def test_a_malformed_name_is_refused(self):
+        for args in (('2010', '01', 'F001', 1),
+                     ('20100066603', '01', 'F01', 1),
+                     ('20100066603', '01', 'F001', 123456789)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                _fp.document_name(*args)
+
+    def test_the_zip_holds_exactly_one_xml_with_no_folders(self):
+        import zipfile
+
+        nombre = _fp.document_name('20100066603', '01', 'F001', 1)
+        contenido = _fp.build_zip(nombre, b'<Invoice/>')
+        with zipfile.ZipFile(io.BytesIO(contenido)) as archivo:
+            self.assertEqual(archivo.namelist(), [f'{nombre}.XML'])
+
+    def test_a_cdr_with_a_path_entry_is_refused(self):
+        """
+        Zip-slip. Aunque el ZIP venga de SUNAT, la garantía tiene que estar del
+        lado que lee: un nombre con `../` no se extrae, se rechaza.
+        """
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archivo:
+            archivo.writestr('../fuera.xml', b'<a/>')
+        with self.assertRaises(ValueError):
+            _fp.extract_cdr(buffer.getvalue())
+
+    def test_a_cdr_with_several_entries_is_refused(self):
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archivo:
+            archivo.writestr('R-uno.xml', b'<a/>')
+            archivo.writestr('R-dos.xml', b'<b/>')
+        with self.assertRaises(ValueError):
+            _fp.extract_cdr(buffer.getvalue())

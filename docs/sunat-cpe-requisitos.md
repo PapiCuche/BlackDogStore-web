@@ -354,3 +354,69 @@ exactamente lo que es un UBL.
 el entorno para el espolón, pero ningún código del proyecto las usa todavía.
 Fijarlas antes de que haya código que las necesite sería declarar una decisión
 que aún no se ha tomado.
+
+
+---
+
+## 13. C2.2A.1 — la factura aceptada, y las dos causas reales
+
+### El 3244 no era lo que parecía
+
+El mensaje «Debe consignar la informacion del tipo de transaccion del
+comprobante» **no habla del tipo de operación**. «Tipo de transacción» es la
+etiqueta que SUNAT usa para el bloque **Contado / Crédito**.
+
+Regla exacta, hoja `Factura2_0` del archivo oficial «Reglas de validación —
+actualizado al 26.08.2026», líneas 174-177:
+
+    NODO      /Invoice/cac:PaymentTerms/cbc:ID
+    ESPERADO  "FormaPago"
+    CONDICIÓN «No existe al menos un tag cac:PaymentTerms con cbc:ID igual a
+              'FormaPago'» — «Validación a partir del 01/01/2022 es ERROR»
+
+Es una prueba de existencia sobre ese nodo. Nada más.
+
+Eso explica por qué las tres ubicaciones que se probaron en C2.2A daban el mismo
+error, **incluida la que no llevaba `sac:SUNATTransaction` en absoluto**: se
+estaba moviendo un nodo que no interviene en la regla.
+
+Regla encadenada **3245**: `/Invoice/cac:PaymentTerms/cbc:PaymentMeansID` debe
+decir si es al contado o al crédito.
+
+**Trampa registrada**: el mismo contenedor `cac:PaymentTerms` se reutiliza para
+detracciones con `cbc:ID = "Detraccion"`. Tenerlo no basta; tiene que valer
+exactamente `FormaPago`.
+
+### El 3206: dos catálogos para la misma idea
+
+Con la forma de pago ya puesta, SUNAT devolvió **3206**, «El dato ingresado como
+tipo de operación no corresponde a un valor esperado (catálogo nro. 51)».
+
+La causa: el tipo de operación vive en **dos catálogos distintos con longitudes
+distintas**, y se estaba usando uno en el sitio del otro.
+
+| Dónde | Catálogo | Venta interna |
+|---|---|---|
+| `sac:SUNATTransaction/cbc:ID` | N.º 17 | `01` |
+| `cbc:InvoiceTypeCode/@listID` | N.º 51 | `0101` |
+
+### Resultado real
+
+Tercer envío, endpoint `e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService`,
+6 de septiembre de 2026:
+
+    RESULTADO   accepted
+    código      0
+    mensaje     La Factura numero F001-1, ha sido aceptada
+    CDR         R-20100066603-01-F001-1.XML (3353 bytes)
+    ReferenceID F001-1
+    observaciones (ninguna)
+
+Tres llamadas en total a lo largo de las dos fases, **cada una precedida de una
+corrección con fuente**. No se probaron variantes contra el servidor.
+
+### La disciplina que lo resolvió
+
+Las dos causas salieron de **leer el archivo oficial de reglas de validación**,
+no de permutar campos. El primer intento —tres envíos moviendo el mismo nodo—
+no avanzó nada; el segundo enfoque acertó a la primera en ambos casos.
