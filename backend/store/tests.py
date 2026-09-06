@@ -47832,7 +47832,11 @@ class C22A1ConcurrencyTest(TransactionTestCase):
     punto de venta.
     """
 
-    reset_sequences = True
+    # SIN `reset_sequences`. Reiniciar las secuencias a 1 choca con la empresa
+    # piloto que siembran las migraciones y que ya ocupa esa fila: el test
+    # moría en `setUp` con una violación de clave primaria que no tenía nada
+    # que ver con lo que se estaba probando. Ninguna aserción de aquí depende
+    # de un identificador concreto.
 
     def _requires_row_locking(self):
         from django.db import connection
@@ -47910,6 +47914,126 @@ class C22A1ConcurrencyTest(TransactionTestCase):
         self.assertEqual(len(numeros), 8)
         self.assertEqual(len(set(numeros)), 8, f'correlativos repetidos: {numeros}')
         self.assertEqual(sorted(numeros), list(range(1, 9)))
+
+    def test_two_tenants_issue_in_parallel_without_touching_each_other(self):
+        """
+        §5.E — contadores aislados bajo concurrencia real.
+
+        Dos empresas emitiendo a la vez tienen que avanzar cada una su propio
+        contador. Si compartieran bloqueo, una esperaría a la otra sin motivo; si
+        compartieran contador, los números se entrelazarían y cada empresa vería
+        huecos que no puede explicar ante SUNAT.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        otra = _p3_company(
+            'c22-conc-b', 'Empresa Concurrente B', tax_id='20522222222',
+            legal_name='EMPRESA CONCURRENTE B SAC')
+        serie_b = FiscalSeries.objects.create(
+            company=otra, document_type=FiscalDocumentType.INVOICE,
+            series='F001', next_number=1)
+        producto_b = _c1_product(otra, 'Articulo B', '118.00')
+        _c1_stock(otra.default_inventory_branch, producto_b, 20)
+
+        def order_de(company, product):
+            order = Order.objects.create(
+                company=company, customer_name='CLIENTE SAC',
+                document_type=Order.DocumentType.RUC,
+                document_number='20000000001',
+                receipt_type=Order.ReceiptType.FACTURA,
+                total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+                subtotal_amount=Decimal('118.00'),
+                taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+                tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+                status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+                fulfillment_branch=company.default_inventory_branch)
+            OrderItem.objects.create(
+                order=order, product=product, quantity=1, price=Decimal('118.00'))
+            return order
+
+        ventas = ([order_de(self.company, self.product) for _ in range(4)]
+                  + [order_de(otra, producto_b) for _ in range(4)])
+        resultados, errores = [], []
+        barrera = threading.Barrier(len(ventas))
+
+        def emitir(order):
+            try:
+                barrera.wait(timeout=15)
+                doc, _ = get_or_create_fiscal_document(order)
+                resultados.append((doc.company_id, doc.number))
+            except Exception as exc:  # noqa: BLE001
+                errores.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=emitir, args=(o,)) for o in ventas]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=40)
+
+        self.assertEqual(errores, [], f'la emisión concurrente falló: {errores}')
+        de_a = sorted(n for c, n in resultados if c == self.company.pk)
+        de_b = sorted(n for c, n in resultados if c == otra.pk)
+        self.assertEqual(de_a, [1, 2, 3, 4], 'el contador de A se entrelazó')
+        self.assertEqual(de_b, [1, 2, 3, 4], 'el contador de B se entrelazó')
+
+    def test_two_simultaneous_submits_produce_one_external_call(self):
+        """
+        §5.D — dos envíos a la vez, UNA sola transmisión.
+
+        Es el sabotaje del doble clic sobre «Enviar». Dos llamadas a SUNAT del
+        mismo comprobante pueden dejar dos registros allí y sólo uno de nuestro
+        lado.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        doc, _ = get_or_create_fiscal_document(self._order())
+        key, cert = self_signed_pem('20100066603')
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+        llamadas = []
+        lock = threading.Lock()
+        barrera = threading.Barrier(2)
+
+        class ProveedorQueCuenta:
+            def submit_invoice(self, *, filename, zip_bytes):
+                with lock:
+                    llamadas.append(filename)
+                # Se demora para que la ventana de carrera sea real y no un
+                # accidente afortunado del planificador.
+                import time
+                time.sleep(0.4)
+                return _accepted()
+
+        rechazados = []
+
+        def enviar():
+            try:
+                barrera.wait(timeout=15)
+                submit_fiscal_document(doc, ProveedorQueCuenta())
+            except FiscalSubmissionInProgress:
+                rechazados.append(1)
+            except Exception as exc:  # noqa: BLE001
+                rechazados.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=enviar) for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=40)
+
+        self.assertEqual(len(llamadas), 1,
+                         f'se transmitió {len(llamadas)} veces el mismo comprobante')
+        self.assertEqual(len(rechazados), 1, 'el segundo envío no fue rechazado')
 
     def test_the_same_sale_issued_twice_in_parallel_yields_one_document(self):
         """
