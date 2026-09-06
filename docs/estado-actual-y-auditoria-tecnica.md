@@ -3016,6 +3016,18 @@ Hasta aquí los casos concurrentes se saltaban en SQLite, donde
 El último cuenta las llamadas al proveedor con una demora deliberada, para que la
 ventana de carrera sea real y no un accidente del planificador.
 
+### Evidencia sobre PostgreSQL, no sólo sobre SQLite
+
+Los **131 tests fiscales** corren en verde contra PostgreSQL 14.18 real, **sin
+saltarse ninguno**. En SQLite se saltan cuatro —los que necesitan bloqueo por
+fila—, que es la convención del proyecto.
+
+    PostgreSQL   Ran 131 tests · OK
+    SQLite       Ran 131 tests · OK (skipped=4)
+
+Eso es lo que convierte el contador fiscal en algo defendible: `select_for_update`
+sólo significa algo donde hay bloqueo por fila.
+
 ### Cinco defectos del arnés de pruebas, todos con salto silencioso
 
 Los E2E fiscales no funcionaron a la primera, y ninguna de las causas era del
