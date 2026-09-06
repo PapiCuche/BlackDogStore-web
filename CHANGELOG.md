@@ -9,6 +9,53 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## C2.2A.1B — Superficie de la factura electrónica
+
+**Estado: PARCIAL.** Migración `0082_fiscal_capabilities`.
+
+Convertir el dominio técnico en producto empezó por auditar cinco invariantes
+antes de exponer nada. **Las cinco tenían un defecto**, y ninguno se veía desde
+las pruebas del camino feliz:
+
+1. **Sin guarda de ambiente** — una serie de producción se elegía si era la más
+   antigua. Ahora lo decide el servidor y falla cerrado.
+2. **«El id más bajo» era política tributaria** — el resolver nuevo filtra por
+   empresa, ambiente y sucursal, y **falla ante ambigüedad**.
+3. **Un rechazo reemitía solo** — cada clic gastaba un correlativo que SUNAT ya
+   considera usado.
+4. **Un 4000+ sin CDR se marcaba aceptado** — habría afirmado una aceptación
+   sobre un documento que quizá no existe para SUNAT.
+5. **Dos envíos simultáneos llamaban los dos** — ahora el intento se reserva
+   antes de la red, con plazo de abandono.
+
+### El defecto que más importaba
+
+**Una venta con descuento producía un XML que ocultaba la rebaja.** 2 × 118,00
+con 18,00 de descuento declaraba «cantidad 2, valor unitario 100,00, importe
+184,75»: la aritmética no cerraba y SUNAT habría recibido un precio unitario que
+nadie cobró. El XSD lo aceptaba porque no comprueba aritmética.
+
+Se falla cerrado, y una regla local hace el defecto imposible. **FACTURA CON
+DESCUENTO: PENDIENTE**, declarado.
+
+### Lo construido
+
+API con cuatro rutas y **dos** capacidades nuevas —ver y emitir— porque
+reintentar no es una tercera y configurar series ya lo expresa `company.manage`.
+PDF A4 y ticket de 80 mm con QR conforme al anexo (diez campos, sin pipe final) y
+marca inequívoca de ambiente de pruebas. Panel separado de la nota interna.
+
+**Concurrencia demostrada en PostgreSQL 14.18 real**, no saltada: ocho emisiones
+simultáneas dan ocho correlativos; dos empresas a la vez no se entrelazan; dos
+envíos simultáneos producen una sola transmisión.
+
+### Lo que falta para COMPLETADA
+
+Factura con descuento, y la auditoría de cobertura comercial completa (cupones,
+promociones, POS).
+
+---
+
 ## C2.2A.1 — Factura electrónica aceptada por SUNAT
 
 **Estado: PARCIAL.** Migración `0081_fiscal_documents`.

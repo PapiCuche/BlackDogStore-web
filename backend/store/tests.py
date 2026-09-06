@@ -8968,10 +8968,22 @@ class Phase2a1SeedAndRegressionTest(TestCase):
              'service.orders.create', 'service.orders.view',
              # M12B. The counter takes the money for a repair; a legacy `sales`
              # membership that never adopted RBAC does not.
-             'service.payments.manage'},
-            'la diferencia debe ser recepción técnica y el cobro del servicio',
+             'service.payments.manage',
+             # C2.2A.1. El mostrador CONSULTA el estado de la factura de un
+             # cliente. Sólo consultar: emitir es `sales.fiscal.issue` y no está
+             # en el preset, porque declarar algo ante SUNAT no se concede a
+             # todo el personal de caja sin que alguien lo decida.
+             #
+             # La matriz legacy tampoco crece aquí. Una membresía anterior al
+             # RBAC no debe adquirir visibilidad sobre comprobantes electrónicos
+             # porque se desplegó software.
+             'sales.fiscal.view'},
+            'la diferencia debe ser recepción técnica, el cobro del servicio y '
+            'la consulta de comprobantes electrónicos',
         )
         self.assertNotIn('service.payments.manage', legacy_sales)
+        self.assertNotIn('sales.fiscal.view', legacy_sales)
+        self.assertNotIn('sales.fiscal.issue', set(ventas.capabilities))
 
         inventario = self.pilot.roles.get(slug='inventario')
         self.assertEqual(
@@ -48883,7 +48895,13 @@ class C22BFiscalApiTest(TestCase):
         self.assertEqual(res.data['total'], '118.00')
         self.assertTrue(res.data['has_xml'])
         self.assertFalse(res.data['has_cdr'])
-        self.assertFalse(res.data['can_download_pdf'])
+        # UN FIRMADO YA SE PUEDE IMPRIMIR, y es deliberado: desde que hay firma
+        # hay `DigestValue` y por tanto QR. El papel dice el estado real, así que
+        # «pendiente de envío» no se confunde con «aceptada». Este test afirmaba
+        # la política anterior —sólo imprimible tras la aceptación— y se
+        # actualizó con ella.
+        self.assertTrue(res.data['can_download_pdf'])
+        self.assertFalse(res.data['is_accepted'])
 
     def test_the_detail_never_carries_the_xml_or_a_secret(self):
         """
