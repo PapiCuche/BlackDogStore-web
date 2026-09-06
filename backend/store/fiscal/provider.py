@@ -221,7 +221,8 @@ class SunatSoapProvider(FiscalProvider):
             # `soap-env:Client.3244` → el código numérico va tras el punto.
             numeric = (code or '').rsplit('.', 1)[-1]
             return ProviderResult(
-                outcome=self._classify(numeric),
+                # Sin CDR: un fault no puede significar «aceptada».
+                outcome=self._classify(numeric, from_cdr=False),
                 response_code=numeric,
                 safe_message=_sanitize(fault), **base,
             )
@@ -232,15 +233,25 @@ class SunatSoapProvider(FiscalProvider):
         )
 
     @staticmethod
-    def _classify(code: str) -> ProviderOutcome:
+    def _classify(code: str, *, from_cdr: bool) -> ProviderOutcome:
         """
-        Los rangos, según el Manual del programador y la hoja de códigos de
-        retorno: 0100-1999 excepción (reintentable), 2000-3999 rechazo,
-        4000+ observación.
+        Traduce un código de SUNAT. `from_cdr` cambia lo que se puede concluir.
 
-        Un código que no encaje en ningún rango es `UNKNOWN_RESPONSE`, no un
-        rechazo: inventarse la semántica de un código desconocido es cómo un
-        error transitorio se convierte en un documento tirado a la basura.
+        Rangos, según el Manual del programador y la hoja de códigos de retorno:
+        0100-1999 excepción reintentable · 2000-3999 rechazo · 4000+ observación.
+
+        «ACEPTADA» EXIGE UN CDR. Un código 4000+ sólo significa «aceptada con
+        observaciones» cuando viene DENTRO de una constancia de recepción: la
+        constancia es la prueba de que SUNAT registró el comprobante. El mismo
+        número llegando en un `faultstring`, sin constancia, no demuestra
+        registro alguno — y afirmarlo pondría «ACEPTADA POR SUNAT» en una
+        pantalla sobre un documento que quizá no existe para ellos.
+
+        Sin CDR, un 4000+ es `UNKNOWN_RESPONSE`: hay que mirarlo, no celebrarlo.
+
+        Un código que no encaje en ningún rango tampoco es rechazo: inventarse la
+        semántica de un código desconocido convierte un error transitorio en un
+        documento tirado a la basura.
         """
         if not code.isdigit():
             return ProviderOutcome.UNKNOWN_RESPONSE
@@ -250,7 +261,8 @@ class SunatSoapProvider(FiscalProvider):
         if 2000 <= value <= 3999:
             return ProviderOutcome.REJECTED
         if value >= 4000:
-            return ProviderOutcome.ACCEPTED_WITH_OBSERVATION
+            return (ProviderOutcome.ACCEPTED_WITH_OBSERVATION if from_cdr
+                    else ProviderOutcome.UNKNOWN_RESPONSE)
         return ProviderOutcome.UNKNOWN_RESPONSE
 
     @staticmethod
@@ -278,10 +290,13 @@ class SunatSoapProvider(FiscalProvider):
         )
 
         if code == '0':
+            # `ResponseCode 0` con observaciones sigue siendo válido
+            # tributariamente, pero hay datos reparables: se distingue para que
+            # la pantalla pueda decirlo en vez de callarlo.
             outcome = (ProviderOutcome.ACCEPTED_WITH_OBSERVATION if notes
                        else ProviderOutcome.ACCEPTED)
         else:
-            outcome = SunatSoapProvider._classify(code or '')
+            outcome = SunatSoapProvider._classify(code or '', from_cdr=True)
 
         return ProviderResult(
             outcome=outcome, response_code=code or '',

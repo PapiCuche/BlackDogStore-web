@@ -169,6 +169,32 @@ DATABASES = {
 }
 
 # ---------------------------------------------------------------------------
+# C2.2A.1 — comprobantes de pago electrónicos
+# ---------------------------------------------------------------------------
+#
+# APAGADO POR DEFECTO. Una instalación que no ha configurado nada fiscal no debe
+# poder enviar nada a SUNAT por el hecho de tener el código instalado.
+FISCAL_ENABLED = env.bool('FISCAL_ENABLED', default=False)
+
+# EL AMBIENTE LO DECIDE EL SERVIDOR, nunca una petición. `store.fiscal_config`
+# falla cerrado ante cualquier valor distinto de «beta»: producción exige un
+# certificado acreditado y credenciales por empresa, y ninguna de las dos cosas
+# existe todavía.
+FISCAL_ENVIRONMENT = env('FISCAL_ENVIRONMENT', default='beta')
+
+# Credenciales y certificado. NO viven en la base de datos: una columna existe
+# para llenarse, y un campo `sol_password` acaba en un serializer, un volcado o
+# una bitácora.
+#
+# Para el entorno de pruebas SUNAT publica credenciales comunes en su Manual del
+# programador; no hay ningún secreto real en un despliegue de desarrollo.
+FISCAL_SOL_RUC = env('FISCAL_SOL_RUC', default='')
+FISCAL_SOL_USER = env('FISCAL_SOL_USER', default='')
+FISCAL_SOL_PASSWORD = env('FISCAL_SOL_PASSWORD', default='')
+FISCAL_CERT_PEM = env('FISCAL_CERT_PEM', default='')
+FISCAL_KEY_PEM = env('FISCAL_KEY_PEM', default='')
+
+# ---------------------------------------------------------------------------
 # M12D — evidencias fotográficas
 # ---------------------------------------------------------------------------
 #
