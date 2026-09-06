@@ -420,3 +420,49 @@ corrección con fuente**. No se probaron variantes contra el servidor.
 Las dos causas salieron de **leer el archivo oficial de reglas de validación**,
 no de permutar campos. El primer intento —tres envíos moviendo el mismo nodo—
 no avanzó nada; el segundo enfoque acertó a la primera en ambos casos.
+
+
+### Las reglas encadenadas de la forma de pago
+
+Una vez que existe `cac:PaymentTerms`, SUNAT valida el bloque entero. Se
+registran aquí porque la primera que se incumpla volverá a bloquear el envío, y
+porque la mitad son necesarias en cuanto se venda a crédito.
+
+| Código | Regla |
+|---|---|
+| 3245 | Si el indicador es `FormaPago`, debe existir `cbc:PaymentMeansID` |
+| 3246 | Su valor sólo puede ser `Contado`, `Credito` o `Cuota[0-9]{3}` |
+| 3247 | No pueden coexistir `Contado` y `Credito` |
+| 3248 | No puede repetirse el mismo `cbc:PaymentMeansID` |
+| 3461 | Un `cac:PaymentTerms` **por concepto**: la forma de pago y el número de cuota no van en el mismo |
+| 3249-3251, 3319 | Al crédito con adquirente RUC: exige al menos una `CuotaNNN`, el monto neto pendiente `cbc:Amount`, y que las cuotas sumen ese monto |
+
+**Trampa confirmada**: el mismo contenedor se reutiliza para detracciones con
+`cbc:ID = 'Detraccion'`. Un XML que sólo lleve el de detracción **sigue
+disparando 3244**, porque no existe ninguno con `FormaPago`. El valor distingue
+mayúsculas y va sin tilde.
+
+**Historia de la regla**: nació como observación con el bloque de contado/crédito
+(D.U. 013-2020, Factura Negociable), pasó a error, volvió a observación el
+13/09/2021 y quedó como **error definitivo desde el 01/01/2022**. Ningún cambio
+de 2026 la toca.
+
+### Un rechazo gasta el correlativo
+
+Confirmado en el Manual del programador: los códigos 2000-3999 son «errores que
+generan rechazo», la factura **no queda registrada** y el número de
+serie-correlativo **se considera ya utilizado**. Hay que corregir y emitir con
+número NUEVO, no reenviar el mismo.
+
+Eso es exactamente lo que implementa `FiscalSeries`: un número entregado está
+gastado, y un documento rechazado no libera el suyo. Los huecos salen más baratos
+que dos documentos que alguna vez compartieron identificador.
+
+### Rangos de códigos, del Manual del programador
+
+| Rango | Significado |
+|---|---|
+| 0100-0999 | Excepciones de SUNAT |
+| 1000-1999 | Excepciones del contribuyente |
+| 2000-3999 | **Errores que generan rechazo** |
+| 4000+ | Observaciones |

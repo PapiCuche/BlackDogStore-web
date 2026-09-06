@@ -9,6 +9,52 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## C2.2A.1 — Factura electrónica aceptada por SUNAT
+
+**Estado: PARCIAL.** Migración `0081_fiscal_documents`.
+
+**CDR real**: «La Factura numero F001-1, ha sido aceptada», `ResponseCode 0`, sin
+observaciones. Endpoint `e-beta.sunat.gob.pe`, 6 de septiembre de 2026.
+
+### Las dos causas del rechazo, leídas en la norma
+
+El error **3244** no hablaba del tipo de operación. «Tipo de transacción» es la
+etiqueta que SUNAT usa para el bloque **Contado/Crédito**: exige
+`/Invoice/cac:PaymentTerms/cbc:ID = 'FormaPago'` desde el 01/01/2022. Por eso los
+tres envíos anteriores, que movían `sac:SUNATTransaction`, daban el mismo error
+incluso cuando ese nodo no estaba.
+
+Resuelto eso apareció el **3206**: el tipo de operación vive en **dos catálogos
+con longitudes distintas**. `cbc:InvoiceTypeCode/@listID` lleva el 51 (`0101`) y
+`sac:SUNATTransaction/cbc:ID` el 17 (`01`).
+
+Tres llamadas a BETA entre las dos fases, **cada una precedida de una corrección
+con fuente**. Ninguna variante probada contra el servidor.
+
+### Qué se construyó
+
+Un paquete sin Django —recibe datos planos, devuelve bytes— con el generador, la
+firma, el empaquetado, la validación contra el esquema oficial versionado y el
+adaptador de proveedor. Encima, tres modelos: `FiscalSeries`, `FiscalDocument` y
+`FiscalSubmissionAttempt`.
+
+**Un error de transporte NO es un rechazo.** Un timeout deja la venta en estado
+incierto: tratarlo como rechazo llevaría a emitir un segundo comprobante por una
+venta que quizá SUNAT ya registró.
+
+**No se reutiliza `SalesNote` ni `InternalSequence`.** Aquél declara que es
+interno, y eso es lo que permite anularlo sin consecuencias; un correlativo
+fiscal entregado está gastado para siempre.
+
+90 tests nuevos. Nueve ADR en [docs/adr-fiscal-c22a1.md](docs/adr-fiscal-c22a1.md).
+
+### Lo que falta para COMPLETADA
+
+Endpoints, superficie de panel, Playwright y QR/PDF fiscal. El vertical técnico
+está cerrado; la superficie no.
+
+---
+
 ## C2.1 — Impuestos Perú, desglose y ticket imprimible
 
 **Estado: IMPLEMENTADO.** Migraciones `0079` (esquema) y `0080` (relleno).
