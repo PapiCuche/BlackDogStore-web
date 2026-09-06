@@ -103,6 +103,10 @@ from .sales_note_services import (
     get_or_create_sales_note,
     get_sales_note_filename,
 )
+from .ticket_services import (
+    generate_sales_note_ticket_pdf,
+    get_sales_note_ticket_filename,
+)
 from .serializers import (
     BranchSerializer,
     BranchStockPolicySerializer,
@@ -1522,7 +1526,23 @@ class AdminOrderSalesNoteView(APIView):
 
 
 class AdminOrderSalesNotePdfView(APIView):
-    """GET /api/admin/orders/{pk}/sales-note/pdf/ — download the internal note PDF."""
+    """
+    GET /api/admin/orders/{pk}/sales-note/pdf/ — descarga la nota interna.
+
+    Sin parámetros devuelve el A4, exactamente como antes: hay enlaces y
+    llamadas ya escritos contra esta ruta y no pueden cambiar de significado.
+    `?formato=ticket80` devuelve el mismo documento en rollo de 80 mm.
+
+    NO SE LLAMA `?format=`. Se comprobó: `format` es el
+    `URL_FORMAT_OVERRIDE` de DRF, que negocia el renderizador ANTES de que
+    corra este método y responde 404 a un valor que no reconoce. El nombre
+    obvio estaba ocupado.
+    """
+
+    #: Un valor desconocido se rechaza en vez de caer al A4 en silencio: quien
+    #: escribe `ticket58` esperando papel estrecho tiene que enterarse ahora,
+    #: no al ver salir un A4 de la impresora.
+    FORMATS = ('a4', 'ticket80')
 
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminSalesNotesThrottle]
@@ -1539,8 +1559,19 @@ class AdminOrderSalesNotePdfView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        wanted = (request.query_params.get('formato') or 'a4').strip().lower()
+        if wanted not in self.FORMATS:
+            return Response(
+                {'detail': f'Formato no reconocido. Use: {", ".join(self.FORMATS)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ticket = wanted == 'ticket80'
+
         try:
-            pdf_bytes = generate_sales_note_pdf(note)
+            pdf_bytes = (
+                generate_sales_note_ticket_pdf(note) if ticket
+                else generate_sales_note_pdf(note)
+            )
         except SalesNoteError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception:
@@ -1559,14 +1590,19 @@ class AdminOrderSalesNotePdfView(APIView):
                 'sales_note_id': note.pk,
                 'sales_note_number': note.number,
                 'order_id': order.pk,
+                # QUÉ formato se llevó. Sin esto la bitácora no distingue una
+                # reimpresión en mostrador de una descarga de archivo.
+                'formato': wanted,
             },
             request=request,
             company=order.company,
         )
 
-        response = HttpResponse(pdf_bytes, content_type='application/pdf')
-        response['Content-Disposition'] = (
-            f'attachment; filename="{get_sales_note_filename(note)}"'
+        filename = (
+            get_sales_note_ticket_filename(note) if ticket
+            else get_sales_note_filename(note)
         )
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
         response['Cache-Control'] = 'no-store'
         return response

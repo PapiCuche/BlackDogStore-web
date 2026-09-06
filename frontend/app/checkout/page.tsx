@@ -5,7 +5,21 @@ import Link from "next/link";
 import Script from "next/script";
 import { useRouter } from "next/navigation";
 import { getSessionKey } from "../lib/cart";
-import { API_BASE } from "../lib/api";
+
+/**
+ * Lo que el cliente está a punto de pagar.
+ *
+ * EL DEFECTO. Esta pantalla no mostraba NADA del pedido: ni artículos, ni
+ * cantidades, ni total. Se pulsaba «Continuar al pago» a ciegas y el importe
+ * aparecía por primera vez en la pasarela. En una tienda eso no es un problema
+ * de composición: es pedir dinero sin decir cuánto.
+ */
+type CheckoutItem = {
+  id: number;
+  quantity: number;
+  product: { id: number; name: string; price: number | string; slug: string };
+};
+import { API_BASE, fetcher } from "../lib/api";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import {
   deliveryDescriptions,
@@ -20,6 +34,24 @@ import {
 } from "../lib/payments";
 
 type Coupon = { code: string; discount_percent: number };
+
+/**
+ * Lo que responde `/checkout/quote/`. TODO son cadenas: un importe que pasa por
+ * `number` en JavaScript deja de ser exacto, y estas cifras tienen que coincidir
+ * al céntimo con el documento que se imprime.
+ */
+type CheckoutQuote = {
+  currency: string;
+  subtotal: string;
+  discount_amount: string;
+  taxable_amount: string;
+  tax_amount: string;
+  tax_treatment: string;
+  total: string;
+  base_label: string;
+  tax_label: string;
+  notice: string;
+};
 type FieldErrors = Record<string, string>;
 
 type FormState = {
@@ -80,7 +112,7 @@ const initialForm: FormState = {
 
 function FieldError({ msg }: { msg?: string }) {
   if (!msg) return null;
-  return <p className="mt-1 text-xs text-red-400">{msg}</p>;
+  return <p className="mt-1 text-xs text-danger">{msg}</p>;
 }
 
 export default function CheckoutPage() {
@@ -101,8 +133,75 @@ export default function CheckoutPage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [cancelled, setCancelled] = useState(false);
   const [coupon, setCoupon] = useState<Coupon | null>(null);
+  const [items, setItems] = useState<CheckoutItem[] | null>(null);
+  // EL DESGLOSE LO CALCULA EL SERVIDOR, no esta pantalla.
+  //
+  // El total de aquí abajo se suma en JavaScript y eso pasa: el backend vuelve
+  // a calcularlo y manda él. Pero el reparto entre base e impuesto sí importa
+  // que cuadre al céntimo con el papel que se lleva el cliente, y en coma
+  // flotante no cuadra —`0.1 + 0.2 !== 0.3` es literalmente este error—. Así
+  // que se pregunta a `/checkout/quote/`, que usa el mismo `Decimal` que
+  // congelará la orden.
+  const [quote, setQuote] = useState<CheckoutQuote | null>(null);
 
   const sessionKey = getSessionKey();
+
+  // El resumen se carga aparte del formulario: si el carrito falla, el
+  // formulario sigue siendo usable y el resumen dice qué pasó, en vez de dejar
+  // la pantalla en blanco.
+  useEffect(() => {
+    if (!sessionKey) return;
+    let cancelledFetch = false;
+    void (async () => {
+      try {
+        const data = await fetcher<CheckoutItem[]>(
+          `${API_BASE}/cart/?session_key=${encodeURIComponent(sessionKey)}`,
+        );
+        if (!cancelledFetch) setItems(Array.isArray(data) ? data : []);
+      } catch {
+        if (!cancelledFetch) setItems([]);
+      }
+    })();
+    return () => { cancelledFetch = true; };
+  }, [sessionKey]);
+
+  const subtotal = (items ?? []).reduce(
+    (sum, item) => sum + Number(item.product.price) * item.quantity, 0,
+  );
+  const discount = coupon ? subtotal * (coupon.discount_percent / 100) : 0;
+  const total = subtotal - discount;
+
+  const couponCode = coupon?.code ?? "";
+  useEffect(() => {
+    // Se vuelve a pedir cuando cambia el carrito o el cupón, porque el desglose
+    // cambia con ellos. Si falla, el resumen sigue mostrando el total y omite
+    // el desglose: es mejor no decir nada del impuesto que decir una cifra que
+    // esta pantalla se haya inventado.
+    let cancelledFetch = false;
+    void (async () => {
+      // La comprobación va DENTRO del trabajo asíncrono, no en el cuerpo del
+      // efecto: un `setState` síncrono aquí encadena un render extra en cada
+      // cambio del carrito.
+      if (!sessionKey || !items || items.length === 0) {
+        if (!cancelledFetch) setQuote(null);
+        return;
+      }
+      try {
+        // `fetchWithAuth`, el mismo camino que el cobro: lleva las cookies y el
+        // CSRF. `fetcher` sólo hace GET.
+        const res = await fetchWithAuth(`${API_BASE}/checkout/quote/`, {
+          method: "POST",
+          body: JSON.stringify({ session_key: sessionKey, coupon_code: couponCode }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const data = (await res.json()) as CheckoutQuote;
+        if (!cancelledFetch) setQuote(data);
+      } catch {
+        if (!cancelledFetch) setQuote(null);
+      }
+    })();
+    return () => { cancelledFetch = true; };
+  }, [sessionKey, items, couponCode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -247,7 +346,7 @@ export default function CheckoutPage() {
           }}
         />
       )}
-      <div className="mx-auto max-w-xl">
+      <div className="mx-auto max-w-6xl">
 
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-foreground">Checkout</h1>
@@ -262,7 +361,7 @@ export default function CheckoutPage() {
           </div>
         )}
         {message && (
-          <div className="mb-5 rounded-xl border border-red-500/20 bg-red-500/[0.06] p-4 text-sm text-red-300">
+          <div className="mb-5 rounded-xl border border-danger-border bg-red-500/[0.06] p-4 text-sm text-danger">
             {message}
           </div>
         )}
@@ -280,6 +379,16 @@ export default function CheckoutPage() {
           </div>
         )}
 
+        {/*
+          DOS COLUMNAS: formulario y resumen.
+
+          El formulario ocupaba 576 px centrados en 1440 y el resumen no
+          existía. Ahora el pedido está a la vista mientras se rellenan los
+          datos, que es cuando importa — y en móvil el resumen va primero, para
+          que lo primero que se lea sea qué se está pagando.
+        */}
+        <div className="grid gap-8 lg:grid-cols-12 lg:items-start">
+          <div className="order-2 lg:order-1 lg:col-span-7">
         <form onSubmit={handleSubmit} className="space-y-5">
 
           {/* 1. Datos personales */}
@@ -287,8 +396,8 @@ export default function CheckoutPage() {
             <h2 className="text-sm font-semibold text-foreground">Datos personales</h2>
 
             <div>
-              <label className={labelClass}>Nombre completo *</label>
-              <input
+              <label htmlFor="checkout-page-nombre-completo" className={labelClass}>Nombre completo *</label>
+              <input id="checkout-page-nombre-completo"
                 value={form.customer_name}
                 onChange={(e) => dispatch({ type: "set_str", field: "customer_name", value: e.target.value })}
                 className={inputClass}
@@ -301,8 +410,8 @@ export default function CheckoutPage() {
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className={labelClass}>Correo electrónico *</label>
-                <input
+                <label htmlFor="checkout-page-correo-electronico" className={labelClass}>Correo electrónico *</label>
+                <input id="checkout-page-correo-electronico"
                   type="email"
                   value={form.customer_email}
                   onChange={(e) => dispatch({ type: "set_str", field: "customer_email", value: e.target.value })}
@@ -314,8 +423,8 @@ export default function CheckoutPage() {
                 <FieldError msg={fe.customer_email} />
               </div>
               <div>
-                <label className={labelClass}>Teléfono *</label>
-                <input
+                <label htmlFor="checkout-page-telefono" className={labelClass}>Teléfono *</label>
+                <input id="checkout-page-telefono"
                   type="tel"
                   value={form.customer_phone}
                   onChange={(e) => dispatch({ type: "set_str", field: "customer_phone", value: e.target.value })}
@@ -330,8 +439,8 @@ export default function CheckoutPage() {
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className={labelClass}>Tipo de documento *</label>
-                <select
+                <label htmlFor="checkout-page-tipo-de-documento" className={labelClass}>Tipo de documento *</label>
+                <select id="checkout-page-tipo-de-documento"
                   value={form.document_type}
                   onChange={(e) => dispatch({ type: "set_str", field: "document_type", value: e.target.value })}
                   className={inputClass}
@@ -344,8 +453,8 @@ export default function CheckoutPage() {
                 <FieldError msg={fe.document_type} />
               </div>
               <div>
-                <label className={labelClass}>Número de documento *</label>
-                <input
+                <label htmlFor="checkout-page-numero-de-documento" className={labelClass}>Número de documento *</label>
+                <input id="checkout-page-numero-de-documento"
                   value={form.document_number}
                   onChange={(e) => dispatch({ type: "set_str", field: "document_number", value: e.target.value })}
                   className={inputClass}
@@ -406,8 +515,8 @@ export default function CheckoutPage() {
             {needsAddress && (
               <div className="space-y-4 pt-1">
                 <div>
-                  <label className={labelClass}>Dirección *</label>
-                  <input
+                  <label htmlFor="checkout-page-direccion" className={labelClass}>Dirección *</label>
+                  <input id="checkout-page-direccion"
                     value={form.address_line}
                     onChange={(e) => dispatch({ type: "set_str", field: "address_line", value: e.target.value })}
                     className={inputClass}
@@ -419,8 +528,8 @@ export default function CheckoutPage() {
 
                 {needsCity && (
                   <div>
-                    <label className={labelClass}>Ciudad *</label>
-                    <input
+                    <label htmlFor="checkout-page-ciudad" className={labelClass}>Ciudad *</label>
+                    <input id="checkout-page-ciudad"
                       value={form.city}
                       onChange={(e) => dispatch({ type: "set_str", field: "city", value: e.target.value })}
                       className={inputClass}
@@ -446,8 +555,8 @@ export default function CheckoutPage() {
                 </div>
 
                 <div>
-                  <label className={labelClass}>Referencia (opcional)</label>
-                  <input
+                  <label htmlFor="checkout-page-referencia-opcional" className={labelClass}>Referencia (opcional)</label>
+                  <input id="checkout-page-referencia-opcional"
                     value={form.reference}
                     onChange={(e) => dispatch({ type: "set_str", field: "reference", value: e.target.value })}
                     className={inputClass}
@@ -564,7 +673,7 @@ export default function CheckoutPage() {
 
           <button
             type="submit"
-            className="w-full rounded-xl bg-foreground px-6 py-3.5 text-sm font-semibold text-muted transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded-xl bg-foreground px-6 py-3.5 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={loading}
           >
             {loading ? "Abriendo el pago…" : "Continuar al pago →"}
@@ -580,10 +689,106 @@ export default function CheckoutPage() {
           </div>
         </form>
 
-        <div className="mt-6 flex justify-center gap-6 text-xs text-muted">
-          <span>SSL Encriptado</span>
-          <span>Pago seguro</span>
-          <span>Compra protegida</span>
+          {/*
+            «SSL Encriptado · Pago seguro · Compra protegida» eran tres sellos
+            que no dicen nada comprobable. Lo que sí es un hecho es quién
+            procesa el cobro y que los datos van cifrados, y eso ya lo dice la
+            declaración de más arriba con el nombre y el RUC de la empresa.
+          */}
+          </div>
+
+          <aside className="order-1 lg:order-2 lg:sticky lg:top-24 lg:col-span-5">
+            <h2 className="text-sm font-semibold text-foreground">Tu pedido</h2>
+            {items === null ? (
+              <p className="mt-3 text-sm text-muted">Cargando el pedido…</p>
+            ) : items.length === 0 ? (
+              <div className="mt-3 rounded-xl border border-bd-border p-5">
+                <p className="text-sm text-muted">
+                  No pudimos leer tu carrito. Revísalo antes de pagar.
+                </p>
+                <Link
+                  href="/cart"
+                  className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold text-foreground underline underline-offset-4"
+                >
+                  Ir al carrito
+                </Link>
+              </div>
+            ) : (
+              <div className="mt-3 rounded-xl border border-bd-border">
+                <ul className="divide-y divide-bd-border">
+                  {items.map((item) => (
+                    <li key={item.id} className="flex items-start gap-3 px-4 py-3">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-foreground">
+                          {item.product.name}
+                        </span>
+                        <span className="mt-0.5 block text-xs text-muted">
+                          {item.quantity} × S/ {Number(item.product.price).toFixed(2)}
+                        </span>
+                      </span>
+                      {/* `tabular-nums` para que los importes alineen en columna. */}
+                      <span className="shrink-0 text-sm tabular-nums text-foreground">
+                        S/ {(Number(item.product.price) * item.quantity).toFixed(2)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <dl className="space-y-2 border-t border-bd-border px-4 py-4 text-sm">
+                  <div className="flex justify-between">
+                    <dt className="text-muted">Subtotal</dt>
+                    <dd className="tabular-nums text-foreground">
+                      S/ {quote ? quote.subtotal : subtotal.toFixed(2)}
+                    </dd>
+                  </div>
+                  {coupon ? (
+                    <div className="flex justify-between">
+                      <dt className="text-muted">Cupón {coupon.code}</dt>
+                      <dd className="tabular-nums text-success">
+                        −S/ {quote ? quote.discount_amount : discount.toFixed(2)}
+                      </dd>
+                    </div>
+                  ) : null}
+                  {/*
+                    El desglose sólo aparece cuando el servidor lo ha dado. Si la
+                    cotización falló, esta pantalla NO se lo inventa: enseña el
+                    total, que es lo que se va a cobrar, y calla sobre el reparto.
+                  */}
+                  {quote ? (
+                    <>
+                      <div className="flex justify-between border-t border-bd-border pt-2">
+                        <dt className="text-muted">{quote.base_label}</dt>
+                        <dd className="tabular-nums text-foreground">
+                          S/ {quote.taxable_amount}
+                        </dd>
+                      </div>
+                      {quote.tax_treatment === "taxed" ? (
+                        <div className="flex justify-between">
+                          <dt className="text-muted">{quote.tax_label}</dt>
+                          <dd className="tabular-nums text-foreground">S/ {quote.tax_amount}</dd>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
+                  <div className="flex justify-between border-t border-bd-border pt-2">
+                    <dt className="font-semibold text-foreground">Total</dt>
+                    <dd className="font-display text-lg font-black tabular-nums text-foreground">
+                      S/ {quote ? quote.total : total.toFixed(2)}
+                    </dd>
+                  </div>
+                </dl>
+                {/*
+                  «Se emite por separado», nunca «emitido». Aquí no ha habido
+                  aceptación de SUNAT y el comprador no debe salir creyendo que
+                  ya tiene un comprobante fiscal.
+                */}
+                {quote ? (
+                  <p className="border-t border-bd-border px-4 py-3 text-xs leading-relaxed text-muted">
+                    {quote.notice}
+                  </p>
+                ) : null}
+              </div>
+            )}
+          </aside>
         </div>
       </div>
     </div>

@@ -226,7 +226,7 @@ function MemberCard({
         <div>
           <div className="flex items-center gap-2">
             <span className="font-medium text-foreground">{membership.username}</span>
-            <span className={`rounded-full px-2 py-0.5 text-[10px] ${membership.is_active ? "bg-surface-2 text-foreground/85" : "bg-red-500/10 text-red-400"}`}>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] ${membership.is_active ? "bg-surface-2 text-foreground/85" : "bg-danger-surface text-danger"}`}>
               {membership.is_active ? "Activo" : "Inactivo"}
             </span>
           </div>
@@ -241,9 +241,9 @@ function MemberCard({
                 {assignment.role_name}{assignment.area_name ? ` · ${assignment.area_name}` : ""}
               </span>
             )) : accessState === "legacy" ? (
-              <span className="text-xs text-amber-300/80">Rol heredado: {membership.role_label}</span>
+              <span className="text-xs text-warning">Rol heredado: {membership.role_label}</span>
             ) : (
-              <span className="text-xs text-red-300/80">Sin roles activos</span>
+              <span className="text-xs text-danger">Sin roles activos</span>
             )}
           </div>
         </div>
@@ -256,7 +256,7 @@ function MemberCard({
             ) : accessState === "legacy" ? (
               <span className="text-xs text-muted">Pendiente de migrar a roles configurables.</span>
             ) : (
-              <span className="text-xs text-red-300/70">Sin permisos efectivos.</span>
+              <span className="text-xs text-danger">Sin permisos efectivos.</span>
             )}
           </div>
         </div>
@@ -272,7 +272,7 @@ function MemberCard({
       {open ? (
         <div className="border-t border-bd-border px-5 py-5">
           {accessState === "custom-empty" ? (
-            <div className="mb-5 rounded-lg border border-amber-500/20 bg-amber-500/[0.05] px-4 py-3 text-xs leading-5 text-amber-200/80">
+            <div className="mb-5 rounded-lg border border-warning-border bg-amber-500/[0.05] px-4 py-3 text-xs leading-5 text-warning">
               <strong>Sin roles activos.</strong> Esta persona no tiene ninguna capacidad en la empresa. No vuelve al rol heredado «{membership.role_label}»: ya usa RBAC configurable, y quitarle el último rol significa exactamente eso.
             </div>
           ) : null}
@@ -297,8 +297,8 @@ function MemberCard({
                               : reactivateRole(assignment.id))}
                             disabled={busy}
                             className={`rounded-md border px-2 py-1 text-[10px] disabled:opacity-40 ${assignment.is_active
-                              ? "border-bd-border text-muted hover:border-red-500/40 hover:text-red-300"
-                              : "border-emerald-500/25 text-emerald-300/80 hover:border-emerald-400/60 hover:text-emerald-200"}`}
+                              ? "border-bd-border text-muted hover:border-danger-border hover:text-danger"
+                              : "border-success-border text-success hover:border-success-border hover:text-success"}`}
                           >
                             {assignment.is_active ? "Quitar" : "Reactivar"}
                           </button>
@@ -308,7 +308,7 @@ function MemberCard({
                     <p className="mt-1 text-[11px] text-muted">{assignment.area_name || "Sin área"} · {assignment.capabilities.length} permisos</p>
                   </div>
                 )) : (
-                  <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.03] px-3 py-3 text-xs leading-5 text-amber-200/70">
+                  <div className="rounded-lg border border-warning-border bg-amber-500/[0.03] px-3 py-3 text-xs leading-5 text-warning">
                     Nunca se le asignó un rol empresarial, así que sigue rigiéndose por «{membership.role_label}» del modelo heredado. Asignarle uno lo migra al RBAC configurable — y a partir de ahí el rol heredado deja de contar para siempre.
                   </div>
                 )}
@@ -395,7 +395,7 @@ function MemberCard({
           </div>
 
           {!canManage ? <p className="mt-4 text-xs text-muted">Modo lectura: necesitas <code>memberships.manage</code> para modificar accesos.</p> : null}
-          {error ? <p className="mt-4 text-sm text-red-400">{error}</p> : null}
+          {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
         </div>
       ) : null}
     </article>
@@ -482,7 +482,7 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
         </header>
 
         {!companyId ? (
-          <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.05] p-5 text-sm text-amber-200/80">Selecciona una empresa. El master de plataforma tiene acceso global, pero debe elegir explícitamente sobre qué tenant actúa.</div>
+          <div className="rounded-xl border border-warning-border bg-amber-500/[0.05] p-5 text-sm text-warning">Selecciona una empresa. El master de plataforma tiene acceso global, pero debe elegir explícitamente sobre qué tenant actúa.</div>
         ) : (
           <>
             <div className="grid gap-3 sm:grid-cols-3">
@@ -497,7 +497,7 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
             </div>
 
             {loading ? <p className="py-12 text-center text-sm text-muted">Cargando accesos…</p> : null}
-            {error ? <div className="rounded-xl border border-red-500/20 bg-red-500/[0.05] p-4 text-sm text-red-400">{error}</div> : null}
+            {error ? <div className="rounded-xl border border-danger-border bg-red-500/[0.05] p-4 text-sm text-danger">{error}</div> : null}
             {!loading && !error ? (
               <div className="space-y-3">
                 {filtered.map((membership) => (

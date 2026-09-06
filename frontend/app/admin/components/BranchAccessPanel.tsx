@@ -42,7 +42,7 @@ function ScopeSummary({ membership }: { membership: MembershipRow }) {
   const granted = membership.branch_access.filter((b) => b.is_active);
   if (granted.length === 0) {
     return (
-      <span className="text-amber-300/80">
+      <span className="text-warning">
         Ninguna — no puede operar inventario
       </span>
     );
@@ -181,7 +181,7 @@ function MembershipRowEditor({
             )}
 
             {mode === "selected" && selected.length === 0 && (
-              <p className="mt-3 text-xs text-amber-300/80">
+              <p className="mt-3 text-xs text-warning">
                 Sin ninguna sucursal marcada, esta persona no podrá ver ni mover
                 inventario en ningún sitio. Es un estado válido, no un error.
               </p>
@@ -213,7 +213,7 @@ function MembershipRowEditor({
             </div>
 
             {error && (
-              <p className="mt-3 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-sm text-red-400">
+              <p className="mt-3 rounded-lg border border-danger-border bg-danger-surface px-3 py-2 text-sm text-danger">
                 {error}
               </p>
             )}
@@ -284,7 +284,7 @@ export function BranchAccessPanel({ companyId, canManage }: Props) {
 
       {loading && <div className="py-8 text-center text-muted">Cargando personal…</div>}
       {error && !loading && (
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+        <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
           {error}
         </div>
       )}

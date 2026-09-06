@@ -88,7 +88,7 @@ export function RoleSelect({ userId, currentRole, isSelf, onRoleChange }: Props)
       )}
       {saving && <p className="text-[10px] text-muted">Guardando…</p>}
       {feedback && !pending && (
-        <p className={`text-[10px] ${feedback.type === "success" ? "text-foreground/85" : "text-red-400"}`}>
+        <p className={`text-[10px] ${feedback.type === "success" ? "text-foreground/85" : "text-danger"}`}>
           {feedback.msg}
         </p>
       )}

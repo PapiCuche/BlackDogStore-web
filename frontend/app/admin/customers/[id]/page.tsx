@@ -76,7 +76,7 @@ function OrderRow({ order }: { order: CustomerOrderRow }) {
       <td className="px-4 py-3 text-muted">{date(order.created_at)}</td>
       <td className="px-4 py-3">
         {order.paid ? (
-          <span className="text-xs text-emerald-400/80">Pagado</span>
+          <span className="text-xs text-success">Pagado</span>
         ) : (
           <span className="text-xs text-muted">{order.status}</span>
         )}
@@ -155,7 +155,7 @@ function CustomerDetailContent({
   if (error || !customer) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+        <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
           {error ?? "Cliente no encontrado."}
         </div>
         <Link

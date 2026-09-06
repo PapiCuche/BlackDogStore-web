@@ -55,7 +55,7 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
   if (error || !product) {
     return (
       <AdminShell user={user}>
-        <p className="text-red-400 text-sm">{error ?? "Producto no encontrado."}</p>
+        <p className="text-danger text-sm">{error ?? "Producto no encontrado."}</p>
         <Link href="/admin/products" className="text-muted hover:text-foreground text-sm mt-4 block">
           ← Volver a productos
         </Link>
@@ -94,9 +94,9 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
             <p
               className={`text-lg font-semibold ${
                 product.inventory === 0
-                  ? "text-red-400"
+                  ? "text-danger"
                   : product.inventory <= 5
-                    ? "text-yellow-400"
+                    ? "text-warning"
                     : "text-foreground"
               }`}
             >

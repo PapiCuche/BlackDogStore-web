@@ -223,7 +223,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
         <Panel>
-          <p className="text-sm text-rose-300">
+          <p className="text-sm text-danger">
             {error instanceof Error ? error.message : "No se encontró la orden."}
           </p>
           <div className="mt-3">
@@ -820,7 +820,7 @@ function PartsSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                 {c.outstanding_quantity === 0 ? (
                   <p className="mt-2 text-xs text-muted">Ya se usó todo lo aprobado.</p>
                 ) : c.available_in_branch === 0 ? (
-                  <p className="mt-2 text-xs text-rose-300">
+                  <p className="mt-2 text-xs text-danger">
                     Sin stock en la sucursal de esta reparación.
                   </p>
                 ) : (
@@ -1131,7 +1131,7 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
       </div>
 
       {summary.payment_status === "overpaid" ? (
-        <p className="mt-3 text-xs text-amber-300">
+        <p className="mt-3 text-xs text-warning">
           Se recibió {summary.currency} {summary.credit} de más. No se devuelve nada
           automáticamente: esta plataforma no puede reembolsar.
         </p>
@@ -1278,7 +1278,7 @@ function DeliverySection({ data, may, busy, run, slug, orderId }: SectionProps) 
         </p>
       ) : blockedByBalance ? (
         <div className="space-y-2">
-          <p className="text-sm text-amber-300">
+          <p className="text-sm text-warning">
             Esta empresa exige el pago antes de entregar. Saldo pendiente:{" "}
             {data.paymentSummary.currency} {data.paymentSummary.outstanding ?? "—"}.
           </p>

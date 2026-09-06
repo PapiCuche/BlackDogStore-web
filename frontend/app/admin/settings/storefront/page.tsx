@@ -187,12 +187,12 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
       </p>
 
       {error ? (
-        <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-300">
+        <p role="alert" className="rounded-xl border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
           {error}
         </p>
       ) : null}
       {notice ? (
-        <p aria-live="polite" className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-300">
+        <p aria-live="polite" className="rounded-xl border border-success-border bg-success-surface px-4 py-3 text-sm text-success">
           {notice}
         </p>
       ) : null}
@@ -431,7 +431,7 @@ function Field({
         <span id={`${id}-hint`} className="mt-1 block text-xs text-muted">{hint}</span>
       ) : null}
       {problem ? (
-        <span id={`${id}-error`} className="mt-1 block text-xs text-red-300">
+        <span id={`${id}-error`} className="mt-1 block text-xs text-danger">
           {problem.join(" ")}
         </span>
       ) : null}
@@ -519,7 +519,7 @@ function PageForm({
       </div>
 
       {errors.__all__ ? (
-        <p role="alert" className="text-sm text-red-300 sm:col-span-2">{errors.__all__.join(" ")}</p>
+        <p role="alert" className="text-sm text-danger sm:col-span-2">{errors.__all__.join(" ")}</p>
       ) : null}
 
       {!readOnly ? (
@@ -637,7 +637,7 @@ function CampaignForm({
         hint="La campaña desaparece sola al llegar esta fecha." />
 
       {errors.__all__ ? (
-        <p role="alert" className="text-sm text-red-300 sm:col-span-2">{errors.__all__.join(" ")}</p>
+        <p role="alert" className="text-sm text-danger sm:col-span-2">{errors.__all__.join(" ")}</p>
       ) : null}
 
       <div className="flex flex-wrap gap-3 sm:col-span-2">

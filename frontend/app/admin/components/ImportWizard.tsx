@@ -39,7 +39,7 @@ export function Stepper({ labels, current }: { labels: string[]; current: number
               (state === "actual"
                 ? "bg-surface-2 text-foreground"
                 : state === "hecho"
-                  ? "bg-emerald-500/10 text-emerald-300"
+                  ? "bg-success-surface text-success"
                   : "bg-surface text-muted")
             }
           >
@@ -52,11 +52,11 @@ export function Stepper({ labels, current }: { labels: string[]; current: number
 }
 
 const ACTION_STYLE: Record<string, string> = {
-  create: "bg-emerald-500/10 text-emerald-300",
-  update: "bg-sky-500/10 text-sky-300",
+  create: "bg-success-surface text-success",
+  update: "bg-info-surface text-info",
   no_change: "bg-surface text-muted",
-  skip: "bg-amber-500/10 text-amber-300",
-  error: "bg-rose-500/15 text-rose-300",
+  skip: "bg-warning-surface text-warning",
+  error: "bg-danger-surface text-danger",
 };
 
 const ACTION_LABEL: Record<string, string> = {
@@ -83,11 +83,11 @@ function ActionTag({ action }: { action: string }) {
 export function CountsBar({ job }: { job: ImportJob }) {
   const items: [string, number, string][] = [
     ["Total", job.counts.total, "text-foreground/85"],
-    ["Crear", job.counts.create, "text-emerald-300"],
-    ["Actualizar", job.counts.update, "text-sky-300"],
+    ["Crear", job.counts.create, "text-success"],
+    ["Actualizar", job.counts.update, "text-info"],
     ["Sin cambios", job.counts.no_change, "text-muted"],
-    ["Omitir", job.counts.skip, "text-amber-300"],
-    ["Errores", job.counts.error, "text-rose-300"],
+    ["Omitir", job.counts.skip, "text-warning"],
+    ["Errores", job.counts.error, "text-danger"],
   ];
   return (
     <div className="mb-4 grid grid-cols-3 gap-2 sm:grid-cols-6">
@@ -121,7 +121,7 @@ export function Notices({ job }: { job: ImportJob }) {
       {[...reader, ...format].map((note) => (
         <p
           key={note}
-          className="rounded-lg border border-sky-400/20 bg-sky-500/[0.06] px-3 py-2 text-sky-200/90"
+          className="rounded-lg border border-info-border bg-sky-500/[0.06] px-3 py-2 text-info"
         >
           {note}
         </p>
@@ -195,12 +195,12 @@ export function PreviewTable({
               </td>
               <td className="px-3 py-2">
                 {row.errors.map((message) => (
-                  <p key={message} className="text-rose-300">
+                  <p key={message} className="text-danger">
                     {message}
                   </p>
                 ))}
                 {row.warnings.map((message) => (
-                  <p key={message} className="text-amber-300/80">
+                  <p key={message} className="text-warning">
                     {message}
                   </p>
                 ))}
@@ -258,10 +258,10 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
                   className={
                     "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider " +
                     (job.status === "applied"
-                      ? "bg-emerald-500/10 text-emerald-300"
+                      ? "bg-success-surface text-success"
                       : job.status === "failed"
-                        ? "bg-rose-500/15 text-rose-300"
-                        : "bg-amber-500/10 text-amber-300")
+                        ? "bg-danger-surface text-danger"
+                        : "bg-warning-surface text-warning")
                   }
                 >
                   {job.status === "applied"
@@ -272,11 +272,11 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
                 </span>
               </td>
               <td className="px-3 py-2 tabular-nums text-foreground/85">{job.counts.total}</td>
-              <td className="px-3 py-2 tabular-nums text-emerald-300">
+              <td className="px-3 py-2 tabular-nums text-success">
                 {job.counts.create}
               </td>
-              <td className="px-3 py-2 tabular-nums text-sky-300">{job.counts.update}</td>
-              <td className="px-3 py-2 tabular-nums text-rose-300">{job.counts.error}</td>
+              <td className="px-3 py-2 tabular-nums text-info">{job.counts.update}</td>
+              <td className="px-3 py-2 tabular-nums text-danger">{job.counts.error}</td>
               <td className="px-3 py-2 text-muted">
                 {(job.summary?.branches ?? [])
                   .map((entry) => entry.branch_name)

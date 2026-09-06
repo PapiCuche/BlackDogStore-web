@@ -24,7 +24,7 @@ subtotal, a discount or a total from a request. Every figure is recomputed from
 import logging
 from dataclasses import dataclass, field
 from datetime import timezone as dt_timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
 from django.db import transaction
@@ -42,6 +42,24 @@ from .tenancy import company_fulfillment_branch
 logger = logging.getLogger(__name__)
 
 CENTS = Decimal('0.01')
+
+
+def _cents(value: Decimal) -> Decimal:
+    """
+    Céntimos con MEDIA AL ALZA — la convención del proyecto, ahora también aquí.
+
+    `quantize(CENTS)` a secas usa `ROUND_HALF_EVEN`, el redondeo bancario, que
+    NO es el que usa el punto de venta (`pos_services._money`, media al alza).
+    El mismo carrito con el mismo cupón podía costar un céntimo distinto según
+    se comprara por la web o en el mostrador: medido, el 40 % de los subtotales
+    diverge para algún porcentaje corriente, y con precios reales —S/ 129,90 al
+    15 %— sale 19,48 en la web y 19,49 en la tienda.
+
+    Convergen al alza y no a la baja porque media al alza es lo que la fase C2.1
+    exige para todo importe, y porque redondear el DESCUENTO hacia arriba sólo
+    puede bajar el total: ningún cliente paga más que antes por este cambio.
+    """
+    return Decimal(value).quantize(CENTS, rounding=ROUND_HALF_UP)
 
 
 class CheckoutError(Exception):
@@ -293,7 +311,7 @@ def price_checkout(company, subtotal: Decimal, coupon_code: str = '') -> Checkou
         return CheckoutPricing(
             subtotal=subtotal,
             discount_amount=Decimal('0.00'),
-            total=subtotal.quantize(CENTS),
+            total=_cents(subtotal),
             discount_multiplier=Decimal('1.0'),
         )
 
@@ -304,14 +322,41 @@ def price_checkout(company, subtotal: Decimal, coupon_code: str = '') -> Checkou
         raise CheckoutError('El cupón ha expirado.')
 
     multiplier = (Decimal('100') - Decimal(str(coupon.discount_percent))) / Decimal('100')
-    discount = (subtotal * (1 - multiplier)).quantize(CENTS)
+    discount = _cents(subtotal * (1 - multiplier))
     return CheckoutPricing(
         subtotal=subtotal,
         discount_amount=discount,
-        total=(subtotal - discount).quantize(CENTS),
+        total=_cents(subtotal - discount),
         discount_multiplier=multiplier,
         coupon=coupon,
     )
+
+
+def _tax_snapshot_fields(company, total, subtotal, discount_amount) -> dict:
+    """
+    Los campos tributarios de una venta nueva, listos para `Order(**...)`.
+
+    Delega en la ÚNICA autoridad de cálculo. Si esto hiciera su propia
+    aritmética habría dos formas de descomponer una venta —ésta y la del punto
+    de venta— y un día darían números distintos para la misma compra.
+    """
+    from .company_settings import get_company_settings
+    from .tax_services import breakdown_from_total
+
+    settings_row = get_company_settings(company)
+    currency = (getattr(settings_row, 'currency', '') or 'PEN')
+    result = breakdown_from_total(
+        total=total, subtotal=subtotal, discount_amount=discount_amount,
+        currency=currency, company=company,
+    )
+    return {
+        'currency': result.currency,
+        'subtotal_amount': result.subtotal,
+        'taxable_amount': result.taxable_amount,
+        'tax_amount': result.tax_amount,
+        'tax_rate': result.tax_rate,
+        'tax_treatment': result.tax_treatment,
+    }
 
 
 def create_pending_order(
@@ -360,6 +405,13 @@ def create_pending_order(
             total=pricing.total,
             discount_amount=pricing.discount_amount,
             coupon_code=pricing.coupon.code if pricing.coupon else '',
+            # EL DESGLOSE SE CONGELA CON LA VENTA, igual que la identidad de
+            # arriba y por el mismo motivo: el reparto del 18 % entre IGV e IPM
+            # cambia cada año hasta 2029, y este documento tiene que seguir
+            # diciendo lo que dijo. `total` no se altera — el desglose sale de
+            # él, porque los precios del catálogo ya llevan el impuesto dentro.
+            **_tax_snapshot_fields(company, pricing.total, pricing.subtotal,
+                                   pricing.discount_amount),
             cart_session_key=cart_session_key,
             status=Order.Status.PENDING_PAYMENT,
             paid=False,
@@ -534,7 +586,7 @@ def start_payment_attempt(
         provider=izipay.PROVIDER,
         transaction_id=transaction_id,
         order_number=order_number,
-        amount=Decimal(order.total).quantize(CENTS),
+        amount=_cents(order.total),
         currency=credentials.currency,
         status=PaymentTransaction.Status.PENDING,
     )

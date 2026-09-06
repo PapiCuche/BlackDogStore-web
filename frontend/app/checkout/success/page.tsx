@@ -120,8 +120,8 @@ export default function CheckoutSuccessPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background px-6">
         <div className="mx-auto max-w-lg text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10">
-            <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-danger-border bg-danger-surface">
+            <svg className="h-8 w-8 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </div>
@@ -129,7 +129,7 @@ export default function CheckoutSuccessPage() {
           <p className="mb-8 text-muted">{error}</p>
           <Link
             href="/checkout"
-            className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-muted transition hover:bg-foreground/90"
+            className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90"
           >
             Volver al checkout
           </Link>
@@ -170,7 +170,7 @@ export default function CheckoutSuccessPage() {
           <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
             <Link
               href="/product"
-              className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-muted transition hover:bg-foreground/90"
+              className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90"
             >
               Seguir comprando
             </Link>
@@ -191,8 +191,8 @@ export default function CheckoutSuccessPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background px-6">
         <div className="mx-auto max-w-lg text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-yellow-500/30 bg-yellow-500/10">
-            <svg className="h-8 w-8 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-warning-border bg-warning-surface">
+            <svg className="h-8 w-8 text-warning" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
@@ -203,7 +203,7 @@ export default function CheckoutSuccessPage() {
           </p>
           <button
             onClick={() => { setLoading(true); setRetryCount(0); }}
-            className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-muted transition hover:bg-foreground/90"
+            className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90"
           >
             Verificar de nuevo
           </button>
@@ -223,8 +223,8 @@ export default function CheckoutSuccessPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-6">
       <div className="mx-auto max-w-lg text-center">
-        <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10">
-          <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-danger-border bg-danger-surface">
+          <svg className="h-8 w-8 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </div>
@@ -235,7 +235,7 @@ export default function CheckoutSuccessPage() {
         <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
           <Link
             href="/checkout"
-            className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-muted transition hover:bg-foreground/90"
+            className="rounded-full bg-foreground px-8 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90"
           >
             Intentar de nuevo
           </Link>

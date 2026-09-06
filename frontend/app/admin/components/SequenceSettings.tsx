@@ -101,14 +101,14 @@ function SequenceRow({
           </label>
           <input
             id={`seq-prefix-${sequence.id}`}
-            className={`${FIELD} ${errors.prefix ? "border-red-500/50" : "border-bd-border"} font-mono`}
+            className={`${FIELD} ${errors.prefix ? "border-danger-border" : "border-bd-border"} font-mono`}
             value={prefix}
             maxLength={12}
             disabled={!canManage || saving}
             onChange={(e) => setPrefix(e.target.value)}
           />
           {errors.prefix ? (
-            <p className="mt-1.5 text-xs text-red-400">{errors.prefix}</p>
+            <p className="mt-1.5 text-xs text-danger">{errors.prefix}</p>
           ) : (
             <p className="mt-1.5 text-[11px] text-muted">
               Letras, dígitos, guion y guion bajo.
@@ -128,13 +128,13 @@ function SequenceRow({
             type="number"
             min={1}
             max={12}
-            className={`${FIELD} ${errors.padding ? "border-red-500/50" : "border-bd-border"}`}
+            className={`${FIELD} ${errors.padding ? "border-danger-border" : "border-bd-border"}`}
             value={padding}
             disabled={!canManage || saving}
             onChange={(e) => setPadding(e.target.value)}
           />
           {errors.padding ? (
-            <p className="mt-1.5 text-xs text-red-400">{errors.padding}</p>
+            <p className="mt-1.5 text-xs text-danger">{errors.padding}</p>
           ) : null}
         </div>
 
@@ -149,13 +149,13 @@ function SequenceRow({
             id={`seq-next-${sequence.id}`}
             type="number"
             min={1}
-            className={`${FIELD} ${errors.next_value ? "border-red-500/50" : "border-bd-border"}`}
+            className={`${FIELD} ${errors.next_value ? "border-danger-border" : "border-bd-border"}`}
             value={nextValue}
             disabled={!canManage || saving || !sequence.can_edit_next_value}
             onChange={(e) => setNextValue(e.target.value)}
           />
           {errors.next_value ? (
-            <p className="mt-1.5 text-xs text-red-400">{errors.next_value}</p>
+            <p className="mt-1.5 text-xs text-danger">{errors.next_value}</p>
           ) : (
             <p className="mt-1.5 text-[11px] text-muted">
               {sequence.can_edit_next_value
@@ -167,7 +167,7 @@ function SequenceRow({
       </div>
 
       {errors.__all__ ? (
-        <p className="mt-3 text-sm text-red-400">{errors.__all__}</p>
+        <p className="mt-3 text-sm text-danger">{errors.__all__}</p>
       ) : null}
 
       {canManage ? (
@@ -238,7 +238,7 @@ export function SequenceSettings({ companyId }: { companyId: number | null }) {
   if (loading) return <p className="py-6 text-sm text-muted">Cargando numeración…</p>;
   if (error) {
     return (
-      <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+      <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
         {error}
       </div>
     );
@@ -287,7 +287,7 @@ export function SequenceSettings({ companyId }: { companyId: number | null }) {
             imprimió.
           </p>
         ) : null}
-        {scopeError ? <p className="text-sm text-red-400">{scopeError}</p> : null}
+        {scopeError ? <p className="text-sm text-danger">{scopeError}</p> : null}
       </fieldset>
 
       <div className="space-y-4">

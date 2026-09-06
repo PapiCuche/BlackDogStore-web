@@ -199,7 +199,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
           </div>
 
           {error ? (
-            <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+            <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
               {error}
             </div>
           ) : loading ? (
@@ -247,7 +247,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
                       <td className="px-4 py-3 text-muted">{row.email || "—"}</td>
                       <td className="px-4 py-3">
                         {row.is_active ? (
-                          <span className="text-xs text-emerald-400/80">Activo</span>
+                          <span className="text-xs text-success">Activo</span>
                         ) : (
                           <span className="text-xs text-muted">Archivado</span>
                         )}

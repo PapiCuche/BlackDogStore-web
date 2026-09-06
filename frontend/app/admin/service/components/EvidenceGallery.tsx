@@ -195,14 +195,14 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
             type="button"
             disabled={busy || !file || !canUploadHere}
             onClick={() => void upload()}
-            className="rounded-lg bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-on-status disabled:opacity-40"
+            className="rounded-lg bg-info-solid px-3 py-1.5 text-xs font-medium text-on-status disabled:opacity-40"
           >
             Subir
           </button>
         </div>
 
         {!canUploadHere ? (
-          <p className="text-[11px] text-amber-300/80">
+          <p className="text-[11px] text-warning">
             No tienes autoridad sobre la etapa «{stageLabel(stage)}».
           </p>
         ) : null}
@@ -224,7 +224,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
       </div>
 
       {error ? (
-        <p className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-300">
+        <p className="rounded-lg border border-danger-border bg-danger-surface px-3 py-2 text-xs text-danger">
           {error}
         </p>
       ) : null}
@@ -259,11 +259,11 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                   <figcaption className="space-y-1.5 px-2 py-2">
                     <div className="flex flex-wrap items-center gap-1">
                       {e.voided_at ? (
-                        <span className="rounded bg-red-500/15 px-1.5 py-px text-[10px] text-red-300">
+                        <span className="rounded bg-danger-surface px-1.5 py-px text-[10px] text-danger">
                           Anulada
                         </span>
                       ) : e.visibility === "customer" ? (
-                        <span className="rounded bg-emerald-500/15 px-1.5 py-px text-[10px] text-emerald-300">
+                        <span className="rounded bg-success-surface px-1.5 py-px text-[10px] text-success">
                           Visible al cliente
                         </span>
                       ) : (
@@ -325,7 +325,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                             type="button"
                             disabled={busy || !reason.trim()}
                             onClick={() => void act(e.id, "void", { reason })}
-                            className="rounded bg-red-500/80 px-1.5 py-px text-[10px] text-on-status disabled:opacity-40"
+                            className="rounded bg-danger-solid px-1.5 py-px text-[10px] text-on-status disabled:opacity-40"
                           >
                             Confirmar
                           </button>

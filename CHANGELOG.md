@@ -9,6 +9,260 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## C2.2A.1 — Factura electrónica aceptada por SUNAT
+
+**Estado: PARCIAL.** Migración `0081_fiscal_documents`.
+
+**CDR real**: «La Factura numero F001-1, ha sido aceptada», `ResponseCode 0`, sin
+observaciones. Endpoint `e-beta.sunat.gob.pe`, 6 de septiembre de 2026.
+
+### Las dos causas del rechazo, leídas en la norma
+
+El error **3244** no hablaba del tipo de operación. «Tipo de transacción» es la
+etiqueta que SUNAT usa para el bloque **Contado/Crédito**: exige
+`/Invoice/cac:PaymentTerms/cbc:ID = 'FormaPago'` desde el 01/01/2022. Por eso los
+tres envíos anteriores, que movían `sac:SUNATTransaction`, daban el mismo error
+incluso cuando ese nodo no estaba.
+
+Resuelto eso apareció el **3206**: el tipo de operación vive en **dos catálogos
+con longitudes distintas**. `cbc:InvoiceTypeCode/@listID` lleva el 51 (`0101`) y
+`sac:SUNATTransaction/cbc:ID` el 17 (`01`).
+
+Tres llamadas a BETA entre las dos fases, **cada una precedida de una corrección
+con fuente**. Ninguna variante probada contra el servidor.
+
+### Qué se construyó
+
+Un paquete sin Django —recibe datos planos, devuelve bytes— con el generador, la
+firma, el empaquetado, la validación contra el esquema oficial versionado y el
+adaptador de proveedor. Encima, tres modelos: `FiscalSeries`, `FiscalDocument` y
+`FiscalSubmissionAttempt`.
+
+**Un error de transporte NO es un rechazo.** Un timeout deja la venta en estado
+incierto: tratarlo como rechazo llevaría a emitir un segundo comprobante por una
+venta que quizá SUNAT ya registró.
+
+**No se reutiliza `SalesNote` ni `InternalSequence`.** Aquél declara que es
+interno, y eso es lo que permite anularlo sin consecuencias; un correlativo
+fiscal entregado está gastado para siempre.
+
+90 tests nuevos. Nueve ADR en [docs/adr-fiscal-c22a1.md](docs/adr-fiscal-c22a1.md).
+
+### Lo que falta para COMPLETADA
+
+Endpoints, superficie de panel, Playwright y QR/PDF fiscal. El vertical técnico
+está cerrado; la superficie no.
+
+---
+
+## C2.1 — Impuestos Perú, desglose y ticket imprimible
+
+**Estado: IMPLEMENTADO.** Migraciones `0079` (esquema) y `0080` (relleno).
+
+Una venta no decía cuánto de su total era tributo. Ahora lo dice, en pantalla y
+en papel, sin que nadie pague un céntimo más.
+
+### La decisión que gobierna todo lo demás
+
+**Los precios del catálogo YA INCLUYEN el impuesto.** No se supuso: se leyó el
+código. `checkout_services.price_checkout` y `pos_services.calculate_pos_totals`
+construyen `total = Σ(Product.price × cantidad) − descuento`, y eso es
+exactamente lo que la tienda cobra hoy.
+
+Por tanto el impuesto **se extrae hacia atrás**, no se suma encima. Sumarlo
+habría convertido un artículo de S/ 118 en S/ 139,24 — habría cambiado los
+precios de toda la tienda por dentro de una migración. El total nunca se toca.
+
+    total    = subtotal − descuento     (intacto: es lo que se cobra)
+    base     = total / (1 + tasa)       redondeado a céntimos
+    impuesto = total − base             POR DIFERENCIA
+
+**El impuesto se obtiene restando, y no es un atajo.** Calcularlo como
+`base × tasa` y redondear las dos cifras por separado produce sumas que no
+cuadran: dos redondeos independientes se separan un céntimo del total. Restando,
+`base + impuesto = total` se cumple siempre. Hay una prueba que recorre un
+importe de cada siete céntimos entre S/ 0,01 y S/ 1 000 verificándolo.
+
+### Por qué la tasa se congela en cada venta
+
+No es una precaución teórica. La **Ley N.º 32387** reparte el 18 % entre IGV e
+Impuesto de Promoción Municipal de forma distinta cada año —15,5 + 2,5 en 2026,
+hasta 14,0 + 4,0 en 2029— manteniendo el total en 18 %. Un documento emitido hoy
+tiene que seguir diciendo lo que dijo cuando ese reparto cambie.
+
+Así que `Order` guarda su propio desglose (`subtotal_amount`, `taxable_amount`,
+`tax_amount`, `tax_rate`, `tax_treatment`, `currency`) y ninguna lectura
+posterior lo recalcula. Fuente: SUNAT, «Concepto, tasa y operaciones gravadas».
+
+Se muestra **una sola línea de impuesto**, rotulada «IGV». Partirla en dos
+columnas obligaría a redondear dos veces —y a que la suma dejara de cuadrar— a
+cambio de un detalle que la representación impresa no separa.
+
+### Una autoridad de cálculo, no cuatro
+
+`store/tax_services.py` es la única función que descompone una venta. La usan el
+escaparate, la previsualización del punto de venta, la venta y los documentos.
+En el punto de venta el desglose se calcula **dentro de `calculate_pos_totals`**,
+junto al total y en la misma llamada: la previsualización y la venta leen ese
+único cálculo, así que no pueden separarse ni un céntimo.
+
+El escaparate **no calcula el suyo**. Pregunta a `POST /api/checkout/quote/`,
+porque `0.1 + 0.2 !== 0.3` en JavaScript es literalmente el error que produciría
+un IGV en pantalla distinto del impreso.
+
+### Documentos
+
+| Formato | Ruta | Papel |
+|---|---|---|
+| A4 | `.../sales-note/pdf/` | Hoja, con desglose completo |
+| Ticket | `.../sales-note/pdf/?formato=ticket80` | Rollo de 80 mm, altura continua |
+
+**Sin parámetros sigue devolviendo el A4 de siempre.** No se llama `?format=`
+porque `format` es el parámetro con el que Django REST negocia el renderizador y
+responde 404 a un valor que no reconoce, antes de que la vista lo mire — se
+comprobó.
+
+El ticket se dibuja dos veces: la primera para medir, la segunda sobre una
+página de exactamente esa altura, para que la impresora no escupa papel en
+blanco.
+
+**La nota se crea al imprimir, no al cobrar.** Reservar un correlativo dentro de
+la transacción que mueve stock y cobra significaría que un fallo al numerar
+tumbaría un cobro que sí ocurrió. Es idempotente: la nota es una por pedido en
+relación uno-a-uno, así que imprimir cinco veces devuelve la misma nota con el
+mismo correlativo.
+
+### Lo que estos documentos NO son
+
+Ninguno es un comprobante electrónico SUNAT. No se firma nada, no se habla con
+SUNAT, no se finge una aceptación. El aviso sigue impreso en los dos formatos y
+hay una prueba que verifica que ninguno contiene «factura emitida», «boleta
+emitida» ni «comprobante SUNAT». El lenguaje es **«solicitado»**, nunca
+«emitido». La emisión electrónica real es C2.2 y no está hecha.
+
+### Verificación
+
+Los PDF se **leen**, no se dan por buenos porque empiecen por `%PDF`: los tests
+descomprimen los streams (ASCII85 sobre Flate, con `zlib` y `base64` de la
+biblioteca estándar, sin añadir dependencias) y comprueban las cifras, el aviso
+y que no aparezca ningún identificador de pasarela, token, dato de tarjeta ni
+`payment_error`.
+
+### Siete defectos que encontró una revisión adversarial
+
+Treinta y dos agentes en seis lentes; 26 hallazgos, cada uno pasado por un
+verificador cuyo trabajo era refutarlo. Los «high» se revisaron a mano porque al
+verificador se le pidió descartar ante la duda — y eso produjo un falso negativo
+que resultó ser el peor defecto de todos.
+
+Todos míos, y ninguno visible desde los tests del camino feliz.
+
+**Cotizar gastaba el presupuesto de pagar.** La cotización compartía limitador
+(10/min) con la creación de la sesión de pago. Doce cotizaciones y el cobro
+respondía 429 sin ejecutarse — y la pantalla vuelve a cotizar en cada cambio del
+carrito, así que ajustar cantidades te cerraba la compra. Cubo propio ahora
+(`checkout_quote`, 60/min).
+
+**Una palabra sin espacios se salía del rollo.** El cortador del ticket sólo
+separaba entre palabras: un nombre de 63 caracteres sin espacios se dibujaba a
+258 pt sobre una página de 227 y desaparecía del papel, sin aviso. El nombre de
+la empresa —texto libre, centrado— se salía por los dos lados. En el A4 no
+ocurría porque `Paragraph` parte solo, y esa asimetría lo escondía. `_wrap`
+trocea ahora por caracteres, midiendo.
+
+**Los botones de imprimir se bloqueaban para siempre.** El verificador descartó
+este hallazgo y se equivocó. `printSalesNoteTicket` esperaba el `onload` de un
+marco oculto, y con un PDF servido como blob ese evento no dispara: los dos
+botones se quedaban en «Preparando…» — 25 s después seguían bloqueados, sin más
+salida que recargar a media venta. Lo resolvió una medición de 30 s en navegador,
+no un razonamiento. Espera acotada a 3 s; si el marco no carga, el ticket se
+descarga y la pantalla lo dice.
+
+**El ticket decía «Comprobante: Boleta».** El A4 rotulaba «Comprobante
+solicitado:» y el ticket no: el mismo dato afirmaba dos cosas según el formato, y
+la del ticket era falsa.
+
+**Escaparate y mostrador redondeaban distinto.** `price_checkout` usaba media al
+par; el POS, media al alza. 40 % de los subtotales divergen para algún porcentaje
+corriente (S/ 129,90 al 15 % → 19,48 web / 19,49 tienda). Previo a C2.1, pero
+C2.1 lo empeoraba al congelar e imprimir la cifra. Unificado en media al alza;
+comprobado sobre 6 667 subtotales que **ningún cliente paga más que antes**.
+
+**El admin de Django podía descuadrar una venta cerrada.** `total` editable sin
+recalcular el desglose congelado → PDF con `base + impuesto != total`. El dinero
+de una venta cerrada es ahora de sólo lectura y el desglose se muestra.
+
+**`money()` aceptaba floats.** Ahora levanta `TypeError`.
+
+Todas las pruebas se verificaron al revés: revertido el arreglo, fallan;
+restaurado, pasan.
+
+### Corregido de paso
+
+El nombre del PDF descargado se componía en el frontend como
+`blackdog-nota-venta-…`: el nombre de **un** inquilino escrito en código
+compartido, así que cualquier otra empresa se descargaba sus ventas con la marca
+ajena. Ahora se usa el nombre que manda el servidor, construido con el slug de
+la empresa dueña del pedido.
+
+---
+
+## Accesos de desarrollo — la promesa que no se cumplía
+
+**Estado: IMPLEMENTADO.** Sin migraciones.
+
+`/auth` anunciaba seis cuentas con su contraseña. Ninguna existía: la base de
+desarrollo no tenía **ningún** usuario. El backend respondía «No active account
+found with the given credentials», que suena a contraseña incorrecta y manda a
+depurar el login — que funcionaba perfectamente.
+
+### Por qué la auditoría anterior no lo vio
+
+Capturó `/auth` 108 veces y nunca pulsó «Usar cuenta». Peor: su arnés se
+autenticaba con un usuario que ella misma creaba, así que el flujo de login se
+verificó de principio a fin **con una cuenta que no era ninguna de las seis
+anunciadas**. Se probó el mecanismo y se dio por buena la promesa.
+
+### Tres defectos, no uno
+
+1. **Entorno sin sembrar y una interfaz que no lo comprobaba.** La tarjeta traía
+   su propia lista escrita a mano y la mostraba siempre.
+2. **Dos listas que podían separarse en silencio** — la del comando y la del
+   componente.
+3. **`_upsert_user` no reactivaba.** Refrescaba correo, flags y contraseña, pero
+   no `is_active`: un demo desactivado desde el panel quedaba inservible para
+   siempre y volver a sembrar no lo arreglaba.
+
+### La corrección
+
+`GET /api/dev/demo-accounts/` — sólo con `DEBUG=True`, 404 con `DEBUG=False` —
+informa de qué cuentas existen y cuáles sirven. La tarjeta lo pinta: una cuenta
+que no se puede usar sale apagada y **sin botón**, con el comando exacto y el
+slug real de una empresa de esa base.
+
+No autentica ni crea nada: las seis siguen siendo usuarios ordinarios que entran
+por `/api/auth/login/` con el mismo JWT, cookies HttpOnly y CSRF.
+
+## Auditoría integral de frontend
+
+**Estado: IMPLEMENTADO.** Sin migraciones — el backend no cambia.
+
+| Hallazgo | Severidad |
+| --- | --- |
+| El panel montaba la cabecera, el pie y el WhatsApp de la tienda | P0 |
+| 13 pantallas del panel nunca cargaban para el master de plataforma | P0 |
+| La empresa elegida se perdía al navegar entre pantallas | P1 |
+| El checkout no mostraba el pedido ni el total | P1 |
+| 105 textos de estado invisibles en tema claro (1.02:1) | P1 |
+| 58 etiquetas de formulario sin asociar a su control | P1 |
+| 7 botones invertidos con texto a 2:1, uno de ellos «Continuar al pago» | P1 |
+| Desbordamiento de 308 px en inventario a 390 px | P2 |
+| 12 maquetas de un prototipo con un precio sin respaldo incrustado | P2 |
+| Formato de fecha estadounidense en una tienda peruana | P3 |
+
+Ninguno lo habría encontrado un test unitario: son propiedades de cómo encaja
+la aplicación entera, y salieron de abrirla en un navegador con sesión real.
+
 ## M12F.1 — Reconciliación: claims, contraste de logotipo y contenido de servicios
 
 **Estado: IMPLEMENTADO.** Migraciones **0077**–**0078**.

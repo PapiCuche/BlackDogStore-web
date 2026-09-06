@@ -9,6 +9,7 @@ import {
   SALES_NOTE_NOTICE,
   createSalesNote,
   downloadSalesNotePdf,
+  printSalesNoteTicket,
   fetchSalesNote,
   type SalesNote,
 } from "../../lib/inventory";
@@ -68,14 +69,16 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
     }
   }
 
-  async function handleDownload() {
+  // Una sola bandera para las dos acciones: comparten la barra de botones y
+  // ninguna debe poder lanzarse mientras la otra sigue en marcha.
+  async function handleDocument(run: () => Promise<void>, failure: string) {
     if (!note) return;
     setDownloading(true);
     setError(null);
     try {
-      await downloadSalesNotePdf(orderId, note.number);
+      await run();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo descargar el PDF.");
+      setError(err instanceof Error ? err.message : failure);
     } finally {
       setDownloading(false);
     }
@@ -133,8 +136,8 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
           )}
 
           {error ? (
-            <div className="mb-4 rounded-lg border border-red-500/25 bg-red-500/[0.07] px-4 py-3">
-              <p className="text-sm text-red-300">{error}</p>
+            <div className="mb-4 rounded-lg border border-danger-border bg-red-500/[0.07] px-4 py-3">
+              <p className="text-sm text-danger">{error}</p>
             </div>
           ) : null}
 
@@ -149,14 +152,42 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
                 {issuing ? "Emitiendo…" : "Generar nota de venta"}
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={() => void handleDownload()}
-                disabled={downloading}
-                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {downloading ? "Generando PDF…" : "Descargar PDF"}
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleDocument(
+                    async () => {
+                      // Si el navegador no abrió el diálogo, el ticket se
+                      // descargó. Decirlo: un botón que promete imprimir y no
+                      // imprime deja al operador esperando a una impresora que
+                      // no ha recibido nada.
+                      const outcome = await printSalesNoteTicket(orderId, note.number);
+                      if (outcome === "downloaded") {
+                        setError(
+                          "El navegador no abrió el diálogo de impresión; " +
+                          "el ticket se descargó. Ábrelo e imprímelo desde el visor.",
+                        );
+                      }
+                    },
+                    "No se pudo imprimir el ticket.",
+                  )}
+                  disabled={downloading}
+                  className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Imprimir ticket 80 mm
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDocument(
+                    () => downloadSalesNotePdf(orderId, note.number, "a4"),
+                    "No se pudo descargar el PDF.",
+                  )}
+                  disabled={downloading}
+                  className="rounded-lg border border-bd-border px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Descargar PDF A4
+                </button>
+              </>
             )}
           </div>
         </>

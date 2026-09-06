@@ -44,12 +44,12 @@ function money(value: string | number) {
 }
 
 const RISK_LABEL: Record<string, { text: string; className: string }> = {
-  out_of_stock: { text: "Sin stock", className: "text-red-400" },
-  critical: { text: "Crítico", className: "text-red-400" },
-  reorder: { text: "Reponer", className: "text-amber-300" },
-  low: { text: "Bajo", className: "text-amber-400/80" },
+  out_of_stock: { text: "Sin stock", className: "text-danger" },
+  critical: { text: "Crítico", className: "text-danger" },
+  reorder: { text: "Reponer", className: "text-warning" },
+  low: { text: "Bajo", className: "text-warning" },
   insufficient_data: { text: "Sin historial", className: "text-muted" },
-  ok: { text: "OK", className: "text-emerald-400/70" },
+  ok: { text: "OK", className: "text-success" },
 };
 
 const TREND_MARK: Record<string, string> = {
@@ -144,7 +144,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
   if (error || !data) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+        <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
           {error ?? "Sin datos."}
         </div>
       </AdminShell>
@@ -161,10 +161,10 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
       <div className="space-y-8">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <label className="text-[11px] uppercase tracking-widest text-muted">
+            <label htmlFor="admin-sales-page-sucursal" className="text-[11px] uppercase tracking-widest text-muted">
               Sucursal
             </label>
-            <select
+            <select id="admin-sales-page-sucursal"
               value={branch ?? ""}
               onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
               className="rounded-lg border border-bd-border bg-background/40 px-3 py-1.5 text-sm text-foreground outline-none"

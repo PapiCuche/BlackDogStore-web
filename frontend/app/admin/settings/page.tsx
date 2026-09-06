@@ -129,7 +129,7 @@ function Field({
 }) {
   const base =
     "w-full rounded-lg border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
-  const borderClass = error ? "border-red-500/50" : "border-bd-border";
+  const borderClass = error ? "border-danger-border" : "border-bd-border";
 
   return (
     <div>
@@ -182,7 +182,7 @@ function Field({
       )}
 
       {error ? (
-        <p className="mt-1.5 text-xs text-red-400">{error}</p>
+        <p className="mt-1.5 text-xs text-danger">{error}</p>
       ) : field.hint ? (
         <p className="mt-1.5 text-[11px] text-muted">{field.hint}</p>
       ) : null}
@@ -333,7 +333,7 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
         {loading ? <p className="py-10 text-center text-muted">Cargando…</p> : null}
 
         {error && !Object.keys(errors).length ? (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+          <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
             {error}
           </div>
         ) : null}
@@ -348,11 +348,11 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
         ) : null}
 
         {config && config.status.missing_count > 0 ? (
-          <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.06] px-5 py-4">
-            <p className="text-sm font-medium text-amber-100/90">
+          <div className="rounded-xl border border-warning-border bg-amber-400/[0.06] px-5 py-4">
+            <p className="text-sm font-medium text-warning">
               Falta configurar {config.status.missing_count} dato(s)
             </p>
-            <p className="mt-1 text-xs text-amber-100/70">
+            <p className="mt-1 text-xs text-warning">
               {config.status.missing.map((m) => m.label).join(" · ")}
             </p>
           </div>
@@ -437,7 +437,7 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   <span className="text-sm text-muted">Cambios guardados.</span>
                 ) : null}
                 {Object.keys(errors).length > 0 ? (
-                  <span className="text-sm text-red-400">
+                  <span className="text-sm text-danger">
                     Revisa los campos marcados.
                   </span>
                 ) : null}

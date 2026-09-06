@@ -106,7 +106,7 @@ function RateEditor({
           {saving ? "…" : "Guardar"}
         </button>
       ) : null}
-      {error ? <span className="text-xs text-red-400">{error}</span> : null}
+      {error ? <span className="text-xs text-danger">{error}</span> : null}
     </div>
   );
 }
@@ -164,7 +164,7 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
   if (error || !report) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+        <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
           {error ?? "Sin datos."}
         </div>
       </AdminShell>

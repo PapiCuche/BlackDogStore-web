@@ -65,7 +65,7 @@ export function UsersTable({ users, currentUser, onRoleChange }: Props) {
                   className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                     user.is_active
                       ? "bg-surface text-foreground/85"
-                      : "bg-red-500/10 text-red-400"
+                      : "bg-danger-surface text-danger"
                   }`}
                 >
                   {user.is_active ? "Activo" : "Inactivo"}

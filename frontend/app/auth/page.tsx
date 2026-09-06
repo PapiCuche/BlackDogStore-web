@@ -166,8 +166,12 @@ export default function AuthPage() {
         </div>
 
         {/* Right — form panel */}
-        <div className="flex flex-col items-center justify-center px-6 py-12 lg:px-12">
-          <div className="w-full max-w-md">
+        <div className="flex min-w-0 flex-col items-center justify-center px-6 py-12 lg:px-12">
+          {/* `min-w-0`: un ítem flex no baja de su ancho intrínseco por defecto, así
+              que cualquier contenido ancho —la tarjeta de accesos, por ejemplo—
+              estiraba esta columna y con ella TODO lo que lleva `w-full`. A 320 px
+              el formulario entero medía 330. */}
+          <div className="w-full min-w-0 max-w-md">
 
             {/* Mobile logo */}
             <div className="mb-8 flex items-center gap-3 lg:hidden">
@@ -187,7 +191,7 @@ export default function AuthPage() {
             </div>
 
             {error && (
-              <div className="mb-5 rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">
+              <div className="mb-5 rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger">
                 {error}
               </div>
             )}
@@ -199,8 +203,8 @@ export default function AuthPage() {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className={labelClass}>Usuario</label>
-                <input
+                <label htmlFor="auth-page-usuario" className={labelClass}>Usuario</label>
+                <input id="auth-page-usuario"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   className={inputClass}
@@ -212,8 +216,8 @@ export default function AuthPage() {
 
               {!isLogin && (
                 <div>
-                  <label className={labelClass}>Correo electrónico</label>
-                  <input
+                  <label htmlFor="auth-page-correo-electronico" className={labelClass}>Correo electrónico</label>
+                  <input id="auth-page-correo-electronico"
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -226,8 +230,8 @@ export default function AuthPage() {
               )}
 
               <div>
-                <label className={labelClass}>Contraseña</label>
-                <input
+                <label htmlFor="auth-page-contrasena" className={labelClass}>Contraseña</label>
+                <input id="auth-page-contrasena"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -240,8 +244,8 @@ export default function AuthPage() {
 
               {!isLogin && (
                 <div>
-                  <label className={labelClass}>Confirmar contraseña</label>
-                  <input
+                  <label htmlFor="auth-page-confirmar-contrasena" className={labelClass}>Confirmar contraseña</label>
+                  <input id="auth-page-confirmar-contrasena"
                     type="password"
                     value={passwordConfirm}
                     onChange={(e) => setPasswordConfirm(e.target.value)}

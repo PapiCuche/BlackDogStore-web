@@ -62,9 +62,9 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
 
   if (branches.length === 0) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-amber-400/20 bg-amber-400/[0.06] px-3 py-2">
-        <IconBranch className="h-4 w-4 text-amber-300/70" />
-        <span className="text-sm text-amber-100/80">Sin sucursales asignadas</span>
+      <div className="flex items-center gap-2 rounded-lg border border-warning-border bg-amber-400/[0.06] px-3 py-2">
+        <IconBranch className="h-4 w-4 text-warning" />
+        <span className="text-sm text-warning">Sin sucursales asignadas</span>
       </div>
     );
   }

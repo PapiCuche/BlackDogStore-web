@@ -100,7 +100,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
   if (error || !order) {
     return (
       <AdminShell user={user}>
-        <p className="text-red-400 text-sm">{error ?? "Orden no encontrada."}</p>
+        <p className="text-danger text-sm">{error ?? "Orden no encontrada."}</p>
         <Link href="/admin/orders" className="text-muted hover:text-foreground text-sm mt-4 block">
           ← Volver a órdenes
         </Link>
@@ -136,7 +136,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
                 {pdfDownloading ? "Generando…" : "Descargar PDF"}
               </button>
               {pdfError && (
-                <p className="text-red-400 text-xs">{pdfError}</p>
+                <p className="text-danger text-xs">{pdfError}</p>
               )}
               {canResendEmail && (
                 <>
@@ -148,10 +148,10 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
                     {resendLoading ? "Enviando…" : "Reenviar email de confirmación"}
                   </button>
                   {resendSuccess && (
-                    <p className="text-green-400 text-xs">{resendSuccess}</p>
+                    <p className="text-success text-xs">{resendSuccess}</p>
                   )}
                   {resendError && (
-                    <p className="text-red-400 text-xs">{resendError}</p>
+                    <p className="text-danger text-xs">{resendError}</p>
                   )}
                 </>
               )}
@@ -280,13 +280,13 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
             )}
             <div>
               <dt className="text-muted text-xs mb-0.5">Términos aceptados</dt>
-              <dd className={order.accepted_terms ? "text-foreground" : "text-red-400"}>
+              <dd className={order.accepted_terms ? "text-foreground" : "text-danger"}>
                 {order.accepted_terms ? "Sí" : "No"}
               </dd>
             </div>
             <div>
               <dt className="text-muted text-xs mb-0.5">Garantía aceptada</dt>
-              <dd className={order.accepted_warranty_policy ? "text-foreground" : "text-red-400"}>
+              <dd className={order.accepted_warranty_policy ? "text-foreground" : "text-danger"}>
                 {order.accepted_warranty_policy ? "Sí" : "No"}
               </dd>
             </div>
@@ -345,7 +345,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
             {order.email_send_error && (
               <div className="col-span-2">
                 <dt className="text-muted text-xs mb-0.5">Error de envío</dt>
-                <dd className="text-red-400 text-xs font-mono whitespace-pre-wrap">{order.email_send_error}</dd>
+                <dd className="text-danger text-xs font-mono whitespace-pre-wrap">{order.email_send_error}</dd>
               </div>
             )}
           </dl>

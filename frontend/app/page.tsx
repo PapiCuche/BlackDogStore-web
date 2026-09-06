@@ -423,7 +423,7 @@ export default function Home() {
           </div>
 
           {error ? (
-            <div className="mt-8 rounded-2xl border border-red-500/20 bg-red-500/10 p-6 text-sm text-red-300">
+            <div className="mt-8 rounded-2xl border border-danger-border bg-danger-surface p-6 text-sm text-danger">
               Error al cargar productos: {error}
             </div>
           ) : loading ? (

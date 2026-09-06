@@ -36,9 +36,9 @@ type Row = {
 
 const PRIORITY_STYLES: Record<string, string> = {
   info: "border-bd-border text-muted",
-  action: "border-amber-500/30 text-amber-300/80",
-  warning: "border-orange-500/30 text-orange-300/80",
-  critical: "border-red-500/40 text-red-300",
+  action: "border-warning-border text-warning",
+  warning: "border-warning-border text-warning",
+  critical: "border-danger-border text-danger",
 };
 
 function Inbox({ ctx }: { ctx: InternalContext }) {
@@ -138,7 +138,7 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
       </div>
 
       {error ? (
-        <p className="rounded-xl border border-red-500/20 bg-red-500/[0.05] px-4 py-3 text-sm text-red-300">
+        <p className="rounded-xl border border-danger-border bg-red-500/[0.05] px-4 py-3 text-sm text-danger">
           {error}
         </p>
       ) : rows === null ? (

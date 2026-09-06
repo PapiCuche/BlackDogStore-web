@@ -2596,3 +2596,363 @@ Estado de clasificación tras la fase: tema global y contraste de logotipo
 IMPLEMENTADOS; responsive del escaparate IMPLEMENTADO con navegador; responsive
 del admin PARCIAL; contenido de servicios, preguntas y métricas editable por el
 tenant.
+
+
+## Auditoría integral de frontend
+
+Rama `audit/frontend-complete`, sobre `feat/storefront-cms-responsive`.
+
+**El runtime nunca sirvió otra rama.** Se verificó que el proceso de `:3000`
+corre desde el mismo árbol de trabajo y que su HTML contiene los marcadores del
+último commit. Lo que faltaba no eran los cambios: era su alcance. La fase
+anterior se detuvo deliberadamente en la portada, así que el resto de la web
+conservaba el lenguaje anterior.
+
+### El panel llevaba puesta la ropa de la tienda
+
+El layout raíz montaba cabecera, pie y botón de WhatsApp en TODAS las rutas. El
+control interno salía con «Catálogo · Servicios · Carrito» encima y el pie de
+marketing completo debajo. Se separa por ruta: `/admin` tiene su propio armazón
+y es el único que debe llevar.
+
+### Trece pantallas del panel no cargaban nunca
+
+Productos, inventario, movimientos, transferencias, recuentos y siete más usan
+`StaffGuard`, que resuelve empresa sólo por membresías. Un master de plataforma
+no tiene ninguna, así que veía «No tienes permisos» en las trece. La API ya
+aceptaba `?company=`; el arreglo es de frontend y no amplía autoridad, porque
+el backend sigue tratando ese parámetro como untrusted.
+
+Además, la empresa elegida vivía en un `useState` de un guard que se monta una
+vez por página: se perdía al navegar.
+
+### Colores de estado
+
+105 textos de estado usaban el extremo claro de cada escala, herencia de cuando
+sólo había tema oscuro. En claro rendían 1.02:1. Se separan dos familias:
+
+    danger / warning / success / info    texto sobre la página — giran
+    *-solid                              relleno con texto encima — no giran
+
+Confundirlas produjo dos defectos seguidos, ambos encontrados midiendo.
+
+### Formularios
+
+58 etiquetas sin asociar a su control, checkout la peor con 11. El lector de
+pantalla anunciaba el campo sin nombre. Lo descubrió el arnés de auditoría al
+no poder iniciar sesión.
+
+### Checkout
+
+No mostraba nada del pedido: ni artículos, ni cantidades, ni total. Se pagaba a
+ciegas.
+
+### Estado
+
+Escaparate y panel comparten sistema visual; 22 rutas × 2 temas sin un solo
+texto por debajo de AA; sin desbordamiento en 320–1440; verificado en Chromium
+y WebKit.
+
+
+## Accesos de desarrollo
+
+La tarjeta de `/auth` anunciaba seis cuentas que no existían, porque la base de
+desarrollo no tenía ningún usuario y nadie había ejecutado `seed_demo_users`.
+
+**La causa de que no se detectara importa más que el defecto.** La auditoría
+anterior capturó esa pantalla 108 veces sin pulsar un solo botón, y su arnés
+entraba con un usuario propio: verificó el mecanismo de login y dio por buena la
+promesa de la interfaz sin comprobarla. Una captura demuestra que algo se pinta,
+no que funcione.
+
+Ahora la interfaz no puede prometer de más: pregunta a
+`GET /api/dev/demo-accounts/` —sólo en desarrollo, 404 en producción— qué
+cuentas existen y cuáles están activas, y no dibuja botón para las que no
+sirven. Eso elimina además la segunda lista escrita a mano.
+
+Y `seed_demo_users` reactiva al refrescar. No lo hacía, y el mensaje que
+producía —«No active account found with the given credentials»— apunta al sitio
+equivocado.
+
+Los seis accesos están cubiertos por un E2E que pulsa el botón, envía el
+formulario, comprueba la sesión por la interfaz y verifica destino y módulos
+visibles. El limitador de 5 intentos por minuto se espera, no se desactiva.
+
+---
+
+## Fase C2.1 — Impuestos Perú, desglose y ticket imprimible
+
+### La pregunta que había que responder antes de escribir nada
+
+**¿`Product.price` incluye el impuesto o no?** De la respuesta dependía todo: si
+no lo incluye, hay que sumar 18 % y todos los precios de la tienda suben; si lo
+incluye, hay que extraerlo y nada cambia de precio.
+
+No se supuso. Se leyó `checkout_services.price_checkout` y
+`pos_services.calculate_pos_totals`, y ambos construyen
+
+    subtotal = Σ(Product.price × cantidad)
+    total    = subtotal − descuento
+
+sin impuesto en ninguna parte. Ese total es exactamente lo que la pasarela
+cobra hoy y lo que el cliente paga. Por tanto **el precio del catálogo es un
+precio final con impuesto incluido**, y el desglose se extrae hacia atrás.
+
+Sumarlo encima habría convertido un artículo de S/ 118 en S/ 139,24 dentro de
+una migración: un cambio de precios de toda la tienda disfrazado de mejora
+contable.
+
+### El impuesto se calcula restando
+
+    base     = total / (1 + tasa)     redondeado a céntimos
+    impuesto = total − base
+
+No es un atajo. La alternativa —calcular `base × tasa` y redondear las dos
+cifras por separado— produce sumas que no cuadran: dos redondeos independientes
+pueden separarse un céntimo del total. Restando, `base + impuesto = total` se
+cumple por construcción, para cualquier importe y cualquier tasa.
+
+Hay una prueba que recorre un importe de cada siete céntimos entre S/ 0,01 y
+S/ 1 000 comprobando la identidad. No es una muestra: si existe un importe donde
+falla, está en ese barrido.
+
+### Por qué la tasa viaja congelada en cada venta
+
+La **Ley N.º 32387** reparte el 18 % entre IGV e Impuesto de Promoción Municipal
+de forma distinta cada año:
+
+| Año | IGV | IPM | Total |
+|---|---|---|---|
+| 2026 | 15,5 % | 2,5 % | 18 % |
+| 2027 | 15,0 % | 3,0 % | 18 % |
+| 2028 | 14,5 % | 3,5 % | 18 % |
+| 2029 | 14,0 % | 4,0 % | 18 % |
+
+Verificado en la página oficial de orientación de SUNAT, no en un blog. El total
+no se mueve, pero el reparto sí, y un documento emitido hoy tiene que seguir
+diciendo lo que dijo. Eso hace obligatorio —no prudente— guardar la tasa con la
+venta.
+
+`Order` ganó seis columnas: `currency`, `subtotal_amount`, `taxable_amount`,
+`tax_amount`, `tax_rate`, `tax_treatment`. `breakdown_for_order()` las **lee**;
+no recalcula nunca. Sólo cae al cálculo en vivo para ventas anteriores a que el
+desglose existiera, y sin escribir nada.
+
+### Se muestra una sola línea de impuesto
+
+Rotulada «IGV», que es lo que muestra la representación impresa peruana y lo que
+el comprador reconoce. Partirla en dos columnas obligaría a redondear dos veces
+—y a que la suma dejara de cuadrar— a cambio de un detalle que el documento no
+necesita separar y que, además, cambia cada año.
+
+### Una autoridad de cálculo
+
+`store/tax_services.py` es la única función que descompone una venta. Sin
+condicionales por `slug`: el piloto no es un caso especial del motor, y hay un
+test que lee el código fuente del módulo y falla si aparece uno.
+
+En el punto de venta el desglose se calcula **dentro de `calculate_pos_totals`**,
+en la misma llamada que el total. La previsualización y la venta leen ese único
+resultado, así que no pueden separarse ni un céntimo: si cada una llamara al
+motor por su cuenta, un cambio en una de las dos llamadas dejaría de verse hasta
+que un cliente reclamara.
+
+### El escaparate no calcula el suyo
+
+Pregunta a `POST /api/checkout/quote/`. El carrito se lee del servidor —no del
+cuerpo de la petición, o un cliente se cotizaría los precios que quisiera— y del
+cuerpo se aceptan sólo la clave de sesión y el cupón.
+
+La alternativa era dividir el total entre 1,18 en el navegador, y eso habría
+creado una segunda autoridad de cálculo: una en Python con `Decimal` y otra en
+JavaScript con coma flotante. `0.1 + 0.2 !== 0.3` no es una curiosidad
+académica; es este error exacto, servido al cliente en pantalla y contradicho por
+el papel que se lleva.
+
+Si la cotización falla, la pantalla **calla**: muestra el total, que es lo que se
+va a cobrar, y no dice nada del impuesto. Mejor callar que inventar una cifra.
+
+### Los dos documentos
+
+| Formato | Ruta | Papel |
+|---|---|---|
+| A4 | `/api/admin/orders/{pk}/sales-note/pdf/` | Hoja, desglose completo |
+| Ticket | `…/pdf/?formato=ticket80` | Rollo de 80 mm, altura continua |
+
+**Sin parámetros sigue devolviendo el A4.** Hay enlaces ya escritos contra esa
+ruta y añadir un formato no puede cambiar lo que devuelve la llamada de siempre.
+
+**No se llama `?format=`.** Se comprobó empíricamente: `format` es el
+`URL_FORMAT_OVERRIDE` de DRF, que negocia el renderizador antes de que la vista
+corra y responde 404 a un valor que no reconoce. El nombre obvio estaba ocupado.
+
+El ticket vive en `store/ticket_services.py`, no en un `if` dentro del A4: son
+dos geometrías sin nada en común —17 cm con tablas de cuatro columnas frente a
+7,2 cm de una sola columna y altura desconocida—, y compartirlas habría
+significado un condicional en cada línea. Lo que sí comparten son los DATOS:
+ambos leen el mismo contexto, que lee el mismo desglose congelado.
+
+Se dibuja **dos veces**: la primera para medir, la segunda sobre una página de
+exactamente esa altura. Sin eso, la impresora escupe palmos de papel en blanco
+tras un ticket de dos líneas.
+
+### La nota se crea al imprimir, no al cobrar
+
+Decisión deliberada. Generarla dentro de la venta metería la reserva de un
+correlativo interno dentro de la transacción que ya mueve stock y cobra: un fallo
+al numerar tumbaría un cobro que sí ocurrió. Y gastaría un número por cada venta
+que nadie llega a imprimir.
+
+No abre la puerta a duplicados. `SalesNote` es uno-a-uno con `Order` y
+`get_or_create_sales_note` es idempotente, así que imprimir cinco veces devuelve
+cinco veces **la misma nota con el mismo correlativo**. La idempotencia del punto
+de venta tampoco se toca: la impresión ocurre después de la venta, fuera de su
+transacción y fuera de su clave.
+
+### Lo que estos documentos NO son
+
+Ninguno es un comprobante electrónico SUNAT. No se firma nada, no se habla con
+SUNAT, no se finge una respuesta, no se marca nada como aceptado. El aviso sigue
+impreso en los dos formatos y el lenguaje es **«solicitado»**, nunca «emitido».
+
+Hay una prueba que lee los dos PDF y falla si aparece «factura emitida», «boleta
+emitida», «comprobante SUNAT» o «factura/boleta electrónica».
+
+**La emisión electrónica real es C2.2 y no está hecha.**
+
+### Los PDF se leen, no se dan por buenos
+
+`pdf.startswith(b'%PDF')` pasa igual si el documento sale en blanco, con el total
+equivocado o con un identificador de pasarela impreso. Las pruebas descomprimen
+los streams —ASCII85 sobre Flate, con `zlib` y `base64` de la biblioteca
+estándar, sin añadir dependencias al proyecto— y comprueban las cifras, el aviso,
+el ancho real del `MediaBox` y que la altura del ticket siga al contenido.
+
+Un detalle que costó encontrar: `pdf_bytes.split(b'stream')` **no sirve**, porque
+la palabra `endstream` contiene `stream`. El cuerpo se quedaba con un `end`
+pegado detrás del terminador `~>`, la decodificación fallaba en silencio y las
+aserciones buscaban su texto dentro de basura.
+
+También se verifica que ninguno de los dos documentos contenga identificadores de
+pasarela, códigos de autorización, tokens, números de tarjeta ni `payment_error`.
+
+### Defecto corregido de paso
+
+El nombre del PDF descargado se componía en el frontend como
+`blackdog-nota-venta-…`: el nombre de **un** inquilino escrito en código
+compartido de una plataforma multiempresa, así que cualquier otra empresa se
+descargaba sus ventas con la marca ajena en el archivo. Ahora se usa el nombre
+que manda el servidor en `Content-Disposition`, construido con el slug de la
+empresa dueña del pedido y filtrado a ASCII seguro.
+
+### Lo que encontró la revisión adversarial
+
+Treinta y dos agentes en seis lentes independientes levantaron 26 hallazgos;
+cada uno pasó por un verificador cuyo trabajo era REFUTARLO. Sobrevivieron dos.
+Reviso a mano los marcados «high» porque al verificador se le instruyó descartar
+ante la duda, y esa instrucción produce falsos negativos — **produjo uno**, y era
+el peor de todos.
+
+Ninguno de estos defectos lo habrían visto los tests que yo mismo escribí,
+porque todos probaban el camino feliz.
+
+**1. Cotizar gastaba el presupuesto de pagar.** `CheckoutQuoteView` nació
+compartiendo `CheckoutThrottle` —el limitador de 10/min— con
+`payments/create-checkout-session/`. Reproducido: doce cotizaciones y la
+creación de la sesión de pago responde 429 sin llegar a ejecutarse.
+
+Era grave por cómo funciona la pantalla: el checkout vuelve a cotizar en CADA
+cambio del carrito o del cupón, así que alguien ajustando cantidades se cerraba
+la compra a sí mismo. **Mirar el checkout se había convertido en un motivo para
+no poder comprar.**
+
+Arreglado con un cubo propio (`checkout_quote`, 60/min). Sigue limitado porque
+recalcula precios y stock, que es trabajo real contra la base de datos.
+
+**2. Una palabra sin espacios se salía del rollo.** El cortador de línea del
+ticket sólo separaba entre palabras. Un nombre como
+`MacBookProM4Max16Pulgadas1TBNegroEspacialConCargadorMagSafe140W` se dibujaba
+entero: 258 pt de ancho sobre una página de 227 pt. No se recortaba con un
+aviso — se salía del papel y desaparecía.
+
+Lo mismo valía para el nombre de la empresa, que va centrado y es texto libre de
+cada inquilino: al desbordar, se sale por los dos lados a la vez.
+
+En el A4 no pasaba porque `Paragraph` parte palabras largas por su cuenta, y esa
+diferencia es justo la que lo hacía difícil de ver: el mismo dato, correcto en un
+documento y perdido en el otro.
+
+Ahora `_wrap` trocea por caracteres, midiendo, cuando una palabra sola no cabe.
+
+**3. Los botones de imprimir se bloqueaban para siempre.** Éste el verificador
+lo DESCARTÓ, y se equivocó. `printSalesNoteTicket` esperaba el `onload` de un
+marco oculto para llamar a imprimir; medido en navegador, con un PDF servido como
+blob ese evento **no dispara**. La promesa no se resolvía nunca, así que los dos
+botones se quedaban en «Preparando…» indefinidamente: veinticinco segundos
+después seguían bloqueados, con el cliente delante y sin más salida que recargar
+a media venta.
+
+Lo resolvió una medición de treinta segundos, no un razonamiento. La espera está
+acotada ahora (3 s), y si el marco no carga el ticket se **descarga** y la
+pantalla lo dice — un botón que promete imprimir y no imprime deja al operador
+mirando una impresora que no ha recibido nada.
+
+**4. El ticket decía «Comprobante: Boleta».** El A4 rotulaba «Comprobante
+solicitado:» y el ticket no, así que el mismo dato afirmaba dos cosas distintas
+según el formato — y la del ticket era la falsa: ese papel no es una boleta, no
+ha habido emisión ni aceptación de SUNAT.
+
+**5. El escaparate y el mostrador redondeaban distinto.** `price_checkout` usaba
+`quantize(CENTS)` a secas —media al par, el redondeo bancario— mientras el punto
+de venta usa media al alza. Medido: el 40 % de los subtotales diverge para algún
+porcentaje corriente de cupón, y con precios reales también (S/ 129,90 al 15 %
+daba 19,48 en la web y 19,49 en la tienda).
+
+Es anterior a C2.1, pero C2.1 lo empeoraba al **congelar e imprimir** esa cifra.
+Se unificó en media al alza, que es lo que esta fase exige para todo importe.
+La dirección importa y se comprobó sobre 6 667 subtotales: redondear el
+DESCUENTO hacia arriba sólo puede bajar el total, así que **ningún cliente paga
+más que antes** por esta corrección.
+
+**6. El admin de Django podía descuadrar una venta cerrada.** `total` era
+editable y los campos del desglose ni se mostraban. Ese formulario no pasa por
+`tax_services`, así que editarlo dejaba la venta diciendo `base + impuesto !=
+total` y el siguiente PDF salía contradictorio consigo mismo.
+
+Recalcular al guardar tampoco valía: reescribiría en silencio un documento ya
+entregado, que es justo lo que el congelado existe para impedir. El dinero de una
+venta cerrada es ahora de sólo lectura, y el desglose se muestra para que un
+descuadre se vea en vez de descubrirse al imprimir. Una corrección de importe es
+una operación comercial —nota de crédito—, no una edición de fila.
+
+**7. `money()` aceptaba floats en silencio.** `Decimal(0.1)` no vale 0,1, y
+redondear ese error a céntimos lo esconde hasta que un total deja de cuadrar.
+Ahora levanta `TypeError`.
+
+**Un agente dejó basura en el repositorio**: `store/tests_dumpticket.py`, un
+arnés de depuración sin aserciones que imprimía dos volcados de PDF en cada
+corrida. Eliminado.
+
+**Las dos pruebas de regresión se verificaron al revés**: se revirtió el arreglo
+y se comprobó que fallan, y se restauró y se comprobó que pasan. Un test que
+pasa igual con el código roto no prueba nada — es el mismo pecado que un test
+que se salta en silencio.
+
+### Deuda declarada
+
+- **`tax_treatment` sólo emite `taxed` hoy.** El campo existe, viaja congelado y
+  los documentos ya saben pintar `exempt` e `inafecta`, pero no hay superficie
+  para marcarlo. Cuando un tenant venda algo exonerado hará falta esa pantalla.
+- **La tasa es una constante del módulo, no configuración por empresa.**
+  `resolve_tax_rate()` ya recibe la empresa, así que el día que haya
+  jurisdicciones distintas no cambia quien llama — pero hoy devuelve 18 % para
+  todos.
+- **Las pantallas escriben `S/` fijo.** El servidor ya manda la moneda en cada
+  desglose, pero el escaparate y el punto de venta la rotulan a mano. Hoy no se
+  nota porque sólo hay PEN; el día que un inquilino use otra, la pantalla y el
+  papel dirán cosas distintas. NO se ha medio-arreglado a propósito: usar el
+  símbolo del servidor sólo en las líneas de impuesto dejaría la misma pantalla
+  mezclando dos notaciones, que es exactamente el defecto que se acaba de
+  corregir en el PDF. Se arregla entero o no se toca.
+- **No hay serie fiscal.** El correlativo `NV-` es interno y así se rotula en los
+  dos documentos. La numeración fiscal pertenece a C2.2.

@@ -285,6 +285,35 @@ def _checked_text(value, limit: int, label: str) -> str:
     return text
 
 
+def _tax_breakdown(company, total, subtotal, discount_amount):
+    """El desglose de esta venta, según la única autoridad de cálculo."""
+    from .company_settings import get_company_settings
+    from .tax_services import breakdown_from_total
+
+    settings_row = get_company_settings(company)
+    return breakdown_from_total(
+        total=total, subtotal=subtotal, discount_amount=discount_amount,
+        currency=(getattr(settings_row, 'currency', '') or 'PEN'), company=company,
+    )
+
+
+def tax_snapshot_fields(breakdown) -> dict:
+    """
+    Un desglose ya calculado, traducido a columnas de `Order`.
+
+    Traduce; no calcula. Es la diferencia entre congelar lo que se enseñó y
+    congelar algo parecido.
+    """
+    return {
+        'currency': breakdown.currency,
+        'subtotal_amount': breakdown.subtotal,
+        'taxable_amount': breakdown.taxable_amount,
+        'tax_amount': breakdown.tax_amount,
+        'tax_rate': breakdown.tax_rate,
+        'tax_treatment': breakdown.tax_treatment,
+    }
+
+
 def _money(value) -> Decimal:
     return Decimal(value).quantize(CENT, rounding=ROUND_HALF_UP)
 
@@ -413,6 +442,12 @@ def calculate_pos_totals(company, products, items, *, discount) -> dict:
         'subtotal': subtotal,
         'discount_amount': discount_amount,
         'total': total,
+        # EL DESGLOSE SALE DE AQUÍ, del mismo sitio que el total y por el mismo
+        # motivo que dice el docstring: la previsualización y la venta lo leen
+        # de este único cálculo, así que no pueden separarse ni un céntimo. Si
+        # cada una llamara al motor por su cuenta, un cambio en una de las dos
+        # llamadas dejaría de verse hasta que un cliente reclamara.
+        'tax': _tax_breakdown(company, total, subtotal, discount_amount),
     }
 
 
@@ -897,6 +932,9 @@ def create_pos_sale(
         total=priced['total'],
         discount_amount=priced['discount_amount'],
         coupon_code=discount['coupon_code'],
+        # Se congela EL MISMO desglose que vio el operador en pantalla, no uno
+        # equivalente recalculado aquí.
+        **tax_snapshot_fields(priced['tax']),
         discount_source=discount['source'],
         discount_reason=discount['reason'],
         discount_authorized_by=(

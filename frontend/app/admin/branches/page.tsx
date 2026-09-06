@@ -128,7 +128,7 @@ function BranchEditor({
               ))}
             </div>
 
-            {error ? <p className="mt-3 text-sm text-red-400">{error}</p> : null}
+            {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
 
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -264,7 +264,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
 
         {loading ? <p className="py-10 text-center text-muted">Cargando…</p> : null}
         {error ? (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+          <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
             {error}
           </div>
         ) : null}
@@ -343,7 +343,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
               </div>
             </div>
             {createError ? (
-              <p className="mt-3 text-sm text-red-400">{createError}</p>
+              <p className="mt-3 text-sm text-danger">{createError}</p>
             ) : null}
             <button
               type="submit"

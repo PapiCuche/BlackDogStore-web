@@ -80,7 +80,7 @@ function PromotionRowView({
           <p className="text-sm font-medium text-foreground">
             {promotion.name}
             {promotion.is_live ? (
-              <span className="ml-2 text-[11px] text-emerald-400/80">activa</span>
+              <span className="ml-2 text-[11px] text-success">activa</span>
             ) : (
               <span className="ml-2 text-[11px] text-muted">
                 {promotion.is_active ? "fuera de fecha" : "archivada"}
@@ -110,7 +110,7 @@ function PromotionRowView({
       <div className="mt-3 flex flex-wrap items-baseline justify-between gap-3 border-t border-bd-border pt-3 text-sm">
         <span className="text-muted line-through">{money(regular)}</span>
         <span className="text-foreground">{money(comboPrice)}</span>
-        <span className="text-emerald-400/80">ahorro {money(saving)}</span>
+        <span className="text-success">ahorro {money(saving)}</span>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-muted">
@@ -232,12 +232,12 @@ function ComboForm({
           </label>
           <input
             id="combo-name"
-            className={`${FIELD} ${errors.name ? "border-red-500/50" : ""}`}
+            className={`${FIELD} ${errors.name ? "border-danger-border" : ""}`}
             value={name}
             maxLength={150}
             onChange={(e) => setName(e.target.value)}
           />
-          {errors.name ? <p className="mt-1 text-xs text-red-400">{errors.name}</p> : null}
+          {errors.name ? <p className="mt-1 text-xs text-danger">{errors.name}</p> : null}
         </div>
         <div>
           <label className={LABEL} htmlFor="combo-type">
@@ -334,7 +334,7 @@ function ComboForm({
               <button
                 type="button"
                 onClick={() => setPicked((prev) => prev.filter((x) => x.product !== p.product))}
-                className="text-xs text-muted transition hover:text-red-400"
+                className="text-xs text-muted transition hover:text-danger"
               >
                 ✕
               </button>
@@ -342,13 +342,13 @@ function ComboForm({
           ))}
         </div>
       ) : null}
-      {errors.items ? <p className="text-xs text-red-400">{errors.items}</p> : null}
+      {errors.items ? <p className="text-xs text-danger">{errors.items}</p> : null}
 
       {picked.length >= 2 ? (
         <div className="flex flex-wrap items-baseline justify-between gap-3 border-t border-bd-border pt-3 text-sm">
           <span className="text-muted line-through">{money(regular)}</span>
           <span className="text-foreground">{money(combo)}</span>
-          <span className="text-emerald-400/80">ahorro {money(saving_)}</span>
+          <span className="text-success">ahorro {money(saving_)}</span>
         </div>
       ) : (
         <p className="text-[11px] text-muted">
@@ -387,7 +387,7 @@ function ComboForm({
           </button>
         </div>
       </div>
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
     </div>
   );
 }
@@ -444,7 +444,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
   if (error || !data) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+        <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
           {error ?? "Sin datos."}
         </div>
       </AdminShell>
@@ -596,7 +596,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                 </button>
               </div>
             ) : null}
-            {couponError ? <p className="text-sm text-red-400">{couponError}</p> : null}
+            {couponError ? <p className="text-sm text-danger">{couponError}</p> : null}
 
             {!coupons?.results.length ? (
               <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">
@@ -624,7 +624,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                           {c.is_expired ? (
                             <span className="text-muted">vencido</span>
                           ) : c.is_active ? (
-                            <span className="text-emerald-400/80">activo</span>
+                            <span className="text-success">activo</span>
                           ) : (
                             <span className="text-muted">inactivo</span>
                           )}

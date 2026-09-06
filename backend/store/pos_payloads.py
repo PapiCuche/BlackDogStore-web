@@ -140,6 +140,19 @@ def preview_payload(priced, *, may_see_commission: bool) -> dict:
             for a in priced['promotions']['applied']
         ],
         'total': str(priced['total']),
+        # LO QUE EL OPERADOR LEE EN VOZ ALTA. Sale del mismo cálculo que hará la
+        # venta, así que el ticket no puede imprimir otra cifra.
+        'tax': {
+            **priced['tax'].as_dict(),
+            'base_label': {
+                'taxed': 'Op. gravada',
+                'exempt': 'Op. exonerada',
+                'unaffected': 'Op. inafecta',
+            }.get(priced['tax'].tax_treatment, 'Op. gravada'),
+            'tax_label': (
+                f"IGV ({(priced['tax'].tax_rate * 100).normalize():f}%)"
+            ),
+        },
         'seller': {
             'id': seller.pk if seller else None,
             'name': pos_services.seller_display_name(seller),
@@ -166,6 +179,23 @@ def preview_payload(priced, *, may_see_commission: bool) -> dict:
     }
 
 
+def _sale_tax(order) -> dict:
+    """El desglose de una venta ya cerrada, con sus rótulos."""
+    from .tax_services import breakdown_for_order
+
+    result = breakdown_for_order(order)
+    percent = (result.tax_rate * 100).normalize()
+    return {
+        **result.as_dict(),
+        'base_label': {
+            'taxed': 'Op. gravada',
+            'exempt': 'Op. exonerada',
+            'unaffected': 'Op. inafecta',
+        }.get(result.tax_treatment, 'Op. gravada'),
+        'tax_label': f'IGV ({percent:f}%)',
+    }
+
+
 def sale_payload(
     order, branch, *, created: bool, may_see_commission: bool,
     available_elsewhere=None,
@@ -189,6 +219,10 @@ def sale_payload(
         'discount_source': order.discount_source,
         'discount_reason': order.discount_reason,
         'total': str(order.total),
+        # EL DESGLOSE CONGELADO DE ESTA VENTA, leído de la orden y no
+        # recalculado: es el mismo que imprimirá el ticket, y una reimpresión
+        # dentro de un año seguirá diciendo lo mismo aunque la tasa cambie.
+        'tax': _sale_tax(order),
         'paid_at': order.paid_at,
         'payment_method': order.payment_method,
         'amount_received': (

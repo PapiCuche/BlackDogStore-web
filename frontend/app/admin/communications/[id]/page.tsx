@@ -58,7 +58,7 @@ function View({ ctx, id }: { ctx: InternalContext; id: string }) {
   if (error) {
     return (
       <div className="space-y-3">
-        <p className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-300">
+        <p className="rounded-lg border border-danger-border bg-danger-surface px-3 py-2 text-xs text-danger">
           {error}
         </p>
         <Link
@@ -78,7 +78,7 @@ function View({ ctx, id }: { ctx: InternalContext; id: string }) {
   return (
     <article className="space-y-4">
       <header className="space-y-1">
-        <span className="inline-block rounded bg-sky-500/15 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-sky-300">
+        <span className="inline-block rounded bg-info-surface px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-info">
           Comunicado
         </span>
         <h1 className="text-lg font-semibold text-foreground">
