@@ -48687,3 +48687,244 @@ class C22BRecipientTest(TestCase):
             order=order, product=producto, quantity=1, price=Decimal('118.00'))
         with self.assertRaises(FiscalError):
             get_or_create_fiscal_document(order)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BFiscalApiTest(TestCase):
+    """
+    La superficie interna: qué devuelve, qué esconde y quién puede tocarla.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-api', 'Empresa API', tax_id='20100066603',
+            legal_name='EMPRESA API SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo API', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+
+        self.emisor, _ = _p2d_member(
+            self.company, 'c22b_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'c22b_observador', ['company.view', 'sales.fiscal.view'])
+        self.ajeno, _ = _p2d_member(
+            self.company, 'c22b_ajeno', ['company.view'])
+
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem = key.decode()
+        self.cert_pem = cert.decode()
+        self.order = self._order()
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _emitir(self, user=None, order=None):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem,
+                               FISCAL_KEY_PEM=self.key_pem):
+            return self._as(user or self.emisor).post(
+                f'/api/admin/orders/{(order or self.order).pk}/fiscal-document/')
+
+    # -- forma de la respuesta ------------------------------------------------
+
+    def test_issuing_returns_the_document_metadata(self):
+        res = self._emitir()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['identifier'], 'F001-1')
+        self.assertEqual(res.data['status'], FiscalDocumentStatus.SIGNED)
+        self.assertEqual(res.data['total'], '118.00')
+        self.assertTrue(res.data['has_xml'])
+        self.assertFalse(res.data['has_cdr'])
+        self.assertFalse(res.data['can_download_pdf'])
+
+    def test_the_detail_never_carries_the_xml_or_a_secret(self):
+        """
+        Un comprobante firmado son kilobytes de base64 y una firma. En la
+        respuesta de detalle se convertiría en algo que se copia y se pega.
+        """
+        self._emitir()
+        res = self._as(self.observador).get(
+            f'/api/admin/orders/{self.order.pk}/fiscal-document/')
+        # `str()` y no `json.dumps`: la respuesta lleva un datetime, que no es
+        # serializable — y el objetivo es inspeccionar TODO lo que sale, no
+        # sólo lo que resulta serializable.
+        crudo = str(res.data).lower()
+        for prohibido in ('<?xml', 'signedxml', 'signed_xml', 'begin private key',
+                          'moddatos', 'wsse', 'certificate', 'soapenv'):
+            self.assertNotIn(prohibido, crudo, prohibido)
+
+    def test_amounts_travel_as_strings(self):
+        """Un importe que llega como número JSON invita a operar con él."""
+        res = self._emitir()
+        for campo in ('taxable_amount', 'tax_amount', 'total'):
+            self.assertIsInstance(res.data[campo], str, campo)
+
+    def test_issuing_twice_returns_the_same_document(self):
+        primero = self._emitir()
+        segundo = self._emitir()
+        self.assertEqual(primero.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segundo.status_code, status.HTTP_200_OK)
+        self.assertEqual(primero.data['id'], segundo.data['id'])
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+
+    def test_an_order_without_a_document_answers_404(self):
+        res = self._as(self.observador).get(
+            f'/api/admin/orders/{self.order.pk}/fiscal-document/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- permisos -------------------------------------------------------------
+
+    def test_viewing_does_not_grant_issuing(self):
+        """
+        SABOTAJE: escalada por capacidad. Consultar el estado de una factura y
+        declarar algo ante SUNAT son decisiones distintas.
+        """
+        res = self._emitir(user=self.observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_member_without_fiscal_capabilities_sees_nothing(self):
+        self._emitir()
+        res = self._as(self.ajeno).get(
+            f'/api/admin/orders/{self.order.pk}/fiscal-document/')
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+    def test_no_legacy_role_grants_fiscal_authority(self):
+        """
+        El concepto no existía antes de esta fase, así que no hay un `admin`
+        histórico que «siempre pudo facturar». La lista vacía es deliberada.
+        """
+        from . import fiscal_views
+
+        self.assertEqual(fiscal_views._NO_LEGACY_BRIDGE, ())
+
+    # -- artefactos -----------------------------------------------------------
+
+    def test_the_xml_downloads_with_the_sunat_filename(self):
+        doc_id = self._emitir().data['id']
+        res = self._as(self.observador).get(
+            f'/api/admin/fiscal-documents/{doc_id}/xml/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('application/xml', res['Content-Type'])
+        self.assertIn('20100066603-01-F001-1.XML', res['Content-Disposition'])
+        self.assertTrue(res.content.startswith(b'<?xml'))
+
+    def test_the_filename_cannot_carry_a_header_injection(self):
+        """Un salto de línea en una cabecera HTTP es inyección de cabeceras."""
+        doc_id = self._emitir().data['id']
+        doc = FiscalDocument.objects.get(pk=doc_id)
+        doc.series = 'F0\r\n'
+        doc.save(update_fields=['series'])
+        res = self._as(self.observador).get(
+            f'/api/admin/fiscal-documents/{doc_id}/xml/')
+        self.assertNotIn('\n', res['Content-Disposition'])
+        self.assertNotIn('\r', res['Content-Disposition'])
+
+    def test_the_cdr_is_404_until_sunat_answers(self):
+        doc_id = self._emitir().data['id']
+        res = self._as(self.observador).get(
+            f'/api/admin/fiscal-documents/{doc_id}/cdr/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BFiscalTenantIsolationTest(TestCase):
+    """
+    SABOTAJES 9, 10 y 11: XML, CDR y estado de otro tenant.
+
+    Un identificador ajeno responde como uno inexistente. Un 403 confirmaría que
+    ese comprobante existe.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c22b-iso-a', 'Empresa A', tax_id='20100066603',
+                             legal_name='EMPRESA A SAC')
+        self.b = _p3_company('c22b-iso-b', 'Empresa B', tax_id='20522222222',
+                             legal_name='EMPRESA B SAC')
+        FiscalSeries.objects.create(
+            company=self.a, document_type=FiscalDocumentType.INVOICE, series='F001')
+        producto = _c1_product(self.a, 'Articulo A', '118.00')
+        _c1_stock(self.a.default_inventory_branch, producto, 10)
+
+        self.order_a = Order.objects.create(
+            company=self.a, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.a.default_inventory_branch)
+        OrderItem.objects.create(
+            order=self.order_a, product=producto, quantity=1,
+            price=Decimal('118.00'))
+
+        doc, _ = get_or_create_fiscal_document(self.order_a)
+        key, cert = self_signed_pem('20100066603')
+        self.doc_a = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        self.doc_a = submit_fiscal_document(self.doc_a, _FakeProvider(_accepted()))
+
+        self.de_b, _ = _p2d_member(
+            self.b, 'c22b_iso_b',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+    def _b(self):
+        client = APIClient()
+        client.force_authenticate(user=self.de_b)
+        return client
+
+    def test_b_cannot_read_a_document_of_a(self):
+        res = self._b().get(
+            f'/api/admin/orders/{self.order_a.pk}/fiscal-document/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_b_cannot_issue_for_an_order_of_a(self):
+        antes = FiscalDocument.objects.count()
+        res = self._b().post(
+            f'/api/admin/orders/{self.order_a.pk}/fiscal-document/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(FiscalDocument.objects.count(), antes)
+
+    def test_b_cannot_download_the_xml_of_a(self):
+        res = self._b().get(f'/api/admin/fiscal-documents/{self.doc_a.pk}/xml/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_b_cannot_download_the_cdr_of_a(self):
+        res = self._b().get(f'/api/admin/fiscal-documents/{self.doc_a.pk}/cdr/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_b_cannot_resubmit_a_document_of_a(self):
+        res = self._b().post(
+            f'/api/admin/fiscal-documents/{self.doc_a.pk}/submit/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self.doc_a.attempts.count(), 1)

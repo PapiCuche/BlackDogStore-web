@@ -93,6 +93,9 @@ REST_FRAMEWORK = {
         # ocurre en cada cambio del carrito, y compartir presupuesto con el
         # cobro dejaba al comprador sin poder pagar por haber mirado.
         'checkout_quote': '60/min',
+        # C2.2A.1. Emitir sale a la red de SUNAT; consultar no.
+        'fiscal_issue': '20/min',
+        'fiscal_read': '120/min',
         'cart': '60/min',
         'payment_status': '30/min',
         'resend_verification': '3/min',

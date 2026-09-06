@@ -146,3 +146,21 @@ class AdminPosSaleThrottle(UserRateThrottle):
 class AdminSalesAnalyticsThrottle(UserRateThrottle):
     """Commercial dashboard and replenishment report."""
     scope = 'admin_sales_analytics'
+
+
+class FiscalIssueThrottle(AnonRateThrottle):
+    """
+    Emitir y enviar tocan un servicio externo. Cubo propio, no el del checkout.
+
+    NO ES LA DEFENSA CONTRA EL DOBLE ENVÍO. Eso vive en el dominio: la reserva
+    de intento y las restricciones de base de datos. Un limitador sólo espacia
+    peticiones; dos clics separados por un segundo pasarían igual.
+    """
+
+    scope = 'fiscal_issue'
+
+
+class FiscalReadThrottle(AnonRateThrottle):
+    """Consultar estado y descargar artefactos. Más holgado: no sale a la red."""
+
+    scope = 'fiscal_read'

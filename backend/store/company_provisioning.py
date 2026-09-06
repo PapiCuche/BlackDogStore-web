@@ -137,6 +137,12 @@ _SALES_CAPS = (
     # Comercial y caja
     'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage',
     'sales.pos.use',
+    # C2.2A.1. Ventas ES el mostrador, y quien atiende necesita saber si la
+    # factura de un cliente ya salió. VER, no emitir: declarar algo ante SUNAT es
+    # un acto con consecuencias tributarias, y darlo por defecto a todo el
+    # personal de caja sería concederlo sin que nadie lo haya decidido. El
+    # preset de administrador sí lo lleva.
+    'sales.fiscal.view',
     # Recepción técnica
     'service.customers.view', 'service.customers.manage',
     'service.devices.view', 'service.devices.manage',

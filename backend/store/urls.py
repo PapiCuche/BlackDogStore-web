@@ -1,5 +1,9 @@
 from rest_framework.routers import DefaultRouter
 from .checkout_quote_views import CheckoutQuoteView
+from .fiscal_views import (
+    AdminFiscalDocumentCdrView, AdminFiscalDocumentSubmitView,
+    AdminFiscalDocumentXmlView, AdminOrderFiscalDocumentView,
+)
 from .views import (
     CategoryViewSet,
     ProductViewSet,
@@ -160,6 +164,11 @@ urlpatterns = [
     path('admin/inventory/no-movement/', AdminStaleStockView.as_view(), name='admin-inventory-no-movement'),
     path('admin/products/<int:pk>/stock-card/', AdminProductStockCardView.as_view(), name='admin-product-stock-card'),
     path('admin/orders/<int:pk>/sales-note/', AdminOrderSalesNoteView.as_view(), name='admin-order-sales-note'),
+    # --- C2.2A.1: comprobantes electrónicos. NO es la nota de venta interna ---
+    path('admin/orders/<int:pk>/fiscal-document/', AdminOrderFiscalDocumentView.as_view(), name='admin-order-fiscal-document'),
+    path('admin/fiscal-documents/<int:pk>/submit/', AdminFiscalDocumentSubmitView.as_view(), name='admin-fiscal-document-submit'),
+    path('admin/fiscal-documents/<int:pk>/xml/', AdminFiscalDocumentXmlView.as_view(), name='admin-fiscal-document-xml'),
+    path('admin/fiscal-documents/<int:pk>/cdr/', AdminFiscalDocumentCdrView.as_view(), name='admin-fiscal-document-cdr'),
     path('admin/orders/<int:pk>/sales-note/pdf/', AdminOrderSalesNotePdfView.as_view(), name='admin-order-sales-note-pdf'),
 
     # --- Phase 2D: multi-branch inventory ---
