@@ -131,7 +131,16 @@ def document_payload(document: FiscalDocument) -> dict:
         # Pistas para la interfaz. El backend las vuelve a comprobar.
         'can_submit': puede_enviar,
         'can_retry': puede_reintentar,
-        'can_download_pdf': document.is_accepted,
+        # Se puede imprimir desde que está firmado: antes no hay valor resumen
+        # y por tanto no hay QR. El papel dice el estado real, así que
+        # «pendiente de envío» no se confunde con «aceptada».
+        'can_download_pdf': document.status in (
+            FiscalDocumentStatus.SIGNED, FiscalDocumentStatus.SUBMITTED,
+            FiscalDocumentStatus.ACCEPTED,
+            FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION,
+            FiscalDocumentStatus.REJECTED,
+            FiscalDocumentStatus.SUBMISSION_ERROR,
+        ),
     }
 
 
@@ -344,3 +353,84 @@ class AdminFiscalDocumentCdrView(APIView):
             f'{document.series}-{document.number}.XML'
         )
         return _artifact_response(document.cdr_xml, name)
+
+
+#: CUÁNDO SE PUEDE IMPRIMIR, y es conservador a propósito.
+#:
+#: Antes de firmar no hay `DigestValue`, así que no hay QR y no hay
+#: representación impresa posible. Después de firmar sí puede imprimirse, pero el
+#: papel dice el estado real: «pendiente de envío» no es «aceptada».
+#:
+#: Un RECHAZADO también se imprime, y a propósito: el papel dice que fue
+#: rechazado y que no tiene validez tributaria. Ocultarlo dejaría al operador sin
+#: forma de enseñarle al cliente qué pasó.
+_PRINTABLE_STATES = (
+    FiscalDocumentStatus.SIGNED,
+    FiscalDocumentStatus.SUBMITTED,
+    FiscalDocumentStatus.ACCEPTED,
+    FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION,
+    FiscalDocumentStatus.REJECTED,
+    FiscalDocumentStatus.SUBMISSION_ERROR,
+)
+
+
+class AdminFiscalDocumentPdfView(APIView):
+    """
+    GET /api/admin/fiscal-documents/{pk}/pdf/ — la representación impresa.
+
+    `?formato=ticket80` devuelve el rollo de 80 mm. Sin parámetro, el A4.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [FiscalReadThrottle]
+
+    FORMATS = ('a4', 'ticket80')
+
+    def get(self, request, pk):
+        document, error = _fiscal_document(request, pk, CAP_FISCAL_VIEW)
+        if error:
+            return error
+
+        if document.status not in _PRINTABLE_STATES:
+            return Response(
+                {'detail': 'El comprobante todavía no se puede imprimir: '
+                           'sin firma no hay valor resumen y sin valor resumen '
+                           'no hay código QR.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        wanted = (request.query_params.get('formato') or 'a4').strip().lower()
+        if wanted not in self.FORMATS:
+            return Response(
+                {'detail': f'Formato no reconocido. Use: {", ".join(self.FORMATS)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from .fiscal_pdf_services import (
+            FiscalPdfError, generate_fiscal_pdf, generate_fiscal_ticket_pdf,
+        )
+
+        try:
+            content = (generate_fiscal_ticket_pdf(document) if wanted == 'ticket80'
+                       else generate_fiscal_pdf(document))
+        except FiscalPdfError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except Exception:
+            logger.exception('Fiscal PDF failed for %s', document.pk)
+            return Response(
+                {'detail': 'No se pudo generar la representación impresa.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        import re
+
+        sufijo = '-ticket80' if wanted == 'ticket80' else ''
+        name = re.sub(
+            r'[^A-Za-z0-9._-]', '',
+            f'{document.issuer_tax_id}-{document.document_type}-'
+            f'{document.series}-{document.number}{sufijo}.pdf',
+        )
+        response = HttpResponse(content, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{name}"'
+        response['Cache-Control'] = 'no-store'
+        return response

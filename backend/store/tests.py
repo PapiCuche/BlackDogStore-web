@@ -47089,6 +47089,7 @@ class C21CheckoutQuoteTest(TestCase):
 # ---------------------------------------------------------------------------
 
 import dataclasses  # noqa: E402
+import datetime  # noqa: E402
 import io  # noqa: E402
 
 from lxml import etree as _LET  # noqa: E402
@@ -48928,3 +48929,224 @@ class C22BFiscalTenantIsolationTest(TestCase):
             f'/api/admin/fiscal-documents/{self.doc_a.pk}/submit/')
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(self.doc_a.attempts.count(), 1)
+
+
+class C22BQrTest(TestCase):
+    """
+    §17 — el QR, campo por campo contra el anexo oficial.
+
+    Del Anexo A de la R.S. 113-2018, numeral 6.4.3. Diez campos separados por
+    `|`, sin separador final.
+    """
+
+    PAYLOAD_ARGS = dict(
+        issuer_tax_id='20100066603', document_type='01', series='F001', number=1,
+        tax_amount=Decimal('18.00'), total=Decimal('118.00'),
+        issue_date=datetime.date(2026, 9, 6),
+        customer_doc_type='6', customer_doc_number='20000000001',
+        digest_value='bDooE0rMdf79EDMTceZ98QtJ3oLEau5OnFGVuDjmjpg=',
+    )
+
+    def test_the_exact_payload(self):
+        from .fiscal.qr import build_qr_payload
+
+        self.assertEqual(
+            build_qr_payload(**self.PAYLOAD_ARGS),
+            '20100066603|01|F001|1|18.00|118.00|2026-09-06|6|20000000001|'
+            'bDooE0rMdf79EDMTceZ98QtJ3oLEau5OnFGVuDjmjpg=',
+        )
+
+    def test_the_field_order_one_by_one(self):
+        """
+        Diez campos posicionales en el orden equivocado producirían un QR
+        sintácticamente perfecto y semánticamente falso.
+        """
+        from .fiscal.qr import build_qr_payload
+
+        campos = build_qr_payload(**self.PAYLOAD_ARGS).split('|')
+        self.assertEqual(len(campos), 10)
+        esperado = [
+            '20100066603',   # 1 RUC del emisor
+            '01',            # 2 tipo de comprobante
+            'F001',          # 3 serie
+            '1',             # 4 correlativo
+            '18.00',         # 5 sumatoria IGV
+            '118.00',        # 6 importe total
+            '2026-09-06',    # 7 fecha de emisión
+            '6',             # 8 tipo de documento del adquirente
+            '20000000001',   # 9 número de documento del adquirente
+            'bDooE0rMdf79EDMTceZ98QtJ3oLEau5OnFGVuDjmjpg=',  # 10 valor resumen
+        ]
+        for i, (obtenido, quiero) in enumerate(zip(campos, esperado), 1):
+            self.assertEqual(obtenido, quiero, f'campo {i}')
+
+    def test_there_is_no_trailing_separator(self):
+        """
+        El mismo anexo define el PDF417 con ONCE campos y SÍ cierra con `|`. El
+        contraste dentro del documento es la evidencia de que el QR no lo lleva.
+        """
+        from .fiscal.qr import build_qr_payload
+
+        self.assertFalse(build_qr_payload(**self.PAYLOAD_ARGS).endswith('|'))
+
+    def test_amounts_carry_two_decimals(self):
+        from .fiscal.qr import build_qr_payload
+
+        payload = build_qr_payload(
+            **{**self.PAYLOAD_ARGS, 'tax_amount': Decimal('0.5'),
+               'total': Decimal('100')})
+        campos = payload.split('|')
+        self.assertEqual(campos[4], '0.50')
+        self.assertEqual(campos[5], '100.00')
+
+    def test_the_payload_is_not_a_url_or_an_internal_id(self):
+        from .fiscal.qr import build_qr_payload
+
+        payload = build_qr_payload(**self.PAYLOAD_ARGS)
+        self.assertNotIn('http', payload.lower())
+        self.assertNotIn('order', payload.lower())
+
+    def test_it_renders_a_real_png(self):
+        from .fiscal.qr import build_qr_payload, render_qr_png
+
+        png = render_qr_png(build_qr_payload(**self.PAYLOAD_ARGS))
+        self.assertTrue(png.startswith(b'\x89PNG'))
+        self.assertGreater(len(png), 200)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BFiscalPdfTest(TestCase):
+    """La representación impresa: lo que dice, lo que no, y cuándo existe."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-pdf', 'Empresa PDF', tax_id='20100066603',
+            legal_name='EMPRESA PDF SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        producto = _c1_product(self.company, 'Articulo PDF', '118.00')
+        _c1_stock(self.company.default_inventory_branch, producto, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=producto, quantity=1, price=Decimal('118.00'))
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        self.doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_an_unsigned_document_has_no_printed_representation(self):
+        """Sin `DigestValue` no hay QR, y sin QR no hay representación impresa."""
+        from .fiscal_pdf_services import FiscalPdfError, generate_fiscal_pdf
+
+        self.doc.digest_value = ''
+        self.doc.save(update_fields=['digest_value'])
+        with self.assertRaises(FiscalPdfError):
+            generate_fiscal_pdf(self.doc)
+
+    def test_the_a4_says_what_it_is_and_carries_the_numbers(self):
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc))
+        self.assertIn('FACTURA', texto.upper())
+        self.assertIn('F001-1', texto)
+        self.assertIn('20100066603', texto)
+        self.assertIn('100.00', texto)
+        self.assertIn('18.00', texto)
+        self.assertIn('118.00', texto)
+
+    def test_a_beta_document_is_marked_unmistakably(self):
+        """
+        Sin marca, alguien lo imprime y lo entrega como factura real. Va en el
+        aviso Y en la marca diagonal: una marca de agua se pierde en una
+        fotocopia mala.
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc)).upper()
+        self.assertIn('SIN VALIDEZ TRIBUTARIA', texto)
+        self.assertIn('BETA', texto)
+
+    def test_it_never_claims_acceptance_without_a_cdr(self):
+        """
+        Un papel que afirma una aceptación que no ocurrió es peor que uno que
+        dice «pendiente».
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc))
+        self.assertNotIn('Aceptada por SUNAT', texto)
+        self.assertIn('pendiente', texto.lower())
+
+    def test_once_accepted_it_says_so(self):
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        doc = submit_fiscal_document(self.doc, _FakeProvider(_accepted()))
+        texto = _pdf_text(generate_fiscal_pdf(doc))
+        self.assertIn('Aceptada por SUNAT', texto)
+
+    def test_a_rejected_document_says_it_has_no_tax_validity(self):
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        self.doc.status = FiscalDocumentStatus.REJECTED
+        self.doc.save(update_fields=['status'])
+        texto = _pdf_text(generate_fiscal_pdf(self.doc)).upper()
+        self.assertIn('RECHAZADA', texto)
+
+    def test_it_is_not_the_internal_sales_note(self):
+        """
+        `SalesNote` imprime «no válido como comprobante SUNAT» porque no lo es.
+        Este documento SÍ pertenece al dominio fiscal: ese aviso sería falso.
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc))
+        self.assertNotIn('No válido como comprobante', texto)
+        self.assertNotIn('Nota de venta interna', texto)
+
+    def test_the_ticket_is_eighty_millimetres_wide(self):
+        from .fiscal_pdf_services import generate_fiscal_ticket_pdf
+
+        pdf = generate_fiscal_ticket_pdf(self.doc)
+        caja = re.search(
+            rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)', pdf)
+        self.assertAlmostEqual(float(caja.group(1)) / 72 * 25.4, 80.0, delta=0.5)
+
+    def test_the_ticket_carries_the_same_figures_as_the_a4(self):
+        from .fiscal_pdf_services import (
+            generate_fiscal_pdf, generate_fiscal_ticket_pdf,
+        )
+
+        ticket = _pdf_text(generate_fiscal_ticket_pdf(self.doc))
+        for cifra in ('100.00', '18.00', '118.00', 'F001-1'):
+            self.assertIn(cifra, ticket)
+        self.assertIn('SIN VALIDEZ TRIBUTARIA', ticket.upper())
+        # Y el A4 dice lo mismo: dos papeles del mismo comprobante no pueden
+        # discrepar.
+        a4 = _pdf_text(generate_fiscal_pdf(self.doc))
+        for cifra in ('100.00', '18.00', '118.00'):
+            self.assertIn(cifra, a4)
+
+    def test_no_document_leaks_a_secret(self):
+        from .fiscal_pdf_services import (
+            generate_fiscal_pdf, generate_fiscal_ticket_pdf,
+        )
+
+        for pdf in (generate_fiscal_pdf(self.doc),
+                    generate_fiscal_ticket_pdf(self.doc)):
+            texto = _pdf_text(pdf).lower()
+            for secreto in ('moddatos', 'private key', 'wsse', 'soapenv',
+                            'begin rsa'):
+                self.assertNotIn(secreto, texto)

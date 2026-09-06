@@ -1,8 +1,9 @@
 from rest_framework.routers import DefaultRouter
 from .checkout_quote_views import CheckoutQuoteView
 from .fiscal_views import (
-    AdminFiscalDocumentCdrView, AdminFiscalDocumentSubmitView,
-    AdminFiscalDocumentXmlView, AdminOrderFiscalDocumentView,
+    AdminFiscalDocumentCdrView, AdminFiscalDocumentPdfView,
+    AdminFiscalDocumentSubmitView, AdminFiscalDocumentXmlView,
+    AdminOrderFiscalDocumentView,
 )
 from .views import (
     CategoryViewSet,
@@ -169,6 +170,7 @@ urlpatterns = [
     path('admin/fiscal-documents/<int:pk>/submit/', AdminFiscalDocumentSubmitView.as_view(), name='admin-fiscal-document-submit'),
     path('admin/fiscal-documents/<int:pk>/xml/', AdminFiscalDocumentXmlView.as_view(), name='admin-fiscal-document-xml'),
     path('admin/fiscal-documents/<int:pk>/cdr/', AdminFiscalDocumentCdrView.as_view(), name='admin-fiscal-document-cdr'),
+    path('admin/fiscal-documents/<int:pk>/pdf/', AdminFiscalDocumentPdfView.as_view(), name='admin-fiscal-document-pdf'),
     path('admin/orders/<int:pk>/sales-note/pdf/', AdminOrderSalesNotePdfView.as_view(), name='admin-order-sales-note-pdf'),
 
     # --- Phase 2D: multi-branch inventory ---
