@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 
+const API = process.env.E2E_API_BASE ?? "http://127.0.0.1:8000/api";
+
 /**
  * C2.1 — cobrar en mostrador y sacar el ticket.
  *
@@ -20,8 +22,24 @@ import { test, expect } from "@playwright/test";
  * se parece demasiado a un aprobado.
  */
 
-test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", async ({ page }) => {
+test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", async ({ page, request }) => {
   test.setTimeout(180_000);
+
+  // QUÉ ARTÍCULO SE VENDE LO DECIDE EL CATÁLOGO, NO ESTE FICHERO.
+  //
+  // La primera versión buscaba «iPhone» por nombre. Las propias corridas de esta
+  // prueba fueron vendiendo unidades hasta dejar ese artículo a cero, y entonces
+  // el buscador lo encontraba pero el carrito se quedaba vacío: la prueba fallaba
+  // por haberse gastado a sí misma el stock, no por un defecto del código.
+  const catalogo = await request.get(`${API}/products/?page_size=50`);
+  const cuerpo = await catalogo.json();
+  const articulos = Array.isArray(cuerpo) ? cuerpo : (cuerpo.results ?? []);
+  const vendible = articulos.find(
+    (p: { price: string; inventory: number }) => Number(p.price) > 0 && p.inventory >= 2,
+  );
+  if (!vendible) {
+    test.skip(true, "el catálogo no tiene ningún artículo con stock suficiente");
+  }
 
   await page.goto("/auth", { waitUntil: "networkidle" });
   const card = page.locator("section").filter({ hasText: "Accesos de desarrollo" });
@@ -44,10 +62,10 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
   // pasando por los motivos equivocados.
   const search = page.getByPlaceholder(/por nombre o c/i).first();
   await expect(search, "el punto de venta no cargó").toBeVisible({ timeout: 30_000 });
-  await search.fill("iPhone");
+  await search.fill(vendible.name.slice(0, 12));
   await page.waitForTimeout(3000);
 
-  const result = page.locator("button").filter({ hasText: /iPhone/i }).first();
+  const result = page.locator("button").filter({ hasText: vendible.name.slice(0, 12) }).first();
   if ((await result.count()) === 0) {
     test.skip(true, "el catálogo no tiene productos con stock en esta sucursal");
   }
