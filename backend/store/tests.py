@@ -49292,3 +49292,170 @@ class C22BFiscalPdfTest(TestCase):
             for secreto in ('moddatos', 'private key', 'wsse', 'soapenv',
                             'begin rsa'):
                 self.assertNotIn(secreto, texto)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BAdversarialTest(TestCase):
+    """
+    §27 — los sabotajes que aún no tenían test propio.
+
+    Cada uno describe una forma concreta de romper el sistema. Si alguno dejara
+    de fallar, el defecto que impide habría vuelto.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-adv', 'Empresa Adversarial', tax_id='20100066603',
+            legal_name='EMPRESA ADVERSARIAL SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Adv', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+        self.user, _ = _p2d_member(
+            self.company, 'c22b_adv',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        return client
+
+    def _issue(self, order):
+        key, cert = self_signed_pem('20100066603')
+        with override_settings(FISCAL_CERT_PEM=cert.decode(),
+                               FISCAL_KEY_PEM=key.decode()):
+            return self._client().post(
+                f'/api/admin/orders/{order.pk}/fiscal-document/')
+
+    def test_sabotage_4_two_issue_clicks_produce_one_correlativo(self):
+        """Doble clic en «Emitir»."""
+        order = self._order()
+        primero = self._issue(order)
+        segundo = self._issue(order)
+        self.assertEqual(primero.data['id'], segundo.data['id'])
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+
+    def test_sabotage_12_no_private_key_reaches_a_response_or_a_log(self):
+        """
+        La clave privada y la Clave SOL no pueden salir por ninguna parte: ni en
+        la respuesta, ni en la bitácora, ni en un intento de envío.
+        """
+        order = self._order()
+        respuesta = self._issue(order)
+        doc = FiscalDocument.objects.get(pk=respuesta.data['id'])
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+        superficies = [str(respuesta.data)]
+        superficies += [str(a.__dict__) for a in FiscalSubmissionAttempt.objects.all()]
+        superficies += [
+            str(log.metadata) for log in AdminAuditLog.objects.filter(
+                target_type='fiscal_document')
+        ]
+        superficies.append(str(FiscalDocument.objects.values().first()))
+
+        for texto in superficies:
+            minusculas = texto.lower()
+            for secreto in ('private key', 'moddatos', 'wsse', 'soapenv',
+                            'begin rsa', 'password'):
+                self.assertNotIn(secreto, minusculas, secreto)
+
+    def test_the_audit_log_stores_hashes_not_documents(self):
+        """
+        Un comprobante entero por entrada haría la bitácora ilegible además de
+        pesada. Se guarda el hash, que sirve para correlacionar.
+        """
+        order = self._order()
+        self._issue(order)
+        firmado = AdminAuditLog.objects.filter(
+            action='fiscal_document_signed').first()
+        self.assertIsNotNone(firmado)
+        self.assertIn('xml_sha256', firmado.metadata)
+        self.assertEqual(len(firmado.metadata['xml_sha256']), 64)
+        self.assertNotIn('<?xml', str(firmado.metadata))
+
+    def test_sabotage_3_a_production_series_is_never_selected(self):
+        """Aunque exista la fila, el ambiente lo decide el servidor."""
+        self.series.is_active = False
+        self.series.save(update_fields=['is_active'])
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F002', environment=FiscalEnvironment.PRODUCTION)
+
+        respuesta = self._issue(self._order())
+        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_sabotage_6_a_timeout_never_becomes_a_rejection_through_the_api(self):
+        order = self._order()
+        doc = FiscalDocument.objects.get(pk=self._issue(order).data['id'])
+
+        from unittest.mock import patch as _patch
+
+        # Se parchea donde se USA: `fiscal_views` importó el nombre al
+        # cargarse, así que parchear `fiscal_config` no lo alcanza.
+        with _patch('store.fiscal_views.resolve_provider') as fake:
+            fake.return_value = _FakeProvider(ProviderResult(
+                outcome=ProviderOutcome.TRANSPORT_ERROR,
+                safe_message='ReadTimeout al contactar con el servicio'))
+            respuesta = self._client().post(
+                f'/api/admin/fiscal-documents/{doc.pk}/submit/')
+
+        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
+        self.assertEqual(respuesta.data['status'],
+                         FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertFalse(respuesta.data['is_accepted'])
+        self.assertTrue(respuesta.data['can_retry'])
+
+    def test_sabotage_7_a_fault_without_a_cdr_never_becomes_accepted(self):
+        order = self._order()
+        doc = FiscalDocument.objects.get(pk=self._issue(order).data['id'])
+
+        from unittest.mock import patch as _patch
+
+        # Se parchea donde se USA: `fiscal_views` importó el nombre al
+        # cargarse, así que parchear `fiscal_config` no lo alcanza.
+        with _patch('store.fiscal_views.resolve_provider') as fake:
+            # Un 4000+ en un fault, sin constancia.
+            fake.return_value = _FakeProvider(ProviderResult(
+                outcome=ProviderOutcome.UNKNOWN_RESPONSE, response_code='4000',
+                safe_message='observación sin CDR'))
+            respuesta = self._client().post(
+                f'/api/admin/fiscal-documents/{doc.pk}/submit/')
+
+        self.assertFalse(respuesta.data['is_accepted'])
+        self.assertNotEqual(respuesta.data['status'],
+                            FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION)
+
+    def test_an_accepted_document_is_never_transmitted_twice(self):
+        order = self._order()
+        doc = FiscalDocument.objects.get(pk=self._issue(order).data['id'])
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+        from unittest.mock import patch as _patch
+
+        proveedor = _FakeProvider(_accepted())
+        with _patch('store.fiscal_views.resolve_provider', return_value=proveedor):
+            self._client().post(f'/api/admin/fiscal-documents/{doc.pk}/submit/')
+        self.assertEqual(proveedor.calls, 0)
