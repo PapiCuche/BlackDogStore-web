@@ -48489,3 +48489,201 @@ class C22BSubmissionClaimTest(TestCase):
         self.assertEqual(self.doc.attempts.count(), 2)
         self.assertEqual(
             [a.attempt_number for a in self.doc.attempts.all()], [1, 2])
+
+
+class C22BDiscountFailsClosedTest(TestCase):
+    """
+    §6 — una venta con descuento NO se emite todavía, y no en silencio.
+
+    C2.1 sabe vender con descuento; el generador fiscal no sabe declararlo. Un
+    descuento se expresa en UBL con `cac:AllowanceCharge`, no rebajando el
+    importe de la línea. Hacer lo segundo producía un documento que decía
+    «2 unidades a 100,00» con un total de línea de 184,75: la aritmética no
+    cerraba y la rebaja era invisible.
+
+    Enviar eso a SUNAT es declarar un precio unitario que nadie cobró.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-desc', 'Empresa Descuento', tax_id='20100066603',
+            legal_name='EMPRESA DESCUENTO SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Desc', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _order(self, *, descuento=Decimal('0.00'), cantidad=2):
+        bruto = Decimal('118.00') * cantidad
+        total = bruto - descuento
+        base = (total / Decimal('1.18')).quantize(Decimal('0.01'))
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=total, discount_amount=descuento, subtotal_amount=bruto,
+            taxable_amount=base, tax_amount=total - base,
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=cantidad,
+            price=Decimal('118.00'))
+        return order
+
+    def test_a_sale_without_a_discount_still_issues(self):
+        """La negativa es para el descuento, no para todas las ventas."""
+        doc, creado = get_or_create_fiscal_document(self._order())
+        self.assertTrue(creado)
+        self.assertEqual(doc.total, Decimal('236.00'))
+
+    def test_a_discounted_sale_is_refused_with_a_reason(self):
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(self._order(descuento=Decimal('18.00')))
+        mensaje = str(ctx.exception).lower()
+        self.assertIn('descuento', mensaje)
+        self.assertIn('18.00', str(ctx.exception))
+
+    def test_refusing_does_not_burn_a_correlativo(self):
+        """
+        Negarse tiene que ser gratis. Si la negativa gastara un número, cada
+        intento dejaría un hueco que hay que explicar ante SUNAT.
+        """
+        serie = FiscalSeries.objects.get(company=self.company)
+        antes = serie.next_number
+        for _ in range(3):
+            with self.assertRaises(FiscalError):
+                get_or_create_fiscal_document(
+                    self._order(descuento=Decimal('18.00')))
+        serie.refresh_from_db()
+        self.assertEqual(serie.next_number, antes)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_line_whose_arithmetic_does_not_close_cannot_be_built(self):
+        """
+        LA REGLA QUE HACE EL DEFECTO IMPOSIBLE, no sólo improbable.
+
+        Aunque alguien construyera los datos a mano saltándose el servicio, un
+        importe de línea que no sea `cantidad × valor unitario` se rechaza. El
+        XSD no lo detecta: no comprueba aritmética.
+        """
+        incoherente = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('2'), 'NIU', Decimal('100.00'),
+                        Decimal('118.00'),
+                        Decimal('184.75'),   # ← el descuento escondido
+                        Decimal('33.25'), Decimal('18.00')),),
+            taxable_amount=Decimal('184.75'), tax_amount=Decimal('33.25'),
+            total=Decimal('218.00'))
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(incoherente)
+        self.assertIn('AllowanceCharge', str(ctx.exception))
+
+    def test_the_schema_alone_would_have_let_it_through(self):
+        """
+        Por qué la regla local hace falta: el esquema oficial acepta el documento
+        incoherente. Pasar el XSD no es pasar SUNAT.
+        """
+        incoherente = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('2'), 'NIU', Decimal('100.00'),
+                        Decimal('118.00'), Decimal('184.75'),
+                        Decimal('33.25'), Decimal('18.00')),),
+            taxable_amount=Decimal('184.75'), tax_amount=Decimal('33.25'),
+            total=Decimal('218.00'))
+        key, cert = self_signed_pem()
+        firmado = _fsign.sign_invoice(
+            _LET.fromstring(_fb.build_invoice_xml(incoherente)),
+            key_pem=key, cert_pem=cert)
+        # No levanta: el esquema no comprueba aritmética.
+        _fs.validate_invoice(
+            _LET.tostring(firmado, xml_declaration=True, encoding='UTF-8'))
+
+
+class C22BRecipientTest(TestCase):
+    """
+    §7 — el receptor de una factura, y que se falle ANTES de gastar correlativo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-recep', 'Empresa Receptor', tax_id='20100066603',
+            legal_name='EMPRESA RECEPTOR SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Rec', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _order(self, **extra):
+        data = dict(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        data.update(extra)
+        order = Order.objects.create(**data)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_the_document_type_is_translated_not_hardcoded(self):
+        """
+        Fijar `'6'` a mano hacía que el XML afirmara «esto es un RUC» aunque la
+        venta dijera DNI: el número viajaba con la etiqueta equivocada y SUNAT
+        recibía una declaración falsa sobre qué documento identifica al comprador.
+        """
+        doc, _ = get_or_create_fiscal_document(self._order())
+        self.assertEqual(doc.customer_doc_type, '6')
+
+    def test_a_factura_with_a_dni_is_refused_before_spending_a_number(self):
+        """
+        Una venta sin RUC no es una factura mal hecha: es una boleta. Y negarse
+        tiene que ser gratis.
+        """
+        antes = self.series.next_number
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(self._order(
+                document_type=Order.DocumentType.DNI, document_number='12345678'))
+        self.assertIn('boleta', str(ctx.exception).lower())
+
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, antes,
+                         'la negativa gastó un correlativo')
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_sale_without_a_recipient_name_is_refused(self):
+        antes = self.series.next_number
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(self._order(customer_name=''))
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, antes)
+
+    def test_an_issuer_without_a_tax_id_is_refused(self):
+        """Sin RUC del emisor no hay comprobante que valga."""
+        sin_ruc = _p3_company('c22b-sinruc', 'Sin RUC', tax_id='')
+        FiscalSeries.objects.create(
+            company=sin_ruc, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        producto = _c1_product(sin_ruc, 'Articulo', '118.00')
+        _c1_stock(sin_ruc.default_inventory_branch, producto, 5)
+        order = Order.objects.create(
+            company=sin_ruc, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=sin_ruc.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=producto, quantity=1, price=Decimal('118.00'))
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)

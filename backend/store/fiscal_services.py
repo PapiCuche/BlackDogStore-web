@@ -117,6 +117,19 @@ def _amount_in_words(total: Decimal, currency: str) -> str:
     return f'{letras} CON {centimos:02d}/100 {moneda}'
 
 
+#: `Order.DocumentType` → Catálogo N.º 06 de SUNAT.
+#:
+#: Se traduce en vez de fijar `'6'` a mano. Escribirlo a mano hacía que el XML
+#: afirmara «esto es un RUC» aunque la venta dijera DNI: el número viajaba tal
+#: cual con la etiqueta equivocada, y SUNAT recibía una declaración falsa sobre
+#: qué documento identifica al adquirente.
+DOC_TYPE_TO_SUNAT = {
+    'ruc': '6',
+    'dni': '1',
+    'ce': '4',   # carné de extranjería
+}
+
+
 def _order_to_invoice_data(order: Order, series: FiscalSeries,
                            number: int) -> InvoiceData:
     """
@@ -160,23 +173,15 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
             tax_percent=(order.tax_rate * 100).quantize(Decimal('0.01')),
         ))
 
-    # Las líneas se derivan del precio unitario y pueden separarse un céntimo del
-    # total de la venta al redondear cada una. El documento declara LO QUE SUMAN
-    # LAS LÍNEAS, porque es lo que SUNAT cuadra; y el ajuste, si lo hay, se aplica
-    # a la última línea para que el total siga siendo el que se cobró.
-    suma = sum((ln.line_amount for ln in lines), Decimal('0.00'))
-    diferencia = order.taxable_amount - suma
-    if diferencia and lines:
-        ultima = lines[-1]
-        lines[-1] = Line(
-            description=ultima.description, quantity=ultima.quantity,
-            unit_code=ultima.unit_code, unit_price=ultima.unit_price,
-            unit_price_with_tax=ultima.unit_price_with_tax,
-            line_amount=ultima.line_amount + diferencia,
-            tax_amount=order.tax_amount - sum(
-                (ln.tax_amount for ln in lines[:-1]), Decimal('0.00')),
-            tax_percent=ultima.tax_percent,
-        )
+    # AQUÍ NO SE CUADRA NADA A LA FUERZA.
+    #
+    # Una versión anterior repartía la diferencia entre la suma de las líneas y
+    # la base de la venta empujándola a la última línea. Eso tapaba el síntoma de
+    # un descuento no declarado y producía una línea cuya aritmética no cerraba.
+    #
+    # Sin descuento —lo único que esta fase emite— la suma de las líneas coincide
+    # con la base por construcción, y si alguna vez no coincidiera es un defecto
+    # que hay que ver, no redondear. `rules.validate` lo comprueba.
 
     issued = timezone.localtime(order.paid_at or timezone.now())
     return InvoiceData(
@@ -193,7 +198,8 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
             address_line=identity.legal_address or '',
         ),
         customer=Party(
-            doc_type='6', doc_number=order.document_number or '',
+            doc_type=DOC_TYPE_TO_SUNAT.get(order.document_type, ''),
+            doc_number=order.document_number or '',
             legal_name=order.customer_name or '',
         ),
         lines=tuple(lines),
@@ -246,6 +252,23 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             'otra fase.'
         )
 
+    # SE FALLA CERRADO ANTE UN DESCUENTO, y es deliberado.
+    #
+    # C2.1 sabe vender con descuento; el generador fiscal todavía no sabe
+    # DECLARARLO. Un descuento se expresa en UBL con `cac:AllowanceCharge` y su
+    # `cbc:AllowanceTotalAmount`, no rebajando el importe de la línea: hacer eso
+    # produce un documento que dice «2 unidades a 100,00» con un total de línea
+    # de 184,75, donde la aritmética no cierra y la rebaja es invisible.
+    #
+    # Enviar eso a SUNAT sería declarar un precio unitario que nadie cobró.
+    # Negarse es peor experiencia y mejor comportamiento.
+    if order.discount_amount and order.discount_amount > 0:
+        raise FiscalError(
+            f'Esta venta tiene un descuento de {order.discount_amount} y la '
+            f'factura electrónica todavía no sabe declararlo. Emitirla ocultaría '
+            f'la rebaja y declararía un precio unitario que no se cobró.'
+        )
+
     existing = FiscalDocument.objects.filter(order=order).order_by('-pk').first()
     if existing is not None and existing.status != FiscalDocumentStatus.REJECTED:
         return existing, False
@@ -284,30 +307,41 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
     except FiscalConfigError as exc:
         raise FiscalError(str(exc)) from None
 
-    with transaction.atomic():
-        number = _reserve(series)
-        data = _order_to_invoice_data(order, series, number)
-        rules.validate(data)
+    # LA TRANSACCIÓN ENVUELVE LA RESERVA Y LA VALIDACIÓN, a propósito: si el
+    # documento no cumple una regla, el `rollback` devuelve el correlativo. Una
+    # negativa no puede gastar un número, porque cada intento fallido dejaría un
+    # hueco que hay que explicar ante SUNAT.
+    try:
+        with transaction.atomic():
+            number = _reserve(series)
+            data = _order_to_invoice_data(order, series, number)
+            # Se traduce a `FiscalError` para que quien llame tenga UN tipo de
+            # excepción. Dejar escapar `FiscalRuleError` hacía que una vista
+            # respondiera 500 a lo que es un 400: una venta que no cumple los
+            # requisitos de una factura.
+            rules.validate(data)
 
-        document = FiscalDocument.objects.create(
-            order=order, company=order.company, series_ref=series,
-            document_type=series.document_type, series=series.series,
-            number=number, issued_at=timezone.now(),
-            environment=series.environment,
-            issuer_tax_id=data.supplier.doc_number,
-            issuer_legal_name=data.supplier.legal_name,
-            issuer_trade_name=data.supplier.trade_name,
-            issuer_address=data.supplier.address_line,
-            customer_doc_type=data.customer.doc_type,
-            customer_doc_number=data.customer.doc_number,
-            customer_legal_name=data.customer.legal_name,
-            currency=data.currency,
-            taxable_amount=data.taxable_amount,
-            tax_amount=data.tax_amount,
-            total=data.total,
-            tax_rate=order.tax_rate,
-            status=FiscalDocumentStatus.GENERATED,
-        )
+            document = FiscalDocument.objects.create(
+                order=order, company=order.company, series_ref=series,
+                document_type=series.document_type, series=series.series,
+                number=number, issued_at=timezone.now(),
+                environment=series.environment,
+                issuer_tax_id=data.supplier.doc_number,
+                issuer_legal_name=data.supplier.legal_name,
+                issuer_trade_name=data.supplier.trade_name,
+                issuer_address=data.supplier.address_line,
+                customer_doc_type=data.customer.doc_type,
+                customer_doc_number=data.customer.doc_number,
+                customer_legal_name=data.customer.legal_name,
+                currency=data.currency,
+                taxable_amount=data.taxable_amount,
+                tax_amount=data.tax_amount,
+                total=data.total,
+                tax_rate=order.tax_rate,
+                status=FiscalDocumentStatus.GENERATED,
+            )
+    except rules.FiscalRuleError as exc:
+        raise FiscalError(str(exc)) from None
     return document, True
 
 
