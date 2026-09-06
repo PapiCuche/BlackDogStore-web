@@ -9,6 +9,7 @@ import { OrderStatusBadge } from "../../components/OrderStatusBadge";
 import { FulfillmentStatusBadge } from "../../components/FulfillmentStatusBadge";
 import { FulfillmentStatusSelect } from "../../components/FulfillmentStatusSelect";
 import { SalesNotePanel } from "../../components/SalesNotePanel";
+import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
 import {
   AdminOrderDetail,
   fetchAdminOrderDetail,
@@ -355,6 +356,24 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
         {canManageSalesNotes(user) && (
           <SalesNotePanel orderId={order.id} isPaid={order.status === "paid"} />
         )}
+
+        {/*
+          El comprobante electrónico va APARTE de la nota interna, y no por
+          orden visual: son dos documentos distintos. La nota lleva impreso que
+          no vale ante SUNAT; esto es una factura electrónica. Juntarlos
+          invitaría a confundir el papel que no tiene validez tributaria con el
+          que sí la tiene.
+
+          Sin comprobación de permiso en el cliente: el panel pregunta al
+          backend, y quien no tenga la capacidad recibe un 404 y ve «todavía no
+          tiene comprobante». Ocultarlo aquí sería duplicar una decisión que ya
+          toma el servidor, y las dos copias se separarían.
+        */}
+        <FiscalDocumentPanel
+          orderId={order.id}
+          isPaid={order.status === "paid"}
+          receiptType={order.receipt_type ?? ""}
+        />
 
         {/* Fulfillment management */}
         {canManageFulfillment && (

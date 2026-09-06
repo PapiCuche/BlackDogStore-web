@@ -2956,3 +2956,101 @@ que se salta en silencio.
   corregir en el PDF. Se arregla entero o no se toca.
 - **No hay serie fiscal.** El correlativo `NV-` es interno y así se rotula en los
   dos documentos. La numeración fiscal pertenece a C2.2.
+
+
+---
+
+## Fase C2.2A.1B — la superficie de la factura electrónica
+
+### Se auditó antes de exponer, y las cinco invariantes tenían un defecto
+
+Ninguno se veía desde las pruebas del camino feliz. Todos habrían sido reales el
+día que alguien usara esto.
+
+**1. No había guarda de ambiente.** La consulta de series no filtraba por
+`environment`: una serie de producción se elegía si era la más antigua. Y no
+existía ninguna configuración fiscal en el proyecto, así que «producción» estaba
+a un literal de distancia. Ahora lo decide el servidor y falla cerrado; crear la
+fila a mano no basta.
+
+**2. «El id más bajo» era política tributaria.** `.filter(...).order_by('pk')
+.first()` elegía la serie. El resolver filtra por empresa, ambiente y sucursal, y
+**falla ante ambigüedad**: un desempate improvisado se convierte en la política
+de la empresa sin que nadie la haya decidido.
+
+**3. Un rechazo reemitía solo.** El queryset excluía `REJECTED`, así que volver a
+pulsar «Emitir» gastaba otro correlativo. SUNAT considera **usado** el número de
+un documento rechazado.
+
+**4. Un 4000+ sin CDR se marcaba aceptado.** Ese código significa «aceptada con
+observaciones» sólo dentro de una constancia. En un `faultstring` no prueba nada.
+
+**5. Dos envíos simultáneos llamaban los dos.** `attempts.count() + 1` se
+calculaba justo antes de la red.
+
+### El defecto que más importaba: el descuento
+
+Una venta de 2 × 118,00 con 18,00 de descuento producía una línea que declaraba
+«cantidad 2, valor unitario 100,00, importe 184,75». Dos por cien no son 184,75:
+la aritmética no cerraba y la rebaja **no aparecía en ninguna parte del
+documento**. SUNAT habría recibido un precio unitario que nadie cobró.
+
+**El XSD lo aceptaba**, porque no comprueba aritmética. Hay un test que lo
+demuestra explícitamente, y existe para que nadie confunda «pasa el esquema» con
+«es correcto».
+
+Se falla cerrado. Un descuento se declara con `cac:AllowanceCharge`, y escribirlo
+exige leer su semántica en la guía: inventarla sería la misma clase de error,
+sólo que más difícil de ver. **FACTURA CON DESCUENTO: PENDIENTE.**
+
+### Concurrencia, ahora con evidencia
+
+Hasta aquí los casos concurrentes se saltaban en SQLite, donde
+`select_for_update` es inocuo. Se ejecutaron contra **PostgreSQL 14.18 real**:
+
+- ocho emisiones simultáneas → ocho correlativos distintos y consecutivos
+- la misma venta dos veces a la vez → un solo documento
+- dos empresas a la vez → contadores aislados
+- dos envíos simultáneos → **una sola** transmisión externa
+
+El último cuenta las llamadas al proveedor con una demora deliberada, para que la
+ventana de carrera sea real y no un accidente del planificador.
+
+### Evidencia sobre PostgreSQL, no sólo sobre SQLite
+
+Los **131 tests fiscales** corren en verde contra PostgreSQL 14.18 real, **sin
+saltarse ninguno**. En SQLite se saltan cuatro —los que necesitan bloqueo por
+fila—, que es la convención del proyecto.
+
+    PostgreSQL   Ran 131 tests · OK
+    SQLite       Ran 131 tests · OK (skipped=4)
+
+Eso es lo que convierte el contador fiscal en algo defendible: `select_for_update`
+sólo significa algo donde hay bloqueo por fila.
+
+### Cinco defectos del arnés de pruebas, todos con salto silencioso
+
+Los E2E fiscales no funcionaron a la primera, y ninguna de las causas era del
+producto:
+
+1. `page.request` no lleva las cookies de sesión y devuelve 401.
+2. El listado de pedidos no trae `receipt_type`: el filtro no encontraba nada.
+3. Un contexto creado a mano no hereda `baseURL`, y el `test.skip` de la entrada
+   saltaba la suite entera.
+4. En Playwright `*` no cruza `/`: el glob no casaba con la barra final y la
+   intercepción no se aplicaba.
+5. Las pruebas responsive volvían a entrar estando ya autenticadas, donde
+   `/auth` no muestra la tarjeta.
+
+Los cinco producían **saltos silenciosos**, que es la clase de fallo que se
+parece demasiado a un aprobado. Quedan escritos porque volverán a aparecer.
+
+### Deuda declarada
+
+- **Factura con descuento**: pendiente, y bloqueada a propósito.
+- **Cobertura comercial completa**: cupones, promociones y ventas de POS no se
+  han auditado una por una contra el generador.
+- **Perfil de firma**: sigue apoyado en los ejemplos de la guía, no en una
+  lectura del anexo. Conviene cerrarlo antes de producción.
+- **Boleta, resumen diario, notas de crédito y débito, producción**: fuera de
+  alcance por decisión, no por olvido.

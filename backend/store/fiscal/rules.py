@@ -142,3 +142,24 @@ def validate(data: InvoiceData) -> None:
     if abs(suma - data.tax_amount) > Decimal('0.01'):
         _fail(f'Las líneas suman {suma} de impuesto y el documento declara '
               f'{data.tax_amount}.')
+
+    # LA ARITMÉTICA DE CADA LÍNEA TIENE QUE CERRAR.
+    #
+    # `cantidad × valor unitario` debe dar el importe de la línea. Parece obvio y
+    # no lo es: repartir un descuento global reduciendo sólo el importe deja un
+    # documento que declara «2 unidades a 100,00» con un total de línea de
+    # 184,75. El XSD lo acepta —no comprueba aritmética— y SUNAT lo rechaza, o
+    # peor, lo acepta con un precio unitario que nadie cobró.
+    #
+    # Un descuento se declara con `cac:AllowanceCharge`, no escondiéndolo en el
+    # importe. Mientras eso no esté implementado, esta regla impide emitir el
+    # documento incoherente.
+    for i, line in enumerate(data.lines, 1):
+        esperado = (line.quantity * line.unit_price).quantize(Decimal('0.01'))
+        if abs(esperado - line.line_amount) > Decimal('0.01'):
+            _fail(
+                f'Línea {i}: {line.quantity} × {line.unit_price} = {esperado}, '
+                f'pero el importe declarado es {line.line_amount}. Un descuento '
+                f'no puede esconderse en el importe de la línea: se declara con '
+                f'AllowanceCharge, y eso todavía no está implementado.'
+            )

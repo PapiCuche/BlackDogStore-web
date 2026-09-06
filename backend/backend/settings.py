@@ -93,6 +93,9 @@ REST_FRAMEWORK = {
         # ocurre en cada cambio del carrito, y compartir presupuesto con el
         # cobro dejaba al comprador sin poder pagar por haber mirado.
         'checkout_quote': '60/min',
+        # C2.2A.1. Emitir sale a la red de SUNAT; consultar no.
+        'fiscal_issue': '20/min',
+        'fiscal_read': '120/min',
         'cart': '60/min',
         'payment_status': '30/min',
         'resend_verification': '3/min',
@@ -167,6 +170,32 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 DATABASES = {
     'default': env.db_url('DATABASE_URL', default=f'sqlite:///{BASE_DIR / "db.sqlite3"}')
 }
+
+# ---------------------------------------------------------------------------
+# C2.2A.1 — comprobantes de pago electrónicos
+# ---------------------------------------------------------------------------
+#
+# APAGADO POR DEFECTO. Una instalación que no ha configurado nada fiscal no debe
+# poder enviar nada a SUNAT por el hecho de tener el código instalado.
+FISCAL_ENABLED = env.bool('FISCAL_ENABLED', default=False)
+
+# EL AMBIENTE LO DECIDE EL SERVIDOR, nunca una petición. `store.fiscal_config`
+# falla cerrado ante cualquier valor distinto de «beta»: producción exige un
+# certificado acreditado y credenciales por empresa, y ninguna de las dos cosas
+# existe todavía.
+FISCAL_ENVIRONMENT = env('FISCAL_ENVIRONMENT', default='beta')
+
+# Credenciales y certificado. NO viven en la base de datos: una columna existe
+# para llenarse, y un campo `sol_password` acaba en un serializer, un volcado o
+# una bitácora.
+#
+# Para el entorno de pruebas SUNAT publica credenciales comunes en su Manual del
+# programador; no hay ningún secreto real en un despliegue de desarrollo.
+FISCAL_SOL_RUC = env('FISCAL_SOL_RUC', default='')
+FISCAL_SOL_USER = env('FISCAL_SOL_USER', default='')
+FISCAL_SOL_PASSWORD = env('FISCAL_SOL_PASSWORD', default='')
+FISCAL_CERT_PEM = env('FISCAL_CERT_PEM', default='')
+FISCAL_KEY_PEM = env('FISCAL_KEY_PEM', default='')
 
 # ---------------------------------------------------------------------------
 # M12D — evidencias fotográficas

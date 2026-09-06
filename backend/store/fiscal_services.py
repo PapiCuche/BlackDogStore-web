@@ -117,6 +117,19 @@ def _amount_in_words(total: Decimal, currency: str) -> str:
     return f'{letras} CON {centimos:02d}/100 {moneda}'
 
 
+#: `Order.DocumentType` → Catálogo N.º 06 de SUNAT.
+#:
+#: Se traduce en vez de fijar `'6'` a mano. Escribirlo a mano hacía que el XML
+#: afirmara «esto es un RUC» aunque la venta dijera DNI: el número viajaba tal
+#: cual con la etiqueta equivocada, y SUNAT recibía una declaración falsa sobre
+#: qué documento identifica al adquirente.
+DOC_TYPE_TO_SUNAT = {
+    'ruc': '6',
+    'dni': '1',
+    'ce': '4',   # carné de extranjería
+}
+
+
 def _order_to_invoice_data(order: Order, series: FiscalSeries,
                            number: int) -> InvoiceData:
     """
@@ -160,23 +173,15 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
             tax_percent=(order.tax_rate * 100).quantize(Decimal('0.01')),
         ))
 
-    # Las líneas se derivan del precio unitario y pueden separarse un céntimo del
-    # total de la venta al redondear cada una. El documento declara LO QUE SUMAN
-    # LAS LÍNEAS, porque es lo que SUNAT cuadra; y el ajuste, si lo hay, se aplica
-    # a la última línea para que el total siga siendo el que se cobró.
-    suma = sum((ln.line_amount for ln in lines), Decimal('0.00'))
-    diferencia = order.taxable_amount - suma
-    if diferencia and lines:
-        ultima = lines[-1]
-        lines[-1] = Line(
-            description=ultima.description, quantity=ultima.quantity,
-            unit_code=ultima.unit_code, unit_price=ultima.unit_price,
-            unit_price_with_tax=ultima.unit_price_with_tax,
-            line_amount=ultima.line_amount + diferencia,
-            tax_amount=order.tax_amount - sum(
-                (ln.tax_amount for ln in lines[:-1]), Decimal('0.00')),
-            tax_percent=ultima.tax_percent,
-        )
+    # AQUÍ NO SE CUADRA NADA A LA FUERZA.
+    #
+    # Una versión anterior repartía la diferencia entre la suma de las líneas y
+    # la base de la venta empujándola a la última línea. Eso tapaba el síntoma de
+    # un descuento no declarado y producía una línea cuya aritmética no cerraba.
+    #
+    # Sin descuento —lo único que esta fase emite— la suma de las líneas coincide
+    # con la base por construcción, y si alguna vez no coincidiera es un defecto
+    # que hay que ver, no redondear. `rules.validate` lo comprueba.
 
     issued = timezone.localtime(order.paid_at or timezone.now())
     return InvoiceData(
@@ -193,7 +198,8 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
             address_line=identity.legal_address or '',
         ),
         customer=Party(
-            doc_type='6', doc_number=order.document_number or '',
+            doc_type=DOC_TYPE_TO_SUNAT.get(order.document_type, ''),
+            doc_number=order.document_number or '',
             legal_name=order.customer_name or '',
         ),
         lines=tuple(lines),
@@ -246,45 +252,96 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             'otra fase.'
         )
 
-    existing = FiscalDocument.objects.filter(order=order).exclude(
-        status=FiscalDocumentStatus.REJECTED,
-    ).first()
-    if existing is not None:
+    # SE FALLA CERRADO ANTE UN DESCUENTO, y es deliberado.
+    #
+    # C2.1 sabe vender con descuento; el generador fiscal todavía no sabe
+    # DECLARARLO. Un descuento se expresa en UBL con `cac:AllowanceCharge` y su
+    # `cbc:AllowanceTotalAmount`, no rebajando el importe de la línea: hacer eso
+    # produce un documento que dice «2 unidades a 100,00» con un total de línea
+    # de 184,75, donde la aritmética no cierra y la rebaja es invisible.
+    #
+    # Enviar eso a SUNAT sería declarar un precio unitario que nadie cobró.
+    # Negarse es peor experiencia y mejor comportamiento.
+    if order.discount_amount and order.discount_amount > 0:
+        raise FiscalError(
+            f'Esta venta tiene un descuento de {order.discount_amount} y la '
+            f'factura electrónica todavía no sabe declararlo. Emitirla ocultaría '
+            f'la rebaja y declararía un precio unitario que no se cobró.'
+        )
+
+    existing = FiscalDocument.objects.filter(order=order).order_by('-pk').first()
+    if existing is not None and existing.status != FiscalDocumentStatus.REJECTED:
         return existing, False
 
-    series = FiscalSeries.objects.filter(
-        company=order.company, document_type=FiscalDocumentType.INVOICE,
-        is_active=True,
-    ).order_by('pk').first()
-    if series is None:
+    if existing is not None:
+        # UN RECHAZO ES TERMINAL PARA EL BOTÓN GENÉRICO.
+        #
+        # El modelo permite otro documento para la misma venta —hará falta el día
+        # que exista un flujo explícito de corrección—, pero que «Emitir» lo
+        # aproveche por defecto convierte un clic distraído en un correlativo
+        # gastado. Y SUNAT considera USADO el número de un documento rechazado:
+        # cada reintento ciego quema uno más y deja un hueco que hay que explicar.
+        #
+        # Reemitir tiene que ser una decisión, no el efecto lateral de un
+        # queryset que excluía el estado.
         raise FiscalError(
-            'La empresa no tiene una serie de factura activa configurada.'
+            f'El comprobante {existing.document_id} fue rechazado por SUNAT '
+            f'({existing.sunat_response_code or "sin código"}). Corrija la venta '
+            f'y emita explícitamente: volver a pulsar «Emitir» gastaría otro '
+            f'correlativo sin resolver la causa del rechazo.'
         )
 
-    with transaction.atomic():
-        number = _reserve(series)
-        data = _order_to_invoice_data(order, series, number)
-        rules.validate(data)
+    # LA SERIE LA ELIGE UN RESOLVER, no `order_by('pk').first()`.
+    #
+    # Aquello convertía «el id más bajo» en política tributaria: bastaba con que
+    # la primera serie creada fuese de producción para que una venta de pruebas
+    # la usara. El resolver filtra por ambiente, respeta la sucursal y FALLA ante
+    # ambigüedad en vez de desempatar por su cuenta.
+    from .fiscal_config import FiscalConfigError, resolve_series
 
-        document = FiscalDocument.objects.create(
-            order=order, company=order.company, series_ref=series,
-            document_type=series.document_type, series=series.series,
-            number=number, issued_at=timezone.now(),
-            environment=series.environment,
-            issuer_tax_id=data.supplier.doc_number,
-            issuer_legal_name=data.supplier.legal_name,
-            issuer_trade_name=data.supplier.trade_name,
-            issuer_address=data.supplier.address_line,
-            customer_doc_type=data.customer.doc_type,
-            customer_doc_number=data.customer.doc_number,
-            customer_legal_name=data.customer.legal_name,
-            currency=data.currency,
-            taxable_amount=data.taxable_amount,
-            tax_amount=data.tax_amount,
-            total=data.total,
-            tax_rate=order.tax_rate,
-            status=FiscalDocumentStatus.GENERATED,
+    try:
+        series = resolve_series(
+            order.company, branch=order.fulfillment_branch,
+            document_type=FiscalDocumentType.INVOICE,
         )
+    except FiscalConfigError as exc:
+        raise FiscalError(str(exc)) from None
+
+    # LA TRANSACCIÓN ENVUELVE LA RESERVA Y LA VALIDACIÓN, a propósito: si el
+    # documento no cumple una regla, el `rollback` devuelve el correlativo. Una
+    # negativa no puede gastar un número, porque cada intento fallido dejaría un
+    # hueco que hay que explicar ante SUNAT.
+    try:
+        with transaction.atomic():
+            number = _reserve(series)
+            data = _order_to_invoice_data(order, series, number)
+            # Se traduce a `FiscalError` para que quien llame tenga UN tipo de
+            # excepción. Dejar escapar `FiscalRuleError` hacía que una vista
+            # respondiera 500 a lo que es un 400: una venta que no cumple los
+            # requisitos de una factura.
+            rules.validate(data)
+
+            document = FiscalDocument.objects.create(
+                order=order, company=order.company, series_ref=series,
+                document_type=series.document_type, series=series.series,
+                number=number, issued_at=timezone.now(),
+                environment=series.environment,
+                issuer_tax_id=data.supplier.doc_number,
+                issuer_legal_name=data.supplier.legal_name,
+                issuer_trade_name=data.supplier.trade_name,
+                issuer_address=data.supplier.address_line,
+                customer_doc_type=data.customer.doc_type,
+                customer_doc_number=data.customer.doc_number,
+                customer_legal_name=data.customer.legal_name,
+                currency=data.currency,
+                taxable_amount=data.taxable_amount,
+                tax_amount=data.tax_amount,
+                total=data.total,
+                tax_rate=order.tax_rate,
+                status=FiscalDocumentStatus.GENERATED,
+            )
+    except rules.FiscalRuleError as exc:
+        raise FiscalError(str(exc)) from None
     return document, True
 
 
@@ -320,6 +377,55 @@ def sign_fiscal_document(document: FiscalDocument, *, key_pem: bytes,
     return document
 
 
+#: Cuánto puede durar un envío antes de darlo por muerto. Un intento con
+#: `finished_at` nulo más antiguo que esto se considera abandonado —proceso
+#: caído, contenedor reiniciado— y deja de bloquear los reintentos.
+STALE_ATTEMPT_MINUTES = 10
+
+
+class FiscalSubmissionInProgress(FiscalError):
+    """Ya hay un envío en curso para este comprobante. No se llama otra vez."""
+
+
+def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt:
+    """
+    Reserva el turno de envío. Devuelve la fila; la red va DESPUÉS.
+
+    Un intento sin `finished_at` significa «alguien está llamando a SUNAT ahora
+    mismo». Si es reciente, esta petición se retira: dos transmisiones
+    simultáneas del mismo comprobante pueden producir dos registros en SUNAT y
+    sólo uno de nuestros lados se entera.
+
+    Si es viejo, se da por abandonado. Sin ese plazo, un proceso caído a mitad de
+    envío dejaría el comprobante bloqueado para siempre y sin forma de
+    desbloquearlo desde el producto.
+    """
+    from datetime import timedelta
+
+    limite = timezone.now() - timedelta(minutes=STALE_ATTEMPT_MINUTES)
+    with transaction.atomic():
+        en_curso = FiscalSubmissionAttempt.objects.select_for_update().filter(
+            document=document, finished_at__isnull=True,
+            started_at__gte=limite,
+        ).first()
+        if en_curso is not None:
+            raise FiscalSubmissionInProgress(
+                f'Ya hay un envío en curso para {document.document_id} '
+                f'(intento {en_curso.attempt_number}). Espere a que termine.'
+            )
+
+        siguiente = (
+            FiscalSubmissionAttempt.objects.filter(document=document)
+            .order_by('-attempt_number').values_list('attempt_number', flat=True)
+            .first() or 0
+        ) + 1
+        return FiscalSubmissionAttempt.objects.create(
+            document=document, attempt_number=siguiente,
+            environment=document.environment, started_at=timezone.now(),
+            result='in_progress',
+        )
+
+
 def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument:
     """
     Envía el documento y registra el intento. FUERA de cualquier transacción.
@@ -341,18 +447,33 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
     )
     zip_bytes = packaging.build_zip(name, document.signed_xml.encode('utf-8'))
 
-    attempt_number = document.attempts.count() + 1
-    started = timezone.now()
+    # SE RESERVA EL INTENTO ANTES DE LA RED, y se cierra la transacción.
+    #
+    # `attempts.count() + 1` calculado justo antes de llamar dejaba una ventana:
+    # dos peticiones simultáneas obtenían el mismo número y, peor, AMBAS llamaban
+    # a SUNAT antes de que la base de datos detectara el choque. Dos
+    # transmisiones del mismo comprobante por un doble clic.
+    #
+    # Ahora la fila se crea primero, con `finished_at` nulo. La restricción única
+    # sobre (documento, número) hace que sólo una petición gane; la otra ve que
+    # hay un envío en curso y no llama.
+    #
+    # La red queda FUERA de la transacción: mantenerla abierta bloquearía la fila
+    # durante segundos de espera.
+    attempt = _claim_attempt(document)
+
     result = provider.submit_invoice(filename=f'{name}.ZIP', zip_bytes=zip_bytes)
 
-    FiscalSubmissionAttempt.objects.create(
-        document=document, attempt_number=attempt_number,
-        environment=document.environment, started_at=started,
-        finished_at=timezone.now(), result=result.outcome.value,
-        response_code=result.response_code, safe_message=result.safe_message,
-        request_sha256=result.request_sha256,
-        response_sha256=result.response_sha256,
-    )
+    attempt.finished_at = timezone.now()
+    attempt.result = result.outcome.value
+    attempt.response_code = result.response_code
+    attempt.safe_message = result.safe_message
+    attempt.request_sha256 = result.request_sha256
+    attempt.response_sha256 = result.response_sha256
+    attempt.save(update_fields=[
+        'finished_at', 'result', 'response_code', 'safe_message',
+        'request_sha256', 'response_sha256',
+    ])
 
     document.status = OUTCOME_TO_STATUS[result.outcome]
     document.sunat_response_code = result.response_code

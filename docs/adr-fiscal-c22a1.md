@@ -172,3 +172,117 @@ una venta ya cobrada.
 
 **Consecuencia buscada.** Si la transmisión falla, la venta sigue pagada, el
 comprobante queda pendiente y se puede reintentar. No se genera otro correlativo.
+
+
+---
+
+# ADR — C2.2A.1B (superficie y endurecimiento)
+
+Seis decisiones más, tomadas al convertir el dominio en producto. Salieron de
+auditar cinco invariantes ANTES de exponer nada, y las cinco tenían un defecto.
+
+---
+
+## ADR-10 · El ambiente lo decide el servidor, y producción falla cerrado
+
+**Decisión.** `FISCAL_ENVIRONMENT` en la configuración del servidor.
+`resolve_environment()` levanta ante cualquier valor distinto de `beta`.
+
+**Por qué.** La consulta de series no filtraba por ambiente: una serie de
+producción se elegía si era la más antigua. Y no existía ninguna configuración
+fiscal, así que «producción» estaba a un literal de distancia.
+
+Que el fallo sea explícito evita que «funcione por accidente» el día que alguien
+copie una variable de entorno de un sitio a otro. Crear una `FiscalSeries` de
+producción a mano tampoco basta: el ambiente no lo decide el contenido de una
+tabla.
+
+**El endpoint tampoco viaja en una petición.** Sale de una tabla del código a
+partir del ambiente. Un inquilino que pudiera escribir la URL de SUNAT tendría
+una petición saliente arbitraria desde nuestro servidor.
+
+---
+
+## ADR-11 · La serie se resuelve; no se toma la primera
+
+**Decisión.** `resolve_series()` filtra por empresa, ambiente y sucursal,
+prefiere la serie de la sucursal sobre la de empresa, y **falla ante ambigüedad**.
+
+**Por qué.** Antes era `.filter(...).order_by('pk').first()`. Eso convierte «el
+id más bajo» en política tributaria.
+
+**Ambigüedad = fallo, y es lo importante.** Un desempate improvisado —«la más
+antigua», «la última»— se convierte en la política de la empresa sin que nadie la
+haya decidido, y sale a la luz cuando SUNAT recibe dos documentos de series
+distintas para el mismo mostrador. Que el sistema diga «hay dos y no sé cuál» es
+peor experiencia y mejor comportamiento.
+
+---
+
+## ADR-12 · Un rechazo es terminal para el botón genérico
+
+**Decisión.** El modelo sigue admitiendo un segundo documento para la misma
+venta; `get_or_create_fiscal_document` se niega.
+
+**Por qué.** El queryset excluía `REJECTED`, así que volver a pulsar «Emitir»
+creaba otro documento y gastaba otro correlativo. **SUNAT considera USADO el
+número de un documento rechazado**: cada clic distraído dejaba un hueco que hay
+que explicar.
+
+La flexibilidad del modelo hace falta para el flujo de corrección de una fase
+futura. Lo que no puede pasar es que se use por accidente.
+
+---
+
+## ADR-13 · «Aceptada» exige una constancia
+
+**Decisión.** Un código 4000+ significa «aceptada con observaciones» **sólo
+dentro de un CDR**. En un `faultstring`, sin constancia, es
+`UNKNOWN_RESPONSE`.
+
+**Por qué.** La constancia es la prueba de que SUNAT registró el comprobante. El
+mismo número llegando en un fault no demuestra registro alguno, y afirmarlo
+pondría «ACEPTADA POR SUNAT» en una pantalla sobre un documento que quizá no
+existe para ellos.
+
+---
+
+## ADR-14 · El intento se reserva antes de la red
+
+**Decisión.** `_claim_attempt` crea la fila con `finished_at` nulo y cierra la
+transacción; la llamada a SUNAT ocurre después. Un segundo envío ve el intento en
+curso y no llama.
+
+**Por qué.** `attempts.count() + 1` se calculaba justo antes de la red: dos
+peticiones simultáneas obtenían el mismo número y **ambas llamaban a SUNAT**. Dos
+transmisiones del mismo comprobante pueden dejar dos registros allí y sólo uno de
+nuestro lado.
+
+**Con plazo de abandono** (10 minutos). Sin él, un proceso caído a mitad de envío
+dejaría el comprobante bloqueado para siempre y sin forma de desbloquearlo desde
+el producto.
+
+Verificado contra PostgreSQL real, contando las llamadas al proveedor con una
+demora deliberada para que la ventana de carrera fuese real.
+
+---
+
+## ADR-15 · Una venta con descuento no se emite
+
+**Decisión.** Se falla cerrado ante `discount_amount > 0`, y una regla local
+impide que un importe de línea difiera de `cantidad × valor unitario`.
+
+**Por qué.** C2.1 vende con descuento y el generador no sabe declararlo. Una
+venta de 2 × 118,00 con 18,00 de rebaja producía una línea que decía «cantidad 2,
+valor unitario 100,00, importe 184,75». La aritmética no cerraba y el descuento
+no aparecía en ninguna parte: SUNAT habría recibido un precio unitario que nadie
+cobró.
+
+**El XSD lo aceptaba**, porque no comprueba aritmética. Hay un test que lo
+demuestra, y existe para que nadie confunda «pasa el esquema» con «es correcto».
+
+Un descuento se declara con `cac:AllowanceCharge`. Escribirlo exige leer su
+semántica en la guía de SUNAT: inventarla sería la misma clase de error, sólo que
+más difícil de ver.
+
+**FACTURA CON DESCUENTO queda PENDIENTE**, declarado.

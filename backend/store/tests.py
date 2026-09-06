@@ -8968,10 +8968,22 @@ class Phase2a1SeedAndRegressionTest(TestCase):
              'service.orders.create', 'service.orders.view',
              # M12B. The counter takes the money for a repair; a legacy `sales`
              # membership that never adopted RBAC does not.
-             'service.payments.manage'},
-            'la diferencia debe ser recepción técnica y el cobro del servicio',
+             'service.payments.manage',
+             # C2.2A.1. El mostrador CONSULTA el estado de la factura de un
+             # cliente. Sólo consultar: emitir es `sales.fiscal.issue` y no está
+             # en el preset, porque declarar algo ante SUNAT no se concede a
+             # todo el personal de caja sin que alguien lo decida.
+             #
+             # La matriz legacy tampoco crece aquí. Una membresía anterior al
+             # RBAC no debe adquirir visibilidad sobre comprobantes electrónicos
+             # porque se desplegó software.
+             'sales.fiscal.view'},
+            'la diferencia debe ser recepción técnica, el cobro del servicio y '
+            'la consulta de comprobantes electrónicos',
         )
         self.assertNotIn('service.payments.manage', legacy_sales)
+        self.assertNotIn('sales.fiscal.view', legacy_sales)
+        self.assertNotIn('sales.fiscal.issue', set(ventas.capabilities))
 
         inventario = self.pilot.roles.get(slug='inventario')
         self.assertEqual(
@@ -47089,6 +47101,7 @@ class C21CheckoutQuoteTest(TestCase):
 # ---------------------------------------------------------------------------
 
 import dataclasses  # noqa: E402
+import datetime  # noqa: E402
 import io  # noqa: E402
 
 from lxml import etree as _LET  # noqa: E402
@@ -47553,22 +47566,45 @@ class C22A1DomainTest(TestCase):
         self.assertEqual(segundo.number, 2)
         self.assertNotEqual(primero.number, segundo.number)
 
-    def test_a_rejected_document_does_not_block_a_new_one_for_the_same_sale(self):
+    def test_the_model_allows_a_second_document_but_the_generic_button_does_not(self):
         """
-        Un rechazo no tiene validez tributaria, así que no ocupa el sitio: la
-        venta puede volver a emitir. Lo que no puede haber son dos VIVOS.
+        LA CONDUCTA CAMBIÓ A PROPÓSITO, y este test cambió con ella.
+
+        Antes, un rechazo liberaba el sitio y «Emitir» creaba otro documento. La
+        flexibilidad del modelo sigue ahí —hará falta el día que exista un flujo
+        de corrección—, pero que el botón genérico la aproveche convierte un clic
+        distraído en un correlativo gastado, y SUNAT considera USADO el número de
+        un documento rechazado.
+
+        Así que el modelo permite; el servicio se niega. La restricción de base
+        de datos es la que sigue impidiendo dos documentos VIVOS.
         """
         order = self._paid_invoice_order()
         primero, _ = get_or_create_fiscal_document(order)
         primero.status = FiscalDocumentStatus.REJECTED
         primero.save(update_fields=['status'])
 
-        segundo, creado = get_or_create_fiscal_document(order)
-        self.assertTrue(creado)
-        self.assertNotEqual(primero.pk, segundo.pk)
+        # El servicio se niega: reemitir tiene que ser una decisión.
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+        # Pero el modelo lo admitiría, que es lo que deja la puerta abierta al
+        # flujo de corrección de una fase futura.
+        segundo = FiscalDocument.objects.create(
+            order=order, company=self.company, series_ref=self.series,
+            document_type=primero.document_type, series=primero.series,
+            number=primero.number + 1, issued_at=timezone.now(),
+            environment=primero.environment,
+            issuer_tax_id=primero.issuer_tax_id,
+            issuer_legal_name=primero.issuer_legal_name,
+            customer_doc_type='6', customer_doc_number='20000000001',
+            customer_legal_name='CLIENTE SAC', currency='PEN',
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'))
         vivos = FiscalDocument.objects.filter(order=order).exclude(
             status=FiscalDocumentStatus.REJECTED).count()
         self.assertEqual(vivos, 1)
+        self.assertNotEqual(primero.pk, segundo.pk)
 
     # -- condiciones de emisión ----------------------------------------------
 
@@ -47808,7 +47844,11 @@ class C22A1ConcurrencyTest(TransactionTestCase):
     punto de venta.
     """
 
-    reset_sequences = True
+    # SIN `reset_sequences`. Reiniciar las secuencias a 1 choca con la empresa
+    # piloto que siembran las migraciones y que ya ocupa esa fila: el test
+    # moría en `setUp` con una violación de clave primaria que no tenía nada
+    # que ver con lo que se estaba probando. Ninguna aserción de aquí depende
+    # de un identificador concreto.
 
     def _requires_row_locking(self):
         from django.db import connection
@@ -47886,6 +47926,126 @@ class C22A1ConcurrencyTest(TransactionTestCase):
         self.assertEqual(len(numeros), 8)
         self.assertEqual(len(set(numeros)), 8, f'correlativos repetidos: {numeros}')
         self.assertEqual(sorted(numeros), list(range(1, 9)))
+
+    def test_two_tenants_issue_in_parallel_without_touching_each_other(self):
+        """
+        §5.E — contadores aislados bajo concurrencia real.
+
+        Dos empresas emitiendo a la vez tienen que avanzar cada una su propio
+        contador. Si compartieran bloqueo, una esperaría a la otra sin motivo; si
+        compartieran contador, los números se entrelazarían y cada empresa vería
+        huecos que no puede explicar ante SUNAT.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        otra = _p3_company(
+            'c22-conc-b', 'Empresa Concurrente B', tax_id='20522222222',
+            legal_name='EMPRESA CONCURRENTE B SAC')
+        serie_b = FiscalSeries.objects.create(
+            company=otra, document_type=FiscalDocumentType.INVOICE,
+            series='F001', next_number=1)
+        producto_b = _c1_product(otra, 'Articulo B', '118.00')
+        _c1_stock(otra.default_inventory_branch, producto_b, 20)
+
+        def order_de(company, product):
+            order = Order.objects.create(
+                company=company, customer_name='CLIENTE SAC',
+                document_type=Order.DocumentType.RUC,
+                document_number='20000000001',
+                receipt_type=Order.ReceiptType.FACTURA,
+                total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+                subtotal_amount=Decimal('118.00'),
+                taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+                tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+                status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+                fulfillment_branch=company.default_inventory_branch)
+            OrderItem.objects.create(
+                order=order, product=product, quantity=1, price=Decimal('118.00'))
+            return order
+
+        ventas = ([order_de(self.company, self.product) for _ in range(4)]
+                  + [order_de(otra, producto_b) for _ in range(4)])
+        resultados, errores = [], []
+        barrera = threading.Barrier(len(ventas))
+
+        def emitir(order):
+            try:
+                barrera.wait(timeout=15)
+                doc, _ = get_or_create_fiscal_document(order)
+                resultados.append((doc.company_id, doc.number))
+            except Exception as exc:  # noqa: BLE001
+                errores.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=emitir, args=(o,)) for o in ventas]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=40)
+
+        self.assertEqual(errores, [], f'la emisión concurrente falló: {errores}')
+        de_a = sorted(n for c, n in resultados if c == self.company.pk)
+        de_b = sorted(n for c, n in resultados if c == otra.pk)
+        self.assertEqual(de_a, [1, 2, 3, 4], 'el contador de A se entrelazó')
+        self.assertEqual(de_b, [1, 2, 3, 4], 'el contador de B se entrelazó')
+
+    def test_two_simultaneous_submits_produce_one_external_call(self):
+        """
+        §5.D — dos envíos a la vez, UNA sola transmisión.
+
+        Es el sabotaje del doble clic sobre «Enviar». Dos llamadas a SUNAT del
+        mismo comprobante pueden dejar dos registros allí y sólo uno de nuestro
+        lado.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        doc, _ = get_or_create_fiscal_document(self._order())
+        key, cert = self_signed_pem('20100066603')
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+        llamadas = []
+        lock = threading.Lock()
+        barrera = threading.Barrier(2)
+
+        class ProveedorQueCuenta:
+            def submit_invoice(self, *, filename, zip_bytes):
+                with lock:
+                    llamadas.append(filename)
+                # Se demora para que la ventana de carrera sea real y no un
+                # accidente afortunado del planificador.
+                import time
+                time.sleep(0.4)
+                return _accepted()
+
+        rechazados = []
+
+        def enviar():
+            try:
+                barrera.wait(timeout=15)
+                submit_fiscal_document(doc, ProveedorQueCuenta())
+            except FiscalSubmissionInProgress:
+                rechazados.append(1)
+            except Exception as exc:  # noqa: BLE001
+                rechazados.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=enviar) for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=40)
+
+        self.assertEqual(len(llamadas), 1,
+                         f'se transmitió {len(llamadas)} veces el mismo comprobante')
+        self.assertEqual(len(rechazados), 1, 'el segundo envío no fue rechazado')
 
     def test_the_same_sale_issued_twice_in_parallel_yields_one_document(self):
         """
@@ -48024,19 +48184,31 @@ class C22A1TenantIsolationTest(TestCase):
 
     def test_the_series_query_is_scoped_by_company(self):
         """
-        SABOTAJE §37 nº 1: quitar el filtro de empresa de la consulta de series.
+        SABOTAJE nº 1: quitar el filtro de empresa de la consulta de series.
 
-        Se comprueba leyendo el código fuente, no la conducta: una consulta sin
-        `company=` puede dar el resultado correcto en un test con una sola
-        empresa y ser un desastre en producción.
+        LA CONSULTA SE MUDÓ. Vivía dentro de `get_or_create_fiscal_document` con
+        un `order_by('pk').first()` que convertía «el id más bajo» en política
+        tributaria; ahora es `fiscal_config.resolve_series`, que además filtra
+        por ambiente y falla ante ambigüedad.
+
+        Se sigue comprobando sobre el código fuente y no sobre la conducta: una
+        consulta sin `company=` puede dar el resultado correcto en un test con
+        una sola empresa y ser un desastre en producción.
         """
         import inspect
 
-        from . import fiscal_services
+        from . import fiscal_config, fiscal_services
 
-        fuente = inspect.getsource(fiscal_services.get_or_create_fiscal_document)
-        self.assertIn('FiscalSeries.objects.filter(', fuente)
-        self.assertIn('company=order.company', fuente)
+        resolver = inspect.getsource(fiscal_config.resolve_series)
+        self.assertIn('company=company', resolver)
+        self.assertIn('environment=environment', resolver)
+        # Y que el servicio DELEGUE en vez de consultar por su cuenta: la
+        # invariante es que `FiscalSeries` ya no se consulta desde aquí, no que
+        # falte una cadena concreta —la primera versión de este test cazaba su
+        # propio comentario en vez de código.
+        servicio = inspect.getsource(fiscal_services.get_or_create_fiscal_document)
+        self.assertIn('resolve_series(', servicio)
+        self.assertNotIn('FiscalSeries.objects', servicio)
 
 
 class C22A1AdminImmutabilityTest(TestCase):
@@ -48082,3 +48254,1208 @@ class C22A1AdminImmutabilityTest(TestCase):
         inline = options.inlines[0](FiscalDocument, dj_admin.site)
         self.assertFalse(inline.has_add_permission(None, None))
         self.assertFalse(inline.can_delete)
+
+
+# ---------------------------------------------------------------------------
+# C2.2A.1B — endurecimiento antes de exponer la superficie
+# ---------------------------------------------------------------------------
+
+from .fiscal_config import (  # noqa: E402
+    FiscalConfigError, resolve_credentials, resolve_environment,
+    resolve_provider, resolve_series,
+)
+from .fiscal_services import FiscalSubmissionInProgress  # noqa: E402
+from .models import FiscalEnvironment  # noqa: E402
+
+
+class C22BEnvironmentGuardTest(TestCase):
+    """
+    SABOTAJE §27 nº 3: producción no se opera en esta fase, y no por descuido.
+
+    El código sabe formar la URL de producción. Lo que no existe es el
+    certificado acreditado ni las credenciales por empresa, así que el fallo es
+    explícito: «funciona por accidente» es justo lo que hay que impedir el día
+    que alguien copie una variable de entorno de un sitio a otro.
+    """
+
+    def test_beta_is_the_only_environment_that_resolves(self):
+        self.assertEqual(resolve_environment(), FiscalEnvironment.BETA)
+
+    @override_settings(FISCAL_ENVIRONMENT='production')
+    def test_production_fails_closed(self):
+        with self.assertRaises(FiscalConfigError) as ctx:
+            resolve_environment()
+        self.assertIn('production', str(ctx.exception))
+
+    @override_settings(FISCAL_ENVIRONMENT='production')
+    def test_a_production_series_cannot_be_used_even_if_someone_creates_one(self):
+        """
+        Crear la fila a mano no basta para operar producción. El ambiente lo
+        decide el servidor, no el contenido de una tabla.
+        """
+        company = _p3_company('c22b-prod', 'Empresa Prod', tax_id='20100066603')
+        FiscalSeries.objects.create(
+            company=company, document_type=FiscalDocumentType.INVOICE,
+            series='F001', environment=FiscalEnvironment.PRODUCTION,
+        )
+        with self.assertRaises(FiscalConfigError):
+            resolve_series(company)
+
+    def test_the_endpoint_is_never_taken_from_a_request(self):
+        """
+        SSRF. Se comprueba sobre el código: `resolve_provider` sólo recibe la
+        empresa, y el endpoint sale de una tabla del propio módulo.
+        """
+        import inspect
+
+        from . import fiscal_config
+
+        firma = inspect.signature(fiscal_config.resolve_provider)
+        self.assertEqual(list(firma.parameters), ['company'])
+        fuente = inspect.getsource(fiscal_config.resolve_provider)
+        self.assertIn('endpoints = {', fuente)
+
+
+class C22BSeriesResolverTest(TestCase):
+    """
+    SABOTAJES §27 nº 1 y 2: serie de otro tenant, serie de otra sucursal.
+
+    Y el defecto que originó este resolver: `order_by('pk').first()` convertía
+    «el id más bajo» en política tributaria.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c22b-res-a', 'Empresa A', tax_id='20100066603')
+        self.b = _p3_company('c22b-res-b', 'Empresa B', tax_id='20522222222')
+
+    def _serie(self, company, series='F001', **kw):
+        return FiscalSeries.objects.create(
+            company=company, document_type=FiscalDocumentType.INVOICE,
+            series=series, **kw,
+        )
+
+    def test_it_resolves_the_only_company_series(self):
+        serie = self._serie(self.a)
+        self.assertEqual(resolve_series(self.a).pk, serie.pk)
+
+    def test_it_never_returns_another_companys_series(self):
+        self._serie(self.b)
+        with self.assertRaises(FiscalConfigError):
+            resolve_series(self.a)
+
+    def test_two_valid_series_fail_instead_of_being_guessed(self):
+        """
+        AMBIGÜEDAD = FALLO.
+
+        Un desempate improvisado se convierte en la política tributaria de la
+        empresa sin que nadie la haya decidido, y sale a la luz cuando SUNAT
+        recibe dos documentos de series distintas para el mismo mostrador.
+        """
+        self._serie(self.a, series='F001')
+        self._serie(self.a, series='F002')
+        with self.assertRaises(FiscalConfigError) as ctx:
+            resolve_series(self.a)
+        self.assertIn('2 series', str(ctx.exception))
+
+    def test_an_inactive_series_is_not_used(self):
+        self._serie(self.a, is_active=False)
+        with self.assertRaises(FiscalConfigError):
+            resolve_series(self.a)
+
+    def test_the_branch_series_wins_over_the_company_one(self):
+        de_empresa = self._serie(self.a, series='F001')
+        de_sucursal = self._serie(
+            self.a, series='F002', branch=self.a.default_inventory_branch)
+        elegida = resolve_series(
+            self.a, branch=self.a.default_inventory_branch)
+        self.assertEqual(elegida.pk, de_sucursal.pk)
+        self.assertNotEqual(elegida.pk, de_empresa.pk)
+
+    def test_a_sale_from_another_branch_falls_back_to_the_company_series(self):
+        """
+        Nunca la serie de la sucursal B para una venta de la sucursal A. Si la
+        venta es de otra sucursal, se usa la de empresa — no la ajena.
+        """
+        de_empresa = self._serie(self.a, series='F001')
+        otra = Branch.objects.create(company=self.a, name='Sucursal Dos')
+        self._serie(self.a, series='F002', branch=otra)
+
+        elegida = resolve_series(
+            self.a, branch=self.a.default_inventory_branch)
+        self.assertEqual(elegida.pk, de_empresa.pk)
+
+
+class C22BAcceptanceEvidenceTest(TestCase):
+    """
+    SABOTAJES §27 nº 6 y 7: un error de transporte marcado como rechazo, y un
+    fault sin CDR marcado como aceptado.
+    """
+
+    def test_a_4000_code_without_a_cdr_is_not_an_acceptance(self):
+        """
+        «ACEPTADA» EXIGE UNA CONSTANCIA.
+
+        El mismo número dentro de un CDR significa «aceptada con observaciones»,
+        porque la constancia prueba que SUNAT registró el comprobante. En un
+        `faultstring`, sin constancia, no prueba nada — y afirmarlo pondría
+        «ACEPTADA POR SUNAT» sobre un documento que quizá no existe para ellos.
+        """
+        from .fiscal.provider import SunatSoapProvider
+
+        self.assertEqual(
+            SunatSoapProvider._classify('4000', from_cdr=False),
+            ProviderOutcome.UNKNOWN_RESPONSE,
+        )
+        self.assertEqual(
+            SunatSoapProvider._classify('4000', from_cdr=True),
+            ProviderOutcome.ACCEPTED_WITH_OBSERVATION,
+        )
+
+    def test_a_transport_error_is_never_a_rejection(self):
+        from .fiscal.provider import SunatSoapProvider
+
+        for code in ('0100', '0999', '1500'):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    SunatSoapProvider._classify(code, from_cdr=False),
+                    ProviderOutcome.TRANSPORT_ERROR,
+                )
+
+    def test_an_unknown_code_is_never_a_rejection(self):
+        from .fiscal.provider import SunatSoapProvider
+
+        for code in ('', 'abc', '99', '50'):
+            with self.subTest(code=code):
+                self.assertNotEqual(
+                    SunatSoapProvider._classify(code, from_cdr=False),
+                    ProviderOutcome.REJECTED,
+                )
+
+    def test_only_a_cdr_marks_a_document_accepted(self):
+        """
+        Se comprueba sobre el mapa del dominio: ningún resultado sin constancia
+        cae en un estado que la interfaz pueda leer como aceptado.
+        """
+        from .fiscal_services import OUTCOME_TO_STATUS
+
+        for outcome in (ProviderOutcome.TRANSPORT_ERROR,
+                        ProviderOutcome.UNKNOWN_RESPONSE):
+            self.assertEqual(
+                OUTCOME_TO_STATUS[outcome], FiscalDocumentStatus.SUBMISSION_ERROR,
+            )
+
+
+class C22BRejectionPolicyTest(TestCase):
+    """
+    SABOTAJE §27 nº 8: un rechazado reemitido automáticamente.
+
+    El modelo permite otro documento para la misma venta —hará falta el día que
+    exista un flujo de corrección—, pero que el botón genérico lo aproveche
+    convierte un clic distraído en un correlativo gastado. Y SUNAT considera
+    USADO el número de un documento rechazado.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-rej', 'Empresa Rechazo', tax_id='20100066603',
+            legal_name='EMPRESA RECHAZO SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Rej', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_a_rejected_document_is_terminal_for_the_generic_button(self):
+        order = self._order()
+        doc, _ = get_or_create_fiscal_document(order)
+        doc.status = FiscalDocumentStatus.REJECTED
+        doc.sunat_response_code = '2335'
+        doc.save(update_fields=['status', 'sunat_response_code'])
+
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(order)
+        mensaje = str(ctx.exception)
+        self.assertIn(doc.document_id, mensaje)
+        self.assertIn('2335', mensaje)
+
+    def test_a_rejected_document_does_not_burn_another_correlativo(self):
+        """
+        LA CONSECUENCIA QUE IMPORTA. Antes, cada clic tras un rechazo gastaba un
+        número y dejaba un hueco que hay que explicar ante SUNAT.
+        """
+        order = self._order()
+        doc, _ = get_or_create_fiscal_document(order)
+        doc.status = FiscalDocumentStatus.REJECTED
+        doc.save(update_fields=['status'])
+        self.series.refresh_from_db()
+        contador = self.series.next_number
+
+        for _ in range(3):
+            with self.assertRaises(FiscalError):
+                get_or_create_fiscal_document(order)
+
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, contador)
+        self.assertEqual(FiscalDocument.objects.filter(order=order).count(), 1)
+
+    def test_reading_a_rejected_document_still_works(self):
+        """Rechazado no significa invisible: hay que poder ver por qué."""
+        order = self._order()
+        doc, _ = get_or_create_fiscal_document(order)
+        doc.status = FiscalDocumentStatus.REJECTED
+        doc.save(update_fields=['status'])
+        self.assertEqual(
+            FiscalDocument.objects.filter(order=order).first().pk, doc.pk)
+
+
+class C22BSubmissionClaimTest(TestCase):
+    """
+    SABOTAJE §27 nº 5: dos envíos simultáneos del mismo comprobante.
+
+    `attempts.count() + 1` calculado justo antes de llamar dejaba una ventana en
+    la que dos peticiones obtenían el mismo número y AMBAS llamaban a SUNAT.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-claim', 'Empresa Claim', tax_id='20100066603',
+            legal_name='EMPRESA CLAIM SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Claim', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        self.doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_an_attempt_in_flight_blocks_a_second_call(self):
+        """
+        Se simula el envío en curso dejando un intento sin cerrar. La segunda
+        petición no debe llamar a SUNAT.
+        """
+        FiscalSubmissionAttempt.objects.create(
+            document=self.doc, attempt_number=1,
+            environment=self.doc.environment, started_at=timezone.now(),
+            result='in_progress')
+
+        proveedor = _FakeProvider(_accepted())
+        with self.assertRaises(FiscalSubmissionInProgress):
+            submit_fiscal_document(self.doc, proveedor)
+        self.assertEqual(proveedor.calls, 0, 'se llamó a SUNAT habiendo envío en curso')
+
+    def test_an_abandoned_attempt_stops_blocking_after_the_deadline(self):
+        """
+        Sin plazo, un proceso caído a mitad de envío dejaría el comprobante
+        bloqueado para siempre y sin forma de desbloquearlo desde el producto.
+        """
+        import datetime as _dt
+
+        from .fiscal_services import STALE_ATTEMPT_MINUTES
+
+        FiscalSubmissionAttempt.objects.create(
+            document=self.doc, attempt_number=1,
+            environment=self.doc.environment,
+            started_at=timezone.now() - _dt.timedelta(
+                minutes=STALE_ATTEMPT_MINUTES + 1),
+            result='in_progress')
+
+        proveedor = _FakeProvider(_accepted())
+        submit_fiscal_document(self.doc, proveedor)
+        self.assertEqual(proveedor.calls, 1)
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.status, FiscalDocumentStatus.ACCEPTED)
+
+    def test_the_attempt_is_recorded_before_the_network_call(self):
+        """
+        La fila existe ANTES de llamar. Se comprueba con un proveedor que mira
+        la base de datos desde dentro de la llamada.
+        """
+        registro = {}
+
+        class ProveedorQueMira:
+            def submit_invoice(self, *, filename, zip_bytes):
+                registro['durante'] = FiscalSubmissionAttempt.objects.filter(
+                    document_id=self.doc_pk, finished_at__isnull=True).count()
+                return _accepted()
+
+        proveedor = ProveedorQueMira()
+        proveedor.doc_pk = self.doc.pk
+        submit_fiscal_document(self.doc, proveedor)
+        self.assertEqual(registro['durante'], 1,
+                         'el intento no estaba reservado durante la llamada')
+
+    def test_a_retry_after_a_failure_reuses_the_same_document(self):
+        self.doc = submit_fiscal_document(self.doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        antes = (self.doc.series, self.doc.number, self.doc.signed_xml_sha256)
+
+        self.doc = submit_fiscal_document(self.doc, _FakeProvider(_accepted()))
+        self.assertEqual(
+            (self.doc.series, self.doc.number, self.doc.signed_xml_sha256), antes)
+        self.assertEqual(self.doc.attempts.count(), 2)
+        self.assertEqual(
+            [a.attempt_number for a in self.doc.attempts.all()], [1, 2])
+
+
+class C22BDiscountFailsClosedTest(TestCase):
+    """
+    §6 — una venta con descuento NO se emite todavía, y no en silencio.
+
+    C2.1 sabe vender con descuento; el generador fiscal no sabe declararlo. Un
+    descuento se expresa en UBL con `cac:AllowanceCharge`, no rebajando el
+    importe de la línea. Hacer lo segundo producía un documento que decía
+    «2 unidades a 100,00» con un total de línea de 184,75: la aritmética no
+    cerraba y la rebaja era invisible.
+
+    Enviar eso a SUNAT es declarar un precio unitario que nadie cobró.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-desc', 'Empresa Descuento', tax_id='20100066603',
+            legal_name='EMPRESA DESCUENTO SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Desc', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _order(self, *, descuento=Decimal('0.00'), cantidad=2):
+        bruto = Decimal('118.00') * cantidad
+        total = bruto - descuento
+        base = (total / Decimal('1.18')).quantize(Decimal('0.01'))
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=total, discount_amount=descuento, subtotal_amount=bruto,
+            taxable_amount=base, tax_amount=total - base,
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=cantidad,
+            price=Decimal('118.00'))
+        return order
+
+    def test_a_sale_without_a_discount_still_issues(self):
+        """La negativa es para el descuento, no para todas las ventas."""
+        doc, creado = get_or_create_fiscal_document(self._order())
+        self.assertTrue(creado)
+        self.assertEqual(doc.total, Decimal('236.00'))
+
+    def test_a_discounted_sale_is_refused_with_a_reason(self):
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(self._order(descuento=Decimal('18.00')))
+        mensaje = str(ctx.exception).lower()
+        self.assertIn('descuento', mensaje)
+        self.assertIn('18.00', str(ctx.exception))
+
+    def test_refusing_does_not_burn_a_correlativo(self):
+        """
+        Negarse tiene que ser gratis. Si la negativa gastara un número, cada
+        intento dejaría un hueco que hay que explicar ante SUNAT.
+        """
+        serie = FiscalSeries.objects.get(company=self.company)
+        antes = serie.next_number
+        for _ in range(3):
+            with self.assertRaises(FiscalError):
+                get_or_create_fiscal_document(
+                    self._order(descuento=Decimal('18.00')))
+        serie.refresh_from_db()
+        self.assertEqual(serie.next_number, antes)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_line_whose_arithmetic_does_not_close_cannot_be_built(self):
+        """
+        LA REGLA QUE HACE EL DEFECTO IMPOSIBLE, no sólo improbable.
+
+        Aunque alguien construyera los datos a mano saltándose el servicio, un
+        importe de línea que no sea `cantidad × valor unitario` se rechaza. El
+        XSD no lo detecta: no comprueba aritmética.
+        """
+        incoherente = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('2'), 'NIU', Decimal('100.00'),
+                        Decimal('118.00'),
+                        Decimal('184.75'),   # ← el descuento escondido
+                        Decimal('33.25'), Decimal('18.00')),),
+            taxable_amount=Decimal('184.75'), tax_amount=Decimal('33.25'),
+            total=Decimal('218.00'))
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(incoherente)
+        self.assertIn('AllowanceCharge', str(ctx.exception))
+
+    def test_the_schema_alone_would_have_let_it_through(self):
+        """
+        Por qué la regla local hace falta: el esquema oficial acepta el documento
+        incoherente. Pasar el XSD no es pasar SUNAT.
+        """
+        incoherente = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('2'), 'NIU', Decimal('100.00'),
+                        Decimal('118.00'), Decimal('184.75'),
+                        Decimal('33.25'), Decimal('18.00')),),
+            taxable_amount=Decimal('184.75'), tax_amount=Decimal('33.25'),
+            total=Decimal('218.00'))
+        key, cert = self_signed_pem()
+        firmado = _fsign.sign_invoice(
+            _LET.fromstring(_fb.build_invoice_xml(incoherente)),
+            key_pem=key, cert_pem=cert)
+        # No levanta: el esquema no comprueba aritmética.
+        _fs.validate_invoice(
+            _LET.tostring(firmado, xml_declaration=True, encoding='UTF-8'))
+
+
+class C22BRecipientTest(TestCase):
+    """
+    §7 — el receptor de una factura, y que se falle ANTES de gastar correlativo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-recep', 'Empresa Receptor', tax_id='20100066603',
+            legal_name='EMPRESA RECEPTOR SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Rec', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _order(self, **extra):
+        data = dict(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        data.update(extra)
+        order = Order.objects.create(**data)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_the_document_type_is_translated_not_hardcoded(self):
+        """
+        Fijar `'6'` a mano hacía que el XML afirmara «esto es un RUC» aunque la
+        venta dijera DNI: el número viajaba con la etiqueta equivocada y SUNAT
+        recibía una declaración falsa sobre qué documento identifica al comprador.
+        """
+        doc, _ = get_or_create_fiscal_document(self._order())
+        self.assertEqual(doc.customer_doc_type, '6')
+
+    def test_a_factura_with_a_dni_is_refused_before_spending_a_number(self):
+        """
+        Una venta sin RUC no es una factura mal hecha: es una boleta. Y negarse
+        tiene que ser gratis.
+        """
+        antes = self.series.next_number
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(self._order(
+                document_type=Order.DocumentType.DNI, document_number='12345678'))
+        self.assertIn('boleta', str(ctx.exception).lower())
+
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, antes,
+                         'la negativa gastó un correlativo')
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_sale_without_a_recipient_name_is_refused(self):
+        antes = self.series.next_number
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(self._order(customer_name=''))
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, antes)
+
+    def test_an_issuer_without_a_tax_id_is_refused(self):
+        """Sin RUC del emisor no hay comprobante que valga."""
+        sin_ruc = _p3_company('c22b-sinruc', 'Sin RUC', tax_id='')
+        FiscalSeries.objects.create(
+            company=sin_ruc, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        producto = _c1_product(sin_ruc, 'Articulo', '118.00')
+        _c1_stock(sin_ruc.default_inventory_branch, producto, 5)
+        order = Order.objects.create(
+            company=sin_ruc, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=sin_ruc.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=producto, quantity=1, price=Decimal('118.00'))
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BFiscalApiTest(TestCase):
+    """
+    La superficie interna: qué devuelve, qué esconde y quién puede tocarla.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-api', 'Empresa API', tax_id='20100066603',
+            legal_name='EMPRESA API SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo API', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+
+        self.emisor, _ = _p2d_member(
+            self.company, 'c22b_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'c22b_observador', ['company.view', 'sales.fiscal.view'])
+        self.ajeno, _ = _p2d_member(
+            self.company, 'c22b_ajeno', ['company.view'])
+
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem = key.decode()
+        self.cert_pem = cert.decode()
+        self.order = self._order()
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _emitir(self, user=None, order=None):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem,
+                               FISCAL_KEY_PEM=self.key_pem):
+            return self._as(user or self.emisor).post(
+                f'/api/admin/orders/{(order or self.order).pk}/fiscal-document/')
+
+    # -- forma de la respuesta ------------------------------------------------
+
+    def test_issuing_returns_the_document_metadata(self):
+        res = self._emitir()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['identifier'], 'F001-1')
+        self.assertEqual(res.data['status'], FiscalDocumentStatus.SIGNED)
+        self.assertEqual(res.data['total'], '118.00')
+        self.assertTrue(res.data['has_xml'])
+        self.assertFalse(res.data['has_cdr'])
+        # UN FIRMADO YA SE PUEDE IMPRIMIR, y es deliberado: desde que hay firma
+        # hay `DigestValue` y por tanto QR. El papel dice el estado real, así que
+        # «pendiente de envío» no se confunde con «aceptada». Este test afirmaba
+        # la política anterior —sólo imprimible tras la aceptación— y se
+        # actualizó con ella.
+        self.assertTrue(res.data['can_download_pdf'])
+        self.assertFalse(res.data['is_accepted'])
+
+    def test_the_detail_never_carries_the_xml_or_a_secret(self):
+        """
+        Un comprobante firmado son kilobytes de base64 y una firma. En la
+        respuesta de detalle se convertiría en algo que se copia y se pega.
+        """
+        self._emitir()
+        res = self._as(self.observador).get(
+            f'/api/admin/orders/{self.order.pk}/fiscal-document/')
+        # `str()` y no `json.dumps`: la respuesta lleva un datetime, que no es
+        # serializable — y el objetivo es inspeccionar TODO lo que sale, no
+        # sólo lo que resulta serializable.
+        crudo = str(res.data).lower()
+        for prohibido in ('<?xml', 'signedxml', 'signed_xml', 'begin private key',
+                          'moddatos', 'wsse', 'certificate', 'soapenv'):
+            self.assertNotIn(prohibido, crudo, prohibido)
+
+    def test_amounts_travel_as_strings(self):
+        """Un importe que llega como número JSON invita a operar con él."""
+        res = self._emitir()
+        for campo in ('taxable_amount', 'tax_amount', 'total'):
+            self.assertIsInstance(res.data[campo], str, campo)
+
+    def test_issuing_twice_returns_the_same_document(self):
+        primero = self._emitir()
+        segundo = self._emitir()
+        self.assertEqual(primero.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segundo.status_code, status.HTTP_200_OK)
+        self.assertEqual(primero.data['id'], segundo.data['id'])
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+
+    def test_an_order_without_a_document_answers_404(self):
+        res = self._as(self.observador).get(
+            f'/api/admin/orders/{self.order.pk}/fiscal-document/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- permisos -------------------------------------------------------------
+
+    def test_viewing_does_not_grant_issuing(self):
+        """
+        SABOTAJE: escalada por capacidad. Consultar el estado de una factura y
+        declarar algo ante SUNAT son decisiones distintas.
+        """
+        res = self._emitir(user=self.observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_member_without_fiscal_capabilities_sees_nothing(self):
+        self._emitir()
+        res = self._as(self.ajeno).get(
+            f'/api/admin/orders/{self.order.pk}/fiscal-document/')
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+    def test_no_legacy_role_grants_fiscal_authority(self):
+        """
+        El concepto no existía antes de esta fase, así que no hay un `admin`
+        histórico que «siempre pudo facturar». La lista vacía es deliberada.
+        """
+        from . import fiscal_views
+
+        self.assertEqual(fiscal_views._NO_LEGACY_BRIDGE, ())
+
+    # -- artefactos -----------------------------------------------------------
+
+    def test_the_xml_downloads_with_the_sunat_filename(self):
+        doc_id = self._emitir().data['id']
+        res = self._as(self.observador).get(
+            f'/api/admin/fiscal-documents/{doc_id}/xml/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('application/xml', res['Content-Type'])
+        self.assertIn('20100066603-01-F001-1.XML', res['Content-Disposition'])
+        self.assertTrue(res.content.startswith(b'<?xml'))
+
+    def test_the_filename_cannot_carry_a_header_injection(self):
+        """Un salto de línea en una cabecera HTTP es inyección de cabeceras."""
+        doc_id = self._emitir().data['id']
+        doc = FiscalDocument.objects.get(pk=doc_id)
+        doc.series = 'F0\r\n'
+        doc.save(update_fields=['series'])
+        res = self._as(self.observador).get(
+            f'/api/admin/fiscal-documents/{doc_id}/xml/')
+        self.assertNotIn('\n', res['Content-Disposition'])
+        self.assertNotIn('\r', res['Content-Disposition'])
+
+    def test_the_cdr_is_404_until_sunat_answers(self):
+        doc_id = self._emitir().data['id']
+        res = self._as(self.observador).get(
+            f'/api/admin/fiscal-documents/{doc_id}/cdr/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BFiscalTenantIsolationTest(TestCase):
+    """
+    SABOTAJES 9, 10 y 11: XML, CDR y estado de otro tenant.
+
+    Un identificador ajeno responde como uno inexistente. Un 403 confirmaría que
+    ese comprobante existe.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c22b-iso-a', 'Empresa A', tax_id='20100066603',
+                             legal_name='EMPRESA A SAC')
+        self.b = _p3_company('c22b-iso-b', 'Empresa B', tax_id='20522222222',
+                             legal_name='EMPRESA B SAC')
+        FiscalSeries.objects.create(
+            company=self.a, document_type=FiscalDocumentType.INVOICE, series='F001')
+        producto = _c1_product(self.a, 'Articulo A', '118.00')
+        _c1_stock(self.a.default_inventory_branch, producto, 10)
+
+        self.order_a = Order.objects.create(
+            company=self.a, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.a.default_inventory_branch)
+        OrderItem.objects.create(
+            order=self.order_a, product=producto, quantity=1,
+            price=Decimal('118.00'))
+
+        doc, _ = get_or_create_fiscal_document(self.order_a)
+        key, cert = self_signed_pem('20100066603')
+        self.doc_a = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        self.doc_a = submit_fiscal_document(self.doc_a, _FakeProvider(_accepted()))
+
+        self.de_b, _ = _p2d_member(
+            self.b, 'c22b_iso_b',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+    def _b(self):
+        client = APIClient()
+        client.force_authenticate(user=self.de_b)
+        return client
+
+    def test_b_cannot_read_a_document_of_a(self):
+        res = self._b().get(
+            f'/api/admin/orders/{self.order_a.pk}/fiscal-document/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_b_cannot_issue_for_an_order_of_a(self):
+        antes = FiscalDocument.objects.count()
+        res = self._b().post(
+            f'/api/admin/orders/{self.order_a.pk}/fiscal-document/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(FiscalDocument.objects.count(), antes)
+
+    def test_b_cannot_download_the_xml_of_a(self):
+        res = self._b().get(f'/api/admin/fiscal-documents/{self.doc_a.pk}/xml/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_b_cannot_download_the_cdr_of_a(self):
+        res = self._b().get(f'/api/admin/fiscal-documents/{self.doc_a.pk}/cdr/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_b_cannot_resubmit_a_document_of_a(self):
+        res = self._b().post(
+            f'/api/admin/fiscal-documents/{self.doc_a.pk}/submit/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self.doc_a.attempts.count(), 1)
+
+
+class C22BQrTest(TestCase):
+    """
+    §17 — el QR, campo por campo contra el anexo oficial.
+
+    Del Anexo A de la R.S. 113-2018, numeral 6.4.3. Diez campos separados por
+    `|`, sin separador final.
+    """
+
+    PAYLOAD_ARGS = dict(
+        issuer_tax_id='20100066603', document_type='01', series='F001', number=1,
+        tax_amount=Decimal('18.00'), total=Decimal('118.00'),
+        issue_date=datetime.date(2026, 9, 6),
+        customer_doc_type='6', customer_doc_number='20000000001',
+        digest_value='bDooE0rMdf79EDMTceZ98QtJ3oLEau5OnFGVuDjmjpg=',
+    )
+
+    def test_the_exact_payload(self):
+        from .fiscal.qr import build_qr_payload
+
+        self.assertEqual(
+            build_qr_payload(**self.PAYLOAD_ARGS),
+            '20100066603|01|F001|1|18.00|118.00|2026-09-06|6|20000000001|'
+            'bDooE0rMdf79EDMTceZ98QtJ3oLEau5OnFGVuDjmjpg=',
+        )
+
+    def test_the_field_order_one_by_one(self):
+        """
+        Diez campos posicionales en el orden equivocado producirían un QR
+        sintácticamente perfecto y semánticamente falso.
+        """
+        from .fiscal.qr import build_qr_payload
+
+        campos = build_qr_payload(**self.PAYLOAD_ARGS).split('|')
+        self.assertEqual(len(campos), 10)
+        esperado = [
+            '20100066603',   # 1 RUC del emisor
+            '01',            # 2 tipo de comprobante
+            'F001',          # 3 serie
+            '1',             # 4 correlativo
+            '18.00',         # 5 sumatoria IGV
+            '118.00',        # 6 importe total
+            '2026-09-06',    # 7 fecha de emisión
+            '6',             # 8 tipo de documento del adquirente
+            '20000000001',   # 9 número de documento del adquirente
+            'bDooE0rMdf79EDMTceZ98QtJ3oLEau5OnFGVuDjmjpg=',  # 10 valor resumen
+        ]
+        for i, (obtenido, quiero) in enumerate(zip(campos, esperado), 1):
+            self.assertEqual(obtenido, quiero, f'campo {i}')
+
+    def test_there_is_no_trailing_separator(self):
+        """
+        El mismo anexo define el PDF417 con ONCE campos y SÍ cierra con `|`. El
+        contraste dentro del documento es la evidencia de que el QR no lo lleva.
+        """
+        from .fiscal.qr import build_qr_payload
+
+        self.assertFalse(build_qr_payload(**self.PAYLOAD_ARGS).endswith('|'))
+
+    def test_amounts_carry_two_decimals(self):
+        from .fiscal.qr import build_qr_payload
+
+        payload = build_qr_payload(
+            **{**self.PAYLOAD_ARGS, 'tax_amount': Decimal('0.5'),
+               'total': Decimal('100')})
+        campos = payload.split('|')
+        self.assertEqual(campos[4], '0.50')
+        self.assertEqual(campos[5], '100.00')
+
+    def test_the_payload_is_not_a_url_or_an_internal_id(self):
+        from .fiscal.qr import build_qr_payload
+
+        payload = build_qr_payload(**self.PAYLOAD_ARGS)
+        self.assertNotIn('http', payload.lower())
+        self.assertNotIn('order', payload.lower())
+
+    def test_it_renders_a_real_png(self):
+        from .fiscal.qr import build_qr_payload, render_qr_png
+
+        png = render_qr_png(build_qr_payload(**self.PAYLOAD_ARGS))
+        self.assertTrue(png.startswith(b'\x89PNG'))
+        self.assertGreater(len(png), 200)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BFiscalPdfTest(TestCase):
+    """La representación impresa: lo que dice, lo que no, y cuándo existe."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-pdf', 'Empresa PDF', tax_id='20100066603',
+            legal_name='EMPRESA PDF SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        producto = _c1_product(self.company, 'Articulo PDF', '118.00')
+        _c1_stock(self.company.default_inventory_branch, producto, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=producto, quantity=1, price=Decimal('118.00'))
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        self.doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_an_unsigned_document_has_no_printed_representation(self):
+        """Sin `DigestValue` no hay QR, y sin QR no hay representación impresa."""
+        from .fiscal_pdf_services import FiscalPdfError, generate_fiscal_pdf
+
+        self.doc.digest_value = ''
+        self.doc.save(update_fields=['digest_value'])
+        with self.assertRaises(FiscalPdfError):
+            generate_fiscal_pdf(self.doc)
+
+    def test_the_a4_says_what_it_is_and_carries_the_numbers(self):
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc))
+        self.assertIn('FACTURA', texto.upper())
+        self.assertIn('F001-1', texto)
+        self.assertIn('20100066603', texto)
+        self.assertIn('100.00', texto)
+        self.assertIn('18.00', texto)
+        self.assertIn('118.00', texto)
+
+    def test_a_beta_document_is_marked_unmistakably(self):
+        """
+        Sin marca, alguien lo imprime y lo entrega como factura real. Va en el
+        aviso Y en la marca diagonal: una marca de agua se pierde en una
+        fotocopia mala.
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc)).upper()
+        self.assertIn('SIN VALIDEZ TRIBUTARIA', texto)
+        self.assertIn('BETA', texto)
+
+    def test_it_never_claims_acceptance_without_a_cdr(self):
+        """
+        Un papel que afirma una aceptación que no ocurrió es peor que uno que
+        dice «pendiente».
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc))
+        self.assertNotIn('Aceptada por SUNAT', texto)
+        self.assertIn('pendiente', texto.lower())
+
+    def test_once_accepted_it_says_so(self):
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        doc = submit_fiscal_document(self.doc, _FakeProvider(_accepted()))
+        texto = _pdf_text(generate_fiscal_pdf(doc))
+        self.assertIn('Aceptada por SUNAT', texto)
+
+    def test_a_rejected_document_says_it_has_no_tax_validity(self):
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        self.doc.status = FiscalDocumentStatus.REJECTED
+        self.doc.save(update_fields=['status'])
+        texto = _pdf_text(generate_fiscal_pdf(self.doc)).upper()
+        self.assertIn('RECHAZADA', texto)
+
+    def test_it_is_not_the_internal_sales_note(self):
+        """
+        `SalesNote` imprime «no válido como comprobante SUNAT» porque no lo es.
+        Este documento SÍ pertenece al dominio fiscal: ese aviso sería falso.
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc))
+        self.assertNotIn('No válido como comprobante', texto)
+        self.assertNotIn('Nota de venta interna', texto)
+
+    def test_the_ticket_is_eighty_millimetres_wide(self):
+        from .fiscal_pdf_services import generate_fiscal_ticket_pdf
+
+        pdf = generate_fiscal_ticket_pdf(self.doc)
+        caja = re.search(
+            rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)', pdf)
+        self.assertAlmostEqual(float(caja.group(1)) / 72 * 25.4, 80.0, delta=0.5)
+
+    def test_the_ticket_carries_the_same_figures_as_the_a4(self):
+        from .fiscal_pdf_services import (
+            generate_fiscal_pdf, generate_fiscal_ticket_pdf,
+        )
+
+        ticket = _pdf_text(generate_fiscal_ticket_pdf(self.doc))
+        for cifra in ('100.00', '18.00', '118.00', 'F001-1'):
+            self.assertIn(cifra, ticket)
+        self.assertIn('SIN VALIDEZ TRIBUTARIA', ticket.upper())
+        # Y el A4 dice lo mismo: dos papeles del mismo comprobante no pueden
+        # discrepar.
+        a4 = _pdf_text(generate_fiscal_pdf(self.doc))
+        for cifra in ('100.00', '18.00', '118.00'):
+            self.assertIn(cifra, a4)
+
+    def test_no_document_leaks_a_secret(self):
+        from .fiscal_pdf_services import (
+            generate_fiscal_pdf, generate_fiscal_ticket_pdf,
+        )
+
+        for pdf in (generate_fiscal_pdf(self.doc),
+                    generate_fiscal_ticket_pdf(self.doc)):
+            texto = _pdf_text(pdf).lower()
+            for secreto in ('moddatos', 'private key', 'wsse', 'soapenv',
+                            'begin rsa'):
+                self.assertNotIn(secreto, texto)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BAdversarialTest(TestCase):
+    """
+    §27 — los sabotajes que aún no tenían test propio.
+
+    Cada uno describe una forma concreta de romper el sistema. Si alguno dejara
+    de fallar, el defecto que impide habría vuelto.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-adv', 'Empresa Adversarial', tax_id='20100066603',
+            legal_name='EMPRESA ADVERSARIAL SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Adv', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+        self.user, _ = _p2d_member(
+            self.company, 'c22b_adv',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        return client
+
+    def _issue(self, order):
+        key, cert = self_signed_pem('20100066603')
+        with override_settings(FISCAL_CERT_PEM=cert.decode(),
+                               FISCAL_KEY_PEM=key.decode()):
+            return self._client().post(
+                f'/api/admin/orders/{order.pk}/fiscal-document/')
+
+    def test_sabotage_4_two_issue_clicks_produce_one_correlativo(self):
+        """Doble clic en «Emitir»."""
+        order = self._order()
+        primero = self._issue(order)
+        segundo = self._issue(order)
+        self.assertEqual(primero.data['id'], segundo.data['id'])
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+
+    def test_sabotage_12_no_private_key_reaches_a_response_or_a_log(self):
+        """
+        La clave privada y la Clave SOL no pueden salir por ninguna parte: ni en
+        la respuesta, ni en la bitácora, ni en un intento de envío.
+        """
+        order = self._order()
+        respuesta = self._issue(order)
+        doc = FiscalDocument.objects.get(pk=respuesta.data['id'])
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+        superficies = [str(respuesta.data)]
+        superficies += [str(a.__dict__) for a in FiscalSubmissionAttempt.objects.all()]
+        superficies += [
+            str(log.metadata) for log in AdminAuditLog.objects.filter(
+                target_type='fiscal_document')
+        ]
+        superficies.append(str(FiscalDocument.objects.values().first()))
+
+        for texto in superficies:
+            minusculas = texto.lower()
+            for secreto in ('private key', 'moddatos', 'wsse', 'soapenv',
+                            'begin rsa', 'password'):
+                self.assertNotIn(secreto, minusculas, secreto)
+
+    def test_the_audit_log_stores_hashes_not_documents(self):
+        """
+        Un comprobante entero por entrada haría la bitácora ilegible además de
+        pesada. Se guarda el hash, que sirve para correlacionar.
+        """
+        order = self._order()
+        self._issue(order)
+        firmado = AdminAuditLog.objects.filter(
+            action='fiscal_document_signed').first()
+        self.assertIsNotNone(firmado)
+        self.assertIn('xml_sha256', firmado.metadata)
+        self.assertEqual(len(firmado.metadata['xml_sha256']), 64)
+        self.assertNotIn('<?xml', str(firmado.metadata))
+
+    def test_sabotage_3_a_production_series_is_never_selected(self):
+        """Aunque exista la fila, el ambiente lo decide el servidor."""
+        self.series.is_active = False
+        self.series.save(update_fields=['is_active'])
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F002', environment=FiscalEnvironment.PRODUCTION)
+
+        respuesta = self._issue(self._order())
+        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_sabotage_6_a_timeout_never_becomes_a_rejection_through_the_api(self):
+        order = self._order()
+        doc = FiscalDocument.objects.get(pk=self._issue(order).data['id'])
+
+        from unittest.mock import patch as _patch
+
+        # Se parchea donde se USA: `fiscal_views` importó el nombre al
+        # cargarse, así que parchear `fiscal_config` no lo alcanza.
+        with _patch('store.fiscal_views.resolve_provider') as fake:
+            fake.return_value = _FakeProvider(ProviderResult(
+                outcome=ProviderOutcome.TRANSPORT_ERROR,
+                safe_message='ReadTimeout al contactar con el servicio'))
+            respuesta = self._client().post(
+                f'/api/admin/fiscal-documents/{doc.pk}/submit/')
+
+        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
+        self.assertEqual(respuesta.data['status'],
+                         FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertFalse(respuesta.data['is_accepted'])
+        self.assertTrue(respuesta.data['can_retry'])
+
+    def test_sabotage_7_a_fault_without_a_cdr_never_becomes_accepted(self):
+        order = self._order()
+        doc = FiscalDocument.objects.get(pk=self._issue(order).data['id'])
+
+        from unittest.mock import patch as _patch
+
+        # Se parchea donde se USA: `fiscal_views` importó el nombre al
+        # cargarse, así que parchear `fiscal_config` no lo alcanza.
+        with _patch('store.fiscal_views.resolve_provider') as fake:
+            # Un 4000+ en un fault, sin constancia.
+            fake.return_value = _FakeProvider(ProviderResult(
+                outcome=ProviderOutcome.UNKNOWN_RESPONSE, response_code='4000',
+                safe_message='observación sin CDR'))
+            respuesta = self._client().post(
+                f'/api/admin/fiscal-documents/{doc.pk}/submit/')
+
+        self.assertFalse(respuesta.data['is_accepted'])
+        self.assertNotEqual(respuesta.data['status'],
+                            FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION)
+
+    def test_an_accepted_document_is_never_transmitted_twice(self):
+        order = self._order()
+        doc = FiscalDocument.objects.get(pk=self._issue(order).data['id'])
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+        from unittest.mock import patch as _patch
+
+        proveedor = _FakeProvider(_accepted())
+        with _patch('store.fiscal_views.resolve_provider', return_value=proveedor):
+            self._client().post(f'/api/admin/fiscal-documents/{doc.pk}/submit/')
+        self.assertEqual(proveedor.calls, 0)
