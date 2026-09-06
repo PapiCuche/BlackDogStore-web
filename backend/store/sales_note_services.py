@@ -171,6 +171,10 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'items': items,
         'discount_amount': Decimal(str(order.discount_amount)),
         'total': Decimal(str(order.total)),
+        # EL DESGLOSE SE LEE DE LA VENTA, NO SE RECALCULA. Un documento
+        # reimpreso dentro de tres años tiene que seguir diciendo lo que dijo,
+        # aunque para entonces la tasa vigente sea otra.
+        'tax': _tax_context(order),
         'store_name': identity.name,
         'store_legal_name': identity.legal_name,
         'store_ruc': identity.tax_id,
@@ -181,6 +185,47 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'warranty_note': identity.warranty_policy_text or _GENERIC_WARRANTY_NOTE,
         'pickup_name': pickup.get('name', ''),
         'pickup_address': pickup.get('address', ''),
+    }
+
+
+def _tax_context(order) -> dict:
+    """
+    El desglose de esta venta, ya formateado para imprimir.
+
+    UNA SOLA LÍNEA DE IMPUESTO, ROTULADA «IGV». El 18 % se compone por ley de
+    IGV más Impuesto de Promoción Municipal, y la Ley N.º 32387 mueve ese
+    reparto cada año hasta 2029 sin tocar el total. La representación impresa
+    peruana muestra el tributo agregado, que es además lo que el comprador
+    reconoce; separarlo obligaría a redondear dos veces y a que la suma dejara
+    de cuadrar, a cambio de un detalle que el documento no necesita.
+    """
+    from .tax_services import TaxTreatment, breakdown_for_order, currency_symbol
+
+    result = breakdown_for_order(order)
+    percent = (result.tax_rate * Decimal('100')).normalize()
+    labels = {
+        TaxTreatment.TAXED: 'Op. gravada',
+        TaxTreatment.EXEMPT: 'Op. exonerada',
+        TaxTreatment.UNAFFECTED: 'Op. inafecta',
+    }
+    return {
+        'currency': result.currency,
+        # El código ISO es lo que se guarda; el símbolo es lo que se imprime.
+        # Sin esto el documento mezclaba «S/ 999.00» en la tabla de productos con
+        # «PEN 999.00» en los totales, tres líneas más abajo y en la misma hoja.
+        'symbol': currency_symbol(result.currency),
+        'subtotal': result.subtotal,
+        'discount_amount': result.discount_amount,
+        'taxable_amount': result.taxable_amount,
+        'tax_amount': result.tax_amount,
+        'tax_rate': result.tax_rate,
+        'treatment': result.tax_treatment,
+        'base_label': labels.get(result.tax_treatment, 'Op. gravada'),
+        'tax_label': f'IGV ({percent:f}%)',
+        # Una operación exonerada no lleva línea de impuesto: un «IGV S/ 0,00»
+        # se lee como que se olvidaron de cobrarlo.
+        'shows_tax': result.tax_treatment == TaxTreatment.TAXED,
+        'total': result.total,
     }
 
 
@@ -325,8 +370,8 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
         rows.append([
             Paragraph(str(it['name']), _body),
             str(it['quantity']),
-            f"S/ {it['unit_price']:.2f}",
-            f"S/ {it['subtotal']:.2f}",
+            f"{ctx['tax']['symbol']} {it['unit_price']:.2f}",
+            f"{ctx['tax']['symbol']} {it['subtotal']:.2f}",
         ])
 
     items_tbl = Table(rows, colWidths=[9 * cm, 2 * cm, 3 * cm, 3 * cm], repeatRows=1)
@@ -345,10 +390,17 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
     story.append(Spacer(1, 8))
 
     # --- Totals ---
-    total_rows = []
-    if ctx['discount_amount'] > 0:
-        total_rows.append(['Descuento:', f"- S/ {ctx['discount_amount']:.2f}"])
-    total_rows.append(['TOTAL:', f"S/ {ctx['total']:.2f}"])
+    tax = ctx['tax']
+    cur = tax['symbol']
+    total_rows = [['Subtotal:', f"{cur} {tax['subtotal']:.2f}"]]
+    if tax['discount_amount'] > 0:
+        total_rows.append(['Descuento:', f"- {cur} {tax['discount_amount']:.2f}"])
+    # El desglose va DESPUÉS del descuento porque el tributo se calcula sobre lo
+    # que realmente se cobra, no sobre el precio de lista.
+    total_rows.append([f"{tax['base_label']}:", f"{cur} {tax['taxable_amount']:.2f}"])
+    if tax['shows_tax']:
+        total_rows.append([f"{tax['tax_label']}:", f"{cur} {tax['tax_amount']:.2f}"])
+    total_rows.append(['TOTAL:', f"{cur} {tax['total']:.2f}"])
 
     totals = Table(total_rows, colWidths=[14 * cm, 3 * cm])
     totals.setStyle(TableStyle([

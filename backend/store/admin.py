@@ -80,8 +80,24 @@ class OrderAdmin(admin.ModelAdmin):
     list_filter = ('status', 'fulfillment_status', 'delivery_method', 'receipt_type', 'paid', 'created_at')
     search_fields = ('customer_name', 'customer_email', 'coupon_code',
                      'document_number', 'customer_phone')
+    # EL DINERO DE UNA VENTA CERRADA NO SE EDITA DESDE AQUÍ.
+    #
+    # `total` dejó de ser un número suelto en C2.1: es el ancla de un desglose
+    # CONGELADO (`taxable_amount`, `tax_amount`, `tax_rate`) que ya se imprimió
+    # en un papel que el cliente tiene en la mano. Cambiarlo aquí no recalcula
+    # nada —este formulario no pasa por `tax_services`—, así que dejaba la venta
+    # diciendo `base + impuesto != total` y el siguiente PDF salía contradictorio
+    # consigo mismo.
+    #
+    # Recalcular al guardar tampoco vale: reescribiría en silencio un documento
+    # ya entregado, que es justo lo que el congelado existe para impedir. Una
+    # corrección de importe es una operación comercial —nota de crédito—, no una
+    # edición de fila.
     readonly_fields = ('paid_at', 'payment_error',
                        'accepted_terms', 'accepted_warranty_policy',
+                       'total', 'discount_amount',
+                       'currency', 'subtotal_amount', 'taxable_amount',
+                       'tax_amount', 'tax_rate', 'tax_treatment',
                        'confirmation_email_sent_at', 'internal_notification_sent_at', 'email_send_error')
     fieldsets = (
         ('Identificación', {
@@ -92,7 +108,11 @@ class OrderAdmin(admin.ModelAdmin):
                        'document_type', 'document_number'),
         }),
         ('Económico', {
-            'fields': ('total', 'discount_amount', 'coupon_code'),
+            # El desglose se MUESTRA, para que una venta descuadrada se vea en
+            # vez de descubrirse al imprimir.
+            'fields': ('total', 'discount_amount', 'coupon_code',
+                       'subtotal_amount', 'taxable_amount', 'tax_amount',
+                       'tax_rate', 'tax_treatment', 'currency'),
         }),
         ('Entrega', {
             'fields': ('delivery_method', 'address_line', 'city', 'district', 'reference'),

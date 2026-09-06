@@ -34,6 +34,24 @@ import {
 } from "../lib/payments";
 
 type Coupon = { code: string; discount_percent: number };
+
+/**
+ * Lo que responde `/checkout/quote/`. TODO son cadenas: un importe que pasa por
+ * `number` en JavaScript deja de ser exacto, y estas cifras tienen que coincidir
+ * al céntimo con el documento que se imprime.
+ */
+type CheckoutQuote = {
+  currency: string;
+  subtotal: string;
+  discount_amount: string;
+  taxable_amount: string;
+  tax_amount: string;
+  tax_treatment: string;
+  total: string;
+  base_label: string;
+  tax_label: string;
+  notice: string;
+};
 type FieldErrors = Record<string, string>;
 
 type FormState = {
@@ -116,6 +134,15 @@ export default function CheckoutPage() {
   const [cancelled, setCancelled] = useState(false);
   const [coupon, setCoupon] = useState<Coupon | null>(null);
   const [items, setItems] = useState<CheckoutItem[] | null>(null);
+  // EL DESGLOSE LO CALCULA EL SERVIDOR, no esta pantalla.
+  //
+  // El total de aquí abajo se suma en JavaScript y eso pasa: el backend vuelve
+  // a calcularlo y manda él. Pero el reparto entre base e impuesto sí importa
+  // que cuadre al céntimo con el papel que se lleva el cliente, y en coma
+  // flotante no cuadra —`0.1 + 0.2 !== 0.3` es literalmente este error—. Así
+  // que se pregunta a `/checkout/quote/`, que usa el mismo `Decimal` que
+  // congelará la orden.
+  const [quote, setQuote] = useState<CheckoutQuote | null>(null);
 
   const sessionKey = getSessionKey();
 
@@ -143,6 +170,38 @@ export default function CheckoutPage() {
   );
   const discount = coupon ? subtotal * (coupon.discount_percent / 100) : 0;
   const total = subtotal - discount;
+
+  const couponCode = coupon?.code ?? "";
+  useEffect(() => {
+    // Se vuelve a pedir cuando cambia el carrito o el cupón, porque el desglose
+    // cambia con ellos. Si falla, el resumen sigue mostrando el total y omite
+    // el desglose: es mejor no decir nada del impuesto que decir una cifra que
+    // esta pantalla se haya inventado.
+    let cancelledFetch = false;
+    void (async () => {
+      // La comprobación va DENTRO del trabajo asíncrono, no en el cuerpo del
+      // efecto: un `setState` síncrono aquí encadena un render extra en cada
+      // cambio del carrito.
+      if (!sessionKey || !items || items.length === 0) {
+        if (!cancelledFetch) setQuote(null);
+        return;
+      }
+      try {
+        // `fetchWithAuth`, el mismo camino que el cobro: lleva las cookies y el
+        // CSRF. `fetcher` sólo hace GET.
+        const res = await fetchWithAuth(`${API_BASE}/checkout/quote/`, {
+          method: "POST",
+          body: JSON.stringify({ session_key: sessionKey, coupon_code: couponCode }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const data = (await res.json()) as CheckoutQuote;
+        if (!cancelledFetch) setQuote(data);
+      } catch {
+        if (!cancelledFetch) setQuote(null);
+      }
+    })();
+    return () => { cancelledFetch = true; };
+  }, [sessionKey, items, couponCode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -677,21 +736,56 @@ export default function CheckoutPage() {
                 <dl className="space-y-2 border-t border-bd-border px-4 py-4 text-sm">
                   <div className="flex justify-between">
                     <dt className="text-muted">Subtotal</dt>
-                    <dd className="tabular-nums text-foreground">S/ {subtotal.toFixed(2)}</dd>
+                    <dd className="tabular-nums text-foreground">
+                      S/ {quote ? quote.subtotal : subtotal.toFixed(2)}
+                    </dd>
                   </div>
                   {coupon ? (
                     <div className="flex justify-between">
                       <dt className="text-muted">Cupón {coupon.code}</dt>
-                      <dd className="tabular-nums text-success">−S/ {discount.toFixed(2)}</dd>
+                      <dd className="tabular-nums text-success">
+                        −S/ {quote ? quote.discount_amount : discount.toFixed(2)}
+                      </dd>
                     </div>
+                  ) : null}
+                  {/*
+                    El desglose sólo aparece cuando el servidor lo ha dado. Si la
+                    cotización falló, esta pantalla NO se lo inventa: enseña el
+                    total, que es lo que se va a cobrar, y calla sobre el reparto.
+                  */}
+                  {quote ? (
+                    <>
+                      <div className="flex justify-between border-t border-bd-border pt-2">
+                        <dt className="text-muted">{quote.base_label}</dt>
+                        <dd className="tabular-nums text-foreground">
+                          S/ {quote.taxable_amount}
+                        </dd>
+                      </div>
+                      {quote.tax_treatment === "taxed" ? (
+                        <div className="flex justify-between">
+                          <dt className="text-muted">{quote.tax_label}</dt>
+                          <dd className="tabular-nums text-foreground">S/ {quote.tax_amount}</dd>
+                        </div>
+                      ) : null}
+                    </>
                   ) : null}
                   <div className="flex justify-between border-t border-bd-border pt-2">
                     <dt className="font-semibold text-foreground">Total</dt>
                     <dd className="font-display text-lg font-black tabular-nums text-foreground">
-                      S/ {total.toFixed(2)}
+                      S/ {quote ? quote.total : total.toFixed(2)}
                     </dd>
                   </div>
                 </dl>
+                {/*
+                  «Se emite por separado», nunca «emitido». Aquí no ha habido
+                  aceptación de SUNAT y el comprador no debe salir creyendo que
+                  ya tiene un comprobante fiscal.
+                */}
+                {quote ? (
+                  <p className="border-t border-bd-border px-4 py-3 text-xs leading-relaxed text-muted">
+                    {quote.notice}
+                  </p>
+                ) : null}
               </div>
             )}
           </aside>

@@ -408,6 +408,45 @@ class Order(models.Model):
     customer_email = models.EmailField(blank=True)
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    # --- C2.1 — DESGLOSE TRIBUTARIO CONGELADO -----------------------------
+    #
+    # En COLUMNAS y no dentro de `company_snapshot`, porque estos importes se
+    # suman, se filtran y se comparan: un JSON obliga a leerlo entero en Python
+    # para responder «cuánto tributo se recaudó este mes».
+    #
+    # CONGELADOS, y no es una precaución teórica. La Ley N.º 32387 reparte el
+    # 18 % entre IGV e IPM de forma distinta cada año hasta 2029. Un documento
+    # emitido hoy tiene que seguir diciendo lo que dijo cuando ese reparto
+    # cambie, así que la venta guarda su copia y ninguna lectura la recalcula.
+    #
+    # `total` NO se toca: sigue siendo lo que se cobra. El desglose lo separa
+    # hacia atrás, porque los precios del catálogo ya incluyen el impuesto.
+    currency = models.CharField(max_length=3, blank=True, default='PEN')
+    #: Suma de las líneas ANTES del descuento. Se guarda en vez de derivarse de
+    #: `total + discount_amount` porque el descuento se redondea, y reconstruir
+    #: el bruto a partir del neto puede devolver un céntimo distinto del que se
+    #: enseñó en pantalla.
+    subtotal_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    #: Valor de venta: el total sin el tributo.
+    taxable_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    tax_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    #: La tasa TOTAL aplicada, no su reparto interno. Cuatro decimales para
+    #: admitir tasas que no sean céntimos redondos.
+    tax_rate = models.DecimalField(
+        max_digits=6, decimal_places=4, null=True, blank=True,
+    )
+    #: Gravado, exonerado o inafecto. Existe para no dar por sentado
+    #: eternamente que todo tributa.
+    tax_treatment = models.CharField(
+        max_length=16, blank=True, default='taxed',
+    )
     coupon_code = models.CharField(max_length=50, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     paid = models.BooleanField(default=False)

@@ -739,6 +739,26 @@ export type PosProduct = {
 
 export type PosSaleLine = { product: number; quantity: number };
 
+/**
+ * El desglose tributario de una venta. TODO son cadenas: estas cifras tienen
+ * que coincidir al céntimo con el documento impreso, y un importe que pasa por
+ * `number` en JavaScript deja de ser exacto.
+ *
+ * Lo calcula el servidor. Esta capa lo transporta y lo pinta; no lo deriva.
+ */
+export type TaxBreakdown = {
+  currency: string;
+  subtotal: string;
+  discount_amount: string;
+  taxable_amount: string;
+  tax_amount: string;
+  tax_rate: string;
+  tax_treatment: "taxed" | "exempt" | "unaffected";
+  total: string;
+  base_label: string;
+  tax_label: string;
+};
+
 export type PosSaleResult = {
   order_id: number;
   created: boolean;
@@ -747,6 +767,11 @@ export type PosSaleResult = {
   discount_source: string;
   discount_reason: string;
   total: string;
+  /**
+   * Opcional en el tipo aunque el servidor lo mande siempre: una venta ya
+   * cobrada no puede quedarse sin resumen en pantalla porque falte una clave.
+   */
+  tax?: TaxBreakdown;
   paid_at: string | null;
   payment_method: string;
   amount_received: string | null;
@@ -968,6 +993,8 @@ export type PosPreview = {
   promotions: AppliedPromotionPreview[];
   coupon_code: string;
   total: string;
+  /** Lo que el operador lee en voz alta. Sale del mismo cálculo que hará la venta. */
+  tax: TaxBreakdown;
   seller: { id: number | null; name: string };
   customer: { id: number; name: string } | null;
   /** null unless the caller may see earnings. */

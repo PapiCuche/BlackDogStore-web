@@ -22,6 +22,25 @@ class CheckoutThrottle(AnonRateThrottle):
     scope = 'checkout'
 
 
+class CheckoutQuoteThrottle(AnonRateThrottle):
+    """
+    Cotizar el carrito NO puede gastar el presupuesto de pagar.
+
+    La cotización nació compartiendo `CheckoutThrottle` con la creación de la
+    sesión de pago, y eso convertía mirar el checkout en un motivo para no poder
+    comprar: se reproduce con doce cotizaciones seguidas, tras las cuales
+    `payments/create-checkout-session/` responde 429 sin llegar siquiera a
+    ejecutarse. Y la pantalla vuelve a cotizar en CADA cambio del carrito o del
+    cupón, así que alguien ajustando cantidades se cerraba la compra a sí mismo.
+
+    Cubo propio y más holgado: es una lectura que no crea nada, no cobra y no
+    reserva stock. Sigue limitada porque recalcula precios y stock en cada
+    llamada, que es trabajo real contra la base de datos.
+    """
+
+    scope = 'checkout_quote'
+
+
 class CartThrottle(AnonRateThrottle):
     scope = 'cart'
 

@@ -1,4 +1,5 @@
 from rest_framework.routers import DefaultRouter
+from .checkout_quote_views import CheckoutQuoteView
 from .views import (
     CategoryViewSet,
     ProductViewSet,
@@ -135,6 +136,8 @@ urlpatterns = [
     ),
     path('payments/status/', PaymentStatusView.as_view(), name='payment-status'),
     path('coupons/validate/', CouponValidateView.as_view(), name='coupon-validate'),
+    # C2.1: el desglose tributario ANTES de pagar. No crea ni cobra nada.
+    path('checkout/quote/', CheckoutQuoteView.as_view(), name='checkout-quote'),
     path('admin/users/', AdminUserListView.as_view(), name='admin-users'),
     path('admin/users/<int:pk>/role/', AdminUserRoleView.as_view(), name='admin-user-role'),
     path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),

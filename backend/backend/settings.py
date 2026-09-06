@@ -89,6 +89,10 @@ REST_FRAMEWORK = {
         'coupon': '20/min',
         'review_create': '5/min',
         'checkout': '10/min',
+        # Cubo PROPIO, separado de 'checkout': cotizar es una lectura que
+        # ocurre en cada cambio del carrito, y compartir presupuesto con el
+        # cobro dejaba al comprador sin poder pagar por haber mirado.
+        'checkout_quote': '60/min',
         'cart': '60/min',
         'payment_status': '30/min',
         'resend_verification': '3/min',

@@ -46093,3 +46093,992 @@ class DemoAccountsSingleSourceTest(TestCase):
         from .dev_accounts_views import DEMO_DESTINATIONS
 
         self.assertEqual(set(DEMO_DESTINATIONS), set(ALL_DEMO_USERNAMES))
+
+
+import re  # noqa: E402
+
+from .tax_services import (  # noqa: E402
+    DEFAULT_TAX_RATE,
+    TaxTreatment,
+    breakdown_for_order,
+    breakdown_from_total,
+    resolve_tax_rate,
+)
+
+
+class C21TaxBreakdownTest(TestCase):
+    """
+    C2.1 — la descomposición tributaria.
+
+    Lo que se prueba aquí no es que la aritmética «funcione»: es que la
+    identidad `base + impuesto = total` se cumpla SIEMPRE, para importes que
+    redondean mal, y que el total cobrado no se mueva ni un céntimo al añadir
+    el desglose.
+    """
+
+    def test_the_canonical_example(self):
+        """118 se parte en 100 + 18. El caso que define la semántica."""
+        result = breakdown_from_total(total=Decimal('118.00'))
+        self.assertEqual(result.taxable_amount, Decimal('100.00'))
+        self.assertEqual(result.tax_amount, Decimal('18.00'))
+        self.assertEqual(result.total, Decimal('118.00'))
+
+    def test_the_total_is_never_altered(self):
+        """
+        EL PRECIO DEL CATÁLOGO YA INCLUYE EL IMPUESTO.
+
+        Si esto fallara, un artículo de S/ 118 pasaría a costar S/ 139,24 y la
+        tienda cobraría de más por haber añadido un desglose.
+        """
+        for amount in ('0.01', '9.99', '118.00', '949.00', '5599.00', '99999.99'):
+            with self.subTest(amount=amount):
+                result = breakdown_from_total(total=Decimal(amount))
+                self.assertEqual(result.total, Decimal(amount))
+
+    def test_base_plus_tax_equals_total_for_awkward_amounts(self):
+        """
+        LA RAZÓN DE CALCULAR EL IMPUESTO POR DIFERENCIA.
+
+        `base × tasa` redondeado por separado se separa un céntimo del total en
+        cuanto el importe no divide limpio. Restando, la identidad se cumple por
+        construcción — y estos importes son justamente los que la rompían.
+        """
+        awkward = [
+            '0.01', '0.02', '0.03', '0.07', '1.00', '3.33', '7.77', '10.10',
+            '19.99', '33.33', '66.67', '99.99', '123.45', '1000.01', '4999.95',
+        ]
+        for amount in awkward:
+            with self.subTest(amount=amount):
+                result = breakdown_from_total(total=Decimal(amount))
+                self.assertEqual(
+                    result.taxable_amount + result.tax_amount,
+                    result.total,
+                    f'{amount} descuadra',
+                )
+
+    def test_every_cent_from_one_to_a_thousand_balances(self):
+        """
+        Un barrido, no una muestra. Si hay un importe donde la identidad falla,
+        está aquí.
+        """
+        for cents in range(1, 100_001, 7):
+            amount = (Decimal(cents) / Decimal('100')).quantize(Decimal('0.01'))
+            result = breakdown_from_total(total=amount)
+            self.assertEqual(
+                result.taxable_amount + result.tax_amount, result.total,
+                f'{amount} descuadra',
+            )
+
+    def test_a_discount_does_not_break_the_identity(self):
+        """
+        El impuesto se calcula SOBRE LO QUE SE COBRA, ya descontado. Y las dos
+        identidades tienen que cumplirse a la vez.
+        """
+        result = breakdown_from_total(
+            total=Decimal('90.00'),
+            subtotal=Decimal('118.00'),
+            discount_amount=Decimal('28.00'),
+        )
+        self.assertEqual(result.total, Decimal('90.00'))
+        self.assertEqual(result.taxable_amount + result.tax_amount, Decimal('90.00'))
+        self.assertEqual(result.subtotal - result.discount_amount, result.total)
+
+    def test_a_zero_total_produces_zero_tax(self):
+        result = breakdown_from_total(total=Decimal('0.00'))
+        self.assertEqual(result.taxable_amount, Decimal('0.00'))
+        self.assertEqual(result.tax_amount, Decimal('0.00'))
+
+    def test_an_untaxed_sale_has_no_tax_and_keeps_its_total(self):
+        """
+        Exonerado no es «gravado al 0 % por casualidad»: es otro tratamiento, y
+        el campo viaja congelado para que un documento antiguo lo siga diciendo.
+        """
+        for treatment in (TaxTreatment.EXEMPT, TaxTreatment.UNAFFECTED):
+            with self.subTest(treatment=treatment):
+                result = breakdown_from_total(
+                    total=Decimal('118.00'), treatment=treatment,
+                )
+                self.assertEqual(result.tax_amount, Decimal('0.00'))
+                self.assertEqual(result.taxable_amount, Decimal('118.00'))
+                self.assertEqual(result.total, Decimal('118.00'))
+                self.assertEqual(result.tax_treatment, treatment)
+
+    def test_the_rate_is_the_total_eighteen_percent(self):
+        """
+        UNA tasa, no dos columnas.
+
+        La Ley N.º 32387 reparte el 18 % entre IGV e IPM de forma distinta cada
+        año —15,5 + 2,5 en 2026, hasta 14,0 + 4,0 en 2029— manteniendo el total.
+        Partirlo obligaría a redondear dos veces y a que la suma no cuadrara, a
+        cambio de un detalle que la representación impresa no necesita separar.
+        """
+        self.assertEqual(DEFAULT_TAX_RATE, Decimal('0.18'))
+        self.assertEqual(resolve_tax_rate(), Decimal('0.18'))
+
+    def test_no_float_ever_enters_the_calculation(self):
+        """Un importe que pasa por `float` deja de ser exacto."""
+        result = breakdown_from_total(total=Decimal('118.00'))
+        for value in (result.total, result.taxable_amount, result.tax_amount,
+                      result.subtotal, result.discount_amount, result.tax_rate):
+            self.assertIsInstance(value, Decimal)
+        for value in result.as_dict().values():
+            self.assertIsInstance(value, str)
+
+    def test_the_engine_holds_no_pilot_specific_rule(self):
+        """El piloto no es un caso especial del motor."""
+        import inspect
+
+        from . import tax_services
+
+        code = inspect.getsource(tax_services)
+        code = re.sub(r'"""[\s\S]*?"""', '', code)
+        code = re.sub(r'^\s*#.*$', '', code, flags=re.MULTILINE)
+        for forbidden in ('black-dog', 'black_dog', 'BLACK_DOG', 'CMAU', 'slug'):
+            self.assertNotIn(forbidden, code)
+
+
+class C21OrderTaxSnapshotTest(TestCase):
+    """
+    El desglose viaja CONGELADO con la venta.
+
+    Sin esto, un documento reimpreso el año que viene mostraría la tasa de
+    entonces, y el papel que el cliente tiene en la mano diría otra cosa.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c21-tax', 'Empresa Tributaria')
+
+    def _order(self, **kw):
+        data = {
+            'company': self.company,
+            'total': Decimal('118.00'),
+            'discount_amount': Decimal('0.00'),
+            'subtotal_amount': Decimal('118.00'),
+            'taxable_amount': Decimal('100.00'),
+            'tax_amount': Decimal('18.00'),
+            'tax_rate': Decimal('0.18'),
+            'tax_treatment': 'taxed',
+            'currency': 'PEN',
+        }
+        data.update(kw)
+        return Order.objects.create(**data)
+
+    def test_the_breakdown_is_read_from_the_sale_not_recomputed(self):
+        """
+        Una venta con una tasa histórica distinta sigue mostrando LA SUYA. Es la
+        prueba de que no se recalcula.
+        """
+        order = self._order(
+            total=Decimal('110.00'), subtotal_amount=Decimal('110.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('10.00'),
+            tax_rate=Decimal('0.10'),
+        )
+        result = breakdown_for_order(order)
+        self.assertEqual(result.tax_rate, Decimal('0.10'))
+        self.assertEqual(result.tax_amount, Decimal('10.00'))
+
+    def test_changing_company_configuration_does_not_move_a_past_sale(self):
+        order = self._order()
+        before = breakdown_for_order(order).as_dict()
+
+        self.company.name = 'Otro Nombre SAC'
+        self.company.save(update_fields=['name'])
+        settings_row = self.company.settings
+        settings_row.currency = 'USD'
+        settings_row.save(update_fields=['currency'])
+
+        self.assertEqual(breakdown_for_order(order).as_dict(), before)
+
+    def test_a_sale_without_a_snapshot_still_answers(self):
+        """
+        Una venta anterior a que existiera el desglose no puede reventar una
+        pantalla. Se descompone en vivo, sin escribir nada.
+        """
+        order = self._order(
+            subtotal_amount=None, taxable_amount=None,
+            tax_amount=None, tax_rate=None,
+        )
+        result = breakdown_for_order(order)
+        self.assertEqual(result.total, Decimal('118.00'))
+        self.assertEqual(
+            result.taxable_amount + result.tax_amount, Decimal('118.00'),
+        )
+
+
+# ---------------------------------------------------------------------------
+# C2.1 — leer lo que un PDF DICE de verdad
+# ---------------------------------------------------------------------------
+
+from .ticket_services import (  # noqa: E402
+    generate_sales_note_ticket_pdf,
+)
+
+
+def _pdf_text(pdf_bytes: bytes) -> str:
+    """
+    El texto visible de un PDF, sin dependencias nuevas.
+
+    POR QUÉ NO BASTA CON `startswith(b'%PDF')`. Esa comprobación pasa igual si
+    el documento sale en blanco, con el total equivocado o con un identificador
+    de pasarela impreso. Un documento que se entrega a un cliente hay que
+    LEERLO para darlo por bueno.
+
+    reportlab comprime los streams de página, así que se descomprimen con zlib
+    —parte de la biblioteca estándar— y se recogen los operadores de texto. Es
+    quince líneas frente a añadir un lector de PDF al proyecto entero sólo para
+    las pruebas.
+    """
+    import base64
+    import zlib
+
+    out = []
+    # `split(b'stream')` NO sirve: la palabra `endstream` CONTIENE `stream`, así
+    # que parte también el cierre y el cuerpo se queda con un `end` pegado
+    # detrás del terminador `~>`. El resultado es que la decodificación falla en
+    # silencio y la prueba busca su texto dentro de basura.
+    for body in re.findall(rb'[^d]stream\r?\n(.*?)endstream', pdf_bytes, re.S):
+        body = body.strip(b'\r\n')
+        # reportlab ENCADENA DOS FILTROS: comprime con Flate y luego codifica el
+        # resultado en ASCII85. Descomprimir sin deshacer antes el ASCII85
+        # devuelve basura que parece texto —y una prueba que busca «SUNAT» en
+        # esa basura falla siempre, o peor, pasa por casualidad.
+        # reportlab termina su ASCII85 con `~>` pero NO lo abre con `<~`, así
+        # que `adobe=True` lo rechaza. Se quita el cierre y se decodifica.
+        if body.endswith(b'~>'):
+            try:
+                body = base64.a85decode(body[:-2])
+            except ValueError:
+                continue
+        try:
+            body = zlib.decompress(body)
+        except zlib.error:
+            pass  # ya viene sin comprimir
+        for piece in re.findall(rb'\((?:\\.|[^\\()])*\)', body):
+            out.append(
+                piece[1:-1]
+                .replace(b'\\(', b'(').replace(b'\\)', b')')
+                .replace(b'\\\\', b'\\')
+                .decode('latin-1')
+            )
+    return ' '.join(out)
+
+
+class C21DocumentTest(TestCase):
+    """
+    Los dos documentos: A4 y ticket de 80 mm.
+
+    Se comprueba lo que IMPRIMEN, no que se generen sin reventar.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.users = _p60_users()
+        # 118.00 x 1: el desglose sale 100.00 + 18.00, cifras reconocibles en
+        # el texto del PDF sin ambigüedad.
+        self.product = _p60_product(name='Cable C21', inventory=10, price='118.00')
+        self.order = _p60_paid_order(self.product, quantity=1)
+        self.order.subtotal_amount = Decimal('118.00')
+        self.order.taxable_amount = Decimal('100.00')
+        self.order.tax_amount = Decimal('18.00')
+        self.order.tax_rate = Decimal('0.18')
+        self.order.tax_treatment = 'taxed'
+        self.order.currency = 'PEN'
+        self.order.save()
+        self.note, _ = get_or_create_sales_note(self.order)
+
+    # -- A4 -------------------------------------------------------------------
+
+    def test_the_a4_prints_the_breakdown(self):
+        text = _pdf_text(generate_sales_note_pdf(self.note))
+        self.assertIn('Op. gravada', text)
+        self.assertIn('IGV (18%)', text)
+        self.assertIn('100.00', text)
+        self.assertIn('18.00', text)
+        self.assertIn('118.00', text)
+
+    def test_both_documents_write_the_currency_the_same_way(self):
+        """
+        UNA SOLA NOTACIÓN POR DOCUMENTO.
+
+        El A4 llegó a mezclar «S/ 999.00» en la tabla de productos con
+        «PEN 999.00» en los totales, tres líneas más abajo y en la misma hoja:
+        el código ISO se coló donde iba el símbolo. Un documento que escribe su
+        moneda de dos formas parece equivocado aunque las cifras cuadren.
+        """
+        for pdf in (generate_sales_note_pdf(self.note),
+                    generate_sales_note_ticket_pdf(self.note)):
+            text = _pdf_text(pdf)
+            self.assertIn('S/', text)
+            self.assertNotIn('PEN', text)
+
+    def test_an_unknown_currency_prints_its_code_rather_than_nothing(self):
+        """Feo, pero nunca incorrecto — y desde luego mejor que un importe suelto."""
+        from .tax_services import currency_symbol
+
+        self.assertEqual(currency_symbol('PEN'), 'S/')
+        self.assertEqual(currency_symbol('USD'), '$')
+        self.assertEqual(currency_symbol('COP'), 'COP')
+        self.assertEqual(currency_symbol(''), 'S/')
+
+    def test_the_a4_still_says_it_is_not_a_sunat_receipt(self):
+        """
+        El aviso no es negociable y añadir el desglose es justo lo que podría
+        haberlo desplazado: un papel con IGV desglosado se parece MÁS a una
+        boleta, así que tiene que decir más claro que no lo es.
+        """
+        text = _pdf_text(generate_sales_note_pdf(self.note))
+        self.assertIn('SUNAT', text)
+        self.assertIn('No es una serie fiscal', text)
+
+    def test_no_document_claims_to_be_issued(self):
+        """
+        «Solicitado», nunca «emitido». Aquí no ha habido aceptación fiscal, y
+        decir «Boleta emitida» sobre un papel interno es afirmar algo falso.
+        """
+        for pdf in (generate_sales_note_pdf(self.note),
+                    generate_sales_note_ticket_pdf(self.note)):
+            text = _pdf_text(pdf).lower()
+            for claim in ('factura emitida', 'boleta emitida', 'comprobante sunat',
+                          'factura electr', 'boleta electr'):
+                self.assertNotIn(claim, text)
+
+    # -- ticket 80 mm ---------------------------------------------------------
+
+    def test_both_documents_say_the_receipt_was_requested_not_issued(self):
+        """
+        «SOLICITADO», NUNCA «EMITIDO», Y EN LOS DOS FORMATOS.
+
+        El ticket rotulaba «Comprobante: Boleta», que se lee como que ese papel
+        ES una boleta. No lo es: no ha habido emisión ni aceptación de SUNAT.
+        El A4 ya lo decía bien, así que el mismo dato afirmaba dos cosas
+        distintas según el formato — y la del ticket era la falsa.
+        """
+        self.order.receipt_type = Order.ReceiptType.BOLETA
+        self.order.save(update_fields=['receipt_type'])
+
+        for pdf in (generate_sales_note_pdf(self.note),
+                    generate_sales_note_ticket_pdf(self.note)):
+            text = _pdf_text(pdf)
+            self.assertIn('solicitado', text.lower())
+            self.assertNotIn('Comprobante: Boleta', text)
+
+    def test_the_ticket_is_eighty_millimetres_wide(self):
+        """
+        Si el ancho no es el del rollo, la impresora recorta o descentra. Se
+        mide en el PDF, no se supone.
+        """
+        pdf = generate_sales_note_ticket_pdf(self.note)
+        box = re.search(rb'/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)', pdf)
+        self.assertIsNotNone(box, 'el ticket no declara MediaBox')
+        width_mm = float(box.group(3)) / 72 * 25.4
+        self.assertAlmostEqual(width_mm, 80.0, delta=0.5)
+
+    def test_the_ticket_height_follows_the_content(self):
+        """
+        Papel continuo: un ticket de un artículo NO puede salir tan largo como
+        uno de diez. Sin esto, la impresora escupe palmos de papel en blanco.
+        """
+        def height(order):
+            note, _ = get_or_create_sales_note(order)
+            pdf = generate_sales_note_ticket_pdf(note)
+            box = re.search(rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+[\d.]+\s+([\d.]+)', pdf)
+            return float(box.group(1))
+
+        short = height(self.order)
+
+        many = _p60_paid_order(self.product, quantity=1)
+        for n in range(6):
+            extra = _p60_product(name=f'Accesorio C21 {n}', inventory=5, price='59.00')
+            OrderItem.objects.create(order=many, product=extra, quantity=1, price=extra.price)
+        long = height(many)
+
+        self.assertGreater(long, short * 1.2)
+
+    def test_the_ticket_prints_the_same_numbers_as_the_a4(self):
+        """
+        DOS SUPERFICIES, UNA SOLA VERDAD.
+
+        Si el ticket recalculara por su cuenta, podría separarse un céntimo del
+        A4 de la MISMA compra — y el cliente tendría dos papeles que no cuadran.
+        """
+        ticket = _pdf_text(generate_sales_note_ticket_pdf(self.note))
+        for figure in ('100.00', '18.00', '118.00'):
+            self.assertIn(figure, ticket)
+        self.assertIn(self.note.number, ticket)
+        self.assertIn('SUNAT', ticket)
+
+    def test_a_name_with_no_spaces_does_not_run_off_the_roll(self):
+        """
+        UNA PALABRA LARGA SIN ESPACIOS TAMBIÉN SE PARTE.
+
+        El cortador sólo separaba entre palabras, así que un nombre como
+        `MacBookProM4Max...140W` se dibujaba entero —258 pt sobre una página de
+        227— y no se recortaba con un aviso: se salía del papel y desaparecía.
+        En el A4 no ocurría porque `Paragraph` parte palabras largas por su
+        cuenta, y esa diferencia es justo la que lo hacía difícil de ver.
+
+        Se mide sobre el TRAZADO REAL, no sobre la lista de trozos: lo que
+        importa es dónde acaba la tinta.
+        """
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        from . import ticket_services
+
+        largo = 'MacBookProM4Max16Pulgadas1TBNegroEspacialConCargadorMagSafe140W'
+        product = _p60_product(name=largo, inventory=5, price='118.00')
+        OrderItem.objects.create(
+            order=self.order, product=product, quantity=1, price=product.price,
+        )
+
+        drawn = []
+        real_line = ticket_services._Cursor.line
+
+        def spy(self, text, *, size=7.5, bold=False, align='left', leading=1.35):
+            if self.pdf is not None:
+                font = ticket_services._FONT_BOLD if bold else ticket_services._FONT
+                for chunk in ticket_services._wrap(text, font, size, self.width):
+                    drawn.append(stringWidth(chunk, font, size))
+            return real_line(self, text, size=size, bold=bold,
+                             align=align, leading=leading)
+
+        with patch.object(ticket_services._Cursor, 'line', spy):
+            generate_sales_note_ticket_pdf(self.note)
+
+        printable = float(ticket_services.TICKET_WIDTH_MM) * mm - 2 * (
+            float(ticket_services.TICKET_MARGIN_MM) * mm
+        )
+        self.assertTrue(drawn, 'no se dibujó ninguna línea')
+        self.assertLessEqual(
+            max(drawn), printable + 0.5,
+            f'una línea mide {max(drawn):.1f} pt sobre {printable:.1f} pt de rollo',
+        )
+
+    def test_a_very_long_company_name_also_stays_on_the_paper(self):
+        """
+        El nombre de la empresa es TEXTO LIBRE de cada inquilino y va centrado:
+        si se pasa, se sale por los DOS lados a la vez.
+        """
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        from . import ticket_services
+
+        printable = float(ticket_services.TICKET_WIDTH_MM) * mm - 2 * (
+            float(ticket_services.TICKET_MARGIN_MM) * mm
+        )
+        nombre = 'TIENDASUPERESPECIALIZADAENPRODUCTOSAPPLEAREQUIPAPERUSAC'
+        for chunk in ticket_services._wrap(
+            nombre, ticket_services._FONT_BOLD, 10, printable,
+        ):
+            self.assertLessEqual(
+                stringWidth(chunk, ticket_services._FONT_BOLD, 10), printable + 0.5,
+            )
+
+    def test_wrapping_never_loses_or_invents_characters(self):
+        """Partir no puede comerse letras: el nombre del producto es información."""
+        from reportlab.lib.units import mm
+
+        from . import ticket_services
+
+        printable = float(ticket_services.TICKET_WIDTH_MM) * mm - 2 * (
+            float(ticket_services.TICKET_MARGIN_MM) * mm
+        )
+        for text in ('A' * 200, 'Cable USB-C', 'x' * 53,
+                     'Funda ' + 'M' * 120 + ' Negra', 'ñ' * 90):
+            with self.subTest(text=text[:20]):
+                joined = ''.join(ticket_services._wrap(
+                    text, ticket_services._FONT, 7, printable,
+                ))
+                self.assertEqual(joined.replace(' ', ''), text.replace(' ', ''))
+
+    def test_the_ticket_refuses_an_unpaid_order(self):
+        """La misma regla que el A4: es el mismo documento."""
+        self.order.paid = False
+        self.order.status = Order.Status.PENDING_PAYMENT
+        self.order.save(update_fields=['paid', 'status'])
+        self.note.refresh_from_db()
+        with self.assertRaises(SalesNoteError):
+            generate_sales_note_ticket_pdf(self.note)
+
+    # -- lo que NO puede aparecer --------------------------------------------
+
+    def test_neither_document_leaks_payment_internals(self):
+        """
+        Estos papeles se entregan en mano. Un identificador de pasarela o un
+        `payment_error` impreso es una fuga, no un detalle.
+        """
+        PaymentTransaction.objects.create(
+            order=self.order,
+            provider='izipay',
+            transaction_id='pi_test_LEAK_9999',
+            provider_unique_id='tok_SECRET_ABC',
+            authorization_code='AUTH_SECRET_777',
+            amount=self.order.total,
+            status='approved',
+            failure_reason='CARD_4111111111111111_DECLINED',
+        )
+        self.order.payment_error = 'CARD_DECLINED_INTERNAL_TRACE_XYZ'
+        self.order.save(update_fields=['payment_error'])
+
+        for pdf in (generate_sales_note_pdf(self.note),
+                    generate_sales_note_ticket_pdf(self.note)):
+            text = _pdf_text(pdf)
+            for secret in ('pi_test_LEAK_9999', 'tok_SECRET_ABC', 'AUTH_SECRET_777',
+                           '4111111111111111', 'CARD_DECLINED_INTERNAL_TRACE_XYZ'):
+                self.assertNotIn(secret, text)
+
+
+class C21TicketEndpointTest(TestCase):
+    """La ruta de descarga: el A4 sigue siendo el de siempre."""
+
+    def setUp(self):
+        cache.clear()
+        self.users = _p60_users()
+        self.product = _p60_product(name='Funda C21', inventory=10, price='118.00')
+        self.order = _p60_paid_order(self.product, quantity=1)
+        self.note, _ = get_or_create_sales_note(self.order)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.users[UserProfile.ROLE_ADMIN])
+
+    def _get(self, query=''):
+        return self.client.get(
+            f'/api/admin/orders/{self.order.pk}/sales-note/pdf/{query}'
+        )
+
+    def test_without_parameters_it_is_still_the_a4(self):
+        """
+        COMPATIBILIDAD. Hay enlaces ya escritos contra esta ruta; añadir un
+        formato no puede cambiar lo que devuelve la llamada de siempre.
+        """
+        res = self._get()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res['Content-Type'], 'application/pdf')
+        box = re.search(rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)', res.content)
+        self.assertAlmostEqual(float(box.group(1)) / 72 * 25.4, 210.0, delta=1.0)
+        self.assertNotIn('ticket80', res['Content-Disposition'])
+
+    def test_the_ticket_format_returns_the_roll(self):
+        res = self._get('?formato=ticket80')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        box = re.search(rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)', res.content)
+        self.assertAlmostEqual(float(box.group(1)) / 72 * 25.4, 80.0, delta=0.5)
+        self.assertIn('ticket80', res['Content-Disposition'])
+
+    def test_an_unknown_format_is_refused_not_silently_ignored(self):
+        """
+        Quien pide `ticket58` esperando papel estrecho tiene que enterarse
+        ahora, no al ver salir un A4 de la impresora.
+        """
+        res = self._get('?formato=ticket58')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_the_download_never_carries_a_free_text_company_name(self):
+        """El nombre libre del tenant no llega a una cabecera HTTP."""
+        for query in ('', '?formato=ticket80'):
+            disposition = self._get(query)['Content-Disposition']
+            self.assertRegex(disposition, r'^attachment; filename="[A-Za-z0-9._-]+"$')
+
+
+class C21SaleSnapshotTest(TestCase):
+    """
+    C2.1 — cada venta nueva guarda su propio desglose.
+
+    Lo que se prueba es que la cifra que se enseñó y la que se guardó son LA
+    MISMA, y que añadir el desglose no movió ni un céntimo de lo que se cobra.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c21-sale', 'Empresa C2.1')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Artículo C21', '118.00')
+        _c1_stock(self.branch, self.product, 50)
+        self.seller, _ = _p2d_member(
+            self.company, 'c21_seller', ['company.view', _C1_POS],
+        )
+
+    def _sell(self, items, **kw):
+        return _c1_sale(actor=self.seller, company=self.company,
+                        branch=self.branch, items=items, **kw)
+
+    def test_a_counter_sale_freezes_its_breakdown(self):
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        self.assertEqual(order.total, Decimal('118.00'))
+        self.assertEqual(order.taxable_amount, Decimal('100.00'))
+        self.assertEqual(order.tax_amount, Decimal('18.00'))
+        self.assertEqual(order.tax_rate, Decimal('0.1800'))
+        self.assertEqual(order.tax_treatment, 'taxed')
+        self.assertEqual(order.currency, 'PEN')
+
+    def test_the_total_charged_did_not_move(self):
+        """
+        LA COMPROBACIÓN QUE MÁS IMPORTA.
+
+        Un artículo de S/ 118 tiene que seguir costando S/ 118. Si el desglose
+        se hubiera sumado encima en vez de extraerse, saldría S/ 139,24.
+        """
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        self.assertEqual(order.total, Decimal('118.00'))
+        self.assertEqual(order.items.first().price, Decimal('118.00'))
+
+    def test_both_identities_hold_on_a_real_sale(self):
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 3}])
+        self.assertEqual(order.taxable_amount + order.tax_amount, order.total)
+        self.assertEqual(order.subtotal_amount - order.discount_amount, order.total)
+
+    def test_a_discounted_sale_taxes_only_what_is_charged(self):
+        """El tributo va sobre lo cobrado, no sobre el precio de lista."""
+        order, _ = self._sell(
+            [{'product': self.product.pk, 'quantity': 1}],
+            manual_discount_type='amount',
+            manual_discount_value=Decimal('18.00'),
+            discount_reason='Prueba C2.1',
+            may_apply_manual_discount=True,
+        )
+        self.assertEqual(order.total, Decimal('100.00'))
+        self.assertEqual(order.subtotal_amount, Decimal('118.00'))
+        self.assertEqual(order.discount_amount, Decimal('18.00'))
+        self.assertEqual(order.taxable_amount + order.tax_amount, Decimal('100.00'))
+
+    def test_awkward_amounts_still_balance_through_the_whole_sale(self):
+        """
+        Importes que no dividen limpio, atravesando la venta REAL —catálogo,
+        stock, cobro— y no sólo el motor de cálculo.
+        """
+        for price in ('0.01', '3.33', '19.99', '99.99', '1000.01'):
+            with self.subTest(price=price):
+                product = _c1_product(self.company, f'Raro {price}', price)
+                _c1_stock(self.branch, product, 10)
+                order, _ = self._sell([{'product': product.pk, 'quantity': 1}])
+                self.assertEqual(order.total, Decimal(price))
+                self.assertEqual(
+                    order.taxable_amount + order.tax_amount, order.total,
+                )
+
+    def test_quantity_above_one_still_balances(self):
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 7}])
+        self.assertEqual(order.total, Decimal('826.00'))
+        self.assertEqual(order.taxable_amount + order.tax_amount, Decimal('826.00'))
+
+    def test_the_preview_and_the_sale_agree_to_the_cent(self):
+        """
+        DOS PANTALLAS, UNA CIFRA.
+
+        Si difirieran, el operador leería un IGV en voz alta y el ticket
+        imprimiría otro, con el cliente delante.
+        """
+        items = [{'product': self.product.pk, 'quantity': 3}]
+        priced = _pos.build_pos_sale(
+            operator=self.seller, company=self.company, branch=self.branch,
+            items=items, customer=None, seller_id=None,
+            payment_method=PaymentMethod.CASH, validate_cash=False,
+            may_assign_seller=False, may_apply_manual_discount=False,
+        )
+        order, _ = self._sell(items)
+
+        self.assertEqual(priced['tax'].taxable_amount, order.taxable_amount)
+        self.assertEqual(priced['tax'].tax_amount, order.tax_amount)
+        self.assertEqual(priced['tax'].total, order.total)
+
+    def test_a_retried_sale_does_not_produce_a_second_breakdown(self):
+        """
+        IDEMPOTENCIA. Reintentar con la misma clave devuelve LA MISMA venta —un
+        solo pedido, un solo desglose, un solo movimiento de stock—, no una
+        segunda con las mismas cifras.
+        """
+        items = [{'product': self.product.pk, 'quantity': 2}]
+        key = 'c21-idem-0001'
+        first, created_first = self._sell(items, idempotency_key=key)
+        second, created_second = self._sell(items, idempotency_key=key)
+
+        self.assertTrue(created_first)
+        self.assertFalse(created_second)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 1)
+        self.assertEqual(second.tax_amount, first.tax_amount)
+
+    def test_a_past_sale_is_not_rewritten_by_a_later_rate(self):
+        """
+        INMUTABILIDAD HISTÓRICA — el motivo de guardar la tasa.
+
+        La Ley N.º 32387 mueve el reparto del 18 % cada año hasta 2029. Una
+        venta de hoy tiene que seguir diciendo lo que dijo.
+        """
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        frozen = breakdown_for_order(order).as_dict()
+
+        with patch('store.tax_services.DEFAULT_TAX_RATE', Decimal('0.25')):
+            self.assertEqual(breakdown_for_order(order).as_dict(), frozen)
+            # Y una venta NUEVA sí usa la tasa nueva: la congelación protege el
+            # pasado, no bloquea el futuro.
+            fresh = breakdown_from_total(total=Decimal('125.00'))
+            self.assertEqual(fresh.tax_rate, Decimal('0.25'))
+
+
+class C21AdminCannotDesyncTheSnapshotTest(TestCase):
+    """
+    El admin de Django no puede descuadrar una venta ya cerrada.
+
+    `total` dejó de ser un número suelto: es el ancla de un desglose congelado
+    que ya se imprimió. Editarlo desde un formulario que no pasa por
+    `tax_services` dejaba la venta diciendo `base + impuesto != total`, y el
+    siguiente PDF salía contradictorio consigo mismo.
+    """
+
+    def test_the_money_fields_are_read_only(self):
+        from django.contrib import admin as dj_admin
+
+        from .models import Order as OrderModel
+
+        options = dj_admin.site._registry[OrderModel]
+        for field in ('total', 'discount_amount', 'subtotal_amount',
+                      'taxable_amount', 'tax_amount', 'tax_rate',
+                      'tax_treatment', 'currency'):
+            self.assertIn(
+                field, options.readonly_fields,
+                f'{field} es editable desde el admin y descuadraría el desglose',
+            )
+
+    def test_the_breakdown_is_visible_so_a_mismatch_can_be_seen(self):
+        """Mostrarlo es lo que convierte un descuadre en algo que se nota."""
+        from django.contrib import admin as dj_admin
+
+        from .models import Order as OrderModel
+
+        options = dj_admin.site._registry[OrderModel]
+        shown = {f for _title, opts in options.fieldsets for f in opts['fields']}
+        for field in ('taxable_amount', 'tax_amount', 'tax_rate'):
+            self.assertIn(field, shown)
+
+
+class C21TenantIsolationTest(TestCase):
+    """El desglose de una empresa no se ve ni se toca desde otra."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c21-iso-a', 'Empresa A')
+        self.b = _p3_company('c21-iso-b', 'Empresa B')
+        self.product_a = _c1_product(self.a, 'Artículo A', '118.00')
+        _c1_stock(self.a.default_inventory_branch, self.product_a, 10)
+        self.seller_a, _ = _p2d_member(self.a, 'c21_a', ['company.view', _C1_POS])
+        self.staff_b, _ = _p2d_member(
+            self.b, 'c21_b', ['company.view', 'sales.notes.manage'],
+        )
+
+    def test_the_document_of_another_company_is_not_reachable(self):
+        order, _ = _c1_sale(
+            actor=self.seller_a, company=self.a,
+            branch=self.a.default_inventory_branch,
+            items=[{'product': self.product_a.pk, 'quantity': 1}],
+        )
+        note, _ = get_or_create_sales_note(order)
+
+        client = APIClient()
+        client.force_authenticate(user=self.staff_b)
+        for query in ('', '?formato=ticket80'):
+            res = client.get(
+                f'/api/admin/orders/{order.pk}/sales-note/pdf/{query}'
+            )
+            # 404, NO 403: un 403 confirmaría que ese pedido existe.
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class C21RoundingConvergenceTest(TestCase):
+    """
+    EL MISMO CARRITO NO PUEDE COSTAR DISTINTO SEGÚN DÓNDE SE COMPRE.
+
+    `price_checkout` redondeaba con `quantize(CENTS)` a secas —media al par, el
+    redondeo bancario— mientras el punto de venta usa media al alza. Medido: el
+    40 % de los subtotales diverge para algún porcentaje corriente de cupón, y
+    con precios reales también: S/ 129,90 al 15 % daba 19,48 de descuento en la
+    web y 19,49 en el mostrador.
+
+    C2.1 lo hacía peor, porque congela e IMPRIME esa cifra: dos documentos de la
+    misma compra podían no cuadrar entre sí.
+    """
+
+    def test_both_channels_round_a_discount_the_same_way(self):
+        from decimal import ROUND_HALF_UP
+
+        from . import checkout_services as checkout
+        from . import pos_services as pos
+
+        for amount in ('129.90', '249.50', '59.90', '0.09', '0.13', '1000.05'):
+            with self.subTest(amount=amount):
+                bruto = Decimal(amount) * Decimal('0.15')
+                self.assertEqual(
+                    checkout._cents(bruto), pos._money(bruto),
+                    f'{amount}: escaparate y mostrador redondean distinto',
+                )
+
+    def test_the_convention_is_half_up_as_the_phase_requires(self):
+        from . import checkout_services as checkout
+
+        # 0.005 es el empate: media al par baja a 0.00, media al alza sube.
+        self.assertEqual(checkout._cents(Decimal('0.005')), Decimal('0.01'))
+        self.assertEqual(checkout._cents(Decimal('0.015')), Decimal('0.02'))
+        self.assertEqual(checkout._cents(Decimal('0.025')), Decimal('0.03'))
+
+    def test_no_customer_pays_more_than_before(self):
+        """
+        La dirección del cambio importa: redondear el DESCUENTO hacia arriba
+        sólo puede bajar el total. Nadie paga más que antes por esta corrección.
+        """
+        from . import checkout_services as checkout
+
+        for cents in range(1, 20000, 3):
+            sub = (Decimal(cents) / Decimal('100')).quantize(Decimal('0.01'))
+            for pct in (5, 10, 15, 25, 50):
+                bruto = sub * Decimal(pct) / Decimal('100')
+                antes = bruto.quantize(Decimal('0.01'))          # media al par
+                ahora = checkout._cents(bruto)                   # media al alza
+                self.assertGreaterEqual(
+                    ahora, antes,
+                    f'S/{sub} al {pct}%: el descuento bajó, el cliente pagaría más',
+                )
+
+
+class C21CheckoutQuoteTest(TestCase):
+    """
+    El desglose que ve el comprador ANTES de pagar.
+
+    Existe para que el escaparate no tenga que dividir el total en JavaScript:
+    `0.1 + 0.2 !== 0.3` es exactamente el error que produciría un IGV en
+    pantalla distinto del impreso.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.product = _seeded(Product.objects.create(
+            company=_pilot_company(), name='Producto C21', slug='producto-c21',
+            price=Decimal('118.00'), inventory=10,
+        ))
+        self.session_key = 'c21-quote-session'
+        CartItem.objects.create(
+            session_key=self.session_key, product=self.product, quantity=1,
+        )
+
+    def _quote(self, **body):
+        return self.client.post(
+            '/api/checkout/quote/',
+            {'session_key': self.session_key, **body},
+            format='json',
+        )
+
+    def test_it_returns_the_breakdown_of_the_current_cart(self):
+        res = self._quote()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['total'], '118.00')
+        self.assertEqual(res.data['taxable_amount'], '100.00')
+        self.assertEqual(res.data['tax_amount'], '18.00')
+
+    def test_every_amount_is_a_string(self):
+        """Un importe que llega como número JSON invita al navegador a operar con él."""
+        res = self._quote()
+        for field in ('subtotal', 'discount_amount', 'taxable_amount',
+                      'tax_amount', 'tax_rate', 'total'):
+            self.assertIsInstance(res.data[field], str, field)
+
+    def test_the_identity_holds_in_the_response(self):
+        res = self._quote()
+        self.assertEqual(
+            Decimal(res.data['taxable_amount']) + Decimal(res.data['tax_amount']),
+            Decimal(res.data['total']),
+        )
+
+    def test_it_does_not_create_anything(self):
+        """Es una pregunta: ni pedido, ni nota, ni movimiento de stock."""
+        before = (Order.objects.count(), SalesNote.objects.count(),
+                  StockMovement.objects.count())
+        self._quote()
+        self.assertEqual(
+            (Order.objects.count(), SalesNote.objects.count(),
+             StockMovement.objects.count()),
+            before,
+        )
+
+    def test_an_empty_cart_is_refused_rather_than_quoted_at_zero(self):
+        """Un total de S/ 0,00 se lee como un precio, no como «no hay nada»."""
+        CartItem.objects.filter(session_key=self.session_key).delete()
+        self.assertEqual(self._quote().status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_it_never_says_a_receipt_was_issued(self):
+        res = self._quote()
+        notice = res.data['notice'].lower()
+        self.assertNotIn('emitida', notice)
+        self.assertIn('no es un comprobante', notice)
+
+    def test_quoting_does_not_spend_the_budget_for_paying(self):
+        """
+        MIRAR EL CHECKOUT NO PUEDE IMPEDIR COMPRAR.
+
+        La cotización nació compartiendo el limitador con la creación de la
+        sesión de pago. Doce cotizaciones agotaban el cubo y
+        `payments/create-checkout-session/` respondía 429 sin llegar a
+        ejecutarse — y la pantalla vuelve a cotizar en CADA cambio del carrito o
+        del cupón, así que alguien ajustando cantidades se cerraba la compra a
+        sí mismo.
+
+        Se comprueba el HECHO: agotar la cotización y ver que el cobro sigue
+        contestando algo que no es 429.
+        """
+        # Doce: más que el cubo del cobro (10/min), que es lo que las agotaba.
+        for _ in range(12):
+            self._quote()
+
+        # El cobro NO puede estar agotado por culpa de lo anterior. No se
+        # comprueba que tenga éxito —le faltan datos y pasarela—, sólo que el
+        # limitador no lo haya rechazado antes de que la vista lo mirase.
+        paying = self.client.post(
+            '/api/payments/create-checkout-session/',
+            {'session_key': self.session_key}, format='json',
+        )
+        self.assertNotEqual(
+            paying.status_code, status.HTTP_429_TOO_MANY_REQUESTS,
+            'cotizar agotó el presupuesto de pagar',
+        )
+
+    def test_the_two_endpoints_do_not_share_a_bucket(self):
+        """La separación, dicha sobre la configuración y no sólo sobre la conducta."""
+        from .checkout_quote_views import CheckoutQuoteView
+        from .throttles import CheckoutQuoteThrottle, CheckoutThrottle
+
+        self.assertEqual(CheckoutQuoteView.throttle_classes, [CheckoutQuoteThrottle])
+        self.assertNotEqual(CheckoutQuoteThrottle.scope, CheckoutThrottle.scope)
+        self.assertIn(CheckoutQuoteThrottle.scope, settings.REST_FRAMEWORK[
+            'DEFAULT_THROTTLE_RATES'
+        ])
+
+    def test_the_quote_matches_what_the_order_will_freeze(self):
+        """
+        LA COMPROBACIÓN QUE JUSTIFICA LA RUTA.
+
+        Lo cotizado y lo congelado tienen que ser la misma cifra: si no, el
+        cliente ve un IGV antes de pagar y otro en el papel que se lleva.
+        """
+        quoted = self._quote().data
+
+        from . import checkout_services as checkout
+        company = _pilot_company()
+        branch = checkout.resolve_fulfillment_branch(company)
+        lines = [checkout.CheckoutLine(product=self.product, quantity=1)]
+        pricing = checkout.price_checkout(
+            company, checkout.validate_lines_and_subtotal(branch, lines), '',
+        )
+        order = checkout.create_pending_order(
+            company=company, branch=branch, lines=lines, pricing=pricing,
+            details=checkout.CustomerDetails(
+                name='Cliente C21', email='c21@example.com', phone='999999999',
+                document_type='dni', document_number='12345678',
+                delivery_method='pickup_store', receipt_type='boleta',
+                accepted_terms=True, accepted_warranty_policy=True,
+                address_line='', city='', district='', reference='', notes='',
+            ),
+        )
+
+        self.assertEqual(str(order.taxable_amount), quoted['taxable_amount'])
+        self.assertEqual(str(order.tax_amount), quoted['tax_amount'])
+        self.assertEqual(str(order.total), quoted['total'])
