@@ -9,6 +9,7 @@ from .models import (
     MembershipBranchAccess, StockTransfer, StockTransferItem,
     CompanySettings, InternalSequence,
     Customer,
+    FiscalDocument, FiscalSeries, FiscalSubmissionAttempt,
 )
 
 
@@ -725,4 +726,69 @@ class PaymentTransactionAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# C2.2A.1 — un comprobante emitido no es una hoja de cálculo
+# ---------------------------------------------------------------------------
+
+@admin.register(FiscalSeries)
+class FiscalSeriesAdmin(admin.ModelAdmin):
+    list_display = ('series', 'company', 'document_type', 'next_number',
+                    'environment', 'is_active')
+    list_filter = ('document_type', 'environment', 'is_active')
+    search_fields = ('series', 'company__name')
+    # EL CONTADOR NO SE EDITA A MANO. Retrocederlo haría que la siguiente
+    # emisión reutilizara un número ya entregado, y dos documentos con el mismo
+    # identificador fiscal son indistinguibles ante SUNAT.
+    readonly_fields = ('next_number', 'created_at', 'updated_at')
+
+
+class FiscalSubmissionAttemptInline(admin.TabularInline):
+    """El historial de envíos, sólo para leer. Un intento ocurrió o no ocurrió."""
+
+    model = FiscalSubmissionAttempt
+    extra = 0
+    can_delete = False
+    readonly_fields = ('attempt_number', 'environment', 'started_at', 'finished_at',
+                       'result', 'response_code', 'safe_message',
+                       'request_sha256', 'response_sha256')
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(FiscalDocument)
+class FiscalDocumentAdmin(admin.ModelAdmin):
+    """
+    SÓLO LECTURA, ENTERO.
+
+    Un comprobante electrónico declara algo ante SUNAT y puede estar ya aceptado.
+    Cambiar aquí un importe, un RUC o el estado no cambia lo que SUNAT tiene: sólo
+    haría que nuestra copia mintiera sobre el documento que existe. Y el XML
+    firmado es el documento: editarlo invalidaría la firma sin avisar.
+
+    Los estados se mueven por servicios —`fiscal_services`— que registran el
+    intento y la respuesta. Una corrección de importe es una nota de crédito, no
+    un UPDATE.
+    """
+
+    list_display = ('document_id', 'company', 'status', 'total', 'currency',
+                    'environment', 'issued_at')
+    list_filter = ('status', 'document_type', 'environment')
+    search_fields = ('series', 'number', 'customer_doc_number',
+                     'issuer_tax_id', 'company__name')
+    inlines = [FiscalSubmissionAttemptInline]
+
+    def get_readonly_fields(self, request, obj=None):
+        return [f.name for f in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        # Un comprobante nace de una venta, no de un formulario.
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        # Borrar un comprobante emitido deja un hueco en la numeración que ante
+        # SUNAT no se puede explicar.
         return False

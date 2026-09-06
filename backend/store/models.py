@@ -7040,3 +7040,348 @@ class StorefrontTrustMetric(models.Model):
 
     def __str__(self):
         return f'{self.value} {self.label}'
+
+
+# ---------------------------------------------------------------------------
+# C2.2A.1 — comprobantes de pago electrónicos (CPE)
+#
+# ESTO NO ES `SalesNote` Y NO PUEDE SERLO.
+#
+# `SalesNote` es un documento INTERNO: se numera con `InternalSequence`, lleva
+# impreso que no vale como comprobante SUNAT, y su correlativo no tiene efecto
+# tributario. Un comprobante electrónico es lo contrario en las tres cosas.
+#
+# Reutilizar `SalesNote` habría dado validez fiscal a un papel que no la tiene, y
+# reutilizar `InternalSequence` habría mezclado en un mismo contador números que
+# se pueden regalar con números que la ley obliga a conservar. Son dominios
+# distintos y se mantienen distintos.
+# ---------------------------------------------------------------------------
+
+def validate_fiscal_series(value: str) -> None:
+    """
+    Cuatro caracteres, el primero la letra que corresponda al documento.
+
+    Anexo N.º 1 campo 8 para la factura, Anexo N.º 2 para la boleta, y
+    reconfirmado por el Anexo N.º 6 vigente desde el 1.8.2026: «se espera que el
+    primer carácter sea la constante F, B, C, L o G según corresponda, seguido
+    por tres caracteres alfanuméricos».
+    """
+    from django.core.exceptions import ValidationError
+
+    if not re.fullmatch(r'[A-Z0-9]{4}', value or ''):
+        raise ValidationError(
+            'La serie fiscal debe tener exactamente 4 caracteres alfanuméricos '
+            'en mayúscula.'
+        )
+
+
+class FiscalEnvironment(models.TextChoices):
+    """
+    Contra qué SUNAT se trabaja.
+
+    PRODUCCIÓN NO ES UNA OPCIÓN QUE SE ELIJA DESDE UNA PETICIÓN. Vive aquí como
+    valor posible porque el modelo tiene que poder representar un documento
+    emitido en producción el día que exista; habilitarla es una decisión de
+    configuración del servidor y de otra fase.
+    """
+
+    BETA = 'beta', 'Pruebas (SUNAT beta)'
+    PRODUCTION = 'production', 'Producción'
+
+
+class FiscalDocumentType(models.TextChoices):
+    """Catálogo N.º 01 de SUNAT, con lo que este dominio sabe emitir."""
+
+    INVOICE = '01', 'Factura electrónica'
+    RECEIPT = '03', 'Boleta de venta electrónica'
+
+
+class FiscalSeries(models.Model):
+    """
+    La serie fiscal de una empresa. Una autoridad de numeración SEPARADA.
+
+    POR QUÉ NO `InternalSequence`
+    -----------------------------
+    Aquel módulo declara en su propia documentación que pertenece a documentos
+    internos, y esa afirmación es lo que permite que una nota de venta se pueda
+    anular sin consecuencias. Un correlativo fiscal asignado entra en el
+    historial: no se recicla ni aunque el documento acabe rechazado.
+
+    Mezclarlos en un contador significaría que un hueco en la numeración fiscal
+    podría venir de un documento interno, y ante SUNAT un hueco hay que poder
+    explicarlo.
+
+    EL CONTADOR ES UN NÚMERO. Como en `InternalSequence`, y por el mismo motivo:
+    recuperar «el siguiente» parseando una cadena formateada hace que cambiar el
+    formato cambie el significado del dato.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='fiscal_series',
+    )
+    #: Nulo cuando la serie es de la empresa. Con valor, la sucursal la tiene
+    #: propia — SUNAT admite series distintas por establecimiento.
+    branch = models.ForeignKey(
+        Branch, null=True, blank=True, on_delete=models.PROTECT,
+        related_name='fiscal_series',
+    )
+    document_type = models.CharField(
+        max_length=2, choices=FiscalDocumentType.choices, db_index=True,
+    )
+    series = models.CharField(max_length=4, validators=[validate_fiscal_series])
+
+    #: MONOTÓNICO Y NUNCA RECICLADO. Un número entregado está gastado, aunque el
+    #: documento que iba a identificar no llegase a existir. Los huecos salen
+    #: más baratos que dos documentos que alguna vez compartieron identificador.
+    next_number = models.PositiveBigIntegerField(default=1)
+
+    environment = models.CharField(
+        max_length=16, choices=FiscalEnvironment.choices,
+        default=FiscalEnvironment.BETA,
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Serie fiscal'
+        verbose_name_plural = 'Series fiscales'
+        constraints = [
+            # La serie es única DENTRO DE LA EMPRESA Y DEL ENTORNO. No global:
+            # dos empresas pueden usar F001 legítimamente, y una misma empresa
+            # puede tener la F001 de pruebas y la de producción sin que sean la
+            # misma fila.
+            models.UniqueConstraint(
+                fields=['company', 'document_type', 'series', 'environment'],
+                name='fiscal_series_unique_per_company_env',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'document_type', 'is_active'])]
+
+    def __str__(self) -> str:
+        return f'{self.series} ({self.get_document_type_display()})'
+
+    def clean(self):
+        """La letra inicial depende del tipo de documento, y no es negociable."""
+        super().clean()
+        expected = {FiscalDocumentType.INVOICE: 'F', FiscalDocumentType.RECEIPT: 'B'}
+        letter = expected.get(self.document_type)
+        if letter and self.series and not self.series.startswith(letter):
+            from django.core.exceptions import ValidationError
+
+            raise ValidationError({
+                'series': f'Una serie de tipo {self.document_type} debe empezar '
+                          f'por «{letter}».',
+            })
+
+
+class FiscalDocumentStatus(models.TextChoices):
+    """
+    El recorrido de un comprobante.
+
+    LA DISTINCIÓN QUE GOBIERNA TODO: un fallo de transporte NO es un rechazo.
+    `SUBMISSION_ERROR` existe precisamente para no confundirlos. De un rechazo se
+    sale corrigiendo y emitiendo otro documento; de un error de transporte se
+    sale reintentando EL MISMO, con su misma serie y su mismo correlativo.
+
+    Tratar un timeout como rechazo llevaría a emitir un segundo comprobante por
+    una venta que quizá SUNAT ya registró.
+    """
+
+    PENDING = 'pending', 'Pendiente de generar'
+    GENERATED = 'generated', 'XML generado'
+    SIGNED = 'signed', 'Firmado'
+    SUBMITTED = 'submitted', 'Enviado'
+    ACCEPTED = 'accepted', 'Aceptado por SUNAT'
+    ACCEPTED_WITH_OBSERVATION = 'accepted_observed', 'Aceptado con observaciones'
+    REJECTED = 'rejected', 'Rechazado por SUNAT'
+    #: Se intentó enviar y no se sabe qué pasó. Reintentable.
+    SUBMISSION_ERROR = 'submission_error', 'Error de envío'
+
+
+class FiscalDocument(models.Model):
+    """
+    Un comprobante de pago electrónico. INMUTABLE una vez numerado.
+
+    QUÉ SE CONGELA Y POR QUÉ
+    ------------------------
+    Todo lo que el documento afirma. El nombre del emisor, su RUC, el del
+    adquirente, los importes y la tasa. No se leen de `Company` ni de `Order` al
+    reimprimir, porque un comprobante emitido hace dos años tiene que seguir
+    diciendo lo que dijo aunque la empresa se haya cambiado el nombre.
+
+    Es la misma disciplina que C2.1 impuso al desglose, aplicada al documento
+    entero.
+
+    EL DINERO VIENE DE C2.1, NO SE RECALCULA
+    ----------------------------------------
+    `taxable_amount`, `tax_amount` y `total` se copian del snapshot que la venta
+    congeló. Aquí no se vuelve a dividir entre 1,18: esa cuenta se hizo una vez,
+    en el momento de la venta, con la tasa de ese momento.
+
+    RELACIÓN CON `Order`: FK, NO OneToOne
+    -------------------------------------
+    Una venta tendrá con el tiempo más de un documento fiscal: la factura y, más
+    adelante, sus notas de crédito o débito. Un `OneToOneField` haría imposible
+    ese futuro sin una migración de esquema. La unicidad que sí hace falta —un
+    solo comprobante ORIGINAL vigente por venta— se expresa con una restricción
+    condicional, que es más precisa y no cierra la puerta.
+    """
+
+    order = models.ForeignKey(
+        Order, on_delete=models.PROTECT, related_name='fiscal_documents',
+    )
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='fiscal_documents',
+    )
+    series_ref = models.ForeignKey(
+        FiscalSeries, on_delete=models.PROTECT, related_name='documents',
+    )
+
+    document_type = models.CharField(max_length=2, choices=FiscalDocumentType.choices)
+    series = models.CharField(max_length=4)
+    number = models.PositiveBigIntegerField()
+    issued_at = models.DateTimeField()
+    environment = models.CharField(max_length=16, choices=FiscalEnvironment.choices)
+
+    # --- emisor, congelado ---
+    issuer_tax_id = models.CharField(max_length=15)
+    issuer_legal_name = models.CharField(max_length=255)
+    issuer_trade_name = models.CharField(max_length=255, blank=True)
+    issuer_address = models.CharField(max_length=255, blank=True)
+
+    # --- adquirente, congelado ---
+    customer_doc_type = models.CharField(max_length=2)
+    customer_doc_number = models.CharField(max_length=20)
+    customer_legal_name = models.CharField(max_length=255)
+
+    # --- dinero, copiado del snapshot de C2.1 ---
+    currency = models.CharField(max_length=3, default='PEN')
+    taxable_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+    tax_rate = models.DecimalField(max_digits=6, decimal_places=4)
+
+    status = models.CharField(
+        max_length=24, choices=FiscalDocumentStatus.choices,
+        default=FiscalDocumentStatus.PENDING, db_index=True,
+    )
+
+    # --- artefactos ---
+    #
+    # El XML se guarda ENTERO porque es el documento: sin él no se puede
+    # reimprimir ni demostrar qué se declaró. El CDR también, porque es la
+    # prueba de la aceptación. Ambos son texto de unos pocos kilobytes.
+    #
+    # Los hashes existen para correlacionar y para detectar alteración sin tener
+    # que comparar cuerpos.
+    signed_xml = models.TextField(blank=True)
+    signed_xml_sha256 = models.CharField(max_length=64, blank=True)
+    #: El «Valor Resumen» que exige el QR. Se lee del XML firmado, no se calcula.
+    digest_value = models.CharField(max_length=128, blank=True)
+    cdr_xml = models.TextField(blank=True)
+    cdr_sha256 = models.CharField(max_length=64, blank=True)
+
+    sunat_response_code = models.CharField(max_length=8, blank=True)
+    sunat_response_message = models.CharField(max_length=500, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Comprobante electrónico'
+        verbose_name_plural = 'Comprobantes electrónicos'
+        constraints = [
+            # Un correlativo es único dentro de su serie. Es LA restricción del
+            # dominio: dos documentos con el mismo identificador fiscal serían
+            # indistinguibles ante SUNAT.
+            models.UniqueConstraint(
+                fields=['company', 'document_type', 'series', 'number', 'environment'],
+                name='fiscal_document_unique_number',
+            ),
+            # Un solo comprobante ORIGINAL por venta que no esté rechazado. Un
+            # rechazo sí permite volver a emitir: el documento rechazado no tiene
+            # validez tributaria, así que no ocupa el sitio.
+            models.UniqueConstraint(
+                fields=['order'],
+                condition=~models.Q(status=FiscalDocumentStatus.REJECTED),
+                name='fiscal_document_one_live_per_order',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'issued_at']),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.series}-{self.number}'
+
+    @property
+    def document_id(self) -> str:
+        """`F001-123`, tal como va en el XML y en el nombre del archivo."""
+        return f'{self.series}-{self.number}'
+
+    @property
+    def is_accepted(self) -> bool:
+        """
+        ¿Puede decirse que SUNAT lo aceptó?
+
+        Existe para que ninguna pantalla tenga que decidirlo por su cuenta. Una
+        interfaz que dedujera «aceptado» de que no hubo error acabaría diciendo
+        ACEPTADA sobre un documento que nunca llegó a enviarse.
+        """
+        return self.status in (
+            FiscalDocumentStatus.ACCEPTED,
+            FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION,
+        )
+
+
+class FiscalSubmissionAttempt(models.Model):
+    """
+    Un intento de envío. HISTORIAL, no «último error».
+
+    Sobrescribir un campo `last_error` pierde justo lo que hace falta cuando algo
+    va mal: cuántas veces se intentó, cuándo, y si el error de hoy es el mismo de
+    ayer. Cada llamada a SUNAT deja una fila.
+
+    UN REINTENTO NO GENERA UN DOCUMENTO NUEVO. Mismo `FiscalDocument`, misma
+    serie, mismo correlativo, mismo XML firmado. Lo único nuevo es esta fila.
+
+    QUÉ NO SE GUARDA: ni la Clave SOL, ni la contraseña del certificado, ni la
+    cabecera WS-Security, ni el sobre SOAP. `safe_message` viene saneado.
+    """
+
+    document = models.ForeignKey(
+        FiscalDocument, on_delete=models.CASCADE, related_name='attempts',
+    )
+    attempt_number = models.PositiveIntegerField()
+    environment = models.CharField(max_length=16, choices=FiscalEnvironment.choices)
+
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    #: El veredicto ya interpretado por el adaptador.
+    result = models.CharField(max_length=32)
+    response_code = models.CharField(max_length=8, blank=True)
+    safe_message = models.CharField(max_length=500, blank=True)
+
+    #: Huellas para correlacionar sin conservar los cuerpos. La del envío se
+    #: calcula sobre el ZIP y NUNCA sobre el sobre SOAP, que lleva la clave.
+    request_sha256 = models.CharField(max_length=64, blank=True)
+    response_sha256 = models.CharField(max_length=64, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Intento de envío fiscal'
+        verbose_name_plural = 'Intentos de envío fiscal'
+        ordering = ['document', 'attempt_number']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['document', 'attempt_number'],
+                name='fiscal_attempt_unique_number',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.document.document_id} · intento {self.attempt_number}'

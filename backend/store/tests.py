@@ -47432,3 +47432,653 @@ class C22A1PackagingTest(TestCase):
             archivo.writestr('R-dos.xml', b'<b/>')
         with self.assertRaises(ValueError):
             _fp.extract_cdr(buffer.getvalue())
+
+
+from .fiscal.provider import ProviderOutcome, ProviderResult  # noqa: E402
+from .fiscal_services import (  # noqa: E402
+    FiscalError, _amount_in_words, get_or_create_fiscal_document,
+    sign_fiscal_document, submit_fiscal_document,
+)
+from .models import (  # noqa: E402
+    FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalSeries,
+    FiscalSubmissionAttempt,
+)
+
+
+class _FakeProvider:
+    """
+    Un proveedor de mentira, para probar el dominio sin red.
+
+    NO SUSTITUYE A LA PRUEBA REAL. La aceptación de SUNAT se demostró contra
+    BETA de verdad; esto sirve para lo que la red no deja probar cómodamente: un
+    timeout, un rechazo, una respuesta ilegible.
+    """
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = 0
+
+    def submit_invoice(self, *, filename, zip_bytes):
+        self.calls += 1
+        return self.result
+
+
+def _accepted():
+    return ProviderResult(
+        outcome=ProviderOutcome.ACCEPTED, response_code='0',
+        safe_message='La Factura numero F001-1, ha sido aceptada',
+        cdr_xml=b'<ApplicationResponse/>', cdr_filename='R-x.XML',
+        request_sha256='a' * 64, response_sha256='b' * 64,
+    )
+
+
+class C22A1DomainTest(TestCase):
+    """
+    El dominio fiscal: numeración, idempotencia y estados.
+
+    La aritmética y el XML ya se probaron aparte; aquí se prueba lo que sólo
+    existe cuando hay base de datos.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22-fiscal', 'Empresa Fiscal', tax_id='20100066603',
+            legal_name='EMPRESA FISCAL SAC',
+        )
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001', next_number=1,
+        )
+        self.product = _c1_product(self.company, 'Articulo Fiscal', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _paid_invoice_order(self, **extra):
+        order = Order.objects.create(
+            company=self.company,
+            customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC,
+            document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch,
+            **extra,
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'),
+        )
+        return order
+
+    # -- numeración -----------------------------------------------------------
+
+    def test_the_first_document_takes_the_first_number(self):
+        order = self._paid_invoice_order()
+        doc, created = get_or_create_fiscal_document(order)
+        self.assertTrue(created)
+        self.assertEqual(doc.document_id, 'F001-1')
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+
+    def test_issuing_twice_produces_one_document_and_one_number(self):
+        """
+        IDEMPOTENCIA. Dos clics en «Emitir» no gastan dos correlativos.
+        """
+        order = self._paid_invoice_order()
+        first, created_first = get_or_create_fiscal_document(order)
+        second, created_second = get_or_create_fiscal_document(order)
+
+        self.assertTrue(created_first)
+        self.assertFalse(created_second)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+
+    def test_a_number_is_never_recycled(self):
+        """
+        Un correlativo entregado está GASTADO, aunque el documento acabe
+        rechazado. Reciclarlo produciría dos documentos que alguna vez
+        compartieron identificador fiscal.
+        """
+        primero, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        primero.status = FiscalDocumentStatus.REJECTED
+        primero.save(update_fields=['status'])
+
+        segundo, creado = get_or_create_fiscal_document(self._paid_invoice_order())
+        self.assertTrue(creado)
+        self.assertEqual(segundo.number, 2)
+        self.assertNotEqual(primero.number, segundo.number)
+
+    def test_a_rejected_document_does_not_block_a_new_one_for_the_same_sale(self):
+        """
+        Un rechazo no tiene validez tributaria, así que no ocupa el sitio: la
+        venta puede volver a emitir. Lo que no puede haber son dos VIVOS.
+        """
+        order = self._paid_invoice_order()
+        primero, _ = get_or_create_fiscal_document(order)
+        primero.status = FiscalDocumentStatus.REJECTED
+        primero.save(update_fields=['status'])
+
+        segundo, creado = get_or_create_fiscal_document(order)
+        self.assertTrue(creado)
+        self.assertNotEqual(primero.pk, segundo.pk)
+        vivos = FiscalDocument.objects.filter(order=order).exclude(
+            status=FiscalDocumentStatus.REJECTED).count()
+        self.assertEqual(vivos, 1)
+
+    # -- condiciones de emisión ----------------------------------------------
+
+    def test_an_unpaid_sale_gets_no_invoice(self):
+        """El comprobante no es autoridad del pago; el pago lo es del comprobante."""
+        order = self._paid_invoice_order()
+        order.paid = False
+        order.status = Order.Status.PENDING_PAYMENT
+        order.save(update_fields=['paid', 'status'])
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+    def test_a_sale_that_asked_for_a_boleta_is_refused(self):
+        order = self._paid_invoice_order()
+        order.receipt_type = Order.ReceiptType.BOLETA
+        order.save(update_fields=['receipt_type'])
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+    def test_a_sale_without_the_c21_snapshot_is_refused(self):
+        """
+        Un comprobante no puede declarar importes que nadie calculó en el
+        momento de vender.
+        """
+        order = self._paid_invoice_order()
+        order.taxable_amount = None
+        order.save(update_fields=['taxable_amount'])
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+    # -- el dinero viene de C2.1 ---------------------------------------------
+
+    def test_the_document_copies_the_frozen_amounts_exactly(self):
+        """
+        C2.1 MANDA. Ni un céntimo de diferencia entre lo cobrado y lo declarado.
+        """
+        order = self._paid_invoice_order()
+        doc, _ = get_or_create_fiscal_document(order)
+        self.assertEqual(doc.taxable_amount, order.taxable_amount)
+        self.assertEqual(doc.tax_amount, order.tax_amount)
+        self.assertEqual(doc.total, order.total)
+        self.assertEqual(doc.tax_rate, order.tax_rate)
+        self.assertEqual(doc.taxable_amount + doc.tax_amount, doc.total)
+
+    def test_the_issuer_identity_is_frozen_not_looked_up(self):
+        """
+        Un comprobante emitido hace dos años sigue diciendo lo que dijo aunque
+        la empresa se haya cambiado el nombre.
+        """
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        antes = doc.issuer_legal_name
+
+        self.company.legal_name = 'OTRO NOMBRE SAC'
+        self.company.save(update_fields=['legal_name'])
+        doc.refresh_from_db()
+        self.assertEqual(doc.issuer_legal_name, antes)
+
+    # -- envío y reintentos ---------------------------------------------------
+
+    def _signed_document(self):
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        key, cert = self_signed_pem('20100066603')
+        return sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_signing_stores_the_xml_its_hash_and_the_digest(self):
+        doc = self._signed_document()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+        self.assertTrue(doc.signed_xml.startswith('<?xml'))
+        self.assertEqual(len(doc.signed_xml_sha256), 64)
+        self.assertTrue(doc.digest_value)
+
+    def test_signing_twice_does_not_change_the_document(self):
+        """
+        El XML firmado ES el comprobante. Regenerarlo cambiaría el `DigestValue`
+        que puede estar ya impreso en un QR entregado.
+        """
+        doc = self._signed_document()
+        antes = (doc.signed_xml_sha256, doc.digest_value)
+        key, cert = self_signed_pem('20100066603')
+        otra = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        self.assertEqual((otra.signed_xml_sha256, otra.digest_value), antes)
+
+    def test_an_accepted_submission_records_the_cdr(self):
+        doc = self._signed_document()
+        doc = submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+        self.assertTrue(doc.is_accepted)
+        self.assertEqual(doc.sunat_response_code, '0')
+        self.assertTrue(doc.cdr_xml)
+        self.assertEqual(len(doc.cdr_sha256), 64)
+
+    def test_a_timeout_is_not_a_rejection(self):
+        """
+        LA DISTINCIÓN QUE GOBIERNA EL DOMINIO.
+
+        Tratar un timeout como rechazo llevaría a emitir un segundo comprobante
+        por una venta que quizá SUNAT ya registró.
+        """
+        doc = self._signed_document()
+        doc = submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR,
+            safe_message='ReadTimeout al contactar con el servicio',
+        )))
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertNotEqual(doc.status, FiscalDocumentStatus.REJECTED)
+        self.assertFalse(doc.is_accepted)
+
+    def test_an_unrecognised_response_is_not_a_rejection_either(self):
+        doc = self._signed_document()
+        doc = submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.UNKNOWN_RESPONSE,
+            safe_message='Respuesta sin CDR ni fault reconocible',
+        )))
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_a_retry_reuses_the_same_number_and_adds_an_attempt(self):
+        """
+        Reintentar NO emite otro documento. Misma serie, mismo correlativo,
+        mismo XML. Lo único nuevo es la fila de intento.
+        """
+        doc = self._signed_document()
+        antes = (doc.series, doc.number, doc.signed_xml_sha256)
+
+        submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        doc.refresh_from_db()
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        doc.refresh_from_db()
+
+        self.assertEqual((doc.series, doc.number, doc.signed_xml_sha256), antes)
+        self.assertEqual(doc.attempts.count(), 2)
+        self.assertEqual([a.attempt_number for a in doc.attempts.all()], [1, 2])
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+
+    def test_an_accepted_document_is_not_sent_again(self):
+        doc = self._signed_document()
+        doc = submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        proveedor = _FakeProvider(_accepted())
+        submit_fiscal_document(doc, proveedor)
+        self.assertEqual(proveedor.calls, 0, 'se reenvió un documento ya aceptado')
+
+    def test_the_attempt_history_never_holds_a_secret(self):
+        doc = self._signed_document()
+        submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        for attempt in FiscalSubmissionAttempt.objects.all():
+            crudo = str(attempt.__dict__).lower()
+            for secreto in ('moddatos', 'clave', 'password', 'wsse'):
+                self.assertNotIn(secreto, crudo)
+
+    # -- importe en letras ----------------------------------------------------
+
+    def test_the_amount_in_words(self):
+        """Es un dato obligatorio del comprobante, no un adorno."""
+        casos = {
+            Decimal('118.00'): 'CIENTO DIECIOCHO CON 00/100 SOLES',
+            Decimal('100.00'): 'CIEN CON 00/100 SOLES',
+            Decimal('1.50'): 'UNO CON 50/100 SOLES',
+            Decimal('0.99'): 'CERO CON 99/100 SOLES',
+            Decimal('1000.00'): 'MIL CON 00/100 SOLES',
+            Decimal('21.00'): 'VEINTIUNO CON 00/100 SOLES',
+        }
+        for importe, esperado in casos.items():
+            with self.subTest(importe=importe):
+                self.assertEqual(_amount_in_words(importe, 'PEN'), esperado)
+
+
+class C22A1SeriesTest(TestCase):
+    """La serie fiscal: alcance por empresa y letra correcta."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c22-serie-a', 'Empresa A', tax_id='20100066603')
+        self.b = _p3_company('c22-serie-b', 'Empresa B', tax_id='20522222222')
+
+    def test_two_companies_may_use_the_same_series(self):
+        """
+        F001 no es única en el mundo: es única DENTRO de la empresa. Una
+        restricción global habría hecho que la primera empresa en registrarla se
+        la quedara para todas.
+        """
+        for empresa in (self.a, self.b):
+            FiscalSeries.objects.create(
+                company=empresa, document_type=FiscalDocumentType.INVOICE,
+                series='F001',
+            )
+        self.assertEqual(FiscalSeries.objects.filter(series='F001').count(), 2)
+
+    def test_a_company_cannot_repeat_its_own_series(self):
+        from django.db import IntegrityError
+
+        FiscalSeries.objects.create(
+            company=self.a, document_type=FiscalDocumentType.INVOICE, series='F001')
+        with self.assertRaises(IntegrityError):
+            FiscalSeries.objects.create(
+                company=self.a, document_type=FiscalDocumentType.INVOICE,
+                series='F001')
+
+    def test_an_invoice_series_must_start_with_f(self):
+        serie = FiscalSeries(
+            company=self.a, document_type=FiscalDocumentType.INVOICE, series='B001')
+        with self.assertRaises(DjangoValidationError):
+            serie.full_clean()
+
+    def test_the_same_series_may_exist_in_both_environments(self):
+        """
+        La F001 de pruebas y la de producción no son la misma serie. Que lo
+        fueran obligaría a inventar nombres distintos para el mismo documento.
+        """
+        for entorno in ('beta', 'production'):
+            FiscalSeries.objects.create(
+                company=self.a, document_type=FiscalDocumentType.INVOICE,
+                series='F001', environment=entorno)
+        self.assertEqual(FiscalSeries.objects.filter(company=self.a).count(), 2)
+
+
+class C22A1ConcurrencyTest(TransactionTestCase):
+    """
+    Dos emisiones a la vez no pueden compartir correlativo.
+
+    `TransactionTestCase` y no `TestCase`: la reserva usa `select_for_update`, y
+    dentro de la transacción envolvente de `TestCase` los hilos no verían el
+    bloqueo.
+
+    LO QUE SQLITE PUEDE Y NO PUEDE DEMOSTRAR
+    ----------------------------------------
+    `select_for_update()` es inocuo en SQLite: el motor serializa las escrituras
+    con un bloqueo de BASE DE DATOS, así que una carrera con hilos ejercitaría
+    ESE bloqueo y no el de fila de este módulo — y pasaría por el motivo
+    equivocado, o fallaría con «database table is locked» sin decir nada sobre
+    la corrección del código.
+
+    Así que las invariantes secuenciales corren en todas partes y el caso
+    genuinamente concurrente se salta —RUIDOSAMENTE— donde no hay bloqueo por
+    fila. Es la misma regla que ya siguen las fases de inventario, secuencias y
+    punto de venta.
+    """
+
+    reset_sequences = True
+
+    def _requires_row_locking(self):
+        from django.db import connection
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite serializa con un bloqueo de base de datos: una carrera '
+                'aquí probaría ese bloqueo y no el de fila de la reserva de '
+                'correlativo.'
+            )
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22-conc', 'Empresa Concurrente', tax_id='20100066603',
+            legal_name='EMPRESA CONCURRENTE SAC',
+        )
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001', next_number=1,
+        )
+        self.product = _c1_product(self.company, 'Articulo Conc', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 50)
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch,
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_parallel_issuance_never_repeats_a_number(self):
+        """
+        Ocho ventas distintas emitiendo a la vez: ocho correlativos distintos.
+
+        Si el bloqueo no funcionara, dos documentos saldrían con el mismo número
+        —indistinguibles ante SUNAT— o la restricción única los rechazaría con un
+        error que el usuario no puede entender.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        orders = [self._order() for _ in range(8)]
+        numeros, errores = [], []
+        barrera = threading.Barrier(len(orders))
+
+        def emitir(order):
+            try:
+                barrera.wait(timeout=10)
+                doc, _ = get_or_create_fiscal_document(order)
+                numeros.append(doc.number)
+            except Exception as exc:  # noqa: BLE001
+                errores.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=emitir, args=(o,)) for o in orders]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=30)
+
+        self.assertEqual(errores, [], f'la emisión concurrente falló: {errores}')
+        self.assertEqual(len(numeros), 8)
+        self.assertEqual(len(set(numeros)), 8, f'correlativos repetidos: {numeros}')
+        self.assertEqual(sorted(numeros), list(range(1, 9)))
+
+    def test_the_same_sale_issued_twice_in_parallel_yields_one_document(self):
+        """
+        Doble clic real: dos peticiones simultáneas sobre LA MISMA venta.
+
+        Tiene que quedar un documento. Que la restricción de base de datos
+        rechace al segundo es aceptable —es su trabajo—; lo que no puede pasar
+        es que queden dos.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        order = self._order()
+        creados, errores = [], []
+        barrera = threading.Barrier(2)
+
+        def emitir():
+            try:
+                barrera.wait(timeout=10)
+                doc, _ = get_or_create_fiscal_document(order)
+                creados.append(doc.pk)
+            except Exception as exc:  # noqa: BLE001
+                errores.append(type(exc).__name__)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=emitir) for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=30)
+
+        vivos = FiscalDocument.objects.filter(order=order).exclude(
+            status=FiscalDocumentStatus.REJECTED).count()
+        self.assertEqual(vivos, 1, f'quedaron {vivos} documentos vivos')
+
+
+    def test_sequential_issuance_never_repeats_a_number(self):
+        """
+        La invariante que SÍ se puede demostrar en cualquier motor: el contador
+        avanza y no se repite. Corre en todas partes, y en PostgreSQL además la
+        respalda la prueba concurrente de arriba.
+        """
+        numeros = []
+        for _ in range(6):
+            doc, creado = get_or_create_fiscal_document(self._order())
+            self.assertTrue(creado)
+            numeros.append(doc.number)
+        self.assertEqual(numeros, list(range(1, 7)))
+        self.assertEqual(len(set(numeros)), 6)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 7)
+
+    def test_the_unique_constraint_is_the_real_guarantee(self):
+        """
+        Aunque el bloqueo fallara, la base de datos no admite dos documentos con
+        el mismo identificador fiscal. Se comprueba forzándolo.
+        """
+        from django.db import IntegrityError
+
+        doc, _ = get_or_create_fiscal_document(self._order())
+        with self.assertRaises(IntegrityError):
+            FiscalDocument.objects.create(
+                order=self._order(), company=self.company,
+                series_ref=self.series, document_type=doc.document_type,
+                series=doc.series, number=doc.number, issued_at=timezone.now(),
+                environment=doc.environment, issuer_tax_id=doc.issuer_tax_id,
+                issuer_legal_name=doc.issuer_legal_name,
+                customer_doc_type='6', customer_doc_number='20000000001',
+                customer_legal_name='OTRO', currency='PEN',
+                taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+                total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            )
+
+
+class C22A1TenantIsolationTest(TestCase):
+    """
+    Lo fiscal de una empresa no se toca desde otra.
+
+    Son pruebas negativas: comprueban que algo NO se puede hacer, que es la
+    única forma de saber que una frontera existe.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c22-iso-a', 'Empresa A', tax_id='20100066603',
+                             legal_name='EMPRESA A SAC')
+        self.b = _p3_company('c22-iso-b', 'Empresa B', tax_id='20522222222',
+                             legal_name='EMPRESA B SAC')
+        self.serie_a = FiscalSeries.objects.create(
+            company=self.a, document_type=FiscalDocumentType.INVOICE, series='F001')
+        self.producto_a = _c1_product(self.a, 'Articulo A', '118.00')
+        _c1_stock(self.a.default_inventory_branch, self.producto_a, 10)
+
+    def _order_de(self, company, product):
+        order = Order.objects.create(
+            company=company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=company.default_inventory_branch,
+        )
+        OrderItem.objects.create(
+            order=order, product=product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_a_company_without_a_series_cannot_borrow_another_ones(self):
+        """
+        La empresa B no tiene serie. La emisión debe FALLAR, no caer en la de A.
+
+        Si cayera, el comprobante saldría con el RUC de B y el correlativo de A:
+        dos empresas gastando el mismo contador ante SUNAT.
+        """
+        producto_b = _c1_product(self.b, 'Articulo B', '118.00')
+        _c1_stock(self.b.default_inventory_branch, producto_b, 10)
+        order_b = self._order_de(self.b, producto_b)
+
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(order_b)
+        self.assertIn('serie', str(ctx.exception).lower())
+        self.serie_a.refresh_from_db()
+        self.assertEqual(self.serie_a.next_number, 1, 'se gastó el contador de A')
+
+    def test_a_document_belongs_to_the_company_of_its_sale(self):
+        doc, _ = get_or_create_fiscal_document(
+            self._order_de(self.a, self.producto_a))
+        self.assertEqual(doc.company_id, self.a.pk)
+        self.assertEqual(
+            FiscalDocument.objects.filter(company=self.b).count(), 0)
+
+    def test_the_series_query_is_scoped_by_company(self):
+        """
+        SABOTAJE §37 nº 1: quitar el filtro de empresa de la consulta de series.
+
+        Se comprueba leyendo el código fuente, no la conducta: una consulta sin
+        `company=` puede dar el resultado correcto en un test con una sola
+        empresa y ser un desastre en producción.
+        """
+        import inspect
+
+        from . import fiscal_services
+
+        fuente = inspect.getsource(fiscal_services.get_or_create_fiscal_document)
+        self.assertIn('FiscalSeries.objects.filter(', fuente)
+        self.assertIn('company=order.company', fuente)
+
+
+class C22A1AdminImmutabilityTest(TestCase):
+    """
+    SABOTAJE §37 nº 9 y §24: un comprobante emitido no se edita a mano.
+
+    Cambiar aquí un importe o un estado no cambia lo que SUNAT tiene: sólo haría
+    que nuestra copia mintiera sobre el documento que existe.
+    """
+
+    def test_every_field_of_a_fiscal_document_is_read_only(self):
+        from django.contrib import admin as dj_admin
+
+        options = dj_admin.site._registry[FiscalDocument]
+        readonly = set(options.get_readonly_fields(None))
+        for field in ('total', 'tax_amount', 'taxable_amount', 'series', 'number',
+                      'issuer_tax_id', 'customer_doc_number', 'issued_at',
+                      'status', 'signed_xml', 'digest_value', 'cdr_xml'):
+            self.assertIn(field, readonly, f'{field} es editable desde el admin')
+
+    def test_a_fiscal_document_cannot_be_created_or_deleted_from_the_admin(self):
+        """
+        Nace de una venta, no de un formulario. Y borrarlo dejaría un hueco en la
+        numeración que ante SUNAT no se puede explicar.
+        """
+        from django.contrib import admin as dj_admin
+
+        options = dj_admin.site._registry[FiscalDocument]
+        self.assertFalse(options.has_add_permission(None))
+        self.assertFalse(options.has_delete_permission(None))
+
+    def test_the_series_counter_is_not_editable(self):
+        """Retrocederlo haría que la siguiente emisión reutilizara un número."""
+        from django.contrib import admin as dj_admin
+
+        options = dj_admin.site._registry[FiscalSeries]
+        self.assertIn('next_number', options.readonly_fields)
+
+    def test_the_submission_history_is_append_only_from_the_admin(self):
+        from django.contrib import admin as dj_admin
+
+        options = dj_admin.site._registry[FiscalDocument]
+        inline = options.inlines[0](FiscalDocument, dj_admin.site)
+        self.assertFalse(inline.has_add_permission(None, None))
+        self.assertFalse(inline.can_delete)
