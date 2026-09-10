@@ -96,6 +96,10 @@ REST_FRAMEWORK = {
         # C2.2A.1. Emitir sale a la red de SUNAT; consultar no.
         'fiscal_issue': '20/min',
         'fiscal_read': '120/min',
+        # H4.1. Invitar envía correo a terceros; aceptar es la superficie que
+        # alguien probaría con tokens al azar.
+        'staff_invite': '30/min',
+        'staff_accept': '20/min',
         'cart': '60/min',
         'payment_status': '30/min',
         'resend_verification': '3/min',

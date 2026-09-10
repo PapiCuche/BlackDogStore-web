@@ -164,3 +164,24 @@ class FiscalReadThrottle(AnonRateThrottle):
     """Consultar estado y descargar artefactos. Más holgado: no sale a la red."""
 
     scope = 'fiscal_read'
+
+
+class StaffInviteThrottle(UserRateThrottle):
+    """
+    Invitar, reenviar y revocar. Cubo propio: envía correo a terceros.
+
+    No se reutiliza el de checkout ni el del punto de venta — comparten cubo
+    significa que una operación agota el presupuesto de otra sin relación, que
+    es el defecto que ya apareció una vez con la cotización fiscal.
+    """
+
+    scope = 'staff_invite'
+
+
+class StaffAcceptThrottle(AnonRateThrottle):
+    """
+    Leer y aceptar una invitación. ANÓNIMO: es la única defensa contra alguien
+    probando tokens al azar, porque quien lo hace no está autenticado.
+    """
+
+    scope = 'staff_accept'

@@ -1,5 +1,9 @@
 from rest_framework.routers import DefaultRouter
 from .checkout_quote_views import CheckoutQuoteView
+from .staff_views import (
+    AdminStaffInvitationDetailView, AdminStaffInvitationListView,
+    StaffInvitationAcceptView,
+)
 from .fiscal_views import (
     AdminFiscalDocumentCdrView, AdminFiscalDocumentPdfView,
     AdminFiscalDocumentSubmitView, AdminFiscalDocumentXmlView,
@@ -209,6 +213,12 @@ urlpatterns = [
     path('admin/areas/<int:pk>/', AdminAreaDetailView.as_view(), name='admin-area-detail'),
     path('admin/roles/', AdminRoleListView.as_view(), name='admin-roles'),
     path('admin/roles/<int:pk>/', AdminRoleDetailView.as_view(), name='admin-role-detail'),
+    # --- H4.1: alta de personal por invitación ---
+    path('admin/staff/invitations/', AdminStaffInvitationListView.as_view(), name='admin-staff-invitations'),
+    path('admin/staff/invitations/<int:pk>/<str:action>/', AdminStaffInvitationDetailView.as_view(), name='admin-staff-invitation-action'),
+    # Pública para leer, autenticada para aceptar. Fuera de `admin/` a propósito:
+    # quien acepta todavía no pertenece a la empresa.
+    path('staff/invitations/accept/', StaffInvitationAcceptView.as_view(), name='staff-invitation-accept'),
     path('admin/membership-role-assignments/', AdminRoleAssignmentListView.as_view(), name='admin-role-assignments'),
     path('admin/membership-role-assignments/<int:pk>/', AdminRoleAssignmentDetailView.as_view(), name='admin-role-assignment-detail'),
     path('me/company-access/', MyCompanyAccessView.as_view(), name='me-company-access'),

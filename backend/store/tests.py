@@ -50169,3 +50169,262 @@ class H41AcceptanceConcurrencyTest(TransactionTestCase):
         accept_invitation(encontrada, persona)
         self.assertIsNone(find_invitation(raw))
         self.assertEqual(Membership.objects.filter(company=self.company).count(), 1)
+
+
+class H41StaffApiTest(TestCase):
+    """
+    La API de altas: quién puede, qué sale y qué no.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-api', 'Empresa API H41')
+        self.otra = _p3_company('h41-api-b', 'Otra Empresa API')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.area = CompanyArea.objects.get(company=self.company, slug='ventas')
+        self.branch = self.company.default_inventory_branch
+
+        # EL GESTOR TIENE LAS CAPACIDADES DEL ROL QUE CONCEDE, y esto no es un
+        # detalle del arnés: el guardián de delegación se niega si no las tiene,
+        # y la primera versión de este fixture lo descubrió fallando. Un
+        # administrador sólo puede repartir autoridad que él mismo posee.
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage',
+             *self.role.capabilities])
+        self.observador, _ = _p2d_member(
+            self.company, 'h41_obs', ['company.view', 'memberships.view'])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _post(self, user=None, **overrides):
+        payload = {
+            'company': self.company.pk,
+            'email': 'ana@correo.test',
+            'first_name': 'Ana',
+            'last_name': 'Torres Pérez',
+            'role': self.role.pk,
+            'area': self.area.pk,
+            'branch_access_mode': 'all',
+        }
+        payload.update(overrides)
+        return self._as(user or self.gestor).post(
+            '/api/admin/staff/invitations/', payload, format='json')
+
+    # -- creación -------------------------------------------------------------
+
+    def test_inviting_returns_the_invitation_without_the_token(self):
+        """
+        EL TOKEN NO SALE EN LA RESPUESTA. Devolverlo al administrador le daría un
+        enlace de acceso a una cuenta ajena, y lo dejaría en el historial del
+        navegador y en cualquier captura de pantalla.
+        """
+        res = self._post()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['email'], 'ana@correo.test')
+        self.assertEqual(res.data['status'], 'pending')
+        self.assertNotIn('token', res.data)
+        self.assertNotIn('token_hash', res.data)
+
+    def test_the_response_uses_human_names_not_only_ids(self):
+        res = self._post()
+        self.assertEqual(res.data['role_name'], self.role.name)
+        self.assertEqual(res.data['area_name'], self.area.name)
+        self.assertEqual(res.data['full_name'], 'Ana Torres Pérez')
+
+    def test_inviting_does_not_create_a_membership(self):
+        self._post()
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 2)
+
+    def test_a_double_post_returns_200_and_one_invitation(self):
+        primera = self._post()
+        segunda = self._post()
+        self.assertEqual(primera.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segunda.status_code, status.HTTP_200_OK)
+        self.assertEqual(StaffInvitation.objects.count(), 1)
+
+    def test_someone_already_in_the_company_answers_409(self):
+        """Es información de la propia empresa: se puede decir."""
+        # `_p2d_member` no pone correo, y sin correo la petición falla antes por
+        # otra razón — lo que probaría otra cosa.
+        self.observador.email = 'observador@h41.test'
+        self.observador.save(update_fields=['email'])
+        res = self._post(email=self.observador.email)
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+
+    # -- autoridad ------------------------------------------------------------
+
+    def test_viewing_does_not_grant_inviting(self):
+        res = self._post(user=self.observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(StaffInvitation.objects.count(), 0)
+
+    def test_a_role_with_capabilities_the_inviter_lacks_is_refused(self):
+        """
+        SABOTAJE §56 nº 7 — ESCALADA POR ALTA.
+
+        Sin esto: invito a un cómplice como administrador, acepta, y ya hay
+        alguien con más autoridad que quien lo metió.
+        """
+        superior = CompanyRole.objects.get(
+            company=self.company, slug='administrador')
+        res = self._post(role=superior.pk)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(StaffInvitation.objects.count(), 0)
+
+    # -- aislamiento ----------------------------------------------------------
+
+    def test_a_role_of_another_company_is_refused(self):
+        ajeno = CompanyRole.objects.get(company=self.otra, slug='ventas')
+        res = self._post(role=ajeno.pk)
+        self.assertIn(res.status_code,
+                      (status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN))
+        self.assertEqual(StaffInvitation.objects.count(), 0)
+
+    def test_an_area_of_another_company_is_refused(self):
+        ajena = CompanyArea.objects.get(company=self.otra, slug='ventas')
+        res = self._post(area=ajena.pk)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_branch_of_another_company_is_refused(self):
+        ajena = self.otra.default_inventory_branch
+        res = self._post(branch_access_mode='selected', branch_ids=[ajena.pk])
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_inviting_into_another_company_is_refused(self):
+        res = self._post(company=self.otra.pk)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(
+            StaffInvitation.objects.filter(company=self.otra).count(), 0)
+
+    # -- listado, reenvío y revocación ---------------------------------------
+
+    def test_the_list_is_scoped_to_the_company(self):
+        self._post()
+        create_invitation(
+            company=self.otra, email='ajena@correo.test', first_name='X',
+            last_name='Y', role_id=CompanyRole.objects.get(
+                company=self.otra, slug='ventas').pk)
+
+        res = self._as(self.observador).get(
+            f'/api/admin/staff/invitations/?company={self.company.pk}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['email'], 'ana@correo.test')
+
+    def test_resend_and_revoke(self):
+        invitation_id = self._post().data['id']
+
+        reenvio = self._as(self.gestor).post(
+            f'/api/admin/staff/invitations/{invitation_id}/resend/',
+            {'company': self.company.pk}, format='json')
+        self.assertEqual(reenvio.status_code, status.HTTP_200_OK)
+
+        revocacion = self._as(self.gestor).post(
+            f'/api/admin/staff/invitations/{invitation_id}/revoke/',
+            {'company': self.company.pk}, format='json')
+        self.assertEqual(revocacion.status_code, status.HTTP_200_OK)
+        self.assertEqual(revocacion.data['status'], 'revoked')
+
+    def test_another_tenant_cannot_revoke_an_invitation(self):
+        invitation_id = self._post().data['id']
+        de_b, _ = _p2d_member(
+            self.otra, 'h41_b_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+
+        res = self._as(de_b).post(
+            f'/api/admin/staff/invitations/{invitation_id}/revoke/',
+            {'company': self.otra.pk}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            StaffInvitation.objects.get(pk=invitation_id).status, 'pending')
+
+    def test_no_response_or_audit_log_carries_the_token(self):
+        """SABOTAJE §56 nº 12 — el token en un registro es una copia del acceso."""
+        res = self._post()
+        superficies = [str(res.data)]
+        superficies += [
+            str(log.metadata) for log in AdminAuditLog.objects.filter(
+                target_type='staff_invitation')
+        ]
+        invitation = StaffInvitation.objects.first()
+        for texto in superficies:
+            self.assertNotIn(invitation.token_hash, texto)
+            self.assertNotIn('token_hash', texto)
+
+
+class H41AcceptEndpointTest(TestCase):
+    """La ruta de aceptación: pública para leer, autenticada para aceptar."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-acc-api', 'Empresa Aceptar API')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.invitation, self.raw, _ = create_invitation(
+            company=self.company, email='ana@correo.test', first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_reading_shows_the_company_and_nothing_else(self):
+        res = APIClient().get(
+            f'/api/staff/invitations/accept/?token={self.raw}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company_name'], self.company.name)
+        # Lo que NO puede salir.
+        crudo = str(res.data).lower()
+        for prohibido in ('capabilit', 'token_hash', 'membership_id', 'password'):
+            self.assertNotIn(prohibido, crudo)
+
+    def test_every_bad_token_answers_the_same(self):
+        for etiqueta, token in (
+            ('inexistente', 'x' * 64),
+            ('vacío', ''),
+            ('alterado', self.raw[:-1] + 'z'),
+        ):
+            with self.subTest(etiqueta=etiqueta):
+                res = APIClient().get(
+                    f'/api/staff/invitations/accept/?token={token}')
+                self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+                self.assertIn('no es válida', res.data['detail'])
+
+    def test_accepting_without_logging_in_answers_401(self):
+        res = APIClient().post(
+            '/api/staff/invitations/accept/', {'token': self.raw}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_accepting_with_the_wrong_account_answers_401(self):
+        intruso = User.objects.create_user('h41_int_api', 'otro@correo.test', 'x')
+        client = APIClient()
+        client.force_authenticate(user=intruso)
+        res = client.post(
+            '/api/staff/invitations/accept/', {'token': self.raw}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_the_invited_account_accepts_and_gets_access(self):
+        ana = User.objects.create_user('h41_ana_api', 'ana@correo.test', 'x')
+        client = APIClient()
+        client.force_authenticate(user=ana)
+        res = client.post(
+            '/api/staff/invitations/accept/', {'token': self.raw}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company_name'], self.company.name)
+        membership = Membership.objects.get(company=self.company, user=ana)
+        self.assertTrue(membership.is_active)
+
+    def test_a_replayed_token_is_refused(self):
+        ana = User.objects.create_user('h41_ana_rep', 'ana@correo.test', 'x')
+        client = APIClient()
+        client.force_authenticate(user=ana)
+        client.post('/api/staff/invitations/accept/',
+                    {'token': self.raw}, format='json')
+        segundo = client.post('/api/staff/invitations/accept/',
+                              {'token': self.raw}, format='json')
+        self.assertEqual(segundo.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 1)
