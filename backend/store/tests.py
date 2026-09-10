@@ -49469,8 +49469,9 @@ from .models import StaffInvitation, MembershipBranchAccess  # noqa: E402
 
 User = get_user_model()  # noqa: E402
 from .staff_services import (  # noqa: E402
-    StaffConflict, StaffError, accept_invitation, create_invitation,
-    find_invitation, resend_invitation, revoke_invitation,
+    StaffConflict, StaffError, StaffIdentityError, accept_invitation,
+    create_invitation, find_invitation, requires_authentication,
+    resend_invitation, revoke_invitation,
 )
 
 
@@ -49541,10 +49542,16 @@ class H41InvitationTest(TestCase):
 
     # -- idempotencia ---------------------------------------------------------
 
-    def test_inviting_twice_leaves_one_pending_invitation(self):
+    def test_a_double_click_does_not_invalidate_the_link_already_sent(self):
         """
-        Doble clic en «Enviar invitación». Dos enlaces válidos para la misma
-        persona son dos formas de entrar, y sólo una se puede revocar a la vez.
+        EL DEFECTO QUE ESTO IMPIDE.
+
+        Una versión anterior rotaba el token al crear, y lo llamaba
+        idempotencia. No lo era: un doble clic accidental invalidaba el enlace
+        que ya iba camino del buzón, y la persona abría el primer correo para
+        leer «token inválido» sin que nadie hubiera hecho nada malo.
+
+        Crear dos veces devuelve LA MISMA invitación con SU MISMO token intacto.
         """
         primera, token1, creada1 = self._invite()
         segunda, token2, creada2 = self._invite()
@@ -49557,18 +49564,54 @@ class H41InvitationTest(TestCase):
                 company=self.company, status=StaffInvitation.STATUS_PENDING).count(),
             1,
         )
-        # Y el token viejo deja de servir.
+        # EL PRIMER ENLACE SIGUE SIRVIENDO. Es lo que importa.
+        self.assertIsNotNone(find_invitation(token1))
+        # Y no se emite un segundo token que enviar: no hay segundo correo.
+        self.assertEqual(token2, '')
+
+    def test_only_an_explicit_resend_rotates_the_token(self):
+        """
+        Rotar es un acto deliberado, con su propia operación y su propio rastro.
+        """
+        _invitation, token1, _ = self._invite()
+        invitation, token2 = resend_invitation(_invitation)
+
         self.assertNotEqual(token1, token2)
+        self.assertIsNone(find_invitation(token1), 'el token viejo sobrevivió')
+        self.assertIsNotNone(find_invitation(token2))
+
+    def test_an_expired_invitation_is_not_revived_by_a_new_create(self):
+        """
+        §B — una invitación caducada no revive por un POST ambiguo. Se cierra y
+        se emite otra, que es un acto distinto y deja rastro distinto.
+        """
+        primera, token1, _ = self._invite()
+        primera.expires_at = timezone.now() - timezone.timedelta(days=1)
+        primera.save(update_fields=['expires_at'])
+
+        segunda, token2, creada = self._invite()
+
+        self.assertTrue(creada, 'debía crearse una invitación nueva')
+        self.assertNotEqual(primera.pk, segunda.pk)
+        primera.refresh_from_db()
+        self.assertEqual(primera.status, StaffInvitation.STATUS_REVOKED)
         self.assertIsNone(find_invitation(token1))
         self.assertIsNotNone(find_invitation(token2))
 
-    def test_reinviting_updates_the_intended_organisation(self):
+    def test_reinviting_updates_the_intended_role_without_touching_the_token(self):
+        """
+        Cambiar el rol de una invitación pendiente es una decisión del
+        administrador sobre su propia empresa, y no invalida el enlace: el
+        enlace identifica a la PERSONA, no al puesto.
+        """
         otro_rol = CompanyRole.objects.create(
-            company=self.company, name='Vendedor', slug='vendedor',
+            company=self.company, name='Vendedor Nuevo', slug='vendedor-nuevo',
             capabilities=['company.view'])
-        self._invite()
+        _primera, token1, _ = self._invite()
         segunda, _raw, _ = self._invite(role_id=otro_rol.pk)
+
         self.assertEqual(segunda.role_id, otro_rol.pk)
+        self.assertIsNotNone(find_invitation(token1), 'el enlace enviado murió')
 
     # -- validación de organización ------------------------------------------
 
@@ -49694,6 +49737,89 @@ class H41InvitationTest(TestCase):
         revoke_invitation(invitation)
         with self.assertRaises(StaffError):
             resend_invitation(invitation)
+
+
+class H41EnumerationTest(TestCase):
+    """
+    §D — no debe haber diferencias observables entre los tres casos.
+
+    Se comparan sobre el RESULTADO REAL, no sobre la intención: un correo que no
+    existe, uno que existe sin membresía aquí, y uno que trabaja en otra empresa
+    tienen que producir la misma forma de respuesta.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-enum', 'Empresa Enumeración')
+        self.otra = _p3_company('h41-enum-b', 'Otra Empresa Enum')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+        # Caso 2: existe en la plataforma pero sin membresía en ninguna parte.
+        User.objects.create_user('h41_suelto', 'suelto@correo.test', 'x')
+        # Caso 3: existe y trabaja en OTRA empresa.
+        ajeno = User.objects.create_user('h41_ajeno', 'ajeno@correo.test', 'x')
+        Membership.objects.create(
+            user=ajeno, company=self.otra, role='sales', is_active=True)
+
+    def _invite(self, email):
+        return create_invitation(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_the_three_cases_are_indistinguishable(self):
+        formas = {}
+        for etiqueta, email in (
+            ('inexistente', 'nadie@correo.test'),
+            ('existe sin membresía', 'suelto@correo.test'),
+            ('trabaja en otra empresa', 'ajeno@correo.test'),
+        ):
+            invitation, raw, creada = self._invite(email)
+            formas[etiqueta] = {
+                'status': invitation.status,
+                'creada': creada,
+                'hay_token': bool(raw),
+                'company_id': invitation.company_id,
+                'role_id': invitation.role_id,
+                'membership': invitation.membership_id,
+                'accepted_at': invitation.accepted_at,
+            }
+
+        referencia = formas['inexistente']
+        for etiqueta, forma in formas.items():
+            self.assertEqual(
+                forma, referencia,
+                f'«{etiqueta}» se distingue de un correo inexistente',
+            )
+
+    def test_no_case_raises_a_different_error(self):
+        """
+        Ninguno de los tres levanta: distinguirlos con una excepción sería el
+        mismo oráculo por otra vía.
+        """
+        for email in ('nadie@correo.test', 'suelto@correo.test',
+                      'ajeno@correo.test'):
+            with self.subTest(email=email):
+                invitation, _raw, _ = self._invite(email)
+                self.assertEqual(invitation.status, StaffInvitation.STATUS_PENDING)
+
+    def test_the_invitation_never_references_another_company(self):
+        """
+        Se comprueban los CAMPOS, no subcadenas de un diccionario serializado:
+        buscar `str(pk)` dentro del volcado casa con cualquier dígito suelto y
+        convierte el test en uno que falla por su propia imprecisión.
+        """
+        invitation, _raw, _ = self._invite('ajeno@correo.test')
+        fila = StaffInvitation.objects.filter(pk=invitation.pk).values().first()
+
+        self.assertEqual(fila['company_id'], self.company.pk)
+        self.assertNotEqual(fila['company_id'], self.otra.pk)
+        # El rol y el área apuntan a la empresa que invita, no a la otra.
+        self.assertEqual(
+            CompanyRole.objects.get(pk=fila['role_id']).company_id,
+            self.company.pk,
+        )
+        # Y no hay ningún campo que nombre a la otra empresa.
+        self.assertNotIn('h41-enum-b', str(fila))
 
 
 class H41TokenSecurityTest(TestCase):
@@ -49903,6 +50029,78 @@ class H41AcceptanceTest(TestCase):
             membership=membership, is_active=True).values_list('branch_id', flat=True))
         self.assertEqual(activos, {self.branch.pk})
         self.assertNotIn(otra_sucursal.pk, activos)
+
+
+class H41AccountControlTest(TestCase):
+    """
+    §C — poseer el enlace NO basta para vincular una cuenta existente.
+
+    Quien intercepte un correo de invitación no puede añadirse una membresía
+    sobre la identidad de otra persona, con todo lo que esa identidad arrastra:
+    pedidos, reseñas, membresías en otras empresas.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-ctrl', 'Empresa Control')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+    def _invite(self, email):
+        return create_invitation(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_an_unauthenticated_request_cannot_accept(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        with self.assertRaises(StaffIdentityError):
+            accept_invitation(find_invitation(raw), AnonymousUser())
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_none_cannot_accept(self):
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        with self.assertRaises(StaffIdentityError):
+            accept_invitation(find_invitation(raw), None)
+
+    def test_a_different_account_cannot_use_someone_elses_link(self):
+        """
+        EL SECUESTRO QUE ESTO IMPIDE. Una persona autenticada con otra cuenta
+        no puede usar un enlace ajeno para meterse en una empresa.
+        """
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        intruso = User.objects.create_user('h41_intruso', 'otro@correo.test', 'x')
+
+        with self.assertRaises(StaffIdentityError):
+            accept_invitation(find_invitation(raw), intruso)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+        # Y el enlace SIGUE VIVO: el intento fallido no se lo quema a su dueña.
+        self.assertIsNotNone(find_invitation(raw))
+
+    def test_the_invited_account_can_accept(self):
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        ana = User.objects.create_user('h41_ana_ok', 'ana@correo.test', 'x')
+        membership = accept_invitation(find_invitation(raw), ana)
+        self.assertEqual(membership.user_id, ana.pk)
+
+    def test_the_email_comparison_ignores_case(self):
+        """`Ana@Correo.test` y `ana@correo.test` son la misma persona."""
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        ana = User.objects.create_user('h41_ana_may', 'Ana@Correo.TEST', 'x')
+        membership = accept_invitation(find_invitation(raw), ana)
+        self.assertEqual(membership.user_id, ana.pk)
+
+    def test_an_existing_account_is_flagged_as_needing_authentication(self):
+        """
+        Lo que decide el flujo: si la cuenta existe hay que demostrar control;
+        si no, la persona establece credenciales y el enlace prueba el buzón.
+        """
+        User.objects.create_user('h41_existe', 'existe@correo.test', 'x')
+        con_cuenta, _r1, _c1 = self._invite('existe@correo.test')
+        sin_cuenta, _r2, _c2 = self._invite('nadie@correo.test')
+
+        self.assertTrue(requires_authentication(con_cuenta))
+        self.assertFalse(requires_authentication(sin_cuenta))
 
 
 class H41AcceptanceConcurrencyTest(TransactionTestCase):

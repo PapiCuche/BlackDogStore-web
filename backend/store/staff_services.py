@@ -114,11 +114,25 @@ def create_invitation(*, company, email: str, first_name: str, last_name: str,
     Devuelve `(invitación, token_en_claro, es_nueva)`. El token en claro sale de
     aquí UNA vez, para enviarlo por correo; no se guarda en ninguna parte.
 
-    IDEMPOTENTE POR DISEÑO. Un doble clic en «Enviar invitación» no deja dos
-    tokens vivos: si ya hay una pendiente para el mismo correo y la misma
-    empresa, se REEMPLAZA su token y se actualizan los datos previstos. El token
-    anterior deja de servir, que es lo correcto — dos enlaces válidos para la
-    misma persona son dos formas de entrar y sólo una se puede revocar a la vez.
+    IDEMPOTENTE DE VERDAD: NO ROTA EL TOKEN.
+
+    Si ya hay una invitación pendiente y vigente para el mismo correo en la misma
+    empresa, se devuelve ESA, con su token intacto y sin reenviar nada.
+
+    Una versión anterior rotaba el token aquí, y era un defecto disfrazado de
+    idempotencia: un doble clic accidental invalidaba el enlace que ya iba camino
+    del buzón. La persona abría el primer correo y leía «token inválido» sin que
+    nadie hubiera hecho nada malo.
+
+    Rotar es un acto DELIBERADO y tiene su propia operación: `resend_invitation`.
+
+    Los datos previstos —rol, área, sucursales— sí se actualizan, porque cambiar
+    el rol de una invitación pendiente es una decisión del administrador sobre su
+    propia empresa y no invalida el enlace: el enlace identifica a la persona, no
+    al puesto.
+
+    El tercer valor devuelto dice si hubo que crear la fila. `False` significa
+    «ya existía»: quien llame puede decidir no enviar un segundo correo.
     """
     email = normalize_email(email)
     if not email:
@@ -134,7 +148,6 @@ def create_invitation(*, company, email: str, first_name: str, last_name: str,
         # SÍ se dice, y sólo en este caso: es personal propio de quien pregunta.
         raise StaffConflict('Esta persona ya forma parte de la empresa.')
 
-    raw = make_raw_token()
     expires = timezone.now() + timezone.timedelta(days=ttl_days)
 
     with transaction.atomic():
@@ -143,17 +156,32 @@ def create_invitation(*, company, email: str, first_name: str, last_name: str,
         ).first()
 
         if pending is not None:
-            pending.first_name = first_name
-            pending.last_name = last_name
-            pending.role = role
-            pending.area = area
-            pending.branch_access_mode = branch_access_mode
-            pending.branch_ids = branches
-            pending.token_hash = hash_token(raw)
-            pending.expires_at = expires
-            pending.invited_by = invited_by
-            pending.save()
-            return pending, raw, False
+            if pending.is_expired:
+                # Una invitación caducada NO revive por un POST ambiguo. Se
+                # cierra y se emite una nueva, que es un acto distinto y deja
+                # rastro distinto.
+                pending.status = StaffInvitation.STATUS_REVOKED
+                pending.token_hash = ''
+                pending.save(update_fields=['status', 'token_hash', 'updated_at'])
+            else:
+                # EL TOKEN NO SE TOCA. Ver la explicación de arriba: rotar aquí
+                # invalidaría el enlace que ya va camino del buzón.
+                pending.first_name = first_name
+                pending.last_name = last_name
+                pending.role = role
+                pending.area = area
+                pending.branch_access_mode = branch_access_mode
+                pending.branch_ids = branches
+                pending.save(update_fields=[
+                    'first_name', 'last_name', 'role', 'area',
+                    'branch_access_mode', 'branch_ids', 'updated_at',
+                ])
+                # Sin token en claro: no hay ninguno nuevo que enviar, y
+                # devolver el viejo exigiría haberlo guardado.
+                return pending, '', False
+
+    raw = make_raw_token()
+    with transaction.atomic():
 
         try:
             invitation = StaffInvitation.objects.create(
@@ -232,10 +260,45 @@ def find_invitation(raw_token: str) -> StaffInvitation | None:
     return invitation
 
 
+def requires_authentication(invitation: StaffInvitation) -> bool:
+    """
+    ¿Hay que demostrar control de la cuenta antes de aceptar?
+
+    Sí cuando el correo invitado YA tiene cuenta en la plataforma. Poseer el
+    enlace no puede bastar para vincular una cuenta ajena: quien intercepte un
+    correo de invitación podría añadirse una membresía sobre la identidad de
+    otra persona, con todo lo que esa identidad ya arrastra —pedidos, reseñas,
+    membresías en otras empresas—.
+
+    Cuando no existe cuenta, no hay nada que secuestrar: la persona establece
+    sus credenciales por el flujo normal y el propio enlace es la prueba de que
+    controla el buzón.
+
+    ESTA FUNCIÓN NO REVELA NADA HACIA FUERA. La llama el flujo de aceptación,
+    que ya tiene un token válido para ese correo — no un administrador ni un
+    visitante cualquiera.
+    """
+    return User.objects.filter(email__iexact=invitation.email).exists()
+
+
+class StaffIdentityError(StaffError):
+    """
+    Quien acepta no ha demostrado controlar el correo invitado.
+
+    Se distingue de `StaffError` porque la respuesta HTTP es otra: aquí no hay
+    nada que corregir en los datos, hay que iniciar sesión.
+    """
+
+
 @transaction.atomic
 def accept_invitation(invitation: StaffInvitation, user) -> Membership:
     """
     Convierte la invitación en acceso real. Todo o nada.
+
+    QUIEN ACEPTA TIENE QUE SER QUIEN FUE INVITADO. Se comprueba que el correo
+    del usuario coincida con el de la invitación. Sin esto, una persona
+    autenticada con otra cuenta podría usar un enlace ajeno para meterse en una
+    empresa a la que nadie la invitó.
 
     Se vuelve a validar la organización AHORA: entre invitar y aceptar puede
     haber pasado una semana, y el rol pudo desactivarse. Conceder lo que la
@@ -245,6 +308,17 @@ def accept_invitation(invitation: StaffInvitation, user) -> Membership:
     mismo enlace deben producir UNA membresía, y la segunda encontrar el token
     ya consumido.
     """
+    if user is None or not getattr(user, 'is_authenticated', False):
+        raise StaffIdentityError('Hay que iniciar sesión para aceptar la invitación.')
+
+    if normalize_email(getattr(user, 'email', '')) != invitation.email:
+        # NO se dice de quién es la cuenta ni a quién iba la invitación: sólo
+        # que no corresponde.
+        raise StaffIdentityError(
+            'Esta invitación es para otra cuenta. Inicie sesión con el correo '
+            'al que fue enviada.'
+        )
+
     locked = StaffInvitation.objects.select_for_update().get(pk=invitation.pk)
     if not locked.is_usable:
         raise StaffError('Esta invitación ya no es válida.')
