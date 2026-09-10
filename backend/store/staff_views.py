@@ -378,3 +378,222 @@ def _send_invitation_email(invitation: StaffInvitation, raw_token: str) -> None:
         logger.exception(
             'No se pudo enviar la invitación %s', invitation.pk,
         )
+
+
+class AdminStaffListView(APIView):
+    """
+    GET /api/admin/staff/ — el PERSONAL de una empresa, en lenguaje humano.
+
+    POR QUÉ EXISTE ESTA VISTA HABIENDO YA `/admin/memberships/`
+    -----------------------------------------------------------
+    Aquélla devuelve membresías: `username`, `role`, identificadores. La pantalla
+    de Personal necesita personas: nombre completo, correo, sus áreas, sus roles
+    y sus sucursales. Componer eso desde el cliente obligaba a una llamada de
+    asignaciones POR PERSONA — un N+1 sobre HTTP que crece con la plantilla.
+
+    ES UNA PROYECCIÓN, NO UN SEGUNDO MODELO DE PERMISOS. No decide nada: lee lo
+    que ya decidieron `Membership`, `MembershipRoleAssignment` y
+    `MembershipBranchAccess`. La autoridad sigue viviendo donde vivía.
+
+    `/admin/memberships/` se conserva intacta: hay código escrito contra ella.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, HasCompanyMembership]
+    throttle_classes = [StaffAcceptThrottle]
+
+    def get(self, request):
+        from django.db.models import Prefetch
+
+        from .models import (
+            Membership, MembershipBranchAccess, MembershipRoleAssignment,
+        )
+
+        company = _company_or_none(request, request.query_params.get('company'))
+        if not company:
+            return _deny_not_found()
+        if not has_capability(request.user, company, CAP_STAFF_VIEW):
+            return _deny_authority()
+
+        queryset = (
+            Membership.objects.filter(company=company)
+            .select_related('user', 'branch')
+            # UNA consulta por relación, no una por persona. Es la diferencia
+            # entre una plantilla de 200 y 401 peticiones.
+            .prefetch_related(
+                Prefetch(
+                    'role_assignments',
+                    queryset=MembershipRoleAssignment.objects
+                    .filter(is_active=True).select_related('role', 'area'),
+                ),
+                Prefetch(
+                    'branch_access',
+                    queryset=MembershipBranchAccess.objects
+                    .filter(is_active=True).select_related('branch'),
+                ),
+            )
+        )
+
+        # --- búsqueda ---
+        #
+        # SERVIDOR, no navegador. Traer toda la plantilla para filtrarla en el
+        # cliente funciona con seis personas y deja de funcionar con seiscientas.
+        buscar = (request.query_params.get('search') or '').strip()
+        if buscar:
+            from django.db.models import Q
+
+            queryset = queryset.filter(
+                Q(user__first_name__icontains=buscar)
+                | Q(user__last_name__icontains=buscar)
+                | Q(user__email__icontains=buscar)
+                | Q(user__username__icontains=buscar)
+            )
+
+        # --- filtros ---
+        estado = (request.query_params.get('status') or '').strip()
+        if estado == 'active':
+            queryset = queryset.filter(is_active=True)
+        elif estado == 'inactive':
+            queryset = queryset.filter(is_active=False)
+
+        area_id = request.query_params.get('area')
+        if area_id:
+            queryset = queryset.filter(
+                role_assignments__area_id=area_id,
+                role_assignments__is_active=True,
+            ).distinct()
+
+        role_id = request.query_params.get('role')
+        if role_id:
+            queryset = queryset.filter(
+                role_assignments__role_id=role_id,
+                role_assignments__is_active=True,
+            ).distinct()
+
+        branch_id = request.query_params.get('branch')
+        if branch_id:
+            from django.db.models import Q
+
+            # «Todas las sucursales» ALCANZA a la sucursal filtrada: quien tiene
+            # acceso completo también trabaja ahí, y omitirlo daría una lista
+            # que miente por defecto.
+            queryset = queryset.filter(
+                Q(branch_access__branch_id=branch_id,
+                  branch_access__is_active=True)
+                | Q(branch_access_mode=Membership.ACCESS_MODE_ALL)
+            ).distinct()
+
+        personas = [self._person(m) for m in queryset]
+        # Se ordena por nombre visible y no por identificador: una lista de
+        # personas ordenada por clave primaria no la puede recorrer nadie.
+        personas.sort(key=lambda p: (not p['is_active'], p['full_name'].lower()))
+
+        return Response({'results': personas, 'count': len(personas)})
+
+    @staticmethod
+    def _person(membership) -> dict:
+        """
+        Una persona, tal como se lee. El identificador viaja pero no se muestra.
+
+        EL NOMBRE NO ES LA IDENTIDAD: dos personas pueden llamarse igual, y por
+        eso el correo va siempre al lado. Cuando no hay nombre se cae al usuario,
+        que es feo pero nunca ambiguo.
+        """
+        usuario = membership.user
+        completo = f'{usuario.first_name} {usuario.last_name}'.strip()
+
+        areas, roles = {}, {}
+        for asignacion in membership.role_assignments.all():
+            if asignacion.role_id:
+                roles[asignacion.role_id] = asignacion.role.name
+            if asignacion.area_id:
+                areas[asignacion.area_id] = asignacion.area.name
+
+        todas = membership.branch_access_mode == membership.ACCESS_MODE_ALL
+        sucursales = (
+            [] if todas
+            else [a.branch.name for a in membership.branch_access.all()]
+        )
+
+        return {
+            'id': membership.pk,
+            'full_name': completo or usuario.username,
+            'first_name': usuario.first_name,
+            'last_name': usuario.last_name,
+            'email': usuario.email,
+            'is_active': membership.is_active,
+            'areas': [{'id': k, 'name': v} for k, v in areas.items()],
+            'roles': [{'id': k, 'name': v} for k, v in roles.items()],
+            'branch_access_mode': membership.branch_access_mode,
+            'branches': sucursales,
+            'branch_scope_label': (
+                'Todas las sucursales' if todas
+                else (', '.join(sucursales) or 'Sin sucursales asignadas')
+            ),
+        }
+
+
+class AdminStaffMembershipView(APIView):
+    """
+    PATCH /api/admin/staff/{pk}/ — desactivar o reactivar a alguien.
+
+    DESACTIVAR NO ES BORRAR. La fila se conserva porque es lo que sostiene el
+    historial de ventas, reparaciones y auditoría de esa persona en esta
+    empresa. Borrar la identidad global sería además borrar sus compras como
+    cliente, que no tienen nada que ver con su empleo.
+
+    REACTIVAR NO DEVUELVE LA AUTORIDAD ANTIGUA. Se reactiva el acceso; los roles
+    quedan como estaban, y concederlos otra vez es una decisión que alguien tiene
+    que tomar explícitamente. Devolverlos por sorpresa daría permisos que nadie
+    acaba de revisar.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, HasCompanyMembership]
+    throttle_classes = [StaffInviteThrottle]
+
+    def patch(self, request, pk):
+        from .models import Membership
+
+        company = _company_or_none(
+            request, request.data.get('company') or request.query_params.get('company'),
+        )
+        if not company:
+            return _deny_not_found()
+        if not has_capability(request.user, company, CAP_STAFF_MANAGE):
+            return _deny_authority()
+
+        membership = Membership.objects.filter(company=company, pk=pk).first()
+        if membership is None:
+            return _deny_not_found()
+
+        if membership.user_id == request.user.id:
+            # Quitarse el acceso a uno mismo deja a la empresa potencialmente sin
+            # nadie que pueda devolvérselo.
+            return Response(
+                {'detail': 'No puedes desactivar tu propio acceso.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        activo = request.data.get('is_active')
+        if not isinstance(activo, bool):
+            return Response(
+                {'detail': 'Indique `is_active` como verdadero o falso.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        membership.is_active = activo
+        membership.save(update_fields=['is_active', 'updated_at'])
+
+        AdminAuditLog.log(
+            actor=request.user,
+            action='membership_reactivated' if activo else 'membership_deactivated',
+            target_type='membership', target_id=membership.pk,
+            metadata={'membership_id': membership.pk, 'company_id': company.pk,
+                      'user_id': membership.user_id},
+            request=request, company=company,
+        )
+        return Response(AdminStaffListView._person(
+            Membership.objects.select_related('user', 'branch')
+            .prefetch_related('role_assignments__role', 'role_assignments__area',
+                              'branch_access__branch')
+            .get(pk=membership.pk)
+        ))

@@ -49465,6 +49465,9 @@ class C22BAdversarialTest(TestCase):
 # H4.1 — alta de personal por invitación
 # ---------------------------------------------------------------------------
 
+from django.db import connection  # noqa: E402
+from django.test.utils import CaptureQueriesContext  # noqa: E402
+
 from .models import StaffInvitation, MembershipBranchAccess  # noqa: E402
 
 User = get_user_model()  # noqa: E402
@@ -50428,3 +50431,266 @@ class H41AcceptEndpointTest(TestCase):
                               {'token': self.raw}, format='json')
         self.assertEqual(segundo.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(Membership.objects.filter(company=self.company).count(), 1)
+
+
+class H41StaffReadModelTest(TestCase):
+    """
+    La proyección de Personal: nombres humanos, sin N+1 y dentro del tenant.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-rm', 'Empresa Read Model')
+        self.otra = _p3_company('h41-rm-b', 'Otra Read Model')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.area = CompanyArea.objects.get(company=self.company, slug='ventas')
+        self.branch = self.company.default_inventory_branch
+
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_rm_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+        self.gestor.first_name, self.gestor.last_name = 'Gloria', 'Gestora'
+        self.gestor.email = 'gloria@h41.test'
+        self.gestor.save()
+
+    def _persona(self, username, nombre, apellido, email, *, activo=True,
+                 con_rol=True, sucursales=None):
+        user = User.objects.create_user(username, email, 'x')
+        user.first_name, user.last_name = nombre, apellido
+        user.save()
+        membership = Membership.objects.create(
+            user=user, company=self.company, role='customer', is_active=activo,
+            branch_access_mode=(Membership.ACCESS_MODE_SELECTED if sucursales
+                                else Membership.ACCESS_MODE_ALL))
+        if con_rol:
+            MembershipRoleAssignment.objects.create(
+                membership=membership, role=self.role, area=self.area,
+                is_active=True)
+        for sucursal in (sucursales or []):
+            MembershipBranchAccess.objects.create(
+                membership=membership, branch=sucursal)
+        return membership
+
+    def _get(self, user=None, **params):
+        client = APIClient()
+        client.force_authenticate(user=user or self.gestor)
+        query = '&'.join(f'{k}={v}' for k, v in params.items())
+        return client.get(
+            f'/api/admin/staff/?company={self.company.pk}'
+            + (f'&{query}' if query else ''))
+
+    # -- forma ----------------------------------------------------------------
+
+    def test_a_person_reads_as_a_person(self):
+        self._persona('h41_carlos', 'Carlos', 'Rodríguez Pérez',
+                      'carlos@empresa.test')
+        res = self._get()
+        carlos = next(p for p in res.data['results']
+                      if p['email'] == 'carlos@empresa.test')
+
+        self.assertEqual(carlos['full_name'], 'Carlos Rodríguez Pérez')
+        self.assertEqual([r['name'] for r in carlos['roles']], [self.role.name])
+        self.assertEqual([a['name'] for a in carlos['areas']], [self.area.name])
+        self.assertEqual(carlos['branch_scope_label'], 'Todas las sucursales')
+        self.assertTrue(carlos['is_active'])
+
+    def test_two_people_with_the_same_name_are_distinguishable(self):
+        """
+        §3 — el nombre NO es la identidad. Dos personas pueden llamarse igual y
+        el correo es lo que las separa.
+        """
+        self._persona('h41_c1', 'Carlos', 'Rodríguez', 'carlos1@empresa.test')
+        self._persona('h41_c2', 'Carlos', 'Rodríguez', 'carlos2@empresa.test')
+        res = self._get(search='Carlos')
+
+        nombres = [p['full_name'] for p in res.data['results']]
+        correos = [p['email'] for p in res.data['results']]
+        self.assertEqual(nombres, ['Carlos Rodríguez', 'Carlos Rodríguez'])
+        self.assertEqual(sorted(correos),
+                         ['carlos1@empresa.test', 'carlos2@empresa.test'])
+
+    def test_someone_without_a_name_falls_back_to_the_username(self):
+        """Feo, pero nunca ambiguo — mejor que una fila en blanco."""
+        user = User.objects.create_user('h41_sinnombre', 'sn@empresa.test', 'x')
+        Membership.objects.create(
+            user=user, company=self.company, role='customer', is_active=True)
+        res = self._get(search='h41_sinnombre')
+        self.assertEqual(res.data['results'][0]['full_name'], 'h41_sinnombre')
+
+    def test_selected_branches_are_named_not_numbered(self):
+        otra = Branch.objects.create(company=self.company, name='Cayma')
+        self._persona('h41_suc', 'Ana', 'Torres', 'ana@empresa.test',
+                      sucursales=[self.branch, otra])
+        res = self._get(search='ana@empresa.test')
+        persona = res.data['results'][0]
+        self.assertIn('Cayma', persona['branch_scope_label'])
+        self.assertNotIn('id', persona['branch_scope_label'])
+
+    # -- búsqueda y filtros ---------------------------------------------------
+
+    def test_search_matches_name_and_email(self):
+        self._persona('h41_b1', 'Beatriz', 'Núñez', 'bea@empresa.test')
+        self._persona('h41_b2', 'Carlos', 'Soto', 'carlos@empresa.test')
+
+        self.assertEqual(len(self._get(search='Beatriz').data['results']), 1)
+        self.assertEqual(len(self._get(search='carlos@').data['results']), 1)
+        self.assertEqual(len(self._get(search='Núñez').data['results']), 1)
+
+    def test_filter_by_status(self):
+        self._persona('h41_act', 'Activa', 'Uno', 'act@empresa.test')
+        self._persona('h41_ina', 'Inactiva', 'Dos', 'ina@empresa.test',
+                      activo=False)
+
+        activos = self._get(status='active').data['results']
+        inactivos = self._get(status='inactive').data['results']
+        self.assertNotIn('ina@empresa.test', [p['email'] for p in activos])
+        self.assertEqual([p['email'] for p in inactivos], ['ina@empresa.test'])
+
+    def test_filter_by_area_and_role(self):
+        self._persona('h41_conrol', 'Con', 'Rol', 'conrol@empresa.test')
+        self._persona('h41_sinrol', 'Sin', 'Rol', 'sinrol@empresa.test',
+                      con_rol=False)
+
+        por_area = self._get(area=self.area.pk).data['results']
+        por_rol = self._get(role=self.role.pk).data['results']
+        self.assertEqual([p['email'] for p in por_area], ['conrol@empresa.test'])
+        self.assertEqual([p['email'] for p in por_rol], ['conrol@empresa.test'])
+
+    def test_filtering_by_branch_includes_people_with_full_scope(self):
+        """
+        Quien tiene «todas las sucursales» también trabaja en ésta. Omitirlo
+        daría una lista que miente por defecto.
+        """
+        self._persona('h41_todas', 'Todas', 'Sucursales', 'todas@empresa.test')
+        self._persona('h41_una', 'Una', 'Sucursal', 'una@empresa.test',
+                      sucursales=[self.branch])
+
+        correos = [p['email'] for p in
+                   self._get(branch=self.branch.pk).data['results']]
+        self.assertIn('todas@empresa.test', correos)
+        self.assertIn('una@empresa.test', correos)
+
+    # -- rendimiento ----------------------------------------------------------
+
+    def test_the_query_count_does_not_grow_with_the_team(self):
+        """
+        §50 — SIN N+1. La pantalla anterior pedía las asignaciones de CADA
+        persona por separado: una plantilla de 200 eran 401 peticiones.
+
+        Se mide con 3 personas y con 12: el número de consultas tiene que ser el
+        mismo.
+        """
+        for i in range(3):
+            self._persona(f'h41_p{i}', f'P{i}', 'Uno', f'p{i}@empresa.test')
+        with CaptureQueriesContext(connection) as pocas:
+            self._get()
+
+        for i in range(3, 12):
+            self._persona(f'h41_p{i}', f'P{i}', 'Uno', f'p{i}@empresa.test')
+        with CaptureQueriesContext(connection) as muchas:
+            self._get()
+
+        self.assertEqual(
+            len(pocas.captured_queries), len(muchas.captured_queries),
+            f'{len(pocas.captured_queries)} consultas con 3 personas y '
+            f'{len(muchas.captured_queries)} con 12: hay N+1',
+        )
+
+    # -- aislamiento y autoridad ---------------------------------------------
+
+    def test_the_list_never_crosses_tenants(self):
+        ajeno = User.objects.create_user('h41_ajeno_rm', 'ajeno@otra.test', 'x')
+        ajeno.first_name = 'Ajeno'
+        ajeno.save()
+        Membership.objects.create(
+            user=ajeno, company=self.otra, role='customer', is_active=True)
+
+        correos = [p['email'] for p in self._get().data['results']]
+        self.assertNotIn('ajeno@otra.test', correos)
+
+    def test_search_does_not_cross_tenants(self):
+        ajeno = User.objects.create_user('h41_busca_b', 'buscar@otra.test', 'x')
+        ajeno.first_name = 'Buscable'
+        ajeno.save()
+        Membership.objects.create(
+            user=ajeno, company=self.otra, role='customer', is_active=True)
+        self.assertEqual(len(self._get(search='Buscable').data['results']), 0)
+
+    def test_someone_without_the_capability_cannot_read(self):
+        forastero, _ = _p2d_member(self.company, 'h41_rm_nada', ['company.view'])
+        res = self._get(user=forastero)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+
+class H41StaffDeactivationTest(TestCase):
+    """Desactivar conserva historia; reactivar no devuelve autoridad."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-desact', 'Empresa Desactivación')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_des_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+
+        user = User.objects.create_user('h41_trabajador', 'trab@empresa.test', 'x')
+        user.first_name, user.last_name = 'Carlos', 'Rodríguez'
+        user.save()
+        self.membership = Membership.objects.create(
+            user=user, company=self.company, role='customer', is_active=True)
+        self.assignment = MembershipRoleAssignment.objects.create(
+            membership=self.membership, role=self.role, is_active=True)
+
+    def _patch(self, activo, user=None):
+        client = APIClient()
+        client.force_authenticate(user=user or self.gestor)
+        return client.patch(
+            f'/api/admin/staff/{self.membership.pk}/',
+            {'company': self.company.pk, 'is_active': activo}, format='json')
+
+    def test_deactivating_keeps_the_row_and_the_history(self):
+        res = self._patch(False)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['is_active'])
+
+        self.membership.refresh_from_db()
+        self.assertTrue(Membership.objects.filter(pk=self.membership.pk).exists())
+        # Las asignaciones sobreviven: son historial.
+        self.assertTrue(
+            MembershipRoleAssignment.objects.filter(pk=self.assignment.pk).exists())
+
+    def test_deactivating_does_not_delete_the_user(self):
+        """Borrar la identidad global borraría también sus compras como cliente."""
+        self._patch(False)
+        self.assertTrue(User.objects.filter(pk=self.membership.user_id).exists())
+
+    def test_reactivating_does_not_restore_authority_by_surprise(self):
+        self._patch(False)
+        self.assignment.is_active = False
+        self.assignment.save(update_fields=['is_active'])
+
+        self._patch(True)
+        self.assignment.refresh_from_db()
+        self.assertFalse(
+            self.assignment.is_active,
+            'el rol antiguo revivió solo: nadie acaba de revisarlo')
+
+    def test_you_cannot_deactivate_yourself(self):
+        """Dejaría a la empresa sin nadie que pueda devolver el acceso."""
+        propia = Membership.objects.get(company=self.company, user=self.gestor)
+        client = APIClient()
+        client.force_authenticate(user=self.gestor)
+        res = client.patch(
+            f'/api/admin/staff/{propia.pk}/',
+            {'company': self.company.pk, 'is_active': False}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_viewing_does_not_grant_deactivating(self):
+        observador, _ = _p2d_member(
+            self.company, 'h41_des_obs', ['company.view', 'memberships.view'])
+        res = self._patch(False, user=observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.membership.refresh_from_db()
+        self.assertTrue(self.membership.is_active)

@@ -2,7 +2,7 @@ from rest_framework.routers import DefaultRouter
 from .checkout_quote_views import CheckoutQuoteView
 from .staff_views import (
     AdminStaffInvitationDetailView, AdminStaffInvitationListView,
-    StaffInvitationAcceptView,
+    AdminStaffListView, AdminStaffMembershipView, StaffInvitationAcceptView,
 )
 from .fiscal_views import (
     AdminFiscalDocumentCdrView, AdminFiscalDocumentPdfView,
@@ -214,6 +214,8 @@ urlpatterns = [
     path('admin/roles/', AdminRoleListView.as_view(), name='admin-roles'),
     path('admin/roles/<int:pk>/', AdminRoleDetailView.as_view(), name='admin-role-detail'),
     # --- H4.1: alta de personal por invitación ---
+    path('admin/staff/', AdminStaffListView.as_view(), name='admin-staff'),
+    path('admin/staff/<int:pk>/', AdminStaffMembershipView.as_view(), name='admin-staff-detail'),
     path('admin/staff/invitations/', AdminStaffInvitationListView.as_view(), name='admin-staff-invitations'),
     path('admin/staff/invitations/<int:pk>/<str:action>/', AdminStaffInvitationDetailView.as_view(), name='admin-staff-invitation-action'),
     # Pública para leer, autenticada para aceptar. Fuera de `admin/` a propósito:
