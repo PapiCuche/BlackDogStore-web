@@ -924,6 +924,28 @@ class AdminAuditLog(models.Model):
         )
 
 
+def make_raw_token() -> str:
+    """
+    Un token de un solo uso, con entropía suficiente para no adivinarse.
+
+    48 bytes en base64 seguro para URL: unos 64 caracteres. Vive aquí y no
+    duplicado en cada sitio que lo necesita para que exista UNA sola respuesta a
+    «cuánta entropía tienen nuestros tokens».
+    """
+    return secrets.token_urlsafe(48)
+
+
+def hash_token(raw: str) -> str:
+    """
+    Lo ÚNICO que se guarda de un token.
+
+    Nunca el token en claro: quien comprometa la base de datos no debe poder
+    verificar correos, restablecer contraseñas ni aceptar invitaciones sin
+    acceso también al buzón de la persona.
+    """
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 class AccountToken(models.Model):
     """
     Single-use, time-limited token for account actions (email verification, password reset).
@@ -962,8 +984,8 @@ class AccountToken(models.Model):
     @classmethod
     def make(cls, user, purpose, ttl_hours):
         """Generate a raw token, store its hash, and return (raw_token, AccountToken)."""
-        raw = secrets.token_urlsafe(48)
-        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        raw = make_raw_token()
+        token_hash = hash_token(raw)
         obj = cls.objects.create(
             user=user,
             token_hash=token_hash,
@@ -978,7 +1000,7 @@ class AccountToken(models.Model):
         Look up the token by hash, validate it, mark it used, and return the instance.
         Raises ValueError with a safe message on any failure.
         """
-        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        token_hash = hash_token(raw_token)
         try:
             obj = cls.objects.select_related('user').get(
                 token_hash=token_hash,
@@ -7385,3 +7407,159 @@ class FiscalSubmissionAttempt(models.Model):
 
     def __str__(self) -> str:
         return f'{self.document.document_id} · intento {self.attempt_number}'
+
+
+# ---------------------------------------------------------------------------
+# H4.1 — alta de personal por invitación
+# ---------------------------------------------------------------------------
+
+class StaffInvitation(models.Model):
+    """
+    Una invitación para que una persona se incorpore al personal de una empresa.
+
+    POR QUÉ EXISTE ESTE MODELO Y NO SE REUTILIZA `AccountToken`
+    -----------------------------------------------------------
+    `AccountToken` es la primitiva correcta —un solo uso, caduca, sólo guarda el
+    hash— y este modelo usa EXACTAMENTE su mecanismo: `make_raw_token()` y
+    `hash_token()`, las mismas funciones. Lo que no encaja es su forma: exige un
+    `user`, y una invitación se dirige a un CORREO que todavía puede no tener
+    cuenta. Hacer nulo aquel campo tocaría el modelo del que dependen la
+    verificación de correo y el restablecimiento de contraseña.
+
+    Así que la invitación es su propio portador del token, con el mismo
+    mecanismo y una sola implementación del hash.
+
+    INVITAR NO ES DAR ACCESO
+    ------------------------
+    Crear una invitación NO crea `Membership`. Mientras nadie acepte, la persona
+    no puede entrar a la empresa. Esa separación es lo que permite revocar una
+    invitación sin dejar rastro de acceso, y lo que impide que un correo escrito
+    con un dedo torcido conceda entrada a un desconocido.
+
+    QUÉ SE CONGELA Y QUÉ NO
+    -----------------------
+    La invitación guarda el rol, el área y las sucursales PREVISTOS. No son el
+    acceso: son la propuesta. Al aceptar se crean las filas reales, y si para
+    entonces el rol fue desactivado, la aceptación falla en vez de conceder algo
+    que la empresa ya retiró.
+    """
+
+    STATUS_PENDING = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REVOKED = 'revoked'
+    #: No hay estado `expired` almacenado: la caducidad la decide `expires_at`
+    #: comparado con la hora actual. Un estado guardado exigiría alguien que lo
+    #: escribiera, y una invitación caducada sin ese proceso seguiría figurando
+    #: como pendiente — mintiendo.
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pendiente'),
+        (STATUS_ACCEPTED, 'Aceptada'),
+        (STATUS_REVOKED, 'Revocada'),
+    ]
+
+    DEFAULT_TTL_DAYS = 7
+
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name='staff_invitations',
+    )
+    #: Normalizado en minúsculas al guardar. Es la identidad de acceso; el
+    #: nombre visible NO lo es, porque dos personas pueden llamarse igual.
+    email = models.EmailField()
+    first_name = models.CharField(max_length=150, blank=True)
+    last_name = models.CharField(max_length=150, blank=True)
+
+    #: El rol y el área PREVISTOS. `PROTECT` en el rol: borrar un rol que una
+    #: invitación pendiente promete dejaría una propuesta imposible de cumplir.
+    role = models.ForeignKey(
+        CompanyRole, on_delete=models.PROTECT, related_name='staff_invitations',
+    )
+    area = models.ForeignKey(
+        CompanyArea, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='staff_invitations',
+    )
+    branch_access_mode = models.CharField(
+        max_length=16, choices=Membership.ACCESS_MODE_CHOICES,
+        default=Membership.ACCESS_MODE_ALL,
+    )
+    #: Las sucursales previstas cuando el modo es `selected`. Se guardan como
+    #: identificadores y se vuelven a validar contra la empresa al aceptar: una
+    #: sucursal puede desaparecer entre la invitación y la aceptación.
+    branch_ids = models.JSONField(default=list, blank=True)
+
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='staff_invitations_sent',
+    )
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING,
+        db_index=True,
+    )
+
+    #: SÓLO EL HASH. El token en claro se envía por correo y no se persiste
+    #: nunca: quien comprometa la base de datos no debe poder aceptar
+    #: invitaciones sin acceso también al buzón.
+    token_hash = models.CharField(max_length=64, db_index=True)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    #: La membresía que resultó. Nula mientras nadie acepte.
+    membership = models.ForeignKey(
+        Membership, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='from_invitations',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Invitación de personal'
+        verbose_name_plural = 'Invitaciones de personal'
+        ordering = ['-created_at']
+        constraints = [
+            # UNA SOLA INVITACIÓN PENDIENTE por empresa y correo. Sin esto, un
+            # doble clic dejaría dos tokens vivos para la misma persona y
+            # aceptar uno no invalidaría el otro.
+            models.UniqueConstraint(
+                fields=['company', 'email'],
+                condition=models.Q(status='pending'),
+                name='staff_invitation_one_pending_per_email',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['token_hash']),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.email} → {self.company}'
+
+    def save(self, *args, **kwargs):
+        # El correo es identidad de acceso: `Ana@X.com` y `ana@x.com` son la
+        # misma persona, y guardarlos distinto crearía dos invitaciones para una.
+        self.email = (self.email or '').strip().lower()
+        super().save(*args, **kwargs)
+
+    @property
+    def is_expired(self) -> bool:
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_usable(self) -> bool:
+        """Pendiente y dentro de plazo. Lo único que permite aceptar."""
+        return self.status == self.STATUS_PENDING and not self.is_expired
+
+    @property
+    def display_status(self) -> str:
+        """
+        El estado tal como debe leerse, con la caducidad calculada.
+
+        Existe para que ninguna pantalla tenga que deducirlo: una interfaz que
+        comparase fechas por su cuenta acabaría mostrando «pendiente» sobre una
+        invitación muerta.
+        """
+        if self.status == self.STATUS_PENDING and self.is_expired:
+            return 'expired'
+        return self.status
+
+    @property
+    def full_name(self) -> str:
+        return f'{self.first_name} {self.last_name}'.strip()
