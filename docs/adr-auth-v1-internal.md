@@ -136,7 +136,30 @@ Ningún orden cumple a la vez «un Bearer inválido no cae a la cookie» y «dos
 - **AUDIT-INTERNAL-01** — las lecturas y los rechazos de v1 interno no se auditan.
 - `OPTIONS` devuelve metadatos de la vista (nombre y descripción) a cualquier usuario autenticado sin pasar por la puerta de tenant. No revela datos de ninguna empresa ni escribe; queda anotado.
 
-## 8. Pruebas que protegen esta decisión
+## 8. Verificación en navegador real
+
+`frontend/e2e/h411-auth-interop.spec.ts`, sin mocks del backend: cada petición pasa por el proxy de la aplicación con las cookies HttpOnly del login y el CSRF que exige.
+
+| Escenario | Qué se comprobó |
+|---|---|
+| **B · admin** | Cliente, equipo y orden creados por cookie; **la misma alta sin CSRF responde 403**; asignación al técnico |
+| **A · técnico** | Aterriza en `/admin`; la tienda le ofrece «Control interno»; en Servicio Técnico, `service/context` y `unread-count` dan 200; la orden aparece en «Mis reparaciones»; ningún refresh |
+| **G · evidencia** | Foto real por `multipart/form-data` con boundary; 201; aparece en la galería |
+| **H · notificaciones** | Contador, bandeja y «Marcar leída» por cookie; el contador baja en uno |
+| **C · cliente puro** | Se queda en la tienda; `/admin` responde «Sin acceso interno»; la API interna, 404 |
+| **D · cliente y técnico** | Conserva «Pedidos» y «Control interno»; Servicio Técnico responde |
+| **E · master** | Elige empresa y el servicio responde para ella |
+| **F · invitación** | `/auth?next=/invitacion?token=…` vuelve a la invitación tras el login |
+
+Lo que la prueba creó se borra antes y después con `purge_e2e_data`: sólo filas marcadas `[E2E]` o correos en `e2e.invalid`.
+
+Tres fallos del **arnés** —ninguno del producto— quedan anotados porque volverán a aparecer:
+
+1. El proxy de Next responde **308** a las rutas con barra final y el navegador las repite sin ella. Esperar «la primera respuesta» atrapaba la redirección. Se filtra por estado, no por `redirectedTo()`, que aún está vacío cuando llega la 308.
+2. El anunciador de rutas de Next tiene `role="alert"` en todas las páginas. Comprobar «ningún alert» fallaba siempre; se comprueba el mensaje concreto.
+3. La tarjeta de accesos de desarrollo carga sus cuentas después de pintar la página. Contarla en cuanto cambia la URL la encontraba vacía y convertía el escenario en un *skipped*, que se parece demasiado a un aprobado.
+
+## 9. Pruebas que protegen esta decisión
 
 | Prueba | Qué fija |
 |---|---|
