@@ -3297,8 +3297,8 @@ no repetir la basura que dejó H4.1.
 
 | Clave | Estado | Qué |
 |---|---|---|
-| **BRANCH-SCOPE-01** | DEFECTO | Los pedidos comerciales de v1 interno no filtran por sucursal. **Preexistente, no introducido por H4.1.1**, igual por ambos canales. Servicio técnico sí filtra, y sus pruebas siguen verdes |
-| **RBAC-LEGACY-01** | DEFECTO | `order_fulfillment_services` decide estados permitidos con `UserProfile.role` global, no con capacidades de empresa |
+| **BRANCH-SCOPE-01** | **RESUELTO en H4.1.2** | Los pedidos comerciales de v1 interno no filtraban por sucursal. **Preexistente, no introducido por H4.1.1**, igual por ambos canales. Servicio técnico sí filtra, y sus pruebas siguen verdes |
+| **RBAC-LEGACY-01** | **RESUELTO en H4.1.2** | `order_fulfillment_services` decidía los estados permitidos con `UserProfile.role` global, no con capacidades de empresa |
 | **AUTH-REVOCATION-01** | PENDIENTE — deuda de seguridad | El access token no consulta la lista negra: tras el logout sigue válido hasta ~30 min. Evaluar antes de producción |
 | **AUDIT-INTERNAL-01** | PENDIENTE | Lecturas y rechazos de v1 interno no se auditan; requiere diseño para no generar volúmenes enormes |
 | **NAV-SERVICE-01** | DEFECTO / PENDIENTE | Seis entradas del menú llevan a `/admin/service` |
@@ -3314,3 +3314,428 @@ no repetir la basura que dejó H4.1.
 | H4.2, H4.3 | PENDIENTE | Fuera de alcance por decisión |
 | Fiscal | PENDIENTE | Factura con descuento, boleta y resumen diario, producción SUNAT |
 | Proxy 308 | OBSERVACIÓN | Toda llamada del navegador con barra final hace una redirección 308 en Next antes de llegar a Django: un viaje de ida y vuelta extra por petición. Preexistente |
+
+---
+
+## Fase H4.1.2 — Autoridad interna: pedidos por sucursal y RBAC por capability
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Rama
+`feat/h4-1-2-internal-authority-hardening`, apilada sobre H4.1.1. Cierra
+**BRANCH-SCOPE-01** y **RBAC-LEGACY-01** con las decisiones D1–D4. Servicio técnico
+y trade-in se registran al final de esta sección; en esta rama no se implementan.
+
+### El problema
+
+**BRANCH-SCOPE-01 era más ancho de lo registrado.** Todas las superficies de pedidos
+comerciales filtraban sólo por empresa. Un miembro limitado a la sucursal A podía,
+con los pedidos de B y por la web o por la app:
+
+- listarlos, abrirlos e imprimir su recibo;
+- reenviar sus correos y mover su despacho;
+- emitir su nota de venta y su factura, esta con la serie de B.
+
+Además veía en el panel los ingresos de toda la empresa. La analítica comercial y
+los KPIs de inventario sí filtraban por sucursal, así que el dashboard mezclaba en
+una misma pantalla cifras con alcance y cifras sin él.
+
+**RBAC-LEGACY-01.** `allowed_fulfillment_statuses(user)` decidía con el
+`UserProfile.role` global también dentro de una empresa SaaS. Quien tenía perfil
+«inventory» y un rol de empresa con `sales.orders.manage` no podía cancelar. El
+panel web, además, llevaba su propia copia de esa regla, atada al mismo rol.
+
+### La frontera: `visible_orders(user, company)`
+
+Es una función de `tenancy.py`. Todas las superficies parten de ella **antes** de
+buscar, contar, agregar o paginar. Fuera de alcance la respuesta es **404**, la
+misma que para un pedido inexistente.
+
+| Quién | Qué pedidos de la empresa ve |
+|---|---|
+| Master con empresa explícita | todos, también los que no tienen sucursal y los de sucursales cerradas |
+| Puente legacy (sólo el piloto) | todos los del piloto, también los que no tienen sucursal |
+| Membresía `ALL` | todos, también los que no tienen sucursal y los de sucursales cerradas |
+| Membresía `SELECTED` | sólo los despachados por una sucursal **activa** con concesión **activa** |
+| Cualquiera, sobre otra empresa | ninguno |
+
+**Pedidos que ninguna sucursal puede responder (D1).** Un pedido sin
+`fulfillment_branch` —historial anterior a la migración 0025— o de una sucursal
+desactivada no pertenece a ninguna sucursal que opere un miembro `SELECTED`, así
+que ese miembro no lo ve.
+
+- **No se amplió `visible_branches()`.** Responde dónde trabaja hoy una persona, no
+  qué historial hereda.
+- **No se hizo backfill** ni se inventó ninguna sucursal.
+
+**Una sola escalera de autoridad.** La decisión «master / puente / ALL / SELECTED /
+nada» vivía dentro de `visible_branches()`. Se extrajo a `_branch_authority()` y la
+leen las dos funciones, así que sucursales y pedidos no pueden discrepar sobre
+quién tiene alcance de toda la empresa. `visible_branches()` se comporta igual que
+antes, y su batería de la Fase 2D sigue verde en SQLite y en PostgreSQL.
+
+### Superficies protegidas
+
+| Superficie | Antes | Ahora |
+|---|---|---|
+| v1: lista, detalle y despacho | empresa | `visible_orders`; 404 fuera de alcance |
+| Web: lista, detalle y despacho | empresa | ídem |
+| Recibo PDF y reenvío de correo | empresa | ídem; fuera de alcance no se envía nada |
+| Nota de venta: GET, POST y PDF | empresa, «deliberadamente sin sucursal» | ídem; no se gasta correlativo |
+| Comprobante por pedido: GET y POST | empresa | ídem; no se tocan serie ni número |
+| Comprobante por id: enviar, XML, CDR y PDF | empresa | el comprobante hereda el alcance de su pedido (`order__in`) |
+| KPIs de ventas del dashboard | empresa | todas las cifras derivan de una única base con alcance |
+| Ficha de cliente (CRM): historial y totales | empresa | la ficha no se fragmenta; su historial sí tiene alcance |
+
+**La nota de venta cambió de criterio a propósito.** Su docstring decía que la
+sucursal no aplicaba porque es «papel sobre una venta». Pero la nota **lleva** la
+venta —cliente, documento, líneas e importes—, y quien no puede abrir el pedido
+tampoco debe leer ni emitir su nota.
+
+**La ficha de cliente es el «lookup equivalente» que D2 pedía buscar.** No aparecía
+en la auditoría y mostraba, a quien tiene `service.customers.view`, los pedidos e
+importes de todas las sucursales. El cliente sigue siendo de toda la empresa; lo
+que compró en cada sucursal, no.
+
+**Los 404 hablan igual.** El detalle y el despacho respondían con el texto por
+defecto de Django, «No Order matches the given query.», que además nombra el
+modelo. Ahora responden «Orden no encontrada.», como ya lo hacían el recibo y el
+reenvío; en v1, «No encontrado.», como la puerta de empresa.
+
+Ya estaban bien y no se tocaron:
+
+- la analítica comercial;
+- más vendidos y comisiones;
+- el Kardex filtrado por pedido;
+- la creación de ventas del POS.
+
+### RBAC: en SaaS decide la capability (D4 · opción A)
+
+`allowed_fulfillment_statuses(user, company)`:
+
+| Camino | Regla |
+|---|---|
+| Membresía o master | Con `sales.orders.manage` en esa empresa, los siete estados; sin ella, ninguno. El rol global no se consulta |
+| Puente legacy | La regla histórica, intacta: `inventory` mueve mercancía (4 estados); ventas y administración, todos |
+
+- **Quien sólo tiene `sales.orders.view` recibe una lista vacía.** Antes recibía los
+  siete estados, y el PATCH los rechazaba.
+- **El detalle web devuelve `available_fulfillment_transitions`**, igual que v1, y
+  `FulfillmentStatusSelect` pinta esa lista. El componente ya no recibe al usuario,
+  así que no tiene de dónde leer un rol.
+- **Se borró `admin_views._INVENTORY_ALLOWED_FULFILLMENT`**, una segunda copia de la
+  regla que nadie usaba.
+- **No se creó `sales.orders.fulfill` ni ninguna otra capability.**
+
+**Cuatro pruebas cambiaron a propósito**, con la decisión escrita en su docstring:
+
+- `M6InternalFulfillmentTest.test_an_INVENTORY_role_is_limited_to_moving_goods` pasa
+  a llamarse `test_a_global_INVENTORY_role_does_not_narrow_what_the_company_granted`
+  y espera 200 al cancelar.
+- `test_it_reports_the_transitions_that_actor_may_use` espera `[]`.
+- `M12BCommerceEventsTest.test_28` y `test_29` movían el despacho a través del
+  servicio con el propio comprador como actor. Funcionaba porque la regla vieja
+  dejaba fijar cualquier estado a todo rol que no fuera inventory, clientes
+  incluidos. Ahora el actor es una vendedora del piloto. Lo que prueban —que el
+  cliente reciba el aviso— no cambia.
+
+Las de `Phase33FulfillmentStatusChangeTest`, que cubren el puente legacy, siguen
+verdes sin tocarlas.
+
+### Búsqueda estructural
+
+Apariciones de `Order.objects`, `company.orders` y `get_object_or_404(Order` en
+código de producción, después de implementar:
+
+| Dónde | Clase |
+|---|---|
+| `tenancy.visible_orders` | INTERNAL SCOPED — es la frontera |
+| `fiscal_views._fiscal_document` | INTERNAL SCOPED — `order__in=visible_orders` |
+| `sales_analytics_views._paid_orders`; `OrderItem` en más vendidos y analítica; `SalesCommission` en comisiones | INTERNAL SCOPED — por sucursales visibles, desde antes |
+| `tenancy.storefront_orders`, `tenancy.customer_owned_orders`, `v1_checkout_views` (idempotencia: empresa + `user=request.user` + clave) | PÚBLICO / CUSTOMER OWNERSHIP |
+| `admin_views`: `email_send_error` del reenvío y relectura tras el PATCH; `v1_internal_views`: relectura tras el PATCH | SEGURO — el mismo pk que `visible_orders` acaba de resolver |
+| `email_services`, `sales_note_services` (bloqueo), `fiscal_services`, `ticket_services`, `inventory_services.record_sale_stock_movements` | SEGURO — reciben un pedido ya resuelto por quien los llama |
+| `views._confirm` (webhook de pago) | SEGURO — el pk sale de un `PaymentAttempt` del servidor |
+| `pos_services._existing_for_key` | SEGURO — clave de idempotencia secreta, dentro de la empresa; ver POS-IDEMP-409 |
+| `models.assert_all_match_company`, `checkout_services.create_pending_order`, `sequences` | SEGURO — invariante, creación y numeración |
+
+**No quedó ningún acceso interno por id sin frontera.** La bitácora de auditoría
+también contiene entradas de pedidos, pero no es una búsqueda de pedidos: es un
+control de empresa protegido por `memberships.view`. Queda anotada como
+AUDIT-BRANCH-SCOPE-01.
+
+### Lo que encontró la suite completa
+
+La primera ejecución completa dio **4019 pruebas: 1 fallo y 2 errores**. Las
+suites dirigidas, que no incluían esas clases, estaban en verde.
+
+1. **Las dos de M12B descritas arriba.** El servicio de despacho ya no acepta a un
+   cliente como actor. Se corrigió el fixture, no el servicio: relajar el servicio
+   para que las pruebas pasaran habría sido reintroducir RBAC-LEGACY-01.
+2. **La matriz de paridad se protegió a sí misma.** Al anotar el alcance de
+   sucursal escribí `tenancy.visible_orders` y «(H4.1.2)» dentro de la columna
+   *Capability*, y `Ip1ParityManifestTest` exige que todo lo que aparece en esa
+   columna sea una capability del catálogo. La nota pasó a un párrafo bajo la
+   tabla y las filas volvieron a su forma original.
+3. **Una prueba inestable de H4.1, no de esta fase.** La segunda ejecución
+   completa dio 4019 pruebas con **1 fallo**:
+   `H41AcceptEndpointTest.test_every_bad_token_answers_the_same`, caso «alterado».
+   - **Causa.** La prueba altera el token con `self.raw[:-1] + 'z'`, y el token sale
+     de `secrets.token_urlsafe(48)`. Cuando ya termina en `z` —una vez de cada 64—
+     el token «alterado» es el correcto y el endpoint responde 200.
+   - **Evidencia.** Forzando el final del token, falla siempre si acaba en `z` y
+     nunca si acaba en `A`. Aislada falló en 1 de 5 pasadas.
+   - **Decisión.** No se corrige aquí, por alcance. Queda como TEST-H41-TOKEN-FLAKY.
+
+### Verificación
+
+| Qué | Resultado |
+|---|---|
+| Batería H4.1.2 + `M6InternalFulfillmentTest` + `Phase33FulfillmentStatusChangeTest` | **67 OK** |
+| Dirigido en SQLite: pedidos web y v1, despacho, notas, fiscal, dashboard, clientes, Fases 2B–2E, M6–M8, Phase33 y 60, C22, H4.1.1 y H4.1.2 | **1030 OK**, 6 saltadas |
+| Dirigido en PostgreSQL: H4.1.2, despacho, M6, H4.1.1, M8 y Fase 2D | **310 OK** |
+| Backend completo (SQLite) | **4019 OK**, 22 saltadas, 0 errores (1414 s) — baseline 3982, +37 de H4.1.2. Antes hubo dos ejecuciones con fallos: la primera, 1 fallo y 2 errores, corregidos; la segunda, 1 fallo de TEST-H41-TOKEN-FLAKY. Ver arriba |
+| Jest | **294 OK** en 23 suites — baseline: 291 en 22 |
+| `tsc --noEmit` | limpio |
+| ESLint | 0 errores y 33 avisos, sin regresión |
+| `next build` | 44/44 |
+| Playwright dirigido: `demo-accounts`, `fiscal-invoice`, `h411-auth-interop` y `pos-ticket` | **24 OK** · 2 omitidos |
+| `makemigrations --check` · `migrate --plan` | sin cambios · sin operaciones |
+
+**Los 2 omitidos no son de H4.1.2.** Son `fiscal-invoice · dark · 390px` y
+`dark · 1440px`: el arnés agota el limitador `admin_orders` mientras busca el
+pedido con factura y se salta la prueba. Ejecutados aislados pasan (1,9 s y
+1,8 s). Queda registrado como E2E-FISCAL-THROTTLE.
+
+**En desarrollo, las cuentas demo no pierden visibilidad.** Sus siete membresías
+son `ALL`, y de los 26 pedidos que había al medir ninguno estaba sin sucursal ni en
+una sucursal cerrada. `dev_inventory`, `dev_technician` y
+`dev_customer_technician` reciben ahora 0 transiciones porque no tienen
+`sales.orders.manage`; el PATCH ya les respondía 403.
+
+### Sabotaje
+
+Cada protección se retiró por separado y se ejecutó la batería de 67 pruebas.
+Después, el archivo se restauró byte a byte con hash verificado. Nada se commiteó.
+
+| Protección retirada | Pruebas en rojo |
+|---|---|
+| A · frontera del detalle, web y v1 | 5 (11 fallos y 1 error contando subtests) |
+| B1 · frontera del recibo PDF | 1 |
+| B2 · frontera fiscal, por pedido y por id | 2 |
+| C · base con alcance de los KPIs del dashboard | 1 |
+| D · SaaS decidido otra vez por `UserProfile.role` | 6 |
+
+### Servicio técnico — registrado, no implementado
+
+Auditoría del PASO 1, confirmada. En H4.1.2 no se toca nada de esto.
+
+- **SVC-INTAKE-WEB — PENDIENTE.** El backend ya crea la orden (`POST
+  service/orders/`), registra el equipo (`POST service/devices/`) y busca clientes
+  (`GET service/customers/`). La web no tiene «Nueva orden de servicio»:
+  `service-console.ts` no exporta ninguna de esas tres llamadas.
+  - Flujo a construir: cliente → equipo → sucursal → falla → condición física →
+    accesorios → evidencias → confirmación → constancia.
+  - Servicio técnico no depende del POS.
+- **Responsabilidad del técnico (regla de producto).**
+  - Puede crear una orden si tiene `service.orders.create`. Es configurable por
+    empresa: no significa que todo técnico pueda, ni que deba usar el POS.
+  - Registra los hechos que ejecuta: diagnóstico, inicio y fin de reparación,
+    trabajo realizado, repuestos, QC y entrega cuando correspondan, y evidencias.
+  - No puede fabricar un estado sin el evento que lo respalda. Los estados
+    sólo-evento de `service_services` ya lo imponen.
+- **SVC-CAP-SPLIT — PROPUESTA PRIORITARIA.**
+  - `service.orders.manage` mezcla asignar, reasignar, desasignar, la transición
+    genérica y cancelar, y el preset Servicio Técnico la incluye.
+  - Hay que separar «registro mi trabajo» de «administro el taller». Nombres
+    orientativos: `service.assignments.manage` y `service.orders.cancel`, con el
+    inicio de diagnóstico en `service.diagnostic.manage`. Los nombres finales salen
+    del catálogo real.
+  - Requiere catálogo, presets y migración, así que va en una fase explícita.
+- **SVC-ASSIGNEE-01 — DEFECTO.**
+  - `eligible_technicians(company)` admite a cualquier usuario con membresía
+    activa, así que alguien de Ventas o de Inventario puede aparecer como técnico
+    asignable.
+  - No es una escalada, porque los endpoints siguen comprobando capabilities. Sí es
+    una inconsistencia operativa y de trazabilidad.
+  - No se arregla aquí. Se resuelve con SVC-CAP-SPLIT, con una regla por
+    capabilities y nunca por el nombre del rol.
+- **Cliente nuevo en recepción.**
+  - El técnico estándar tiene `service.customers.view` y no `manage`: abre órdenes
+    para clientes existentes pero no da de alta a clientes nuevos.
+  - **No se le concede `manage` automáticamente.**
+  - Opciones a decidir en SVC-OPS, con preferencia por el mínimo privilegio: (A) lo
+    da de alta recepción o ventas; (B) la empresa concede `manage` al técnico; (C)
+    una capability de alta más estrecha en una fase futura, si el código y los
+    casos reales la justifican.
+- **SVC-QUOTE-INSHOP — PENDIENTE.**
+  - La decisión sobre una cotización sólo se registra desde la superficie del
+    cliente.
+  - Hace falta que un empleado autorizado registre la de un cliente presencial, por
+    teléfono o por WhatsApp: revisión exacta, decisión, canal, importe congelado,
+    quién la registró, cuándo y constancia.
+  - Nunca «el técnico marca aprobado» sin constancia de quién tomó la decisión.
+- **SVC-QC-SEGREGATION — PROPUESTA.** Hoy quien repara puede hacer el QC, algo
+  válido en un taller pequeño. A futuro podrá exigirse que lo haga otra persona
+  (`checked_by` distinto de quien reparó), configurable por empresa y por tipo de
+  reparación; nunca como regla universal.
+- **Pago y entrega: separación de responsabilidades, no defecto.**
+  - El técnico estándar entrega y no cobra; ventas cobra.
+  - Una empresa que quiera un técnico con caja concede la capability por RBAC.
+  - El preset global no se amplía sin una decisión de producto.
+
+### Trade-in — registrado, no implementado
+
+**TRADE-IN — PENDIENTE.** No existe en backend, frontend ni migraciones. No se
+mezcla con la orden de reparación, y el valor del equipo entregado **no** es un
+`discount_amount`.
+
+**La regla central.** Una venta de S/ 3500 con un equipo entregado valorado en
+S/ 1200 se registra así:
+
+| Concepto | Importe |
+|---|---|
+| Precio comercial | 3500 |
+| Adquisición del equipo usado | 1200 |
+| Crédito aplicado a la liquidación | 1200 |
+| Saldo monetario | 2300 |
+
+Nunca «precio = 2300» ni «descuento = 1200». Tratarlo como descuento tendría cuatro
+efectos:
+
+- recortaría la comisión, que se calcula sobre subtotal menos descuento;
+- falsearía el desglose tributario;
+- imprimiría «Descuento» en el ticket;
+- ocultaría que la empresa adquirió un activo.
+
+**Dominio de referencia:**
+
+- `TradeInCase`.
+- `TradeInDevice`.
+- `TradeInInspection`.
+- `TradeInValuation`: revisión, importe, moneda, evaluador, validez y notas.
+- `TradeInDecision` / `OfferAcceptance`.
+- `TradeInEvidence`: modelo propio sobre el almacenamiento común, sin reutilizar
+  `RepairEvidence`.
+
+La valoración es **manual**: el sistema registra y controla, pero no calcula el valor.
+
+- **Inspección:**
+  - Plantillas por empresa y por tipo de dispositivo. Para un teléfono pueden
+    incluir, si aplica: serial/IMEI, capacidad, color, estado físico, pantalla,
+    cámaras, micrófonos y altavoces, puertos, biometría, batería, conectividad,
+    estado de activación, accesorios y evidencias.
+  - Ningún checklist «iPhone» fijado en el núcleo del SaaS.
+  - No se guardan PIN ni contraseñas.
+- **TRADEIN-OWNERSHIP — PROPUESTA PRIORITARIA.**
+  - Antes de aceptar el equipo físicamente se registran: identidad del cliente
+    según la política, declaración de propiedad y origen, serial/IMEI, constancia
+    de entrega, observaciones y evidencias.
+  - Consultar una lista negra externa de IMEI sería una integración posterior; no
+    se da por existente.
+- **Valoraciones versionadas, nunca sobrescritas.** Bajar de 1200 a 1050 crea una
+  revisión nueva que conserva ambas cifras, quién, cuándo y por qué. El cliente
+  acepta una revisión concreta.
+
+**Preguntas de negocio que deben decidirse ANTES de TRADEIN-POS:**
+
+| | Pregunta |
+|---|---|
+| A | ¿Se aceptan varios equipos como parte de pago de una misma venta? |
+| B | ¿Qué pasa si el valor del trade-in supera el total de la compra? Opciones: no se permite, crédito a favor o devolución de dinero. No se asume ninguna |
+| C | ¿Puede aplicarse una valoración parcialmente? |
+| D | ¿Puede usarse una valoración en más de una venta? Preferencia inicial: no; una valoración aceptada se consume una sola vez |
+| E | ¿Cuánto dura la oferta? |
+| F | ¿Los importes a partir de cierto monto requieren aprobación de un supervisor? |
+| G | ¿Qué ocurre si el cliente acepta y luego se anula la compra? |
+| H | ¿Qué pasa con el equipo que ya quedó en custodia física? |
+
+**Lo que trade-in necesita alrededor:**
+
+- **INV-SERIAL — PENDIENTE.**
+  - Un trade-in aceptado no suma +1 a un producto agregado. Hace falta una unidad
+    serializada: `SerializedStockUnit` o equivalente.
+  - Campos: empresa, sucursal, producto, serial, IMEI, condición, grado, origen
+    (compra, trade-in, devolución…), costo de adquisición y estado.
+  - Estados orientativos: pendiente de QC, reacondicionamiento, lista para venta,
+    reservada, vendida, cuarentena y retirada. Los nombres finales se fijan tras
+    auditarlo.
+- **Un `Device` no es inventario.**
+  - `Device` es el equipo de un cliente en servicio técnico; la unidad serializada
+    es propiedad de la empresa.
+  - Ni `Device` ni `TradeInDevice` funcionan como stock. El flujo es:
+    `TradeInDevice` aceptado → unidad serializada.
+- **REFURB-UNIT — PROPUESTA.**
+  - Un equipo recibido puede necesitar batería, pantalla, limpieza, reparación y QC
+    antes de venderse.
+  - No se crea un cliente ficticio para registrarlo como `RepairOrder`.
+  - Se evaluará un flujo de reacondicionamiento de la unidad, o reutilizar piezas
+    del motor técnico sin mezclar la propiedad del cliente con la de la empresa.
+- **SALE-TENDER-LEDGER — PENDIENTE.**
+  - Una venta puede liquidarse con crédito de trade-in (1200), tarjeta (2000) y
+    efectivo (300). `Order.payment_method` admite un solo medio y no alcanza.
+  - Diseño posible: `OrderSettlement` con `Tender[]` (efectivo, tarjeta,
+    transferencia, crédito de trade-in…).
+- **TRADEIN-REVERSAL — PENDIENTE.**
+  - Anular una venta con trade-in no es reembolsar el pedido: hay dos activos, el
+    producto que salió y el equipo que entró.
+  - La política debe definir si el equipo se devuelve, qué pasa si ya se
+    reacondicionó o se vendió, cómo se revierte el crédito y cómo queda la
+    liquidación.
+- **TRADEIN-MARGIN — PROPUESTA.**
+  - Costo de adquisición 1200 + acondicionamiento 180 = costo total 1380. Venta
+    1850. Margen bruto 470.
+  - Sin mezclar costo, precio y crédito comercial.
+- **FISCAL-TRADEIN — BLOQUEADO** hasta que haya una definición contable y
+  tributaria.
+  - Falta decidir cómo se documenta la adquisición del equipo usado, cómo se
+    representa el crédito, qué importe va en el comprobante de la venta y qué
+    documentos adicionales corresponden.
+  - El motor fiscal no se toca.
+
+### Orden recomendado de fases
+
+1. **H4.1.2** — alcance de sucursal y RBAC legacy (esta fase).
+2. **SVC-OPS-01** — operación real del taller:
+   - nueva orden en la web, recepción guiada y constancia;
+   - SVC-CAP-SPLIT y SVC-ASSIGNEE-01;
+   - aprobación presencial o telefónica;
+   - cadena de custodia y requisitos mínimos por etapa.
+3. **INV-SERIAL-01** — unidad serializada individual.
+4. **TRADEIN-01** — caso, inspección, valoración, oferta, aceptación y evidencias.
+5. **SALE-TENDER-01** — liquidación con varios medios de pago.
+6. **TRADEIN-02** — aceptación física → stock serializado → crédito en el POS.
+7. **CAT-01** — imágenes, publicación y catálogo para productos nuevos y seminuevos.
+
+Siguen pendientes LEGAL-01/02/03, INV-ALERTS, NAV-01, NAV-SERVICE-01, H4.2, H4.3,
+NOTIFY-RT, FISCAL-SERVICE y la deuda fiscal.
+
+### Deuda registrada
+
+| Clave | Estado | Qué |
+|---|---|---|
+| **BRANCH-SCOPE-01** | RESUELTO | Ver arriba |
+| **RBAC-LEGACY-01** | RESUELTO en el backend y en el selector de despacho | El resto de la interfaz queda en RBAC-LEGACY-UI-01 |
+| **RBAC-LEGACY-UI-01** | PENDIENTE · nuevo | La web todavía decide por `user.role` si muestra «Reenviar email» (`canResendEmail`), el panel de nota de venta (`canManageSalesNotes`) y las páginas de `isStaffRole`. El servidor autoriza bien, pero la interfaz puede esconder la acción a quien tiene la capability o mostrarla a quien recibirá 403 |
+| **DASH-SCOPE-LABEL** | PENDIENTE · nuevo | El bloque de ventas del dashboard ya tiene alcance, pero no declara qué sucursales cubre; el de inventario sí (`scope`) |
+| **CRM-HISTORY-CAP** | OBSERVACIÓN · nueva | La ficha de cliente muestra historial e importes con `service.customers.view`, sin exigir `sales.orders.view`. Ya tiene alcance de sucursal; la pregunta de capacidad sigue abierta |
+| **AUDIT-BRANCH-SCOPE-01** | OBSERVACIÓN · nueva | La bitácora de auditoría es de empresa (`memberships.view`) e incluye entradas de pedidos de todas las sucursales, con el correo del cliente en los metadatos |
+| **POS-IDEMP-409** | OBSERVACIÓN · nueva | Repetir una clave de idempotencia del POS con otra cesta responde 409 con el id del pedido existente. La clave es secreta y la genera el dispositivo |
+| **ORDER-BACKFILL-01** | PENDIENTE | Pedidos sin `fulfillment_branch`: 0 en desarrollo; producción sin medir. Backfill sólo en una fase separada y con certeza sobre la sucursal histórica |
+| **E2E-FISCAL-THROTTLE** | DEFECTO del arnés · preexistente | `fiscal-invoice.spec.ts` busca en cada prueba el pedido con factura abriendo en serie el detalle de cada pedido pagado. Nueve pruebas seguidas superan el limitador `admin_orders` (120/min): las últimas reciben 429, no encuentran pedido y se **omiten en silencio**. Cada venta que crea `pos-ticket` añade una petición por búsqueda: con 26 pedidos se omitía una prueba y con 27, dos. Aisladas pasan. Arreglo en el arnés (buscar una vez y reutilizar el id), no en el limitador |
+| **TEST-H41-TOKEN-FLAKY** | DEFECTO del arnés · preexistente (H4.1) | `H41AcceptEndpointTest.test_every_bad_token_answers_the_same` construye el token «alterado» sustituyendo el último carácter por `z`. Si el token aleatorio ya acababa en `z` (1 de cada 64 veces), no hay alteración y el endpoint responde 200. Reproducido forzando el final del token. Arreglo: sustituir por un carácter distinto del último |
+| **SVC-INTAKE-WEB** | PENDIENTE | Nueva orden de servicio en la web |
+| **SVC-CAP-SPLIT** | PROPUESTA PRIORITARIA | Separar `service.orders.manage` |
+| **SVC-ASSIGNEE-01** | DEFECTO · nuevo | Cualquier miembro activo es técnico asignable |
+| **SVC-QUOTE-INSHOP** | PENDIENTE | Aprobación del cliente registrada por el personal |
+| **SVC-QC-SEGREGATION** | PROPUESTA | QC por otra persona, configurable |
+| SVC-DELIVERY-ID · SVC-PART-RESERVE · SVC-SLA · SVC-CUSTODY · SVC-STAGE-TEMPLATES | PROPUESTA | Del PASO 1 |
+| **TRADE-IN** | PENDIENTE | Sin implementación |
+| **TRADEIN-OWNERSHIP** | PROPUESTA PRIORITARIA | Propiedad y origen antes de aceptar |
+| **INV-SERIAL** · PRODUCT-CONDITION | PENDIENTE | Unidad serializada y condición por unidad |
+| **REFURB-UNIT** | PROPUESTA · nueva | Reacondicionamiento de una unidad de la empresa |
+| **SALE-TENDER-LEDGER** | PENDIENTE | Liquidación con varios medios de pago |
+| **TRADEIN-REVERSAL** | PENDIENTE · nueva | Anulación con dos activos |
+| **TRADEIN-MARGIN** · TRADEIN-QC · WARRANTY-SERIAL | PROPUESTA | — |
+| **FISCAL-TRADEIN** | BLOQUEADO | Pendiente de definición contable y tributaria |
+| SALES-FULFILL-CAP | DESCARTADA | Opción B de D4: no se crea capability de despacho |
+| AUTH-REVOCATION-01 · AUDIT-INTERNAL-01 · NAV-01 · NAV-SERVICE-01 · CAT-01 · LEGAL-01/02/03 · INV-ALERTS · NOTIFY-RT · FISCAL-SERVICE · H4.2 · H4.3 · fiscal | Sin cambios | Ver H4.1.1 |
+| Inestable C2.1 (`tax-breakdown`) | PREEXISTENTE | Sin cambios |
