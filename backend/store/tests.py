@@ -10660,15 +10660,23 @@ class Phase2bDashboardCatalogTest(TestCase):
 
         Pinning the key set is the point: a new field on this payload has to be a
         deliberate change that somebody reviewed here. 2C added `sales`; 2D added
-        `inventory`; 3 added `configuration`.
+        `inventory`; 3 added `configuration`; H4.1.2A added `branch_scope`, which
+        is where the panel now reads the caller's branches from — it used to dig
+        them out of `inventory`, and told anyone without an inventory capability
+        that they had no branch.
         """
         data = self._get(self.user_a).data
         self.assertEqual(
             set(data.keys()),
-            {'company', 'membership', 'access', 'organization', 'catalog', 'sales',
-             'inventory', 'configuration', 'available_companies',
+            {'company', 'membership', 'branch_scope', 'access', 'organization',
+             'catalog', 'sales', 'inventory', 'configuration', 'available_companies',
              'requires_company_selection', 'alerts'},
         )
+        # Y la forma del campo nuevo, por el mismo motivo: ids y nombres de
+        # sucursal, sin existencias ni cifras que se colasen desde inventario.
+        self.assertEqual(
+            set(data['branch_scope'].keys()),
+            {'mode', 'default_branch', 'branches'})
         # Phase 2B.1 added the chart series; the point of pinning the key set is
         # that a new key must be a deliberate change, reviewed here.
         self.assertEqual(
@@ -50515,10 +50523,17 @@ class H41AcceptEndpointTest(TestCase):
             self.assertNotIn(prohibido, crudo)
 
     def test_every_bad_token_answers_the_same(self):
+        # H4.1.2A — TEST-H41-TOKEN-FLAKY. «Alterado» sustituía siempre el último
+        # carácter por `z`, y el token sale de `secrets.token_urlsafe`: cuando ya
+        # acababa en `z` (1 de cada 64) no había alteración ninguna y el endpoint
+        # respondía 200, con toda razón. El sustituto es ahora distinto del
+        # carácter original, y se comprueba antes de usarlo.
+        tampered = self.raw[:-1] + ('y' if self.raw.endswith('z') else 'z')
+        self.assertNotEqual(tampered, self.raw)
         for etiqueta, token in (
             ('inexistente', 'x' * 64),
             ('vacío', ''),
-            ('alterado', self.raw[:-1] + 'z'),
+            ('alterado', tampered),
         ):
             with self.subTest(etiqueta=etiqueta):
                 res = APIClient().get(
@@ -52275,3 +52290,187 @@ class H412SaasCapabilityAuthorityTest(H412ScopeBase):
         self.assertEqual(_h412_allowed(self.all_staff, self.company), _H412_ALL_STATES)
         self.assertEqual(_h412_allowed(self.all_staff, self.other), ())
         self.assertEqual(_h412_allowed(self.all_staff, None), ())
+
+
+# ===========================================================================
+# H4.1.2A — STABILIZATION GATE
+# ===========================================================================
+#
+# BRANCH-CONTEXT-UI-01  Dónde trabaja una persona es contexto de ACCESO, no de
+#                       inventario. El panel leía las sucursales del resumen de
+#                       inventario, que sólo existe con capacidad de inventario,
+#                       y a un técnico con sucursal le decía «Sin sucursal».
+# E2E-FISCAL-THROTTLE   El limitador no se tocó: lo que se arregló fue el arnés,
+#                       que pedía lo mismo nueve veces. Aquí queda fijado que
+#                       `admin_orders` sigue respondiendo 429 con su tasa real.
+
+#: Servicio Técnico de verdad: alcanza sucursales y NO tiene inventario.
+_H412A_TECHNICIAN_CAPS = (
+    'service.orders.view', 'service.orders.create', 'service.devices.view',
+)
+
+
+class H412aDashboardBranchScopeTest(TestCase):
+    """El panel dice dónde trabaja quien mira, tenga o no capacidad de inventario."""
+
+    URL = '/api/me/internal-dashboard/'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('h412a-scope')
+        self.other = _p2d_company('h412a-otra')
+        self.a = _p2d_branch(self.company, 'Sucursal A')
+        self.b = _p2d_branch(self.company, 'Sucursal B')
+        self.c = _p2d_branch(self.company, 'Sucursal C')
+        self.foreign_branch = _p2d_branch(self.other, 'Sucursal Ajena')
+        # Las sucursales que crea el aprovisionamiento no son de esta prueba.
+        _H412Branch.objects.filter(company=self.company).exclude(
+            pk__in=[self.a.pk, self.b.pk, self.c.pk],
+        ).update(is_active=False)
+        self.master = User.objects.create_user(
+            username='h412a_master', password='Pass123!', is_superuser=True,
+        )
+
+    def _get(self, user, params=''):
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client.get(f'{self.URL}{params}')
+
+    def _scope(self, user, params=''):
+        return self._get(user, params).json()['branch_scope']
+
+    @staticmethod
+    def _names(scope):
+        return [b['name'] for b in scope['branches']]
+
+    def test_a_technician_with_one_branch_sees_its_name(self):
+        _H412Branch.objects.filter(pk__in=[self.b.pk, self.c.pk]).update(is_active=False)
+        tech, _ = _p2d_member(self.company, 'h412a_tech_one', _H412A_TECHNICIAN_CAPS)
+
+        scope = self._scope(tech)
+
+        self.assertEqual(scope['mode'], 'all')
+        self.assertEqual(self._names(scope), ['Sucursal A'])
+
+    def test_several_branches_are_reported_one_by_one(self):
+        tech, _ = _p2d_member(self.company, 'h412a_tech_many', _H412A_TECHNICIAN_CAPS)
+
+        scope = self._scope(tech)
+
+        self.assertEqual(scope['mode'], 'all')
+        self.assertEqual(
+            sorted(self._names(scope)), ['Sucursal A', 'Sucursal B', 'Sucursal C'],
+        )
+
+    def test_SELECTED_reports_exactly_its_grants(self):
+        tech, _ = _p2d_member(
+            self.company, 'h412a_tech_sel', _H412A_TECHNICIAN_CAPS, branches=[self.b],
+        )
+
+        scope = self._scope(tech)
+
+        self.assertEqual(scope['mode'], 'selected')
+        self.assertEqual(self._names(scope), ['Sucursal B'])
+
+    def test_SELECTED_without_grants_is_an_empty_scope_not_a_missing_one(self):
+        """La diferencia que el panel necesita para decir «sin sucursales asignadas»."""
+        tech, _ = _p2d_member(
+            self.company, 'h412a_tech_none', _H412A_TECHNICIAN_CAPS, branches=[],
+        )
+
+        scope = self._scope(tech)
+
+        self.assertIsNotNone(scope)
+        self.assertEqual(scope['mode'], 'selected')
+        self.assertEqual(scope['branches'], [])
+
+    def test_the_scope_does_not_depend_on_an_inventory_capability(self):
+        """EL DEFECTO BRANCH-CONTEXT-UI-01, fijado: sin inventario también hay sucursal."""
+        tech, _ = _p2d_member(self.company, 'h412a_tech_noinv', _H412A_TECHNICIAN_CAPS)
+        keeper, _ = _p2d_member(
+            self.company, 'h412a_keeper', ('inventory.view',) + _H412A_TECHNICIAN_CAPS,
+        )
+
+        without_inventory = self._get(tech).json()
+        with_inventory = self._get(keeper).json()
+
+        self.assertIsNone(without_inventory['inventory'])
+        self.assertEqual(len(without_inventory['branch_scope']['branches']), 3)
+        # Y quien sí lo tiene ve exactamente el mismo alcance por los dos sitios.
+        self.assertIsNotNone(with_inventory['inventory'])
+        self.assertEqual(
+            [b['id'] for b in with_inventory['branch_scope']['branches']],
+            [b['id'] for b in with_inventory['inventory']['branches']],
+        )
+
+    def test_the_master_gets_the_scope_of_the_company_it_names(self):
+        own = self._scope(self.master, f'?company={self.company.pk}')
+        foreign = self._scope(self.master, f'?company={self.other.pk}')
+
+        self.assertEqual(own['mode'], 'platform')
+        self.assertEqual(sorted(self._names(own)), ['Sucursal A', 'Sucursal B', 'Sucursal C'])
+        self.assertIsNone(own['default_branch'])
+        self.assertIn('Sucursal Ajena', self._names(foreign))
+        self.assertNotIn('Sucursal A', self._names(foreign))
+
+    def test_no_branch_of_another_company_leaks(self):
+        tech, _ = _p2d_member(self.company, 'h412a_tech_leak', _H412A_TECHNICIAN_CAPS)
+
+        scope = self._scope(tech)
+
+        self.assertNotIn(self.foreign_branch.pk, [b['id'] for b in scope['branches']])
+        self.assertEqual(self._get(tech, f'?company={self.other.pk}').status_code, 404)
+
+    def test_the_default_branch_is_one_they_can_actually_operate(self):
+        tech, membership = _p2d_member(
+            self.company, 'h412a_tech_default', _H412A_TECHNICIAN_CAPS, branches=[self.b],
+        )
+        Membership.objects.filter(pk=membership.pk).update(branch=self.a)
+
+        # `Membership.branch` apunta a una sucursal que esta persona NO opera:
+        # es una preferencia caducada, no un alcance.
+        self.assertIsNone(self._scope(tech)['default_branch'])
+
+        Membership.objects.filter(pk=membership.pk).update(branch=self.b)
+        self.assertEqual(self._scope(tech)['default_branch']['name'], 'Sucursal B')
+
+    def test_without_a_company_chosen_the_scope_is_null_not_empty(self):
+        """Null dice «todavía no se sabe»; una lista vacía diría «ninguna»."""
+        payload = self._get(self.master).json()
+
+        self.assertTrue(payload['requires_company_selection'])
+        self.assertIsNone(payload['branch_scope'])
+
+
+class H412aAdminOrdersThrottleTest(TestCase):
+    """
+    E2E-FISCAL-THROTTLE — el limitador de `admin_orders` NO se tocó.
+
+    Lo que se arregló fue el arnés de navegador, que buscaba el mismo pedido en
+    cada prueba y gastaba 13 peticiones cada vez. Esta prueba fija lo que no
+    puede cambiar con ese arreglo: con la tasa REAL configurada, la petición que
+    la supera recibe 429.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('h412a-throttle')
+        self.user, _ = _p2d_member(self.company, 'h412a_thr', ['sales.orders.view'])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_the_request_over_the_real_rate_is_429(self):
+        from .throttles import AdminOrdersThrottle
+
+        # La tasa se LEE de la configuración: fijarla aquí a mano convertiría
+        # esta prueba en una copia que deja de mirar lo que se despliega.
+        allowed = int(AdminOrdersThrottle().rate.split('/')[0])
+
+        for _ in range(allowed):
+            self.assertEqual(self.client.get('/api/admin/orders/').status_code, 200)
+
+        self.assertEqual(self.client.get('/api/admin/orders/').status_code, 429)

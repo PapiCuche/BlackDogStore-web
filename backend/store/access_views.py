@@ -42,6 +42,7 @@ from .tenancy import (
     NoTenantError,
     active_memberships,
     can_delegate_capabilities,
+    describe_branch_scope,
     has_capability,
     is_platform_admin,
     resolve_capabilities,
@@ -806,6 +807,10 @@ class InternalDashboardView(APIView):
             return Response({
                 'company': None,
                 'membership': None,
+                # Sin empresa resuelta no hay sucursales que describir. Null dice
+                # «todavía no se sabe»; una lista vacía diría «ninguna», que es
+                # otra cosa.
+                'branch_scope': None,
                 'access': {
                     'is_platform_admin': platform_admin,
                     'legacy_role': None,
@@ -928,6 +933,12 @@ class InternalDashboardView(APIView):
                     'name': membership.branch.name,
                 },
             },
+            # WHERE THIS PERSON MAY WORK — H4.1.2A, and deliberately NOT inside
+            # `inventory`. That snapshot only exists for a caller holding an
+            # inventory capability, so reading the branch line from it told a
+            # technician with a branch that they had none. Branch scope is access
+            # context: ids and names, no stock and no figures.
+            'branch_scope': describe_branch_scope(user, company),
             'access': {
                 'is_platform_admin': platform_admin,
                 'legacy_role': membership.role if membership else None,
