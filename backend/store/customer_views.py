@@ -27,6 +27,14 @@ model, because a customer does not belong to a branch — the same person buys i
 one shop, leaves a laptop at another and collects it at a third. Scoping master
 data by branch would fragment one client into three files and break the history
 this module exists to keep. Recorded in docs/saas-multiempresa.md.
+
+...BUT A CUSTOMER'S ORDERS DO (H4.1.2)
+--------------------------------------
+The customer is company master data; each of their purchases was fulfilled by a
+branch. The file stays whole for everyone who may view customers, while the
+purchase history and its totals inside it come from tenancy.visible_orders(): a
+member granted one shop sees what that client bought there, not a record of the
+other shops' sales they could not open one by one.
 """
 
 from django.db.models import Count, Max, Q, Sum
@@ -39,7 +47,7 @@ from .customer_services import (
     assert_document_available,
     find_possible_duplicates,
 )
-from .models import AdminAuditLog, Customer, Order
+from .models import AdminAuditLog, Customer
 from .serializers import (
     CustomerListSerializer,
     CustomerOrderSerializer,
@@ -51,6 +59,7 @@ from .tenancy import (
     NoTenantError,
     has_capability,
     resolve_company_for_user,
+    visible_orders,
 )
 from .throttles import AdminCustomerWriteThrottle, AdminCustomersThrottle
 
@@ -300,8 +309,8 @@ class AdminCustomerDetailView(APIView):
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         orders = (
-            Order.objects
-            .filter(company=company, customer=customer)
+            visible_orders(request.user, company)
+            .filter(customer=customer)
             .order_by('-created_at')
         )
         # Aggregated in the database, in one round trip. Summing in Python would
