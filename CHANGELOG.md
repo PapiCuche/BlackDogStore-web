@@ -9,6 +9,52 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## H4.1 — Personal, onboarding y áreas internas
+
+**Estado: IMPLEMENTADO.** Migración `0083_staff_invitations`, la única de la fase.
+
+Dar de alta a un trabajador era tocar cuatro tablas por identificador. Ahora es
+un formulario con nombres: nombre, correo, rol, área y alcance de sucursal.
+
+- `StaffInvitation`: token **sólo hasheado**, caduca a los 7 días, una sola
+  invitación viva por correo y empresa.
+- **Crear no es reenviar.** Un doble clic devuelve la misma invitación sin rotar
+  el token, que habría invalidado el correo ya enviado. Sólo «Reenviar» rota.
+- **El token no vincula cuentas.** Aceptar exige sesión iniciada con el correo
+  invitado; lo contrario responde 401. Comprobado en backend, en navegador con
+  sesión ajena, y llamando a la ruta a mano.
+- **No se dice dónde trabaja nadie.** Sin empresas cruzadas en los errores, y un
+  solo mensaje para invitación inexistente, caducada, revocada o ya usada.
+- Pantallas `/admin/staff`, `/admin/areas` e `/invitacion`; áreas con aviso de
+  impacto que explica lo que **no** pasa al desactivarlas.
+- `AdminStaffListView`: modelo de lectura con prefetch, búsqueda y filtros en el
+  servidor. Sin N+1 por persona.
+
+### Cuatro defectos encontrados al cerrar, ninguno visible desde las pruebas verdes
+
+1. **Personal giraba para siempre** para cualquiera con una sola empresa: leía el
+   selector del master, que ahí vale `null`. Encontrado mirando una captura.
+   Cinco pruebas de Jest lo fijan; quitando el arreglo, 4 se ponen rojas.
+2. **Crear un área respondía 400 siempre**: el serializador exigía `slug` y el
+   formulario no lo mandaba. Se deriva en el servidor, antes del validador de
+   unicidad — derivarlo en `create()` llega tarde.
+3. **«Desactivar acceso» salía en tu propia ficha**, y sólo llevaba al 400 que ya
+   lo impedía.
+4. **La aceptación ofrecía un botón condenado a fallar** a quien no tenía la
+   sesión correcta.
+
+Verificado con 13 escenarios de Playwright sin mocks, el camino del master con
+selector explícito, y revisión visual a 390/768/1440 en claro y oscuro: **0 px de
+desborde en 30 combinaciones**.
+
+**Deuda declarada:** H4.1.1 (auth web ↔ v1 interno: Servicio Técnico responde 401
+desde el navegador, reproducido con evidencia), lista de invitaciones sin
+paginar, correo real sin probar end-to-end, H4.2 y H4.3 fuera de alcance.
+
+Detalle: [docs/estado-actual-y-auditoria-tecnica.md](docs/estado-actual-y-auditoria-tecnica.md)
+
+---
+
 ## C2.2A.1B — Superficie de la factura electrónica
 
 **Estado: PARCIAL.** Migración `0082_fiscal_capabilities`.
