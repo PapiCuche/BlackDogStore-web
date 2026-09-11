@@ -3054,3 +3054,126 @@ parece demasiado a un aprobado. Quedan escritos porque volverán a aparecer.
   lectura del anexo. Conviene cerrarlo antes de producción.
 - **Boleta, resumen diario, notas de crédito y débito, producción**: fuera de
   alcance por decisión, no por olvido.
+
+---
+
+## Fase H4.1 — Personal, onboarding y áreas internas
+
+**Estado: IMPLEMENTADO.** Migración **0083_staff_invitations**, la única de la
+fase. Rama `feat/h4-1-personnel-onboarding`.
+
+### El problema que resuelve
+
+Dar de alta a un trabajador exigía tocar `Membership`, `CompanyRole`,
+`MembershipRoleAssignment` y `MembershipBranchAccess` a mano, cada uno por su
+identificador. Es un trabajo de administrador de base de datos, y quien lleva
+una tienda no lo es. H4.1 lo convierte en un formulario: nombre, correo, rol,
+área y alcance de sucursal, todo elegido por su **nombre**.
+
+### La invitación no concede acceso: lo hace la persona
+
+> **El token prueba que la invitación es auténtica. No prueba quién la usa.**
+
+Quien invita no crea la cuenta de nadie. Crea una invitación con un token que
+sólo existe **hasheado** en la base de datos, se envía por correo y caduca a los
+7 días. Aceptarla exige haber iniciado sesión con **ese** correo.
+
+Esto se pidió explícitamente y se comprobó de tres maneras: prueba de backend,
+prueba de navegador con una sesión de otra persona, y llamada directa a la ruta
+saltándose la pantalla. Las tres responden **401**, que es la respuesta correcta:
+lo que falta no es autoridad, es demostrar quién eres.
+
+### Crear e invitar otra vez no son lo mismo
+
+Un doble clic accidental **no** rota el token. `create_invitation` es
+idempotente: si ya hay una invitación viva para ese correo, la devuelve tal cual.
+Rotar el token allí habría invalidado el correo que la persona ya tenía en la
+bandeja — un fallo que sólo se descubre cuando alguien no puede entrar y nadie
+sabe por qué. Sólo **Reenviar**, que es una decisión explícita, genera uno nuevo.
+
+### Lo que no se dice
+
+El error de «esta persona ya trabaja en otra empresa» no existe. Contestarlo
+convertiría el formulario en un buscador de dónde trabaja la gente. La respuesta
+es la misma —y el efecto es el mismo— se conozca o no el correo de antemano.
+
+En la pantalla pública de aceptación pasa igual: inexistente, alterada,
+caducada, revocada y ya usada comparten **un solo mensaje**. Distinguirlas
+diría a quien prueba tokens si acertó el formato o sólo el plazo.
+
+### Las áreas no dan permisos
+
+Se repite porque es fácil de romper: pertenecer a «Servicio Técnico» no concede
+nada. La autoridad vive en las capacidades del rol. El área organiza, filtra y
+aparece en los informes. Por eso desactivar un área con gente dentro **avisa de
+lo que no pasa**: no quita roles ni permisos, sólo deja de ofrecerse.
+
+### Defectos encontrados al cerrar la fase
+
+Cuatro, y ninguno se veía desde las pruebas que ya estaban verdes.
+
+**1. La pantalla de Personal giraba para siempre.** Leía
+`ctx.selectedCompanyId`, que es el selector del master y vale `null` para quien
+pertenece a una sola empresa — el caso normal, es decir, casi todo el mundo. Se
+encontró **mirando una captura**; el smoke pasaba porque comprobaba que la ruta
+renderizaba. Ahora la empresa sale de `ctx.dashboard.company.id` y hay cinco
+pruebas de Jest que fallan si alguien lo devuelve atrás, comprobado quitando el
+arreglo a propósito: **4 de 5 rojas**.
+
+**2. Crear un área era imposible.** El serializador exigía `slug`, el formulario
+no lo mandaba y «Crear área» respondía 400 **siempre**. La pantalla decía «No se
+pudo crear el área» y no había forma de crear ninguna. El slug se deriva ahora en
+el servidor con `slugify`, la misma convención de las áreas del aprovisionamiento,
+con sufijo numérico si la empresa ya lo tiene tomado.
+
+El detalle que costó encontrar: derivarlo en `create()` **no sirve**. La unicidad
+de `(company, slug)` se comprueba con un validador de conjunto que exige el campo
+antes de mirar ningún valor, así que se deriva en `to_internal_value`.
+
+**3. «Desactivar acceso» aparecía en tu propia ficha.** Nadie puede desactivarse
+a sí mismo —dejaría a la empresa sin quien devuelva el acceso— y el servidor ya
+lo rechazaba con un 400. El botón sólo servía para llegar a ese error. El modelo
+de lectura marca ahora `is_self` y la ficha explica por qué no hay botón.
+
+**4. La página de aceptación ofrecía «Aceptar invitación» a quien no podía.**
+El texto decía «crea tu cuenta con este correo» y justo debajo había un botón
+principal cuyo único destino era un error. Ahora la acción depende de quién esté
+conectado: si la sesión no es la del correo invitado, la página lo dice con
+nombre y apellidos —«estás dentro como X, esta invitación es para Y»— y ofrece
+iniciar sesión. El servidor sigue decidiendo; esto sólo evita el clic inútil.
+
+### Cargando, vacío y sin empresa son tres cosas distintas
+
+Y ahora se ven distintas. «Cargando personal» es que no se sabe todavía; «no hay
+personal que coincida» es que la empresa está y la búsqueda no devolvió nada; y
+«no hay ninguna empresa seleccionada» es que no hay desde dónde mirar. Ese estado
+es real: un rol heredado entra al control interno sin empresa. Confundir los tres
+fue el defecto 1.
+
+### Verificación
+
+- **Playwright, 13 escenarios en navegador real, sin mocks del backend**: carga
+  con una sola membresía, búsqueda, filtros, alta sin escribir identificadores,
+  doble alta, reenvío, revocación, aceptación, control de cuenta, token
+  inventado, desactivar/reactivar, áreas con aviso de impacto, autorización y
+  frontera de tenant. Más el camino del **master con selector explícito**, que es
+  justo lo que el arreglo del defecto 1 podía haber roto.
+- **Revisión visual a 390, 768 y 1440, en claro y oscuro**, de cinco pantallas.
+  Desborde horizontal medido: **0 px en las 30 combinaciones**.
+- La pantalla de Personal se lee de un vistazo en un móvil de 390: nombre,
+  correo, área, roles y sucursales por su nombre, **cero identificadores**.
+
+### Deuda registrada
+
+- **H4.1.1 — interoperabilidad de auth web ↔ v1 interno**: las superficies
+  `/api/v1/internal/<slug>/…` autentican **sólo con Bearer** y la web usa cookies
+  HttpOnly, así que Servicio Técnico responde 401 desde el navegador. Reproducido
+  con evidencia en [h41-servicio-tecnico-401.md](h41-servicio-tecnico-401.md). No
+  se arregla aquí: añadir cookie sin más abriría CSRF en cada mutación de v1.
+  Afecta a servicio, notificaciones, comunicados, anuncios y evidencias.
+- **Lista de invitaciones sin paginar ni plegar**: con muchas pendientes empuja
+  el personal fuera de la primera pantalla. Se ve claramente en las capturas.
+- **Sin reenvío de correo real en desarrollo**: el enlace en claro sólo existe
+  con `DEBUG`, que es lo correcto, pero deja el camino del correo sin probar
+  end-to-end.
+- **H4.2 y H4.3**: fuera de alcance por decisión.

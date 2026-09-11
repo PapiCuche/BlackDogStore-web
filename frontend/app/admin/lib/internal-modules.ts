@@ -332,12 +332,24 @@ export const INTERNAL_MODULES: InternalModule[] = [
     id: "admin.people",
     group: "administration",
     label: "Personal",
-    description: "Usuarios de la plataforma y sus roles.",
-    href: "/admin/users",
+    // El lenguaje cambió con la pantalla: ya no son «usuarios de la
+    // plataforma», son las personas que trabajan en esta empresa.
+    description: "Trabajadores, responsabilidades y acceso por sucursal.",
+    href: "/admin/staff",
     requiredCapabilities: ["memberships.view"],
     legacyRoles: ADMIN_ROLES,
     status: "implemented",
     quickAction: true,
+  },
+  {
+    id: "admin.areas",
+    group: "administration",
+    label: "Áreas",
+    description: "Cómo se organiza el equipo. Los permisos los da el rol.",
+    href: "/admin/areas",
+    requiredCapabilities: ["areas.manage"],
+    legacyRoles: ADMIN_ROLES,
+    status: "implemented",
   },
   {
     id: "admin.audit",

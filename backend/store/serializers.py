@@ -795,6 +795,12 @@ class CompanyAreaSerializer(serializers.ModelSerializer):
 
     company_name = serializers.CharField(source='company.name', read_only=True)
     member_count = serializers.IntegerField(read_only=True, default=0)
+    # NOBODY TYPES A SLUG. Whoever opens "Áreas" writes a name — "Taller de
+    # pantallas" — and the stable identifier is derived here. It has to be
+    # derived on the server: the slug is unique per company, so resolving a
+    # collision means reading the other areas of that tenant, which the browser
+    # neither can nor should do.
+    slug = serializers.SlugField(max_length=120, required=False, allow_blank=True)
 
     class Meta:
         model = CompanyArea
@@ -810,6 +816,49 @@ class CompanyAreaSerializer(serializers.ModelSerializer):
                 {'company': 'No se puede mover un área a otra empresa.'}
             )
         return attrs
+
+    def to_internal_value(self, data):
+        attrs = super().to_internal_value(data)
+        # El slug se deriva AQUÍ y no en `create()`. La unicidad de
+        # (company, slug) se comprueba con un validador de conjunto, y ese
+        # validador exige el campo antes de mirar ningún valor: sin slug en
+        # `attrs` responde «Este campo es requerido» y nunca se llega a crear.
+        #
+        # En un PATCH no se toca: el slug es el identificador estable del área,
+        # y renombrarla no puede cambiarlo bajo los pies de quien ya lo usa.
+        if self.instance is None and not attrs.get('slug'):
+            company = attrs.get('company')
+            if company is not None:
+                attrs['slug'] = self._free_slug(company, attrs.get('name', ''))
+        return attrs
+
+    @staticmethod
+    def _free_slug(company, name: str) -> str:
+        """
+        `slugify(name)`, the same convention the preset areas use, and a numeric
+        suffix if that tenant already took it.
+
+        A name that leaves nothing sluggable — "///", or one written entirely in
+        a script slugify drops — still needs an identifier, so it falls back to
+        `area`. Better a dull slug than a 500.
+        """
+        base = slugify(name)[:110] or 'area'
+        taken = set(
+            CompanyArea.objects.filter(
+                company=company, slug__startswith=base,
+            ).values_list('slug', flat=True)
+        )
+        if base not in taken:
+            return base
+        for n in range(2, 1000):
+            candidate = f'{base}-{n}'
+            if candidate not in taken:
+                return candidate
+        # A thousand areas named the same is not a real shop; fail loudly rather
+        # than return a slug that will collide at the database.
+        raise serializers.ValidationError(
+            {'name': 'Demasiadas áreas con un nombre parecido.'}
+        )
 
 
 class CompanyRoleSerializer(serializers.ModelSerializer):

@@ -49459,3 +49459,1372 @@ class C22BAdversarialTest(TestCase):
         with _patch('store.fiscal_views.resolve_provider', return_value=proveedor):
             self._client().post(f'/api/admin/fiscal-documents/{doc.pk}/submit/')
         self.assertEqual(proveedor.calls, 0)
+
+
+# ---------------------------------------------------------------------------
+# H4.1 — alta de personal por invitación
+# ---------------------------------------------------------------------------
+
+from django.db import connection  # noqa: E402
+from django.test.utils import CaptureQueriesContext  # noqa: E402
+
+from .models import StaffInvitation, MembershipBranchAccess  # noqa: E402
+
+User = get_user_model()  # noqa: E402
+from .staff_services import (  # noqa: E402
+    StaffConflict, StaffError, StaffIdentityError, accept_invitation,
+    create_invitation, find_invitation, requires_authentication,
+    resend_invitation, revoke_invitation,
+)
+
+
+class H41InvitationTest(TestCase):
+    """
+    Crear, reenviar y revocar. Y lo que no se puede averiguar desde aquí.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-inv', 'Empresa Invitación')
+        self.otra = _p3_company('h41-otra', 'Otra Empresa')
+        self.role = CompanyRole.objects.create(
+            company=self.company, name='Técnico', slug='tecnico',
+            capabilities=['company.view'])
+        # EL APROVISIONAMIENTO YA CREA LAS ÁREAS. Crear otra «Servicio Técnico»
+        # choca con la restricción única (empresa, nombre) — lo que confirma que
+        # una empresa nueva nace con sus áreas preset y que no hay que
+        # inventarlas.
+        self.area = CompanyArea.objects.get(
+            company=self.company, slug='servicio-tecnico')
+        self.admin = User.objects.create_user('h41_admin', 'admin@h41.test', 'x')
+
+    def _invite(self, email='ana@correo.test', **kw):
+        data = dict(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres Pérez', role_id=self.role.pk,
+            area_id=self.area.pk, invited_by=self.admin,
+        )
+        data.update(kw)
+        return create_invitation(**data)
+
+    # -- creación -------------------------------------------------------------
+
+    def test_creating_an_invitation_does_not_grant_access(self):
+        """
+        INVITAR NO ES DAR ACCESO. Mientras nadie acepte, no hay membresía y la
+        persona no puede entrar.
+        """
+        invitation, raw, created = self._invite()
+        self.assertTrue(created)
+        self.assertEqual(invitation.status, StaffInvitation.STATUS_PENDING)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+        self.assertIsNone(invitation.membership)
+
+    def test_the_raw_token_is_never_stored(self):
+        """
+        Quien comprometa la base de datos no debe poder aceptar invitaciones sin
+        acceso también al buzón.
+        """
+        invitation, raw, _ = self._invite()
+        self.assertNotEqual(invitation.token_hash, raw)
+        self.assertEqual(len(invitation.token_hash), 64)
+        crudo = str(StaffInvitation.objects.filter(pk=invitation.pk).values().first())
+        self.assertNotIn(raw, crudo)
+
+    def test_the_token_has_enough_entropy(self):
+        _invitation, raw, _ = self._invite()
+        self.assertGreaterEqual(len(raw), 60)
+
+    def test_the_email_is_normalised(self):
+        """
+        `Ana@X.com` y `ana@x.com` son la misma persona. Guardarlos distinto
+        crearía dos invitaciones para una.
+        """
+        invitation, _raw, _ = self._invite(email='  Ana@Correo.TEST ')
+        self.assertEqual(invitation.email, 'ana@correo.test')
+
+    # -- idempotencia ---------------------------------------------------------
+
+    def test_a_double_click_does_not_invalidate_the_link_already_sent(self):
+        """
+        EL DEFECTO QUE ESTO IMPIDE.
+
+        Una versión anterior rotaba el token al crear, y lo llamaba
+        idempotencia. No lo era: un doble clic accidental invalidaba el enlace
+        que ya iba camino del buzón, y la persona abría el primer correo para
+        leer «token inválido» sin que nadie hubiera hecho nada malo.
+
+        Crear dos veces devuelve LA MISMA invitación con SU MISMO token intacto.
+        """
+        primera, token1, creada1 = self._invite()
+        segunda, token2, creada2 = self._invite()
+
+        self.assertTrue(creada1)
+        self.assertFalse(creada2)
+        self.assertEqual(primera.pk, segunda.pk)
+        self.assertEqual(
+            StaffInvitation.objects.filter(
+                company=self.company, status=StaffInvitation.STATUS_PENDING).count(),
+            1,
+        )
+        # EL PRIMER ENLACE SIGUE SIRVIENDO. Es lo que importa.
+        self.assertIsNotNone(find_invitation(token1))
+        # Y no se emite un segundo token que enviar: no hay segundo correo.
+        self.assertEqual(token2, '')
+
+    def test_only_an_explicit_resend_rotates_the_token(self):
+        """
+        Rotar es un acto deliberado, con su propia operación y su propio rastro.
+        """
+        _invitation, token1, _ = self._invite()
+        invitation, token2 = resend_invitation(_invitation)
+
+        self.assertNotEqual(token1, token2)
+        self.assertIsNone(find_invitation(token1), 'el token viejo sobrevivió')
+        self.assertIsNotNone(find_invitation(token2))
+
+    def test_an_expired_invitation_is_not_revived_by_a_new_create(self):
+        """
+        §B — una invitación caducada no revive por un POST ambiguo. Se cierra y
+        se emite otra, que es un acto distinto y deja rastro distinto.
+        """
+        primera, token1, _ = self._invite()
+        primera.expires_at = timezone.now() - timezone.timedelta(days=1)
+        primera.save(update_fields=['expires_at'])
+
+        segunda, token2, creada = self._invite()
+
+        self.assertTrue(creada, 'debía crearse una invitación nueva')
+        self.assertNotEqual(primera.pk, segunda.pk)
+        primera.refresh_from_db()
+        self.assertEqual(primera.status, StaffInvitation.STATUS_REVOKED)
+        self.assertIsNone(find_invitation(token1))
+        self.assertIsNotNone(find_invitation(token2))
+
+    def test_reinviting_updates_the_intended_role_without_touching_the_token(self):
+        """
+        Cambiar el rol de una invitación pendiente es una decisión del
+        administrador sobre su propia empresa, y no invalida el enlace: el
+        enlace identifica a la PERSONA, no al puesto.
+        """
+        otro_rol = CompanyRole.objects.create(
+            company=self.company, name='Vendedor Nuevo', slug='vendedor-nuevo',
+            capabilities=['company.view'])
+        _primera, token1, _ = self._invite()
+        segunda, _raw, _ = self._invite(role_id=otro_rol.pk)
+
+        self.assertEqual(segunda.role_id, otro_rol.pk)
+        self.assertIsNotNone(find_invitation(token1), 'el enlace enviado murió')
+
+    # -- validación de organización ------------------------------------------
+
+    def test_a_role_from_another_company_is_refused(self):
+        """
+        SABOTAJE: `role_id` de otro inquilino. No es un error de tipo — es un
+        intento de conceder autoridad ajena.
+        """
+        ajeno = CompanyRole.objects.create(
+            company=self.otra, name='Admin', slug='admin-otra',
+            capabilities=['company.manage'])
+        with self.assertRaises(StaffError):
+            self._invite(role_id=ajeno.pk)
+
+    def test_an_area_from_another_company_is_refused(self):
+        ajena = CompanyArea.objects.get(
+            company=self.otra, slug='servicio-tecnico')
+        with self.assertRaises(StaffError):
+            self._invite(area_id=ajena.pk)
+
+    def test_a_branch_from_another_company_is_refused(self):
+        ajena = Branch.objects.create(company=self.otra, name='Sucursal Ajena')
+        with self.assertRaises(StaffError):
+            self._invite(
+                branch_access_mode=Membership.ACCESS_MODE_SELECTED,
+                branch_ids=[ajena.pk])
+
+    def test_an_inactive_role_is_refused(self):
+        self.role.is_active = False
+        self.role.save(update_fields=['is_active'])
+        with self.assertRaises(StaffError):
+            self._invite()
+
+    def test_an_inactive_area_is_refused(self):
+        """
+        Un área desactivada no se ofrece para asignaciones nuevas. El historial
+        de quien ya la tenía se conserva; lo que no se hace es incorporar gente
+        a un área que la empresa retiró.
+        """
+        self.area.is_active = False
+        self.area.save(update_fields=['is_active'])
+        with self.assertRaises(StaffError):
+            self._invite()
+
+    def test_selected_scope_needs_at_least_one_branch(self):
+        with self.assertRaises(StaffError):
+            self._invite(
+                branch_access_mode=Membership.ACCESS_MODE_SELECTED, branch_ids=[])
+
+    # -- privacidad -----------------------------------------------------------
+
+    def test_inviting_an_email_that_exists_elsewhere_reveals_nothing(self):
+        """
+        ANTI-ENUMERACIÓN. La empresa A no puede averiguar si un correo está
+        registrado ni dónde trabaja esa persona: la respuesta es idéntica.
+        """
+        forastero = User.objects.create_user(
+            'h41_forastero', 'ana@correo.test', 'x')
+        Membership.objects.create(
+            user=forastero, company=self.otra, role='sales',
+            is_active=True)
+
+        conocido, _t1, _c1 = self._invite(email='ana@correo.test')
+        StaffInvitation.objects.filter(pk=conocido.pk).delete()
+        desconocido, _t2, _c2 = self._invite(email='nadie@correo.test')
+
+        # Misma forma de respuesta: una invitación pendiente, sin pista alguna.
+        self.assertEqual(conocido.status, desconocido.status)
+        for campo in ('company_id', 'role_id', 'area_id', 'status'):
+            self.assertEqual(getattr(conocido, campo), getattr(desconocido, campo))
+
+    def test_only_membership_in_the_same_company_is_disclosed(self):
+        """
+        La única excepción: si ya es de ESTA empresa, se dice. Es personal
+        propio de quien pregunta, y callarlo le haría crear una invitación que
+        nunca serviría.
+        """
+        persona = User.objects.create_user('h41_dentro', 'dentro@correo.test', 'x')
+        Membership.objects.create(
+            user=persona, company=self.company, role='sales',
+            is_active=True)
+        with self.assertRaises(StaffConflict):
+            self._invite(email='dentro@correo.test')
+
+    def test_an_inactive_member_can_be_invited_back(self):
+        """Reactivación: no se crea una segunda membresía."""
+        persona = User.objects.create_user('h41_baja', 'baja@correo.test', 'x')
+        Membership.objects.create(
+            user=persona, company=self.company, role='sales',
+            is_active=False)
+        invitation, _raw, creada = self._invite(email='baja@correo.test')
+        self.assertTrue(creada)
+        self.assertEqual(invitation.status, StaffInvitation.STATUS_PENDING)
+
+    # -- revocación y reenvío -------------------------------------------------
+
+    def test_revoking_kills_the_token_immediately(self):
+        invitation, raw, _ = self._invite()
+        self.assertIsNotNone(find_invitation(raw))
+        revoke_invitation(invitation)
+        self.assertIsNone(find_invitation(raw))
+        self.assertEqual(invitation.status, StaffInvitation.STATUS_REVOKED)
+
+    def test_a_revoked_invitation_is_not_deleted(self):
+        """Quién invitó a quién es historial: borrarlo dejaría un hueco."""
+        invitation, _raw, _ = self._invite()
+        revoke_invitation(invitation)
+        self.assertTrue(StaffInvitation.objects.filter(pk=invitation.pk).exists())
+
+    def test_resending_issues_a_new_token_and_kills_the_old_one(self):
+        """
+        Reenviar el mismo token alargaría la vida de un enlace que quizá lleva
+        días en un buzón que ya no controla nadie.
+        """
+        invitation, viejo, _ = self._invite()
+        _invitation, nuevo = resend_invitation(invitation)
+        self.assertNotEqual(viejo, nuevo)
+        self.assertIsNone(find_invitation(viejo))
+        self.assertIsNotNone(find_invitation(nuevo))
+
+    def test_a_revoked_invitation_cannot_be_resent(self):
+        invitation, _raw, _ = self._invite()
+        revoke_invitation(invitation)
+        with self.assertRaises(StaffError):
+            resend_invitation(invitation)
+
+
+class H41EnumerationTest(TestCase):
+    """
+    §D — no debe haber diferencias observables entre los tres casos.
+
+    Se comparan sobre el RESULTADO REAL, no sobre la intención: un correo que no
+    existe, uno que existe sin membresía aquí, y uno que trabaja en otra empresa
+    tienen que producir la misma forma de respuesta.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-enum', 'Empresa Enumeración')
+        self.otra = _p3_company('h41-enum-b', 'Otra Empresa Enum')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+        # Caso 2: existe en la plataforma pero sin membresía en ninguna parte.
+        User.objects.create_user('h41_suelto', 'suelto@correo.test', 'x')
+        # Caso 3: existe y trabaja en OTRA empresa.
+        ajeno = User.objects.create_user('h41_ajeno', 'ajeno@correo.test', 'x')
+        Membership.objects.create(
+            user=ajeno, company=self.otra, role='sales', is_active=True)
+
+    def _invite(self, email):
+        return create_invitation(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_the_three_cases_are_indistinguishable(self):
+        formas = {}
+        for etiqueta, email in (
+            ('inexistente', 'nadie@correo.test'),
+            ('existe sin membresía', 'suelto@correo.test'),
+            ('trabaja en otra empresa', 'ajeno@correo.test'),
+        ):
+            invitation, raw, creada = self._invite(email)
+            formas[etiqueta] = {
+                'status': invitation.status,
+                'creada': creada,
+                'hay_token': bool(raw),
+                'company_id': invitation.company_id,
+                'role_id': invitation.role_id,
+                'membership': invitation.membership_id,
+                'accepted_at': invitation.accepted_at,
+            }
+
+        referencia = formas['inexistente']
+        for etiqueta, forma in formas.items():
+            self.assertEqual(
+                forma, referencia,
+                f'«{etiqueta}» se distingue de un correo inexistente',
+            )
+
+    def test_no_case_raises_a_different_error(self):
+        """
+        Ninguno de los tres levanta: distinguirlos con una excepción sería el
+        mismo oráculo por otra vía.
+        """
+        for email in ('nadie@correo.test', 'suelto@correo.test',
+                      'ajeno@correo.test'):
+            with self.subTest(email=email):
+                invitation, _raw, _ = self._invite(email)
+                self.assertEqual(invitation.status, StaffInvitation.STATUS_PENDING)
+
+    def test_the_invitation_never_references_another_company(self):
+        """
+        Se comprueban los CAMPOS, no subcadenas de un diccionario serializado:
+        buscar `str(pk)` dentro del volcado casa con cualquier dígito suelto y
+        convierte el test en uno que falla por su propia imprecisión.
+        """
+        invitation, _raw, _ = self._invite('ajeno@correo.test')
+        fila = StaffInvitation.objects.filter(pk=invitation.pk).values().first()
+
+        self.assertEqual(fila['company_id'], self.company.pk)
+        self.assertNotEqual(fila['company_id'], self.otra.pk)
+        # El rol y el área apuntan a la empresa que invita, no a la otra.
+        self.assertEqual(
+            CompanyRole.objects.get(pk=fila['role_id']).company_id,
+            self.company.pk,
+        )
+        # Y no hay ningún campo que nombre a la otra empresa.
+        self.assertNotIn('h41-enum-b', str(fila))
+
+
+class H41TokenSecurityTest(TestCase):
+    """
+    §32 — el token. Todos los fallos responden IGUAL.
+
+    Distinguir «no existe» de «caducado» diría a quien prueba tokens si acertó
+    el formato o sólo el plazo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-tok', 'Empresa Token')
+        self.role = CompanyRole.objects.create(
+            company=self.company, name='Técnico', slug='tecnico',
+            capabilities=['company.view'])
+        self.invitation, self.raw, _ = create_invitation(
+            company=self.company, email='ana@correo.test', first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_a_valid_token_resolves(self):
+        self.assertEqual(find_invitation(self.raw).pk, self.invitation.pk)
+
+    def test_every_failure_answers_the_same(self):
+        for etiqueta, token in (
+            ('inexistente', 'x' * 64),
+            ('alterado', self.raw[:-1] + ('a' if self.raw[-1] != 'a' else 'b')),
+            ('vacío', ''),
+            ('nulo', None),
+        ):
+            with self.subTest(etiqueta=etiqueta):
+                self.assertIsNone(find_invitation(token))
+
+    def test_an_expired_token_stops_working(self):
+        self.invitation.expires_at = timezone.now() - timezone.timedelta(minutes=1)
+        self.invitation.save(update_fields=['expires_at'])
+        self.assertIsNone(find_invitation(self.raw))
+
+    def test_an_expired_invitation_reads_as_expired_not_pending(self):
+        """
+        Una pantalla que comparase fechas por su cuenta acabaría mostrando
+        «pendiente» sobre una invitación muerta.
+        """
+        self.invitation.expires_at = timezone.now() - timezone.timedelta(minutes=1)
+        self.invitation.save(update_fields=['expires_at'])
+        self.assertEqual(self.invitation.display_status, 'expired')
+        self.assertFalse(self.invitation.is_usable)
+
+
+class H41AcceptanceTest(TestCase):
+    """
+    Aceptar convierte la invitación en acceso real. Todo o nada.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-acc', 'Empresa Aceptación')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.area = CompanyArea.objects.get(company=self.company, slug='ventas')
+        self.branch = self.company.default_inventory_branch
+        self.admin = User.objects.create_user('h41_acc_admin', 'a@h41.test', 'x')
+
+    def _invite(self, email='nuevo@correo.test', **kw):
+        data = dict(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres', role_id=self.role.pk, area_id=self.area.pk,
+            invited_by=self.admin)
+        data.update(kw)
+        return create_invitation(**data)
+
+    def test_accepting_creates_the_membership_role_and_area(self):
+        invitation, raw, _ = self._invite()
+        persona = User.objects.create_user('h41_ana', 'nuevo@correo.test', 'x')
+
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        self.assertEqual(membership.company_id, self.company.pk)
+        self.assertEqual(membership.user_id, persona.pk)
+        self.assertTrue(membership.is_active)
+        asignacion = MembershipRoleAssignment.objects.get(membership=membership)
+        self.assertEqual(asignacion.role_id, self.role.pk)
+        self.assertEqual(asignacion.area_id, self.area.pk)
+
+    def test_the_legacy_role_is_not_granted_by_onboarding(self):
+        """
+        §42 — H4.1 NO amplía la autoridad del rol heredado.
+
+        La autoridad de esta persona son sus `MembershipRoleAssignment`. Darle
+        además un rol legacy extendería una vía de autorización que esta fase no
+        debe tocar.
+        """
+        invitation, raw, _ = self._invite()
+        persona = User.objects.create_user('h41_leg', 'nuevo@correo.test', 'x')
+        membership = accept_invitation(find_invitation(raw), persona)
+        self.assertEqual(membership.role, 'customer')
+
+    def test_the_token_is_consumed(self):
+        """Un enlace usado no vuelve a funcionar."""
+        _invitation, raw, _ = self._invite()
+        persona = User.objects.create_user('h41_con', 'nuevo@correo.test', 'x')
+        accept_invitation(find_invitation(raw), persona)
+        self.assertIsNone(find_invitation(raw))
+
+    def test_accepting_twice_is_refused(self):
+        """SABOTAJE: replay del mismo enlace."""
+        invitation, raw, _ = self._invite()
+        persona = User.objects.create_user('h41_dos', 'nuevo@correo.test', 'x')
+        encontrada = find_invitation(raw)
+        accept_invitation(encontrada, persona)
+        with self.assertRaises(StaffError):
+            accept_invitation(encontrada, persona)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 1)
+
+    def test_selected_branch_scope_is_applied(self):
+        invitation, raw, _ = self._invite(
+            branch_access_mode=Membership.ACCESS_MODE_SELECTED,
+            branch_ids=[self.branch.pk])
+        persona = User.objects.create_user('h41_suc', 'nuevo@correo.test', 'x')
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        self.assertEqual(membership.branch_access_mode,
+                         Membership.ACCESS_MODE_SELECTED)
+        accesos = MembershipBranchAccess.objects.filter(
+            membership=membership, is_active=True)
+        self.assertEqual([a.branch_id for a in accesos], [self.branch.pk])
+
+    def test_a_role_deactivated_between_invite_and_accept_blocks_acceptance(self):
+        """
+        Entre invitar y aceptar puede pasar una semana. Conceder lo que la
+        empresa ya retiró sería peor que fallar.
+        """
+        _invitation, raw, _ = self._invite()
+        encontrada = find_invitation(raw)
+        self.role.is_active = False
+        self.role.save(update_fields=['is_active'])
+
+        persona = User.objects.create_user('h41_ret', 'nuevo@correo.test', 'x')
+        with self.assertRaises(StaffError):
+            accept_invitation(encontrada, persona)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    # -- reactivación ---------------------------------------------------------
+
+    def test_reactivation_reuses_the_membership_instead_of_creating_another(self):
+        """
+        §21 — la fila es lo que conserva el historial de ventas, reparaciones y
+        auditoría de esa persona en esta empresa.
+        """
+        persona = User.objects.create_user('h41_vuelve', 'vuelve@correo.test', 'x')
+        antigua = Membership.objects.create(
+            user=persona, company=self.company, role='sales', is_active=False)
+
+        _invitation, raw, _ = self._invite(email='vuelve@correo.test')
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        self.assertEqual(membership.pk, antigua.pk)
+        self.assertTrue(membership.is_active)
+        self.assertEqual(Membership.objects.filter(
+            company=self.company, user=persona).count(), 1)
+
+    def test_reactivation_does_not_silently_restore_old_authority(self):
+        """
+        §21 — los roles antiguos NO se restauran solos. El administrador elige
+        explícitamente cuáles concede, y esa elección viaja en la invitación.
+        """
+        persona = User.objects.create_user('h41_priv', 'priv@correo.test', 'x')
+        antigua = Membership.objects.create(
+            user=persona, company=self.company, role='sales', is_active=False)
+        rol_viejo = CompanyRole.objects.get(
+            company=self.company, slug='administrador')
+        MembershipRoleAssignment.objects.create(
+            membership=antigua, role=rol_viejo, is_active=False)
+
+        _invitation, raw, _ = self._invite(email='priv@correo.test')
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        # El rol de administrador antiguo sigue inactivo: no revivió solo.
+        viejo = MembershipRoleAssignment.objects.get(
+            membership=membership, role=rol_viejo)
+        self.assertFalse(viejo.is_active)
+        # Y el rol nuevo, el que el administrador eligió, sí está.
+        nuevo = MembershipRoleAssignment.objects.get(
+            membership=membership, role=self.role)
+        self.assertTrue(nuevo.is_active)
+
+    def test_branch_scope_is_replaced_not_accumulated(self):
+        """
+        Sumar a las sucursales de una etapa anterior le daría acceso que nadie
+        acaba de conceder.
+        """
+        otra_sucursal = Branch.objects.create(
+            company=self.company, name='Sucursal Norte')
+        persona = User.objects.create_user('h41_alc', 'alc@correo.test', 'x')
+        antigua = Membership.objects.create(
+            user=persona, company=self.company, role='sales', is_active=False,
+            branch_access_mode=Membership.ACCESS_MODE_SELECTED)
+        MembershipBranchAccess.objects.create(
+            membership=antigua, branch=otra_sucursal)
+
+        _invitation, raw, _ = self._invite(
+            email='alc@correo.test',
+            branch_access_mode=Membership.ACCESS_MODE_SELECTED,
+            branch_ids=[self.branch.pk])
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        activos = set(MembershipBranchAccess.objects.filter(
+            membership=membership, is_active=True).values_list('branch_id', flat=True))
+        self.assertEqual(activos, {self.branch.pk})
+        self.assertNotIn(otra_sucursal.pk, activos)
+
+
+class H41AccountControlTest(TestCase):
+    """
+    §C — poseer el enlace NO basta para vincular una cuenta existente.
+
+    Quien intercepte un correo de invitación no puede añadirse una membresía
+    sobre la identidad de otra persona, con todo lo que esa identidad arrastra:
+    pedidos, reseñas, membresías en otras empresas.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-ctrl', 'Empresa Control')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+    def _invite(self, email):
+        return create_invitation(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_an_unauthenticated_request_cannot_accept(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        with self.assertRaises(StaffIdentityError):
+            accept_invitation(find_invitation(raw), AnonymousUser())
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_none_cannot_accept(self):
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        with self.assertRaises(StaffIdentityError):
+            accept_invitation(find_invitation(raw), None)
+
+    def test_a_different_account_cannot_use_someone_elses_link(self):
+        """
+        EL SECUESTRO QUE ESTO IMPIDE. Una persona autenticada con otra cuenta
+        no puede usar un enlace ajeno para meterse en una empresa.
+        """
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        intruso = User.objects.create_user('h41_intruso', 'otro@correo.test', 'x')
+
+        with self.assertRaises(StaffIdentityError):
+            accept_invitation(find_invitation(raw), intruso)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+        # Y el enlace SIGUE VIVO: el intento fallido no se lo quema a su dueña.
+        self.assertIsNotNone(find_invitation(raw))
+
+    def test_the_invited_account_can_accept(self):
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        ana = User.objects.create_user('h41_ana_ok', 'ana@correo.test', 'x')
+        membership = accept_invitation(find_invitation(raw), ana)
+        self.assertEqual(membership.user_id, ana.pk)
+
+    def test_the_email_comparison_ignores_case(self):
+        """`Ana@Correo.test` y `ana@correo.test` son la misma persona."""
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        ana = User.objects.create_user('h41_ana_may', 'Ana@Correo.TEST', 'x')
+        membership = accept_invitation(find_invitation(raw), ana)
+        self.assertEqual(membership.user_id, ana.pk)
+
+    def test_an_existing_account_is_flagged_as_needing_authentication(self):
+        """
+        Lo que decide el flujo: si la cuenta existe hay que demostrar control;
+        si no, la persona establece credenciales y el enlace prueba el buzón.
+        """
+        User.objects.create_user('h41_existe', 'existe@correo.test', 'x')
+        con_cuenta, _r1, _c1 = self._invite('existe@correo.test')
+        sin_cuenta, _r2, _c2 = self._invite('nadie@correo.test')
+
+        self.assertTrue(requires_authentication(con_cuenta))
+        self.assertFalse(requires_authentication(sin_cuenta))
+
+
+class H41AcceptanceConcurrencyTest(TransactionTestCase):
+    """
+    §32 — dos aceptaciones simultáneas del mismo enlace.
+
+    Igual que la concurrencia fiscal: en SQLite `select_for_update` es inocuo,
+    así que el caso concurrente se salta RUIDOSAMENTE y la invariante secuencial
+    corre en todas partes.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-conc', 'Empresa Concurrente H41')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+    def test_two_simultaneous_acceptances_create_one_membership(self):
+        from django.db import connection
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite serializa con un bloqueo de base de datos: una carrera '
+                'aquí probaría ese bloqueo y no el de fila de la aceptación.'
+            )
+
+        import threading
+
+        _invitation, raw, _ = create_invitation(
+            company=self.company, email='race@correo.test', first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+        persona = User.objects.create_user('h41_race', 'race@correo.test', 'x')
+
+        resultados, errores = [], []
+        barrera = threading.Barrier(2)
+
+        def aceptar():
+            try:
+                barrera.wait(timeout=15)
+                encontrada = find_invitation(raw)
+                if encontrada is None:
+                    errores.append('token ya consumido')
+                    return
+                resultados.append(accept_invitation(encontrada, persona).pk)
+            except StaffError:
+                errores.append('rechazada')
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=aceptar) for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=30)
+
+        self.assertEqual(
+            Membership.objects.filter(company=self.company).count(), 1,
+            f'resultados={resultados} errores={errores}')
+
+    def test_sequential_double_acceptance_is_refused(self):
+        """La invariante que sí se demuestra en cualquier motor."""
+        _invitation, raw, _ = create_invitation(
+            company=self.company, email='seq@correo.test', first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+        persona = User.objects.create_user('h41_seq', 'seq@correo.test', 'x')
+        encontrada = find_invitation(raw)
+        accept_invitation(encontrada, persona)
+        self.assertIsNone(find_invitation(raw))
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 1)
+
+
+class H41StaffApiTest(TestCase):
+    """
+    La API de altas: quién puede, qué sale y qué no.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-api', 'Empresa API H41')
+        self.otra = _p3_company('h41-api-b', 'Otra Empresa API')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.area = CompanyArea.objects.get(company=self.company, slug='ventas')
+        self.branch = self.company.default_inventory_branch
+
+        # EL GESTOR TIENE LAS CAPACIDADES DEL ROL QUE CONCEDE, y esto no es un
+        # detalle del arnés: el guardián de delegación se niega si no las tiene,
+        # y la primera versión de este fixture lo descubrió fallando. Un
+        # administrador sólo puede repartir autoridad que él mismo posee.
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage',
+             *self.role.capabilities])
+        self.observador, _ = _p2d_member(
+            self.company, 'h41_obs', ['company.view', 'memberships.view'])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _post(self, user=None, **overrides):
+        payload = {
+            'company': self.company.pk,
+            'email': 'ana@correo.test',
+            'first_name': 'Ana',
+            'last_name': 'Torres Pérez',
+            'role': self.role.pk,
+            'area': self.area.pk,
+            'branch_access_mode': 'all',
+        }
+        payload.update(overrides)
+        return self._as(user or self.gestor).post(
+            '/api/admin/staff/invitations/', payload, format='json')
+
+    # -- creación -------------------------------------------------------------
+
+    def test_inviting_returns_the_invitation_without_the_token(self):
+        """
+        EL TOKEN NO SALE EN LA RESPUESTA. Devolverlo al administrador le daría un
+        enlace de acceso a una cuenta ajena, y lo dejaría en el historial del
+        navegador y en cualquier captura de pantalla.
+        """
+        res = self._post()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['email'], 'ana@correo.test')
+        self.assertEqual(res.data['status'], 'pending')
+        self.assertNotIn('token', res.data)
+        self.assertNotIn('token_hash', res.data)
+
+    def test_the_response_uses_human_names_not_only_ids(self):
+        res = self._post()
+        self.assertEqual(res.data['role_name'], self.role.name)
+        self.assertEqual(res.data['area_name'], self.area.name)
+        self.assertEqual(res.data['full_name'], 'Ana Torres Pérez')
+
+    def test_inviting_does_not_create_a_membership(self):
+        self._post()
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 2)
+
+    def test_a_double_post_returns_200_and_one_invitation(self):
+        primera = self._post()
+        segunda = self._post()
+        self.assertEqual(primera.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segunda.status_code, status.HTTP_200_OK)
+        self.assertEqual(StaffInvitation.objects.count(), 1)
+
+    def test_someone_already_in_the_company_answers_409(self):
+        """Es información de la propia empresa: se puede decir."""
+        # `_p2d_member` no pone correo, y sin correo la petición falla antes por
+        # otra razón — lo que probaría otra cosa.
+        self.observador.email = 'observador@h41.test'
+        self.observador.save(update_fields=['email'])
+        res = self._post(email=self.observador.email)
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+
+    # -- autoridad ------------------------------------------------------------
+
+    def test_viewing_does_not_grant_inviting(self):
+        res = self._post(user=self.observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(StaffInvitation.objects.count(), 0)
+
+    def test_a_role_with_capabilities_the_inviter_lacks_is_refused(self):
+        """
+        SABOTAJE §56 nº 7 — ESCALADA POR ALTA.
+
+        Sin esto: invito a un cómplice como administrador, acepta, y ya hay
+        alguien con más autoridad que quien lo metió.
+        """
+        superior = CompanyRole.objects.get(
+            company=self.company, slug='administrador')
+        res = self._post(role=superior.pk)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(StaffInvitation.objects.count(), 0)
+
+    # -- aislamiento ----------------------------------------------------------
+
+    def test_a_role_of_another_company_is_refused(self):
+        ajeno = CompanyRole.objects.get(company=self.otra, slug='ventas')
+        res = self._post(role=ajeno.pk)
+        self.assertIn(res.status_code,
+                      (status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN))
+        self.assertEqual(StaffInvitation.objects.count(), 0)
+
+    def test_an_area_of_another_company_is_refused(self):
+        ajena = CompanyArea.objects.get(company=self.otra, slug='ventas')
+        res = self._post(area=ajena.pk)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_branch_of_another_company_is_refused(self):
+        ajena = self.otra.default_inventory_branch
+        res = self._post(branch_access_mode='selected', branch_ids=[ajena.pk])
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_inviting_into_another_company_is_refused(self):
+        res = self._post(company=self.otra.pk)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(
+            StaffInvitation.objects.filter(company=self.otra).count(), 0)
+
+    # -- listado, reenvío y revocación ---------------------------------------
+
+    def test_the_list_is_scoped_to_the_company(self):
+        self._post()
+        create_invitation(
+            company=self.otra, email='ajena@correo.test', first_name='X',
+            last_name='Y', role_id=CompanyRole.objects.get(
+                company=self.otra, slug='ventas').pk)
+
+        res = self._as(self.observador).get(
+            f'/api/admin/staff/invitations/?company={self.company.pk}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['email'], 'ana@correo.test')
+
+    def test_resend_and_revoke(self):
+        invitation_id = self._post().data['id']
+
+        reenvio = self._as(self.gestor).post(
+            f'/api/admin/staff/invitations/{invitation_id}/resend/',
+            {'company': self.company.pk}, format='json')
+        self.assertEqual(reenvio.status_code, status.HTTP_200_OK)
+
+        revocacion = self._as(self.gestor).post(
+            f'/api/admin/staff/invitations/{invitation_id}/revoke/',
+            {'company': self.company.pk}, format='json')
+        self.assertEqual(revocacion.status_code, status.HTTP_200_OK)
+        self.assertEqual(revocacion.data['status'], 'revoked')
+
+    def test_another_tenant_cannot_revoke_an_invitation(self):
+        invitation_id = self._post().data['id']
+        de_b, _ = _p2d_member(
+            self.otra, 'h41_b_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+
+        res = self._as(de_b).post(
+            f'/api/admin/staff/invitations/{invitation_id}/revoke/',
+            {'company': self.otra.pk}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            StaffInvitation.objects.get(pk=invitation_id).status, 'pending')
+
+    def test_no_response_or_audit_log_carries_the_token(self):
+        """SABOTAJE §56 nº 12 — el token en un registro es una copia del acceso."""
+        res = self._post()
+        superficies = [str(res.data)]
+        superficies += [
+            str(log.metadata) for log in AdminAuditLog.objects.filter(
+                target_type='staff_invitation')
+        ]
+        invitation = StaffInvitation.objects.first()
+        for texto in superficies:
+            self.assertNotIn(invitation.token_hash, texto)
+            self.assertNotIn('token_hash', texto)
+
+
+class H41AcceptEndpointTest(TestCase):
+    """La ruta de aceptación: pública para leer, autenticada para aceptar."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-acc-api', 'Empresa Aceptar API')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.invitation, self.raw, _ = create_invitation(
+            company=self.company, email='ana@correo.test', first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_reading_shows_the_company_and_nothing_else(self):
+        res = APIClient().get(
+            f'/api/staff/invitations/accept/?token={self.raw}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company_name'], self.company.name)
+        # Lo que NO puede salir.
+        crudo = str(res.data).lower()
+        for prohibido in ('capabilit', 'token_hash', 'membership_id', 'password'):
+            self.assertNotIn(prohibido, crudo)
+
+    def test_every_bad_token_answers_the_same(self):
+        for etiqueta, token in (
+            ('inexistente', 'x' * 64),
+            ('vacío', ''),
+            ('alterado', self.raw[:-1] + 'z'),
+        ):
+            with self.subTest(etiqueta=etiqueta):
+                res = APIClient().get(
+                    f'/api/staff/invitations/accept/?token={token}')
+                self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+                self.assertIn('no es válida', res.data['detail'])
+
+    def test_accepting_without_logging_in_answers_401(self):
+        res = APIClient().post(
+            '/api/staff/invitations/accept/', {'token': self.raw}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_accepting_with_the_wrong_account_answers_401(self):
+        intruso = User.objects.create_user('h41_int_api', 'otro@correo.test', 'x')
+        client = APIClient()
+        client.force_authenticate(user=intruso)
+        res = client.post(
+            '/api/staff/invitations/accept/', {'token': self.raw}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_the_invited_account_accepts_and_gets_access(self):
+        ana = User.objects.create_user('h41_ana_api', 'ana@correo.test', 'x')
+        client = APIClient()
+        client.force_authenticate(user=ana)
+        res = client.post(
+            '/api/staff/invitations/accept/', {'token': self.raw}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company_name'], self.company.name)
+        membership = Membership.objects.get(company=self.company, user=ana)
+        self.assertTrue(membership.is_active)
+
+    def test_a_replayed_token_is_refused(self):
+        ana = User.objects.create_user('h41_ana_rep', 'ana@correo.test', 'x')
+        client = APIClient()
+        client.force_authenticate(user=ana)
+        client.post('/api/staff/invitations/accept/',
+                    {'token': self.raw}, format='json')
+        segundo = client.post('/api/staff/invitations/accept/',
+                              {'token': self.raw}, format='json')
+        self.assertEqual(segundo.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 1)
+
+
+class H41StaffReadModelTest(TestCase):
+    """
+    La proyección de Personal: nombres humanos, sin N+1 y dentro del tenant.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-rm', 'Empresa Read Model')
+        self.otra = _p3_company('h41-rm-b', 'Otra Read Model')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.area = CompanyArea.objects.get(company=self.company, slug='ventas')
+        self.branch = self.company.default_inventory_branch
+
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_rm_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+        self.gestor.first_name, self.gestor.last_name = 'Gloria', 'Gestora'
+        self.gestor.email = 'gloria@h41.test'
+        self.gestor.save()
+
+    def _persona(self, username, nombre, apellido, email, *, activo=True,
+                 con_rol=True, sucursales=None):
+        user = User.objects.create_user(username, email, 'x')
+        user.first_name, user.last_name = nombre, apellido
+        user.save()
+        membership = Membership.objects.create(
+            user=user, company=self.company, role='customer', is_active=activo,
+            branch_access_mode=(Membership.ACCESS_MODE_SELECTED if sucursales
+                                else Membership.ACCESS_MODE_ALL))
+        if con_rol:
+            MembershipRoleAssignment.objects.create(
+                membership=membership, role=self.role, area=self.area,
+                is_active=True)
+        for sucursal in (sucursales or []):
+            MembershipBranchAccess.objects.create(
+                membership=membership, branch=sucursal)
+        return membership
+
+    def _get(self, user=None, **params):
+        client = APIClient()
+        client.force_authenticate(user=user or self.gestor)
+        query = '&'.join(f'{k}={v}' for k, v in params.items())
+        return client.get(
+            f'/api/admin/staff/?company={self.company.pk}'
+            + (f'&{query}' if query else ''))
+
+    # -- forma ----------------------------------------------------------------
+
+    def test_a_person_reads_as_a_person(self):
+        self._persona('h41_carlos', 'Carlos', 'Rodríguez Pérez',
+                      'carlos@empresa.test')
+        res = self._get()
+        carlos = next(p for p in res.data['results']
+                      if p['email'] == 'carlos@empresa.test')
+
+        self.assertEqual(carlos['full_name'], 'Carlos Rodríguez Pérez')
+        self.assertEqual([r['name'] for r in carlos['roles']], [self.role.name])
+        self.assertEqual([a['name'] for a in carlos['areas']], [self.area.name])
+        self.assertEqual(carlos['branch_scope_label'], 'Todas las sucursales')
+        self.assertTrue(carlos['is_active'])
+
+    def test_two_people_with_the_same_name_are_distinguishable(self):
+        """
+        §3 — el nombre NO es la identidad. Dos personas pueden llamarse igual y
+        el correo es lo que las separa.
+        """
+        self._persona('h41_c1', 'Carlos', 'Rodríguez', 'carlos1@empresa.test')
+        self._persona('h41_c2', 'Carlos', 'Rodríguez', 'carlos2@empresa.test')
+        res = self._get(search='Carlos')
+
+        nombres = [p['full_name'] for p in res.data['results']]
+        correos = [p['email'] for p in res.data['results']]
+        self.assertEqual(nombres, ['Carlos Rodríguez', 'Carlos Rodríguez'])
+        self.assertEqual(sorted(correos),
+                         ['carlos1@empresa.test', 'carlos2@empresa.test'])
+
+    def test_someone_without_a_name_falls_back_to_the_username(self):
+        """Feo, pero nunca ambiguo — mejor que una fila en blanco."""
+        user = User.objects.create_user('h41_sinnombre', 'sn@empresa.test', 'x')
+        Membership.objects.create(
+            user=user, company=self.company, role='customer', is_active=True)
+        res = self._get(search='h41_sinnombre')
+        self.assertEqual(res.data['results'][0]['full_name'], 'h41_sinnombre')
+
+    def test_selected_branches_are_named_not_numbered(self):
+        otra = Branch.objects.create(company=self.company, name='Cayma')
+        self._persona('h41_suc', 'Ana', 'Torres', 'ana@empresa.test',
+                      sucursales=[self.branch, otra])
+        res = self._get(search='ana@empresa.test')
+        persona = res.data['results'][0]
+        self.assertIn('Cayma', persona['branch_scope_label'])
+        self.assertNotIn('id', persona['branch_scope_label'])
+
+    # -- búsqueda y filtros ---------------------------------------------------
+
+    def test_search_matches_name_and_email(self):
+        self._persona('h41_b1', 'Beatriz', 'Núñez', 'bea@empresa.test')
+        self._persona('h41_b2', 'Carlos', 'Soto', 'carlos@empresa.test')
+
+        self.assertEqual(len(self._get(search='Beatriz').data['results']), 1)
+        self.assertEqual(len(self._get(search='carlos@').data['results']), 1)
+        self.assertEqual(len(self._get(search='Núñez').data['results']), 1)
+
+    def test_filter_by_status(self):
+        self._persona('h41_act', 'Activa', 'Uno', 'act@empresa.test')
+        self._persona('h41_ina', 'Inactiva', 'Dos', 'ina@empresa.test',
+                      activo=False)
+
+        activos = self._get(status='active').data['results']
+        inactivos = self._get(status='inactive').data['results']
+        self.assertNotIn('ina@empresa.test', [p['email'] for p in activos])
+        self.assertEqual([p['email'] for p in inactivos], ['ina@empresa.test'])
+
+    def test_filter_by_area_and_role(self):
+        self._persona('h41_conrol', 'Con', 'Rol', 'conrol@empresa.test')
+        self._persona('h41_sinrol', 'Sin', 'Rol', 'sinrol@empresa.test',
+                      con_rol=False)
+
+        por_area = self._get(area=self.area.pk).data['results']
+        por_rol = self._get(role=self.role.pk).data['results']
+        self.assertEqual([p['email'] for p in por_area], ['conrol@empresa.test'])
+        self.assertEqual([p['email'] for p in por_rol], ['conrol@empresa.test'])
+
+    def test_filtering_by_branch_includes_people_with_full_scope(self):
+        """
+        Quien tiene «todas las sucursales» también trabaja en ésta. Omitirlo
+        daría una lista que miente por defecto.
+        """
+        self._persona('h41_todas', 'Todas', 'Sucursales', 'todas@empresa.test')
+        self._persona('h41_una', 'Una', 'Sucursal', 'una@empresa.test',
+                      sucursales=[self.branch])
+
+        correos = [p['email'] for p in
+                   self._get(branch=self.branch.pk).data['results']]
+        self.assertIn('todas@empresa.test', correos)
+        self.assertIn('una@empresa.test', correos)
+
+    # -- rendimiento ----------------------------------------------------------
+
+    def test_the_query_count_does_not_grow_with_the_team(self):
+        """
+        §50 — SIN N+1. La pantalla anterior pedía las asignaciones de CADA
+        persona por separado: una plantilla de 200 eran 401 peticiones.
+
+        Se mide con 3 personas y con 12: el número de consultas tiene que ser el
+        mismo.
+        """
+        for i in range(3):
+            self._persona(f'h41_p{i}', f'P{i}', 'Uno', f'p{i}@empresa.test')
+        with CaptureQueriesContext(connection) as pocas:
+            self._get()
+
+        for i in range(3, 12):
+            self._persona(f'h41_p{i}', f'P{i}', 'Uno', f'p{i}@empresa.test')
+        with CaptureQueriesContext(connection) as muchas:
+            self._get()
+
+        self.assertEqual(
+            len(pocas.captured_queries), len(muchas.captured_queries),
+            f'{len(pocas.captured_queries)} consultas con 3 personas y '
+            f'{len(muchas.captured_queries)} con 12: hay N+1',
+        )
+
+    # -- aislamiento y autoridad ---------------------------------------------
+
+    def test_the_list_never_crosses_tenants(self):
+        ajeno = User.objects.create_user('h41_ajeno_rm', 'ajeno@otra.test', 'x')
+        ajeno.first_name = 'Ajeno'
+        ajeno.save()
+        Membership.objects.create(
+            user=ajeno, company=self.otra, role='customer', is_active=True)
+
+        correos = [p['email'] for p in self._get().data['results']]
+        self.assertNotIn('ajeno@otra.test', correos)
+
+    def test_search_does_not_cross_tenants(self):
+        ajeno = User.objects.create_user('h41_busca_b', 'buscar@otra.test', 'x')
+        ajeno.first_name = 'Buscable'
+        ajeno.save()
+        Membership.objects.create(
+            user=ajeno, company=self.otra, role='customer', is_active=True)
+        self.assertEqual(len(self._get(search='Buscable').data['results']), 0)
+
+    def test_someone_without_the_capability_cannot_read(self):
+        forastero, _ = _p2d_member(self.company, 'h41_rm_nada', ['company.view'])
+        res = self._get(user=forastero)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+
+class H41StaffDeactivationTest(TestCase):
+    """Desactivar conserva historia; reactivar no devuelve autoridad."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-desact', 'Empresa Desactivación')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_des_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+
+        user = User.objects.create_user('h41_trabajador', 'trab@empresa.test', 'x')
+        user.first_name, user.last_name = 'Carlos', 'Rodríguez'
+        user.save()
+        self.membership = Membership.objects.create(
+            user=user, company=self.company, role='customer', is_active=True)
+        self.assignment = MembershipRoleAssignment.objects.create(
+            membership=self.membership, role=self.role, is_active=True)
+
+    def _patch(self, activo, user=None):
+        client = APIClient()
+        client.force_authenticate(user=user or self.gestor)
+        return client.patch(
+            f'/api/admin/staff/{self.membership.pk}/',
+            {'company': self.company.pk, 'is_active': activo}, format='json')
+
+    def test_deactivating_keeps_the_row_and_the_history(self):
+        res = self._patch(False)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['is_active'])
+
+        self.membership.refresh_from_db()
+        self.assertTrue(Membership.objects.filter(pk=self.membership.pk).exists())
+        # Las asignaciones sobreviven: son historial.
+        self.assertTrue(
+            MembershipRoleAssignment.objects.filter(pk=self.assignment.pk).exists())
+
+    def test_deactivating_does_not_delete_the_user(self):
+        """Borrar la identidad global borraría también sus compras como cliente."""
+        self._patch(False)
+        self.assertTrue(User.objects.filter(pk=self.membership.user_id).exists())
+
+    def test_reactivating_does_not_restore_authority_by_surprise(self):
+        self._patch(False)
+        self.assignment.is_active = False
+        self.assignment.save(update_fields=['is_active'])
+
+        self._patch(True)
+        self.assignment.refresh_from_db()
+        self.assertFalse(
+            self.assignment.is_active,
+            'el rol antiguo revivió solo: nadie acaba de revisarlo')
+
+    def test_you_cannot_deactivate_yourself(self):
+        """Dejaría a la empresa sin nadie que pueda devolver el acceso."""
+        propia = Membership.objects.get(company=self.company, user=self.gestor)
+        client = APIClient()
+        client.force_authenticate(user=self.gestor)
+        res = client.patch(
+            f'/api/admin/staff/{propia.pk}/',
+            {'company': self.company.pk, 'is_active': False}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_viewing_does_not_grant_deactivating(self):
+        observador, _ = _p2d_member(
+            self.company, 'h41_des_obs', ['company.view', 'memberships.view'])
+        res = self._patch(False, user=observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.membership.refresh_from_db()
+        self.assertTrue(self.membership.is_active)
+
+
+class H41AreaCreationTest(TestCase):
+    """
+    Crear un área desde la pantalla, que es escribir un NOMBRE y nada más.
+
+    El defecto que estas pruebas fijan: el serializador exigía `slug`, el
+    formulario no lo mandaba y «Crear área» respondía 400 siempre. La pantalla
+    decía «No se pudo crear el área.» y no había forma de crear ninguna.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-areas', 'Empresa Áreas H41')
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_area_gestor',
+            ['company.view', 'memberships.view', 'areas.manage'])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _crear(self, nombre, user=None, **extra):
+        payload = {'company': self.company.pk, 'name': nombre}
+        payload.update(extra)
+        return self._as(user or self.gestor).post(
+            '/api/admin/areas/', payload, format='json')
+
+    def test_creating_an_area_needs_only_a_name(self):
+        res = self._crear('Taller de pantallas')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data['name'], 'Taller de pantallas')
+        self.assertEqual(res.data['slug'], 'taller-de-pantallas')
+
+    def test_the_slug_follows_the_preset_convention(self):
+        """
+        Las áreas del aprovisionamiento usan `slugify`: «Recepción» es
+        `recepcion`. Una creada a mano no puede seguir otra convención, o dos
+        áreas equivalentes quedarían con identificadores distintos.
+        """
+        res = self._crear('Recepción Norte')
+        self.assertEqual(res.data['slug'], 'recepcion-norte')
+
+    def test_a_repeated_slug_gets_a_suffix_instead_of_a_500(self):
+        """
+        «Postventa» y «Postventa.» dan el mismo slug. El segundo no puede
+        reventar contra la restricción de unicidad.
+        """
+        primera = self._crear('Postventa')
+        self.assertEqual(primera.status_code, status.HTTP_201_CREATED)
+        segunda = self._crear('Postventa.')
+        self.assertEqual(segunda.status_code, status.HTTP_201_CREATED, segunda.data)
+        self.assertEqual(primera.data['slug'], 'postventa')
+        self.assertEqual(segunda.data['slug'], 'postventa-2')
+
+    def test_a_name_with_nothing_sluggable_still_gets_an_identifier(self):
+        res = self._crear('///')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data['slug'], 'area')
+
+    def test_an_explicit_slug_is_still_respected(self):
+        """El aprovisionamiento y las pruebas antiguas lo mandan; sigue valiendo."""
+        res = self._crear('Laboratorio', slug='lab-interno')
+        self.assertEqual(res.data['slug'], 'lab-interno')
+
+    def test_the_derived_slug_does_not_collide_across_companies(self):
+        """
+        Dos empresas pueden tener cada una su «Ventas». La unicidad es por
+        empresa, así que el sufijo no debe contagiarse de la vecina.
+        """
+        otra = _p3_company('h41-areas-b', 'Otra Empresa Áreas')
+        vecino, _ = _p2d_member(
+            otra, 'h41_area_vecino', ['company.view', 'memberships.view', 'areas.manage'])
+        res = self._as(vecino).post(
+            '/api/admin/areas/',
+            {'company': otra.pk, 'name': 'Taller de pantallas'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['slug'], 'taller-de-pantallas')
+
+    def test_viewing_does_not_grant_creating(self):
+        observador, _ = _p2d_member(
+            self.company, 'h41_area_obs', ['company.view', 'memberships.view'])
+        res = self._crear('Intrusa', user=observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertFalse(
+            CompanyArea.objects.filter(company=self.company, name='Intrusa').exists())
+
+
+class H41StaffSelfCardTest(TestCase):
+    """
+    La propia ficha se marca como propia.
+
+    El servidor ya impide que alguien se desactive a sí mismo. Sin esta marca la
+    pantalla no tenía forma de saber cuál era la fila de quien mira, así que
+    ofrecía un botón cuyo único destino era el 400.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-self', 'Empresa Propia H41')
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_self_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+        self.otra, _ = _p2d_member(
+            self.company, 'h41_self_otra', ['company.view'])
+
+    def _marcas(self, user):
+        """{membresía: is_self} tal como lo ve `user`."""
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get('/api/admin/staff/', {'company': self.company.pk})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return {p['id']: p['is_self'] for p in res.data['results']}
+
+    def _membresia(self, user):
+        return Membership.objects.get(company=self.company, user=user).pk
+
+    def test_only_the_callers_own_row_is_marked(self):
+        marcas = self._marcas(self.gestor)
+        self.assertTrue(marcas[self._membresia(self.gestor)])
+        self.assertFalse(marcas[self._membresia(self.otra)])
+        self.assertEqual(sum(marcas.values()), 1,
+                         'debería marcarse exactamente una ficha')
+
+    def test_the_same_row_is_not_marked_for_somebody_else(self):
+        """La marca es de quien pregunta, no una propiedad de la persona."""
+        gestor_b, _ = _p2d_member(
+            self.company, 'h41_self_gestor_b',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+        marcas = self._marcas(gestor_b)
+        self.assertTrue(marcas[self._membresia(gestor_b)])
+        self.assertFalse(marcas[self._membresia(self.gestor)])
