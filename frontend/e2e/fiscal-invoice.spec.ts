@@ -102,6 +102,24 @@ const REJECTED = {
  */
 let SESSION_COOKIES: Awaited<ReturnType<import("@playwright/test").BrowserContext["cookies"]>> = [];
 
+/**
+ * Y UN SOLO PEDIDO PARA TODA LA SUITE — E2E-FISCAL-THROTTLE (H4.1.2A).
+ *
+ * EL DEFECTO. Cada prueba buscaba el pedido por su cuenta, y buscarlo cuesta una
+ * lista más el detalle de cada pedido pagado hasta dar con el que pidió factura:
+ * con los datos de desarrollo, 13 peticiones. Sumando la carga de la pantalla,
+ * nueve pruebas hacían ~135 peticiones a `admin_orders` en menos de un minuto y
+ * el limitador —120/min, una defensa real— devolvía 429 a las últimas. La
+ * búsqueda contestaba `null` y la prueba se OMITÍA en silencio, que se parece
+ * demasiado a un aprobado. Cada venta nueva del POS empeoraba el reparto.
+ *
+ * EL ARREGLO NO ES DESACTIVAR EL LIMITADOR, sino dejar de pedir lo mismo nueve
+ * veces: se resuelve una vez en `beforeAll` y las pruebas reutilizan el id. Que
+ * el limitador siga respondiendo 429 lo prueba el backend, en
+ * `H412aAdminOrdersThrottleTest`, contra el límite real.
+ */
+let INVOICE_ORDER_ID: number | null = null;
+
 async function signIn(page: Page) {
   await page.goto("/auth", { waitUntil: "networkidle" });
   const card = page.locator("section").filter({ hasText: "Accesos de desarrollo" });
@@ -136,6 +154,8 @@ async function signIn(page: Page) {
  * propio contexto de cookies y responde 401 aunque el navegador esté
  * autenticado — ya pasó una vez en las pruebas de cuentas de desarrollo, y la
  * consecuencia fue una suite que se saltaba entera sin decir por qué.
+ *
+ * Se llama UNA vez por ejecución: ver la nota de E2E-FISCAL-THROTTLE.
  */
 async function paidInvoiceOrder(page: Page): Promise<number | null> {
   return page.evaluate(async () => {
@@ -159,6 +179,19 @@ async function paidInvoiceOrder(page: Page): Promise<number | null> {
     }
     return null;
   });
+}
+
+/** El pedido de la suite, o una omisión que dice exactamente qué falta. */
+function invoiceOrder(): number {
+  if (INVOICE_ORDER_ID === null) {
+    test.skip(
+      true,
+      "no hay ningún pedido pagado con factura solicitada en esta base de desarrollo",
+    );
+  }
+  // `test.skip` no estrecha el tipo para TypeScript, aunque en tiempo de
+  // ejecución la prueba ya no sigue.
+  return INVOICE_ORDER_ID as number;
 }
 
 /** Sirve un estado fijo del comprobante, sin tocar SUNAT. */
@@ -200,6 +233,7 @@ test.beforeAll(async ({ browser, baseURL }) => {
   // En memoria y no en fichero: `test.use({ storageState })` se evalúa ANTES de
   // que corra este bloque, así que el fichero todavía no existiría.
   SESSION_COOKIES = await context.cookies();
+  INVOICE_ORDER_ID = await paidInvoiceOrder(page);
   await context.close();
 });
 
@@ -212,12 +246,7 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
 
   test("sin comprobante ofrece emitirlo", async ({ page }) => {
     test.setTimeout(120_000);
-    await page.goto("/admin/orders", { waitUntil: "networkidle" });
-    const orderId = await paidInvoiceOrder(page);
-    if (!orderId) test.skip(true, "no hay pedido pagado con factura solicitada");
-    // `test.skip` no estrecha el tipo para TypeScript, aunque en tiempo de
-    // ejecución la prueba ya no sigue.
-    const id = orderId as number;
+    const id = invoiceOrder();
 
     await serveDocument(page, null);
     await openOrder(page, id);
@@ -228,12 +257,7 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
 
   test("firmado ofrece enviar, y no dice que esté aceptado", async ({ page }) => {
     test.setTimeout(120_000);
-    await page.goto("/admin/orders", { waitUntil: "networkidle" });
-    const orderId = await paidInvoiceOrder(page);
-    if (!orderId) test.skip(true, "no hay pedido pagado con factura solicitada");
-    // `test.skip` no estrecha el tipo para TypeScript, aunque en tiempo de
-    // ejecución la prueba ya no sigue.
-    const id = orderId as number;
+    const id = invoiceOrder();
 
     await serveDocument(page, SIGNED);
     await openOrder(page, id);
@@ -247,12 +271,7 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
 
   test("aceptado muestra la respuesta de SUNAT y el CDR", async ({ page }) => {
     test.setTimeout(120_000);
-    await page.goto("/admin/orders", { waitUntil: "networkidle" });
-    const orderId = await paidInvoiceOrder(page);
-    if (!orderId) test.skip(true, "no hay pedido pagado con factura solicitada");
-    // `test.skip` no estrecha el tipo para TypeScript, aunque en tiempo de
-    // ejecución la prueba ya no sigue.
-    const id = orderId as number;
+    const id = invoiceOrder();
 
     await serveDocument(page, ACCEPTED);
     await openOrder(page, id);
@@ -266,12 +285,7 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
 
   test("un error de envío ofrece reintentar el MISMO comprobante", async ({ page }) => {
     test.setTimeout(120_000);
-    await page.goto("/admin/orders", { waitUntil: "networkidle" });
-    const orderId = await paidInvoiceOrder(page);
-    if (!orderId) test.skip(true, "no hay pedido pagado con factura solicitada");
-    // `test.skip` no estrecha el tipo para TypeScript, aunque en tiempo de
-    // ejecución la prueba ya no sigue.
-    const id = orderId as number;
+    const id = invoiceOrder();
 
     await serveDocument(page, FAILED);
     await openOrder(page, id);
@@ -287,12 +301,7 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
 
   test("un rechazo no ofrece reemitir, y explica por qué", async ({ page }) => {
     test.setTimeout(120_000);
-    await page.goto("/admin/orders", { waitUntil: "networkidle" });
-    const orderId = await paidInvoiceOrder(page);
-    if (!orderId) test.skip(true, "no hay pedido pagado con factura solicitada");
-    // `test.skip` no estrecha el tipo para TypeScript, aunque en tiempo de
-    // ejecución la prueba ya no sigue.
-    const id = orderId as number;
+    const id = invoiceOrder();
 
     await serveDocument(page, REJECTED);
     await openOrder(page, id);
@@ -320,10 +329,7 @@ test.describe("la superficie fiscal cabe y se lee", () => {
         // entrar chocaba con el limitador y, peor, `/auth` estando autenticado
         // no muestra la tarjeta de accesos — así que el `test.skip` de `signIn`
         // saltaba estas cuatro pruebas en silencio.
-        await page.goto("/admin/orders", { waitUntil: "networkidle" });
-        const orderId = await paidInvoiceOrder(page);
-        if (!orderId) test.skip(true, "no hay pedido pagado con factura solicitada");
-        const id = orderId as number;
+        const id = invoiceOrder();
 
         await serveDocument(page, ACCEPTED);
         await openOrder(page, id);

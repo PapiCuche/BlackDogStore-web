@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
-import { StaffGuard } from "../../components/StaffGuard";
+import { AccessGuard } from "../../components/AccessGuard";
 import {
   BranchStockTable,
   EmptyBox,
@@ -257,5 +257,9 @@ function ReportsContent({ user }: { user: AuthUser }) {
 }
 
 export default function ReportsPage() {
-  return <StaffGuard>{(user) => <ReportsContent user={user} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.reports" legacyRoles={["sales", "inventory", "admin", "superadmin"]}>
+      {(access) => <ReportsContent user={access.user} />}
+    </AccessGuard>
+  );
 }

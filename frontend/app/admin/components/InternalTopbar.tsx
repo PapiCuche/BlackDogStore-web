@@ -19,7 +19,7 @@
 import Link from "next/link";
 import { CompanySwitcher } from "./CompanySwitcher";
 import { IconBranch, IconMenu, IconShield } from "./icons";
-import type { InternalDashboard } from "../lib/internal-api";
+import type { BranchScope, InternalDashboard } from "../lib/internal-api";
 import { roleLabel, type AuthUser } from "../../lib/auth";
 
 import { NotificationBell } from "./NotificationBell";
@@ -31,6 +31,23 @@ type Props = {
   onSelectCompany: (companyId: number) => void;
 };
 
+/**
+ * Qué dice la barra sobre las sucursales de quien mira — H4.1.2A.
+ *
+ * Cero sucursales significa cosas distintas según cómo se conceden: a quien las
+ * recibe una a una, que todavía no tiene ninguna; a quien las alcanza todas,
+ * que la empresa no tiene ninguna activa. Decir «Sin sucursal» a las dos —y
+ * también a quien sí tenía— era el defecto BRANCH-CONTEXT-UI-01.
+ *
+ * Se exporta aparte porque es la regla, y una regla se prueba sin pintar nada.
+ */
+export function branchScopeLabel(scope: BranchScope | null | undefined): string | null {
+  if (!scope) return null;
+  if (scope.branches.length === 1) return scope.branches[0].name;
+  if (scope.branches.length > 1) return `${scope.branches.length} sucursales`;
+  return scope.mode === "selected" ? "Sin sucursales asignadas" : "Sin sucursales activas";
+}
+
 export function InternalTopbar({
   user,
   dashboard,
@@ -39,22 +56,17 @@ export function InternalTopbar({
 }: Props) {
   const access = dashboard?.access;
   const isMaster = Boolean(access?.is_platform_admin);
-  const branch = dashboard?.membership?.branch ?? null;
   const hasCompany = Boolean(dashboard?.company);
-  // Phase 2D: the topbar states the BRANCH SCOPE, which is now a real rule
-  // rather than a placeholder. `Membership.branch` is the default branch — where
-  // the internal control opens — and `inventory.branches` is what the person can
-  // actually reach. There is no branch SELECTOR here on purpose: the choice
-  // belongs to the screens that act on one, and a global selector would imply an
-  // authority the topbar does not have.
-  const reachable = dashboard?.inventory?.branches ?? [];
-  const scopeLabel = branch
-    ? branch.name
-    : reachable.length === 0
-      ? "Sin sucursal"
-      : reachable.length === 1
-        ? reachable[0].name
-        : `${reachable.length} sucursales`;
+  // Phase 2D: the topbar states the BRANCH SCOPE. There is no branch SELECTOR
+  // here on purpose — the choice belongs to the screens that act on one, and a
+  // global selector would imply an authority the topbar does not have.
+  //
+  // H4.1.2A: the scope comes from `branch_scope`, which is access context. It
+  // used to come from `inventory.branches`, and the backend only builds that for
+  // a caller holding an inventory capability, so a technician with a branch was
+  // told they had none.
+  const scope = dashboard?.branch_scope ?? null;
+  const scopeLabel = branchScopeLabel(scope);
 
   return (
     <header className="sticky top-0 z-40 border-b border-bd-border bg-background/95 backdrop-blur">
@@ -79,17 +91,19 @@ export function InternalTopbar({
                   <p className="truncate text-sm font-medium text-foreground">
                     {dashboard?.company?.name}
                   </p>
-                  <span
-                    className="hidden items-center gap-1 text-xs text-muted sm:flex"
-                    title={
-                      reachable.length > 0
-                        ? reachable.map((b) => b.name).join(" · ")
-                        : undefined
-                    }
-                  >
-                    <IconBranch className="h-3.5 w-3.5" />
-                    {scopeLabel}
-                  </span>
+                  {scopeLabel && (
+                    <span
+                      className="hidden items-center gap-1 text-xs text-muted sm:flex"
+                      title={
+                        scope && scope.branches.length > 0
+                          ? scope.branches.map((b) => b.name).join(" · ")
+                          : undefined
+                      }
+                    >
+                      <IconBranch className="h-3.5 w-3.5" />
+                      {scopeLabel}
+                    </span>
+                  )}
                 </div>
               </>
             ) : (

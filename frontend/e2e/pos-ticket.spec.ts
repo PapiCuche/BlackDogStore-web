@@ -52,8 +52,22 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
     test.skip(true, "dev_admin no existe o está inactiva: siembra con seed_demo_users");
   }
   await use.click();
-  await page.getByRole("button", { name: /iniciar sesión/i }).first().click();
-  await page.waitForURL((u) => !u.pathname.startsWith("/auth"), { timeout: 30_000 });
+
+  // EL LIMITADOR SON 5 INTENTOS POR MINUTO Y POR IP — H4.1.2A. Es una defensa
+  // real, y en la suite completa entran once cuentas seguidas: a alguna le toca
+  // esperar. Sin reintento, esa espera se leía como un fallo del cambio que se
+  // estuviera probando. Se ESPERA la ventana, como ya hacen `demo-accounts`,
+  // `h411-auth-interop`, `fiscal-invoice` y `staff-personnel`.
+  for (let intento = 0; intento < 3; intento++) {
+    await page.getByRole("button", { name: /iniciar sesión/i }).first().click();
+    try {
+      await page.waitForURL((u) => !u.pathname.startsWith("/auth"), { timeout: 15_000 });
+      break;
+    } catch {
+      if (intento === 2) throw new Error("no se pudo iniciar sesión: el limitador no cedió");
+      await page.waitForTimeout(62_000);
+    }
+  }
 
   await page.goto("/admin/sales/pos", { waitUntil: "networkidle" });
 
@@ -65,7 +79,23 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
   await search.fill(vendible.name.slice(0, 12));
   await page.waitForTimeout(3000);
 
-  const result = page.locator("button").filter({ hasText: vendible.name.slice(0, 12) }).first();
+  // EL RESULTADO DE LA BÚSQUEDA, NO LA TARJETA DEL COMBO — H4.1.2A.
+  //
+  // La pantalla sugiere combos, y sus tarjetas nombran los mismos artículos: un
+  // `button` filtrado sólo por texto casaba PRIMERO con el combo «1× AirPods Pro
+  // + 1× iPhone 15 Pro». Mientras ese combo estuvo disponible, la prueba pasaba
+  // añadiendo un combo de dos artículos en vez del artículo que dice vender —
+  // verde por el motivo equivocado. El día que el iPhone se quedó sin stock, el
+  // combo apareció deshabilitado, con razón, y la prueba se quedó tres minutos
+  // esperando a que se habilitara un botón que nunca debía habilitarse.
+  //
+  // Se pide lo que la prueba quiere de verdad: una fila del catálogo que se
+  // puede pulsar y que declara unidades disponibles.
+  const result = page
+    .locator("button:not([disabled])")
+    .filter({ hasText: vendible.name.slice(0, 12) })
+    .filter({ hasText: /\d+\s*disp\./ })
+    .first();
   if ((await result.count()) === 0) {
     test.skip(true, "el catálogo no tiene productos con stock en esta sucursal");
   }

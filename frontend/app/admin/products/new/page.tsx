@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AdminGuard } from "../../components/AdminGuard";
+import { AccessGuard } from "../../components/AccessGuard";
 import { AdminShell } from "../../components/AdminShell";
 import { ProductForm } from "../../components/ProductForm";
 import { AdminCategory, AdminProduct, fetchAdminCategories } from "../../../lib/admin";
@@ -40,20 +40,12 @@ function NewProductContent({ user }: { user: AuthUser }) {
 }
 
 export default function NewProductPage() {
+  // H4.1.2A: quien puede crear productos lo dice `products.manage` en esta
+  // empresa. El doble chequeo por rol que había aquí dentro sobraba y, peor,
+  // echaba a quien la empresa sí había autorizado.
   return (
-    <AdminGuard>
-      {(user) => {
-        if (user.role !== "admin" && user.role !== "superadmin") {
-          return (
-            <AdminShell user={user}>
-              <p className="text-muted text-sm">
-                Solo los administradores pueden crear productos.
-              </p>
-            </AdminShell>
-          );
-        }
-        return <NewProductContent user={user} />;
-      }}
-    </AdminGuard>
+    <AccessGuard capability="products.manage" legacyRoles={["admin", "superadmin"]}>
+      {(access) => <NewProductContent user={access.user} />}
+    </AccessGuard>
   );
 }

@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { StaffGuard } from "../../components/StaffGuard";
+import { AccessGuard } from "../../components/AccessGuard";
+import type { InternalAccess } from "../../lib/internal-access";
 import { AdminShell } from "../../components/AdminShell";
 import { ProductForm } from "../../components/ProductForm";
 import { InventoryAdjustForm } from "../../components/InventoryAdjustForm";
@@ -16,7 +17,7 @@ import {
 } from "../../../lib/admin";
 import type { AuthUser } from "../../../lib/auth";
 
-function ProductDetailContent({ user }: { user: AuthUser }) {
+function ProductDetailContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const { id } = useParams<{ id: string }>();
   const productId = parseInt(id, 10);
 
@@ -25,9 +26,8 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const canManage = user.role === "admin" || user.role === "superadmin";
-  const canAdjustInventory =
-    user.role === "inventory" || user.role === "admin" || user.role === "superadmin";
+  const canManage = access.can("products.manage", ["admin", "superadmin"]);
+  const canAdjustInventory = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
 
   useEffect(() => {
     Promise.all([
@@ -153,6 +153,8 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
 
 export default function ProductDetailPage() {
   return (
-    <StaffGuard>{(user) => <ProductDetailContent user={user} />}</StaffGuard>
+    <AccessGuard capability="products.view" legacyRoles={["inventory", "sales", "admin", "superadmin"]}>
+      {(access) => <ProductDetailContent user={access.user} access={access} />}
+    </AccessGuard>
   );
 }

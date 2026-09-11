@@ -14,7 +14,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
-import { StaffGuard } from "../../components/StaffGuard";
+import { AccessGuard } from "../../components/AccessGuard";
 import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import {
@@ -198,5 +198,9 @@ function ReplenishmentContent({ user }: { user: AuthUser }) {
 }
 
 export default function ReplenishmentPage() {
-  return <StaffGuard>{(user) => <ReplenishmentContent user={user} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.reports" legacyRoles={["inventory", "admin", "superadmin"]}>
+      {(access) => <ReplenishmentContent user={access.user} />}
+    </AccessGuard>
+  );
 }

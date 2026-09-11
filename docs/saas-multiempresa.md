@@ -4677,3 +4677,44 @@ sucursal.
 No se creó ninguna capability. La app y el panel web pintan
 `available_fulfillment_transitions`, que calcula el servidor; ninguno guarda una
 copia de la regla.
+
+---
+
+## H4.1.2A — El alcance de sucursal es contexto de acceso
+
+### Dónde trabajo no se deduce de si veo el inventario
+
+`tenancy.describe_branch_scope(user, company)` responde «qué sucursales alcanza
+esta persona», y el dashboard interno lo publica como `branch_scope`:
+
+| Campo | Qué dice |
+|---|---|
+| `mode` | `platform`, `legacy`, `all`, `selected` o `none` |
+| `default_branch` | dónde abre el panel, resuelto contra las sucursales visibles |
+| `branches` | ids y nombres de las que puede operar |
+
+**Por qué no vive dentro del resumen de inventario.** Ahí vivía, y el backend sólo
+construye ese bloque para quien tiene `inventory.view` o `inventory.reports`. Un
+técnico alcanza sucursales y no tiene ninguna de las dos, así que el panel le
+decía «Sin sucursal»: una frase sobre una capacidad de inventario disfrazada de
+alcance. Dónde trabaja alguien es un hecho sobre esa persona, no sobre el stock.
+
+Lleva ids y nombres, y nada más: sin existencias, sin dinero, sin contadores. Y no
+es autoridad — cada petición vuelve a resolver `visible_branches()` en el servidor.
+
+### La interfaz ofrece lo que el servidor concede
+
+Las pantallas internas preguntaban al `UserProfile.role` global lo que el backend
+decide por capacidad de empresa, y las dos respuestas se contradecían en ambos
+sentidos: quien entraba por una invitación —perfil `customer` con capacidades
+reales— era rechazado por la pantalla, y un perfil `sales` sin la capacidad veía
+botones que respondían 403.
+
+| Contexto | Quién decide qué se ofrece |
+|---|---|
+| Con empresa resuelta | la capacidad que informa el servidor |
+| Sin empresa (puente legacy, sin Membership) | el rol legacy, que es lo que el backend comprueba en ese camino |
+| Master de plataforma | pasa siempre |
+
+`isStaffRole` sobrevive **sólo** para ese puente. Cuando desaparezca el puente,
+desaparece el rol global de la interfaz.

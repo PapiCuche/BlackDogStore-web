@@ -9,6 +9,52 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## H4.1.2A — Estabilización y contexto de sucursal
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Cierra TEST-H41-TOKEN-FLAKY,
+E2E-FISCAL-THROTTLE, RBAC-LEGACY-UI-01 y el defecto nuevo BRANCH-CONTEXT-UI-01.
+
+- **BRANCH-CONTEXT-UI-01.** Un técnico con sucursal veía «Sin sucursal»: la barra
+  leía las sucursales del resumen de inventario, que el backend sólo construye
+  para quien tiene capacidad de inventario. Ahora el dashboard publica
+  `branch_scope` —contexto de acceso, con ids y nombres y nada más— y la barra
+  distingue «N sucursales», «Sin sucursales asignadas» y «Sin sucursales activas».
+- **RBAC-LEGACY-UI-01.** 16 pantallas internas dejaban que el rol global decidiera
+  lo que el backend decide por capacidad. `AccessGuard` pregunta al servidor y
+  conserva el rol sólo donde no hay empresa: el puente legacy. Se borraron
+  `StaffGuard`, `AdminGuard` y tres helpers de rol.
+- **TEST-H41-TOKEN-FLAKY.** El token «alterado» coincidía con el original 1 de
+  cada 64 veces. 120 pasadas en verde y tres finales de token forzados.
+- **E2E-FISCAL-THROTTLE.** El arnés fiscal gastaba ~135 peticiones por suite y el
+  limitador omitía pruebas en silencio. Ahora resuelve el pedido una vez (~22), y
+  una prueba de backend fija que el 429 sigue ocurriendo con la tasa real.
+- **E2E-POS-COMBO-SELECTOR**, encontrado por la suite completa y anterior a esta
+  fase: `pos-ticket` pulsaba la tarjeta de un combo en vez de la fila del
+  catálogo, así que pasaba comprando dos artículos en vez del que dice vender, y
+  se volvió roja el día que ese combo se quedó sin stock.
+- **E2E-LOGIN-RETRY**, también preexistente: `pos-ticket` y
+  `staff-master-selector` no esperaban la ventana del limitador de login (5/min
+  por IP), y la ráfaga de once entradas de la suite completa los volvía rojos.
+  Ahora reintentan como el resto; el limitador sigue intacto.
+
+Servicio técnico, documentos de venta (incluida la boleta) y cotizaciones
+comerciales quedan auditados en el estado actual, sin implementar.
+
+Verificado:
+
+- Dirigido 42 OK; backend completo **4029 OK** (22 saltadas), frente a 4019 en
+  H4.1.2. La primera pasada marcó 1 fallo: el test que fija las claves del
+  payload del dashboard, actualizado a propósito para admitir `branch_scope`.
+- Jest 309 OK en 25 suites; `tsc` y ESLint sin errores; build 44/44.
+- **Playwright completo: 111 OK, 1 fallo, 5 no ejecutados, 0 flaky** (7,6 min). El
+  fallo es el inestable conocido de C2.1, que aislado pasa 9/9.
+- 120 pasadas seguidas del test de invitación, sin fallos.
+- Sin migraciones.
+
+**Deuda nueva:** SVC-MENU-01, SALES-DOC-01, FISCAL-BOLETA-01 y SALES-QUOTE-01.
+
+---
+
 ## H4.1.2 — Autoridad interna: pedidos por sucursal y RBAC por capability
 
 **Estado: IMPLEMENTADO.** Sin migraciones. Cierra BRANCH-SCOPE-01 y

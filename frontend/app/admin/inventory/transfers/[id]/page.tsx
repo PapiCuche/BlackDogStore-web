@@ -15,7 +15,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { AdminShell } from "../../../components/AdminShell";
-import { StaffGuard } from "../../../components/StaffGuard";
+import { AccessGuard } from "../../../components/AccessGuard";
+import type { InternalAccess } from "../../../lib/internal-access";
 import {
   EmptyBox,
   ErrorBox,
@@ -37,11 +38,11 @@ import {
   type StockTransfer,
 } from "../../../../lib/inventory";
 import { fetchAdminProducts, type AdminProduct } from "../../../../lib/admin";
-import { canManageInventory, type AuthUser } from "../../../../lib/auth";
+import type { AuthUser } from "../../../../lib/auth";
 
 type Draft = Record<number, string>;
 
-function TransferDetail({ user, transferId }: { user: AuthUser; transferId: number }) {
+function TransferDetail({ user, access, transferId }: { user: AuthUser; access: InternalAccess; transferId: number }) {
   const [transfer, setTransfer] = useState<StockTransfer | null>(null);
   const [products, setProducts] = useState<AdminProduct[]>([]);
   const [draft, setDraft] = useState<Draft>({});
@@ -50,7 +51,7 @@ function TransferDetail({ user, transferId }: { user: AuthUser; transferId: numb
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const mayTransfer = canManageInventory(user);
+  const mayTransfer = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
 
   const load = useCallback(async () => {
     const data = await fetchTransfer(transferId);
@@ -308,15 +309,19 @@ export default function TransferDetailPage() {
 
   if (!Number.isFinite(transferId)) {
     return (
-      <StaffGuard>
-        {(user) => (
-          <AdminShell user={user}>
+      <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+        {(access) => (
+          <AdminShell user={access.user}>
             <ErrorBox message="Identificador de transferencia inválido." />
           </AdminShell>
         )}
-      </StaffGuard>
+      </AccessGuard>
     );
   }
 
-  return <StaffGuard>{(user) => <TransferDetail user={user} transferId={transferId} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+      {(access) => <TransferDetail user={access.user} access={access} transferId={transferId} />}
+    </AccessGuard>
+  );
 }

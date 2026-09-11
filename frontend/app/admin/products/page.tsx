@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { StaffGuard } from "../components/StaffGuard";
+import { AccessGuard } from "../components/AccessGuard";
+import type { InternalAccess } from "../lib/internal-access";
 import { AdminShell } from "../components/AdminShell";
 import { ProductsTable } from "../components/ProductsTable";
 import {
@@ -21,7 +22,7 @@ type Filters = {
   stock: string;
 };
 
-function ProductsContent({ user }: { user: AuthUser }) {
+function ProductsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const [data, setData] = useState<PaginatedResponse<AdminProduct> | null>(null);
   const [categories, setCategories] = useState<AdminCategory[]>([]);
   const [filters, setFilters] = useState<Filters>({
@@ -34,7 +35,7 @@ function ProductsContent({ user }: { user: AuthUser }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const canManage = user.role === "admin" || user.role === "superadmin";
+  const canManage = access.can("products.manage", ["admin", "superadmin"]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -142,7 +143,7 @@ function ProductsContent({ user }: { user: AuthUser }) {
           ) : (
             <ProductsTable
               products={data?.results ?? []}
-              currentUser={user}
+              canManage={canManage}
               onChanged={load}
             />
           )}
@@ -176,6 +177,8 @@ function ProductsContent({ user }: { user: AuthUser }) {
 
 export default function AdminProductsPage() {
   return (
-    <StaffGuard>{(user) => <ProductsContent user={user} />}</StaffGuard>
+    <AccessGuard capability="products.view" legacyRoles={["inventory", "sales", "admin", "superadmin"]}>
+      {(access) => <ProductsContent user={access.user} access={access} />}
+    </AccessGuard>
   );
 }

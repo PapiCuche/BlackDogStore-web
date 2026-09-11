@@ -12,7 +12,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { AdminShell } from "../../../components/AdminShell";
-import { StaffGuard } from "../../../components/StaffGuard";
+import { AccessGuard } from "../../../components/AccessGuard";
+import type { InternalAccess } from "../../../lib/internal-access";
 import {
   EmptyBox,
   ErrorBox,
@@ -33,11 +34,11 @@ import {
   type InventoryCount,
 } from "../../../../lib/inventory";
 import { fetchAdminProducts, type AdminProduct } from "../../../../lib/admin";
-import { canManageInventory, type AuthUser } from "../../../../lib/auth";
+import type { AuthUser } from "../../../../lib/auth";
 
 type Draft = Record<number, string>;
 
-function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
+function CountDetail({ user, access, countId }: { user: AuthUser; access: InternalAccess; countId: number }) {
   const [count, setCount] = useState<InventoryCount | null>(null);
   const [products, setProducts] = useState<AdminProduct[]>([]);
   const [draft, setDraft] = useState<Draft>({});
@@ -46,7 +47,7 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const mayCount = canManageInventory(user);
+  const mayCount = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
 
   const load = useCallback(async () => {
     const data = await fetchCount(countId);
@@ -311,15 +312,19 @@ export default function CountDetailPage() {
 
   if (!Number.isFinite(countId)) {
     return (
-      <StaffGuard>
-        {(user) => (
-          <AdminShell user={user}>
+      <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+        {(access) => (
+          <AdminShell user={access.user}>
             <ErrorBox message="Identificador de recuento inválido." />
           </AdminShell>
         )}
-      </StaffGuard>
+      </AccessGuard>
     );
   }
 
-  return <StaffGuard>{(user) => <CountDetail user={user} countId={countId} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+      {(access) => <CountDetail user={access.user} access={access} countId={countId} />}
+    </AccessGuard>
+  );
 }

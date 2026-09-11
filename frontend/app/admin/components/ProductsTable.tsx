@@ -3,18 +3,16 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AdminProduct, patchAdminProduct } from "../../lib/admin";
-import { AuthUser } from "../../lib/auth";
 import { ProductStatusBadge } from "./ProductStatusBadge";
 
 type Props = {
   products: AdminProduct[];
-  currentUser: AuthUser;
+  /** H4.1.2A: lo decide el servidor, no el rol global de la sesión. */
+  canManage: boolean;
   onChanged: () => void;
 };
 
-export function ProductsTable({ products, currentUser, onChanged }: Props) {
-  const canManage =
-    currentUser.role === "admin" || currentUser.role === "superadmin";
+export function ProductsTable({ products, canManage, onChanged }: Props) {
   const [toggleError, setToggleError] = useState<string | null>(null);
 
   async function toggleActive(product: AdminProduct) {

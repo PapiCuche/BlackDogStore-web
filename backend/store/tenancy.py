@@ -1390,6 +1390,65 @@ def visible_orders(user, company):
     return Order.objects.none()
 
 
+#: How a caller reaches the branches they may operate. PRESENTATION ONLY — the
+#: gates ask visible_branches() and visible_orders(), never this string.
+BRANCH_SCOPE_PLATFORM = 'platform'   # platform master, company named explicitly
+BRANCH_SCOPE_LEGACY = 'legacy'       # pre-SaaS operator on the pilot
+BRANCH_SCOPE_ALL = 'all'             # membership in mode ALL
+BRANCH_SCOPE_SELECTED = 'selected'   # membership in mode SELECTED
+BRANCH_SCOPE_NONE = 'none'           # no authority in this company
+
+
+def describe_branch_scope(user, company) -> dict:
+    """
+    Where this caller may work, as something an interface can render.
+
+    WHY IT EXISTS (H4.1.2A, BRANCH-CONTEXT-UI-01). The panel used to read its
+    branch line from the INVENTORY snapshot, which the dashboard only builds for
+    someone holding `inventory.view` or `inventory.reports`. A technician reaches
+    branches and holds neither, so the panel said "Sin sucursal" about a person
+    with a branch: a sentence about an inventory capability wearing the words of
+    branch access.
+
+    Branch scope is ACCESS context — "where do I work" is a fact about the
+    caller, not about stock. So it carries branch ids and names, and nothing
+    else: no stock, no money, no counters.
+
+    `default_branch` is where the panel opens, not a boundary. A membership whose
+    default branch was later revoked or deactivated has no default and still has
+    a scope; that is why it is resolved against the visible set rather than read
+    straight off `Membership.branch`.
+
+    NOT AUTHORITY. Every request re-resolves visible_branches() server-side.
+    """
+    scope, membership = _branch_authority(user, company)
+
+    if scope == _SCOPE_NONE:
+        mode = BRANCH_SCOPE_NONE
+    elif is_platform_admin(user):
+        mode = BRANCH_SCOPE_PLATFORM
+    elif membership is None:
+        mode = BRANCH_SCOPE_LEGACY
+    elif scope == _SCOPE_SELECTED:
+        mode = BRANCH_SCOPE_SELECTED
+    else:
+        mode = BRANCH_SCOPE_ALL
+
+    branches = list(visible_branches(user, company))
+
+    default = None
+    if membership is not None and membership.branch_id is not None:
+        default = next((b for b in branches if b.pk == membership.branch_id), None)
+
+    return {
+        'mode': mode,
+        'default_branch': (
+            None if default is None else {'id': default.pk, 'name': default.name}
+        ),
+        'branches': [{'id': b.pk, 'name': b.name} for b in branches],
+    }
+
+
 def visible_branch_ids(user, company) -> list[int]:
     """Primary keys of visible_branches(), for building `branch__in` filters."""
     return list(visible_branches(user, company).values_list('pk', flat=True))

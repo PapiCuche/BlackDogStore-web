@@ -22,8 +22,21 @@ test("el master elige empresa y el personal carga", async ({ page }) => {
     .getByRole("button", { name: "Usar cuenta" });
   if ((await usar.count()) === 0) test.skip(true, "dev_master no está sembrado");
   await usar.click();
-  await page.getByRole("button", { name: /iniciar sesión/i }).first().click();
-  await page.waitForURL((u) => !u.pathname.startsWith("/auth"), { timeout: 20_000 });
+
+  // EL LIMITADOR SON 5 INTENTOS POR MINUTO Y POR IP — H4.1.2A. Esta prueba corre
+  // al final de una suite que ya ha entrado diez veces, así que le toca esperar
+  // la ventana. Se espera, no se desactiva: un test que apaga una defensa deja
+  // de probar lo que se despliega.
+  for (let intento = 0; intento < 3; intento++) {
+    await page.getByRole("button", { name: /iniciar sesión/i }).first().click();
+    try {
+      await page.waitForURL((u) => !u.pathname.startsWith("/auth"), { timeout: 15_000 });
+      break;
+    } catch {
+      if (intento === 2) throw new Error("no se pudo iniciar sesión: el limitador no cedió");
+      await page.waitForTimeout(62_000);
+    }
+  }
 
   await page.goto("/admin/staff", { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: "Personal", exact: true }))
