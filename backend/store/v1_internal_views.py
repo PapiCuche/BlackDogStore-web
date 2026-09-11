@@ -44,7 +44,7 @@ from .tenancy import (
     resolve_public_storefront_company,
 )
 from .throttles import AdminOrdersThrottle, AdminOrderStatusChangeThrottle
-from .v1_authentication import V1BearerAuthentication
+from .v1_internal_authentication import V1InternalAuthentication
 from .v1_internal_serializers import (
     V1InternalFulfillmentSerializer,
     V1InternalOrderDetailSerializer,
@@ -79,9 +79,18 @@ def _is_internal_member(user, company) -> bool:
 
 
 class V1InternalSurfaceMixin:
-    """Shared gate for every internal-audience view."""
+    """
+    Shared gate for every internal-audience view.
 
-    authentication_classes = [V1BearerAuthentication]
+    TWO CLIENTS, ONE SURFACE (H4.1.1, docs/adr-auth-v1-internal.md). Native apps
+    authenticate with `Authorization: Bearer`; the web panel with its HttpOnly
+    cookie, which carries CSRF on every unsafe method. `V1InternalAuthentication`
+    admits exactly ONE of the two per request and refuses a request that
+    presents both. Nothing below this line knows or cares which one it was:
+    the gates read `request.user`, never the credential.
+    """
+
+    authentication_classes = [V1InternalAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     def get_internal_company(self):

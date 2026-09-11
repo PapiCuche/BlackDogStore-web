@@ -25195,13 +25195,27 @@ class M6InternalContextTest(M6InternalBase):
         for leaked in ('customer_email', 'izipay', 'token', 'secret', 'tax_id', 'total'):
             self.assertNotIn(leaked, body)
 
-    def test_a_web_cookie_does_not_open_it(self):
+    def test_a_web_cookie_opens_it_and_one_request_carries_one_channel(self):
+        """
+        H4.1.1 — ESTA PRUEBA DECÍA LO CONTRARIO, y a propósito.
+
+        Hasta H4.1.1 la superficie interna era sólo Bearer y la cookie web
+        recibía 401. Eso dejaba al panel —que consume esta misma API desde H2—
+        sin servicio técnico, notificaciones ni comunicados con la sesión
+        válida. Ahora la cookie la abre, bajo una regla que esta prueba conserva:
+        una request lleva UN canal, y presentar los dos es un 401.
+        Ver docs/adr-auth-v1-internal.md.
+        """
         web = APIClient()
         web.post(
             '/api/auth/login/', {'username': 'vendedora', 'password': 'Pass123!'}, format='json',
         )
 
-        self.assertEqual(web.get(_m6_ctx_url('m6-shop')).status_code, 401)
+        self.assertEqual(web.get(_m6_ctx_url('m6-shop')).status_code, 200)
+
+        _client, token = _m6_login('vendedora')
+        both = web.get(_m6_ctx_url('m6-shop'), HTTP_AUTHORIZATION=f"Bearer {token['access']}")
+        self.assertEqual(both.status_code, 401)
 
     def test_a_body_or_header_cannot_change_the_company(self):
         payload = self.client.get(
@@ -25633,8 +25647,17 @@ class M6LegacyRegressionTest(TestCase):
             ('store.authentication.CookieJWTAuthentication',),
         )
 
-    def test_every_internal_view_declares_bearer_explicitly(self):
-        from .v1_authentication import V1BearerAuthentication
+    def test_every_internal_view_declares_its_authentication_explicitly(self):
+        """
+        Declarada EXPLÍCITAMENTE, no heredada del default global de cookie.
+
+        Pedidos internos. Desde H4.1.1 lo que se declara es el orquestador de la
+        superficie interna —un canal por request, Bearer o cookie— en lugar de
+        sólo Bearer. La intención de la prueba no cambia: optar por esta
+        autenticación es una línea visible en un diff, nunca un efecto del
+        default del proyecto.
+        """
+        from .v1_internal_authentication import V1InternalAuthentication as V1BearerAuthentication
         from .v1_internal_views import (
             V1InternalContextView, V1InternalOrderDetailView,
             V1InternalOrderFulfillmentView, V1InternalOrderListView,
@@ -26569,14 +26592,31 @@ class M7InventoryAccessTest(M7InventoryBase):
     def test_anonymous_is_401(self):
         self.assertEqual(APIClient().get(_m7_url('m7-shop', 'summary')).status_code, 401)
 
-    def test_a_WEB_cookie_does_not_open_it(self):
+    def test_a_WEB_cookie_opens_it_and_one_request_carries_one_channel(self):
+        """
+        H4.1.1 — ESTA PRUEBA DECÍA LO CONTRARIO, y a propósito.
+
+        La superficie interna era sólo Bearer. Desde H4.1.1 la cookie web la
+        abre, con la regla que esta prueba conserva: una request lleva UN
+        canal, y presentar cookie y Bearer a la vez es un 401.
+        Ver docs/adr-auth-v1-internal.md.
+        """
         web = APIClient()
         web.post(
             '/api/auth/login/', {'username': 'almacenera', 'password': 'Pass123!'},
             format='json',
         )
 
-        self.assertEqual(web.get(_m7_url('m7-shop', 'summary')).status_code, 401)
+        self.assertEqual(web.get(_m7_url('m7-shop', 'summary')).status_code, 200)
+
+        native = APIClient().post(
+            '/api/v1/auth/login/',
+            {'email': 'almacenera@example.com', 'password': 'Pass123!'}, format='json',
+        ).json()
+        both = web.get(
+            _m7_url('m7-shop', 'summary'), HTTP_AUTHORIZATION=f"Bearer {native['access']}",
+        )
+        self.assertEqual(both.status_code, 401)
 
     def test_a_member_with_inventory_view_gets_the_summary(self):
         self.assertEqual(self.client.get(_m7_url('m7-shop', 'summary')).status_code, 200)
@@ -27097,8 +27137,17 @@ class M7InventoryRegressionTest(M7InventoryBase):
             ('store.authentication.CookieJWTAuthentication',),
         )
 
-    def test_every_inventory_view_declares_bearer_explicitly(self):
-        from .v1_authentication import V1BearerAuthentication
+    def test_every_inventory_view_declares_its_authentication_explicitly(self):
+        """
+        Declarada EXPLÍCITAMENTE, no heredada del default global de cookie.
+
+        Inventario interno. Desde H4.1.1 lo que se declara es el orquestador de la
+        superficie interna —un canal por request, Bearer o cookie— en lugar de
+        sólo Bearer. La intención de la prueba no cambia: optar por esta
+        autenticación es una línea visible en un diff, nunca un efecto del
+        default del proyecto.
+        """
+        from .v1_internal_authentication import V1InternalAuthentication as V1BearerAuthentication
         from .v1_inventory_views import (
             V1InventoryAdjustmentView, V1InventoryMovementsView,
             V1InventoryStockView, V1InventorySummaryView,
@@ -27858,8 +27907,17 @@ class M8InternalAccessTest(M8ServiceBase):
         Company.objects.filter(pk=self.company.pk).update(is_active=False)
         self.assertEqual(self.client.get(_m8_url('m8-taller', 'orders/')).status_code, 404)
 
-    def test_every_service_view_declares_bearer_explicitly(self):
-        from .v1_authentication import V1BearerAuthentication
+    def test_every_service_view_declares_its_authentication_explicitly(self):
+        """
+        Declarada EXPLÍCITAMENTE, no heredada del default global de cookie.
+
+        Servicio técnico interno. Desde H4.1.1 lo que se declara es el orquestador de la
+        superficie interna —un canal por request, Bearer o cookie— en lugar de
+        sólo Bearer. La intención de la prueba no cambia: optar por esta
+        autenticación es una línea visible en un diff, nunca un efecto del
+        default del proyecto.
+        """
+        from .v1_internal_authentication import V1InternalAuthentication as V1BearerAuthentication
         from .v1_service_views import (
             V1ServiceContextView, V1ServiceCustomerSearchView,
             V1ServiceDeviceDetailView, V1ServiceDeviceListView,
@@ -50828,3 +50886,564 @@ class H41StaffSelfCardTest(TestCase):
         marcas = self._marcas(gestor_b)
         self.assertTrue(marcas[self._membresia(gestor_b)])
         self.assertFalse(marcas[self._membresia(self.gestor)])
+
+
+# ===========================================================================
+# H4.1.1 — Web ↔ v1 interno: UNA credencial por request
+# ===========================================================================
+#
+# El panel web se autentica con cookie HttpOnly; la app nativa, con Bearer. La
+# superficie `/api/v1/internal/` aceptaba sólo Bearer y la web recibía 401 con
+# una sesión perfectamente válida. Ahora acepta los dos canales, y estas pruebas
+# fijan las reglas que hacen seguro aceptar dos:
+#
+#   · una request = un canal. Header y cookie a la vez → 401, sin elegir.
+#   · un Authorization explícito nunca cae a la cookie.
+#   · la cookie trae su CSRF; el Bearer no lo necesita.
+#   · tenant, sucursal y capacidades responden IGUAL por los dos canales.
+#
+# Ver docs/adr-auth-v1-internal.md.
+
+from django.conf import settings as _h411_settings  # noqa: E402
+from django.db import connection as _h411_connection  # noqa: E402
+from django.test.utils import CaptureQueriesContext as _H411Capture  # noqa: E402
+from django.urls import (  # noqa: E402
+    URLPattern as _H411Pattern, URLResolver as _H411Resolver,
+    get_resolver as _h411_resolver,
+)
+import re as _h411_re  # noqa: E402
+
+from rest_framework_simplejwt.tokens import RefreshToken as _H411Refresh  # noqa: E402
+
+from .v1_internal_authentication import V1InternalAuthentication  # noqa: E402
+
+_H411_INVALID = 'Credenciales inválidas.'
+_H411_WRITE_SQL = ('INSERT', 'UPDATE', 'DELETE')
+
+
+def _h411_routes():
+    """Todas las rutas del proyecto como (plantilla, URLPattern)."""
+    def walk(patterns, prefix=''):
+        for p in patterns:
+            if isinstance(p, _H411Resolver):
+                yield from walk(p.url_patterns, prefix + str(p.pattern))
+            elif isinstance(p, _H411Pattern):
+                yield prefix + str(p.pattern), p
+    return list(walk(_h411_resolver().url_patterns))
+
+
+def _h411_internal_routes():
+    return [(r, p) for r, p in _h411_routes() if r.startswith('api/v1/internal/')]
+
+
+def _h411_fill(route, kwargs):
+    """`api/v1/internal/<slug:company_slug>/x/<int:pk>/` con valores reales."""
+    def sub(m):
+        name = m.group(1)
+        if name not in kwargs:
+            raise AssertionError(
+                f'Ruta interna sin fixture para «{name}»: {route}. Si es nueva, '
+                f'añádela a esta prueba; una ruta que nadie ejecuta es una ruta '
+                f'que nadie auditó.'
+            )
+        return str(kwargs[name])
+    return '/' + _h411_re.sub(r'<(?:\w+:)?(\w+)>', sub, route)
+
+
+def _h411_access(user):
+    return str(_H411Refresh.for_user(user).access_token)
+
+
+def _h411_bearer(user, *, token=None, **client_kw):
+    client = APIClient(**client_kw)
+    client.credentials(HTTP_AUTHORIZATION=f'Bearer {token or _h411_access(user)}')
+    return client
+
+
+def _h411_cookie(user, *, enforce_csrf=True, token=None):
+    """El navegador: cookie de acceso y CSRF exigido como en producción."""
+    client = APIClient(enforce_csrf_checks=enforce_csrf)
+    client.cookies[_h411_settings.JWT_COOKIE_ACCESS_NAME] = token or _h411_access(user)
+    return client
+
+
+def _h411_csrf(client):
+    """Pide la cookie CSRF igual que el frontend, y devuelve su valor."""
+    client.get('/api/auth/csrf/')
+    return client.cookies['csrftoken'].value
+
+
+@override_settings(**_EVIDENCE_TEST_STORAGE)
+class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
+    """
+    §10 — GET, HEAD y OPTIONS de TODA la superficie interna no escriben nada.
+
+    POR QUÉ ES CONDICIÓN Y NO DETALLE. El canal cookie exime de CSRF a los
+    métodos seguros, como hace toda la web. Eso sólo es seguro si un método
+    seguro es de verdad de sólo lectura: un GET que marcara algo como leído, que
+    creara una fila "por si acaso" o que avanzara un estado sería ejecutable
+    desde cualquier página ajena que el empleado visitara con su sesión abierta.
+
+    CÓMO LO PRUEBA. No leyendo el código — eso ya se hizo, y no ve una función
+    importada por nombre ni un método de modelo —, sino EJECUTANDO cada ruta con
+    una orden llevada hasta el final de su ciclo y contando el SQL que emite.
+    Cualquier INSERT, UPDATE o DELETE falla la prueba.
+
+    Y EXIGE 200 en GET y HEAD: un 404 en la puerta querría decir que el handler
+    no llegó a correr, y una auditoría que no ejecutó el código no auditó nada.
+    """
+
+    # Rutas GET que necesitan parámetros para hacer su trabajo completo. La caja
+    # vende DESDE una sucursal, así que sin `branch` responde 400 antes de
+    # buscar nada — y un 400 así no audita la búsqueda. Se rellena en setUp.
+    QUERY = {}
+    # Respuestas distintas de 200 que SIGUEN siendo el handler entero corriendo.
+    # Cada una con su razón; lo que no esté aquí y no sea 200 falla.
+    NON_200_BUT_EXECUTED = {
+        # Buscar un código que no existe responde 404 después de buscarlo.
+        'v1-internal-pos-lookup': {404},
+        # Su GET existe SÓLO para responder 405: el handler entero es esa línea.
+        # La lectura de un pedido vive en la ruta de detalle.
+        'v1-internal-order-fulfillment': {405},
+    }
+
+    def setUp(self):
+        super().setUp()
+        from store import inventory_services as _inv
+
+        self.ready_for_pickup()
+        self.pay('50.00')
+        self.evidence = self.upload()
+        self.commerce = _order(self.company, user=self.client_user, total='500.00', paid=True)
+        self.transfer = _inv.create_stock_transfer(
+            company=self.company, source_branch=self.branch_a,
+            destination_branch=self.branch_b, actor=self.staff,
+        )
+        self.master = _m7_user('h411_master')
+        self.master.is_superuser = True
+        self.master.is_staff = True
+        self.master.save(update_fields=['is_superuser', 'is_staff'])
+        self.announcement = _ann.create_draft(
+            author=self.master, source_company=self.company,
+            title='Comunicado H4.1.1', body='Sólo lectura.',
+        )
+        _ann.set_audience(
+            announcement=self.announcement,
+            rules=[{'company': self.company, 'kind': _Rule.Kind.ALL_COMPANY}],
+        )
+        _ann.publish(announcement=self.announcement, actor=self.master)
+
+        # ACUÑADO AQUÍ, y no dentro de la medición. `RefreshToken.for_user`
+        # registra el token emitido (INSERT en la lista negra), y la primera
+        # versión de esta prueba lo contó como si lo hubiera escrito la vista.
+        self.master_token = _h411_access(self.master)
+
+        order = self.order
+        quote = order.quotes.order_by('-pk').first()
+        self.kwargs_base = {
+            'company_slug': self.company.slug,
+            'diagnostic_id': order.diagnostics.order_by('pk').first().pk,
+            'quote_id': quote.pk,
+            'evidence_id': self.evidence.pk,
+            # Sólo los alcanza OPTIONS, que no busca el objeto. Cualquier entero.
+            'item_id': 999999, 'usage_id': 999999, 'payment_id': 999999,
+        }
+        self.QUERY = {
+            'v1-internal-pos-search': f'?branch={self.branch_a.pk}&q=Bat',
+            'v1-internal-pos-lookup': f'?branch={self.branch_a.pk}&code=H411-NO-EXISTE',
+        }
+        self.pk_by_name = {
+            'v1-internal-order-detail': self.commerce.pk,
+            'v1-internal-order-fulfillment': self.commerce.pk,
+            'v1-internal-service-device-detail': self.device.pk,
+            'v1-internal-announcement': self.announcement.pk,
+            'v1-internal-notifications-read': 999999,
+        }
+
+    def _kwargs(self, pattern):
+        name = pattern.name or ''
+        kwargs = dict(self.kwargs_base)
+        if name in self.pk_by_name:
+            kwargs['pk'] = self.pk_by_name[name]
+        elif name.startswith('v1-internal-transfer'):
+            kwargs['pk'] = self.transfer.pk
+        elif name.startswith('v1-internal-communications'):
+            kwargs['pk'] = self.announcement.pk
+        else:
+            kwargs['pk'] = self.order.pk
+        return kwargs
+
+    def _probe(self, make_client):
+        problems, executed = [], {'get': 0, 'head': 0, 'options': 0}
+        for route, pattern in _h411_internal_routes():
+            view = pattern.callback.view_class
+            url = _h411_fill(route, self._kwargs(pattern))
+            # Lo que la vista ADMITE, no lo que hereda: una vista puede heredar
+            # `get` y restringirlo con `http_method_names`. HEAD sigue a GET.
+            allowed = {m.lower() for m in view().allowed_methods}
+            methods = ['options'] + (['get', 'head'] if 'get' in allowed else [])
+            for method in methods:
+                cache.clear()  # un 429 cortaría el handler antes de correr
+                target = url + (self.QUERY.get(pattern.name, '') if method != 'options' else '')
+                client = make_client()  # fuera de la medición: montarlo no es la vista
+                with _H411Capture(_h411_connection) as queries:
+                    res = getattr(client, method)(target)
+                writes = [
+                    q['sql'][:140] for q in queries.captured_queries
+                    if q['sql'].lstrip().upper().startswith(_H411_WRITE_SQL)
+                ]
+                if writes:
+                    problems.append(f'{method.upper()} {target} ESCRIBIÓ: {writes}')
+                allowed = {200} | self.NON_200_BUT_EXECUTED.get(pattern.name, set())
+                if method in ('get', 'head') and res.status_code not in allowed:
+                    problems.append(
+                        f'{method.upper()} {target} → {res.status_code}: el handler '
+                        f'no corrió entero, así que no quedó auditado.'
+                    )
+                if method == 'options' and res.status_code >= 400:
+                    problems.append(f'OPTIONS {target} → {res.status_code}')
+                executed[method] += 1
+        self.assertEqual(problems, [], '\n' + '\n'.join(problems))
+        return executed
+
+    def test_every_safe_method_is_read_only_through_bearer(self):
+        executed = self._probe(lambda: _h411_bearer(self.master, token=self.master_token))
+        self.assertEqual(executed['options'], len(_h411_internal_routes()))
+        self.assertGreaterEqual(executed['get'], 40)
+
+    def test_every_safe_method_is_read_only_through_the_cookie(self):
+        executed = self._probe(lambda: _h411_cookie(self.master, token=self.master_token))
+        self.assertEqual(executed['options'], len(_h411_internal_routes()))
+        self.assertGreaterEqual(executed['get'], 40)
+
+
+class H411CredentialChannelTest(M8ServiceBase):
+    """
+    §9 — qué credencial se evalúa, y qué pasa cuando hay más de una.
+
+    La regla entera cabe en una línea: UNA REQUEST, UN CANAL. Cada prueba de
+    aquí existe porque la sonda del PASO 1 demostró, ejecutando el código, que
+    apilar las dos clases de DRF rompe al menos una de estas afirmaciones.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.full_service_role()
+        self.order = self.make_order()
+        self.slug = self.company.slug
+        self.ctx = f'/api/v1/internal/{self.slug}/service/context/'
+        self.read_all = f'/api/v1/internal/{self.slug}/notifications/read-all/'
+        self.colleague = _m7_user('h411_colega')
+        Membership.objects.create(user=self.colleague, company=self.company, role='technician')
+        cache.clear()
+
+    def _detail(self, res):
+        return res.json().get('detail')
+
+    # -- 01-10 · un canal por request ----------------------------------------
+
+    def test_01_no_credentials_is_401_with_the_v1_challenge(self):
+        res = APIClient().get(self.ctx)
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(res['WWW-Authenticate'], 'Bearer realm="api"')
+
+    def test_02_a_valid_bearer_authenticates(self):
+        self.assertEqual(_h411_bearer(self.staff).get(self.ctx).status_code, 200)
+
+    def test_03_a_valid_cookie_authenticates_a_get(self):
+        """EL ARREGLO. Antes de H4.1.1 esto era 401 con la sesión válida."""
+        self.assertEqual(_h411_cookie(self.staff).get(self.ctx).status_code, 200)
+
+    def test_04_an_invalid_bearer_does_not_fall_back_to_a_valid_cookie(self):
+        client = _h411_cookie(self.staff)
+        res = client.get(self.ctx, HTTP_AUTHORIZATION='Bearer xxx.yyy.zzz')
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_05_a_foreign_scheme_does_not_fall_back_to_a_valid_cookie(self):
+        for header in ('Basic abc', 'Token abc', 'Digest abc', 'garbage', 'Bearer a b'):
+            with self.subTest(header=header):
+                cache.clear()
+                res = _h411_cookie(self.staff).get(self.ctx, HTTP_AUTHORIZATION=header)
+                self.assertEqual(res.status_code, 401)
+                self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_05b_a_foreign_scheme_alone_is_refused_too(self):
+        res = APIClient().get(self.ctx, HTTP_AUTHORIZATION='Basic abc')
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_06_bearer_of_one_user_and_cookie_of_another_is_401(self):
+        """La sonda: con [Bearer, Cookie] esto entraba como el del Bearer."""
+        client = _h411_cookie(self.colleague)
+        res = client.get(self.ctx, HTTP_AUTHORIZATION=f'Bearer {_h411_access(self.staff)}')
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_07_bearer_and_cookie_of_the_SAME_user_is_still_401(self):
+        """No se comparan identidades: presentar dos canales ya es el error."""
+        client = _h411_cookie(self.staff)
+        res = client.get(self.ctx, HTTP_AUTHORIZATION=f'Bearer {_h411_access(self.staff)}')
+        self.assertEqual(res.status_code, 401)
+
+    def test_08_an_explicit_empty_authorization_header_closes_the_cookie_path(self):
+        res = _h411_cookie(self.staff).get(self.ctx, HTTP_AUTHORIZATION='')
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_08b_absent_and_empty_authorization_are_different_facts(self):
+        absent = APIClient().get(self.ctx)
+        empty = APIClient().get(self.ctx, HTTP_AUTHORIZATION='')
+        self.assertEqual(absent.status_code, 401)
+        self.assertEqual(empty.status_code, 401)
+        # Ausente: nadie presentó nada. Vacío: alguien presentó algo inválido.
+        self.assertNotEqual(self._detail(absent), _H411_INVALID)
+        self.assertEqual(self._detail(empty), _H411_INVALID)
+
+    def test_09_bearer_without_a_token_is_401(self):
+        for header in ('Bearer', 'Bearer '):
+            with self.subTest(header=header):
+                res = APIClient().get(self.ctx, HTTP_AUTHORIZATION=header)
+                self.assertEqual(res.status_code, 401)
+
+    def test_10_an_invalid_cookie_is_a_generic_401(self):
+        """«Token is invalid» narraba el estado de la credencial; aquí no."""
+        res = _h411_cookie(self.staff, token='xxx.yyy.zzz').get(self.ctx)
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+        self.assertEqual(res['WWW-Authenticate'], 'Bearer realm="api"')
+
+    def test_an_empty_cookie_is_not_a_credential(self):
+        """Semántica de `CookieJWTAuthentication`: vacía equivale a ausente."""
+        client = APIClient()
+        client.cookies[_h411_settings.JWT_COOKIE_ACCESS_NAME] = ''
+        res = client.get(self.ctx, HTTP_AUTHORIZATION=f'Bearer {_h411_access(self.staff)}')
+        self.assertEqual(res.status_code, 200)
+
+    # -- 11-17 · CSRF sólo en el canal cookie --------------------------------
+
+    def test_11_to_14_a_cookie_mutation_without_csrf_is_403(self):
+        client = _h411_cookie(self.staff)
+        for method in ('post', 'patch', 'put', 'delete'):
+            with self.subTest(method=method):
+                cache.clear()
+                res = getattr(client, method)(self.read_all)
+                self.assertEqual(res.status_code, 403)
+                self.assertIn('CSRF', self._detail(res))
+
+    def test_15_a_cookie_mutation_with_a_wrong_csrf_is_403(self):
+        client = _h411_cookie(self.staff)
+        _h411_csrf(client)
+        res = client.post(self.read_all, HTTP_X_CSRFTOKEN='a' * 64)
+        self.assertEqual(res.status_code, 403)
+        self.assertIn('CSRF', self._detail(res))
+
+    def test_16_a_cookie_mutation_with_a_valid_csrf_reaches_the_domain(self):
+        client = _h411_cookie(self.staff)
+        token = _h411_csrf(client)
+        self.assertEqual(client.post(self.read_all, HTTP_X_CSRFTOKEN=token).status_code, 200)
+        # PATCH/PUT/DELETE no existen en esta ruta: 405 prueba que PASARON la
+        # autenticación y el CSRF y llegaron al despacho.
+        for method in ('patch', 'put', 'delete'):
+            with self.subTest(method=method):
+                cache.clear()
+                res = getattr(client, method)(self.read_all, HTTP_X_CSRFTOKEN=token)
+                self.assertEqual(res.status_code, 405)
+
+    def test_17_a_bearer_mutation_needs_no_csrf(self):
+        client = _h411_bearer(self.staff, enforce_csrf_checks=True)
+        self.assertEqual(client.post(self.read_all).status_code, 200)
+        self.assertEqual(client.patch(self.read_all).status_code, 405)
+
+    def test_safe_methods_through_the_cookie_need_no_csrf(self):
+        client = _h411_cookie(self.staff)
+        for method in ('get', 'head', 'options'):
+            with self.subTest(method=method):
+                cache.clear()
+                self.assertEqual(getattr(client, method)(self.ctx).status_code, 200)
+
+    # -- 18-24 · las puertas responden IGUAL por los dos canales -------------
+
+    def _both(self, user, url):
+        """{canal: status} para la misma petición por cada canal."""
+        out = {}
+        for channel, make in (('bearer', _h411_bearer), ('cookie', _h411_cookie)):
+            cache.clear()
+            out[channel] = make(user).get(url).status_code
+        return out
+
+    def test_18_an_inactive_user_is_401_on_both_channels(self):
+        bearer, cookie = _h411_access(self.staff), _h411_access(self.staff)
+        self.staff.is_active = False
+        self.staff.save(update_fields=['is_active'])
+        for name, client in (('bearer', _h411_bearer(self.staff, token=bearer)),
+                             ('cookie', _h411_cookie(self.staff, token=cookie))):
+            with self.subTest(channel=name):
+                cache.clear()
+                res = client.get(self.ctx)
+                self.assertEqual(res.status_code, 401)
+                self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_19_an_inactive_membership_is_404_on_both_channels(self):
+        self.membership.is_active = False
+        self.membership.save(update_fields=['is_active'])
+        self.assertEqual(self._both(self.staff, self.ctx), {'bearer': 404, 'cookie': 404})
+
+    def test_20_an_inactive_company_is_404_on_both_channels(self):
+        self.company.is_active = False
+        self.company.save(update_fields=['is_active'])
+        self.assertEqual(self._both(self.staff, self.ctx), {'bearer': 404, 'cookie': 404})
+
+    def test_21_another_tenants_slug_is_404_on_both_channels(self):
+        url = f'/api/v1/internal/{self.other.slug}/service/context/'
+        self.assertEqual(self._both(self.staff, url), {'bearer': 404, 'cookie': 404})
+
+    def test_22_an_order_outside_the_branch_scope_is_404_on_both_channels(self):
+        order_b = self.make_order(branch=self.branch_b)
+        self.restrict_to_branch_a()
+        base = f'/api/v1/internal/{self.slug}/service/orders'
+        self.assertEqual(self._both(self.staff, f'{base}/{order_b.pk}/'),
+                         {'bearer': 404, 'cookie': 404})
+        self.assertEqual(self._both(self.staff, f'{base}/{self.order.pk}/'),
+                         {'bearer': 200, 'cookie': 200})
+
+    def test_23_a_missing_capability_is_403_on_both_channels(self):
+        sin = _m7_user('h411_sin_permiso')
+        membership = Membership.objects.create(user=sin, company=self.company, role='technician')
+        _assign(membership, _role(self.company, 'Sólo empresa',
+                                  capabilities=['company.view'], slug='h411-solo-empresa'))
+        self.assertEqual(self._both(sin, self.ctx), {'bearer': 403, 'cookie': 403})
+
+    def test_24_a_revoked_capability_takes_effect_on_the_next_request(self):
+        bearer = _h411_bearer(self.staff)
+        cookie = _h411_cookie(self.staff)
+        self.assertEqual(bearer.get(self.ctx).status_code, 200)
+        cache.clear()
+        self.assertEqual(cookie.get(self.ctx).status_code, 200)
+        MembershipRoleAssignment.objects.filter(membership=self.membership).update(is_active=False)
+        for name, client in (('bearer', bearer), ('cookie', cookie)):
+            with self.subTest(channel=name):
+                cache.clear()
+                # Los MISMOS clientes, con los MISMOS tokens: la autoridad no
+                # viaja en el token, se vuelve a leer en cada request.
+                self.assertEqual(client.get(self.ctx).status_code, 403)
+
+    # -- 25-30 · las fronteras no se mueven ----------------------------------
+
+    def test_25_the_web_admin_surface_does_not_accept_bearer(self):
+        for url in ('/api/admin/areas/', '/api/me/internal-dashboard/'):
+            with self.subTest(url=url):
+                cache.clear()
+                self.assertEqual(_h411_bearer(self.staff).get(url).status_code, 401)
+
+    def test_26_the_web_profile_does_not_accept_bearer(self):
+        self.assertEqual(_h411_bearer(self.staff).get('/api/auth/me/').status_code, 401)
+
+    def test_27_the_customer_surface_does_not_start_accepting_the_cookie(self):
+        url = f'/api/v1/customer/{self.slug}/orders/'
+        self.assertEqual(_h411_cookie(self.client_user).get(url).status_code, 401)
+        self.assertEqual(_h411_bearer(self.client_user).get(url).status_code, 200)
+
+    def test_28_platform_and_native_identity_do_not_change(self):
+        from store.announcement_views import _PlatformMixin
+        from store.v1_auth_views import V1MeView
+        from store.v1_authentication import V1BearerAuthentication
+        from store.v1_customer_views import V1CustomerSurfaceMixin
+
+        master = _m7_user('h411_master_frontera')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        self.assertEqual(_h411_cookie(master).get('/api/v1/platform/announcements/').status_code, 401)
+        cache.clear()
+        self.assertEqual(_h411_cookie(self.staff).get('/api/v1/auth/me/').status_code, 401)
+        for view in (_PlatformMixin, V1MeView, V1CustomerSurfaceMixin):
+            with self.subTest(view=view.__name__):
+                self.assertEqual(view.authentication_classes, [V1BearerAuthentication])
+
+    def test_29_the_global_default_authentication_is_unchanged(self):
+        self.assertEqual(
+            tuple(_h411_settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES']),
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_30_the_orchestrator_lives_on_the_internal_surface_and_nowhere_else(self):
+        internal, elsewhere = 0, []
+        for route, pattern in _h411_routes():
+            view = (getattr(pattern.callback, 'view_class', None)
+                    or getattr(pattern.callback, 'cls', None))
+            classes = list(getattr(view, 'authentication_classes', []) or [])
+            if route.startswith('api/v1/internal/'):
+                internal += 1
+                self.assertEqual(classes, [V1InternalAuthentication], route)
+            elif V1InternalAuthentication in classes:
+                elsewhere.append(route)
+        self.assertEqual(internal, 70)
+        self.assertEqual(elsewhere, [])
+
+    # -- identidades ----------------------------------------------------------
+
+    def test_a_customer_without_membership_is_404_by_cookie(self):
+        """Comprar en la tienda no es trabajar en ella."""
+        self.assertEqual(_h411_cookie(self.client_user).get(self.ctx).status_code, 404)
+
+    def test_the_public_storefront_ignores_the_cookie(self):
+        url = f'/api/v1/storefront/{self.slug}/config/'
+        anonymous = APIClient().get(url)
+        with_cookie = _h411_cookie(self.staff).get(url)
+        self.assertEqual(anonymous.status_code, 200)
+        self.assertEqual(anonymous.json(), with_cookie.json())
+
+    def test_the_master_reaches_the_NAMED_company_by_cookie_without_a_membership(self):
+        master = _m7_user('h411_master_cookie')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        self.assertEqual(_h411_cookie(master).get(self.ctx).status_code, 200)
+        self.assertFalse(Membership.objects.filter(user=master).exists())
+
+    def test_the_master_is_not_an_implicit_recipient(self):
+        from store.models import Notification
+        master = _m7_user('h411_master_bandeja')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        draft = _ann.create_draft(author=self.staff, source_company=self.company,
+                                  title='Aviso H4.1.1', body='Para el personal.')
+        _ann.set_audience(announcement=draft,
+                          rules=[{'company': self.company, 'kind': _Rule.Kind.ALL_COMPANY}])
+        _ann.publish(announcement=draft, actor=self.staff)
+        self.assertFalse(Notification.objects.filter(user=master).exists())
+        res = _h411_cookie(master).get(f'/api/v1/internal/{self.slug}/notifications/unread-count/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['unread'], 0)
+
+    def test_no_token_appears_in_a_response_or_a_log_line(self):
+        import logging
+
+        class _Collect(logging.Handler):
+            def __init__(self):
+                super().__init__(logging.DEBUG)
+                self.lines = []
+
+            def emit(self, record):
+                self.lines.append(record.getMessage())
+
+        good = _h411_access(self.staff)
+        root, collect = logging.getLogger(), _Collect()
+        previous = root.level
+        root.addHandler(collect)
+        root.setLevel(logging.DEBUG)
+        bodies = []
+        try:
+            for client, extra in (
+                (_h411_cookie(self.staff, token=good), {'HTTP_AUTHORIZATION': f'Bearer {good}'}),
+                (_h411_cookie(self.staff, token=good), {}),
+                (APIClient(), {'HTTP_AUTHORIZATION': f'Bearer {good}x'}),
+                (_h411_cookie(self.staff, token=good + 'x'), {}),
+            ):
+                cache.clear()
+                bodies.append(client.get(self.ctx, **extra).content.decode())
+        finally:
+            root.removeHandler(collect)
+            root.setLevel(previous)
+        for text in bodies + collect.lines:
+            self.assertNotIn(good, text)
+
