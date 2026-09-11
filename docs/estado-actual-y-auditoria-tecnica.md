@@ -3904,6 +3904,7 @@ que convertiría estas pruebas en unas que ya no prueban lo que se despliega.
 | Jest | **309 OK** en 25 suites — baseline: 294 en 23 |
 | `tsc --noEmit` | limpio |
 | ESLint | 0 errores y 33 avisos, sin regresión |
+| `next build` | 44/44 |
 | **Playwright completo** | **111 OK** · 1 fallo · 5 no ejecutados · 0 flaky (7,6 min) |
 | TEST-H41-TOKEN-FLAKY | **120 pasadas seguidas, 0 fallos**, más `z`, `y` y `A` forzados |
 | `makemigrations --check` · `migrate --plan` | sin cambios · sin operaciones |

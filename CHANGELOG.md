@@ -45,7 +45,7 @@ Verificado:
 - Dirigido 42 OK; backend completo **4029 OK** (22 saltadas), frente a 4019 en
   H4.1.2. La primera pasada marcó 1 fallo: el test que fija las claves del
   payload del dashboard, actualizado a propósito para admitir `branch_scope`.
-- Jest 309 OK en 25 suites; `tsc` y ESLint sin errores.
+- Jest 309 OK en 25 suites; `tsc` y ESLint sin errores; build 44/44.
 - **Playwright completo: 111 OK, 1 fallo, 5 no ejecutados, 0 flaky** (7,6 min). El
   fallo es el inestable conocido de C2.1, que aislado pasa 9/9.
 - 120 pasadas seguidas del test de invitación, sin fallos.
