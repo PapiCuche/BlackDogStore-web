@@ -15,7 +15,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
-import { StaffGuard } from "../../components/StaffGuard";
+import { AccessGuard } from "../../components/AccessGuard";
+import type { InternalAccess } from "../../lib/internal-access";
 import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import {
@@ -35,7 +36,7 @@ import {
   type InventoryCount,
   type InventoryScope,
 } from "../../../lib/inventory";
-import { canManageInventory, type AuthUser } from "../../../lib/auth";
+import type { AuthUser } from "../../../lib/auth";
 
 const STATUS_FILTERS: { value: "" | CountStatus; label: string }[] = [
   { value: "", label: "Todos" },
@@ -63,7 +64,7 @@ export function CountStatusBadge({ count }: { count: InventoryCount }) {
   );
 }
 
-function CountsContent({ user }: { user: AuthUser }) {
+function CountsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const scope = useBranchScope({ preferAggregate: true });
   const [counts, setCounts] = useState<InventoryCount[]>([]);
   const [resultScope, setResultScope] = useState<InventoryScope | null>(null);
@@ -77,7 +78,7 @@ function CountsContent({ user }: { user: AuthUser }) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const mayCount = canManageInventory(user);
+  const mayCount = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
   const branches = scope.access?.results ?? [];
   const branch = scope.branch;
 
@@ -285,5 +286,9 @@ function CountsContent({ user }: { user: AuthUser }) {
 }
 
 export default function CountsPage() {
-  return <StaffGuard>{(user) => <CountsContent user={user} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+      {(access) => <CountsContent user={access.user} access={access} />}
+    </AccessGuard>
+  );
 }

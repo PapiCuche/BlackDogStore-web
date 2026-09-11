@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { StaffGuard } from "../components/StaffGuard";
+import { AccessGuard } from "../components/AccessGuard";
 import { AdminShell } from "../components/AdminShell";
 import { OrdersTable } from "../components/OrdersTable";
 import {
@@ -165,6 +165,8 @@ function OrdersContent({ user }: { user: AuthUser }) {
 
 export default function AdminOrdersPage() {
   return (
-    <StaffGuard>{(user) => <OrdersContent user={user} />}</StaffGuard>
+    <AccessGuard capability="sales.orders.view" legacyRoles={["inventory", "sales", "admin", "superadmin"]}>
+      {(access) => <OrdersContent user={access.user} />}
+    </AccessGuard>
   );
 }

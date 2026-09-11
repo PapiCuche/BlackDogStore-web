@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { StaffGuard } from "../../components/StaffGuard";
+import { AccessGuard } from "../../components/AccessGuard";
+import type { InternalAccess } from "../../lib/internal-access";
 import { AdminShell } from "../../components/AdminShell";
 import { OrderStatusBadge } from "../../components/OrderStatusBadge";
 import { FulfillmentStatusBadge } from "../../components/FulfillmentStatusBadge";
@@ -22,9 +23,9 @@ import {
   DELIVERY_METHOD_LABELS,
   RECEIPT_TYPE_LABELS,
 } from "../../../lib/business";
-import { canManageSalesNotes, type AuthUser } from "../../../lib/auth";
+import type { AuthUser } from "../../../lib/auth";
 
-function OrderDetailContent({ user }: { user: AuthUser }) {
+function OrderDetailContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const { id } = useParams<{ id: string }>();
   const orderId = parseInt(id, 10);
 
@@ -74,8 +75,10 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
     }
   }
 
-  const canResendEmail =
-    user.role === "admin" || user.role === "superadmin";
+  // H4.1.2A — lo decide el servidor: `sales.orders.manage` en ESTA empresa, y
+  // el rol legacy sólo en el puente del piloto, que es lo que el backend
+  // acepta en ese camino (_LEGACY_RESEND_EMAIL_ROLES).
+  const canResendEmail = access.can("sales.orders.manage", ["admin", "superadmin"]);
 
   useEffect(() => {
     fetchAdminOrderDetail(orderId)
@@ -350,7 +353,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
         </section>
 
         {/* Internal sales note — sales/admin/superadmin only, paid orders only */}
-        {canManageSalesNotes(user) && (
+        {access.can("sales.notes.manage", ["sales", "admin", "superadmin"]) && (
           <SalesNotePanel orderId={order.id} isPaid={order.status === "paid"} />
         )}
 
@@ -396,6 +399,8 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
 
 export default function AdminOrderDetailPage() {
   return (
-    <StaffGuard>{(user) => <OrderDetailContent user={user} />}</StaffGuard>
+    <AccessGuard capability="sales.orders.view" legacyRoles={["inventory", "sales", "admin", "superadmin"]}>
+      {(access) => <OrderDetailContent user={access.user} access={access} />}
+    </AccessGuard>
   );
 }

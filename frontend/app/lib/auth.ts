@@ -18,10 +18,17 @@ export type BusinessRole =
   | 'admin'
   | 'superadmin';
 
-export function isAdminRole(user: AuthUser | null): boolean {
-  return user?.role === 'admin' || user?.role === 'superadmin';
-}
-
+/**
+ * H4.1.2A — `isAdminRole`, `canManageInventory` y `canManageSalesNotes` se
+ * borraron con RBAC-LEGACY-UI-01. Decidían por el rol GLOBAL lo que el backend
+ * decide por la capacidad de la empresa, así que echaban a quien tenía permiso
+ * y ofrecían botones que respondían 403. Su sustituto es
+ * `admin/lib/internal-access.buildInternalAccess`, que pregunta al servidor.
+ *
+ * `isStaffRole` sobrevive por una razón concreta: es la autoridad del operador
+ * del PUENTE LEGACY, que no tiene Membership y sobre el que el backend sigue
+ * mirando el rol. Se usa donde no hay contexto de empresa que preguntar.
+ */
 export function isStaffRole(user: AuthUser | null): boolean {
   return (
     user?.role === 'inventory' ||
@@ -33,24 +40,6 @@ export function isStaffRole(user: AuthUser | null): boolean {
 
 export function isSuperAdmin(user: AuthUser | null): boolean {
   return user?.role === 'superadmin';
-}
-
-/** Phase 6.0 — may register manual stock entries/exits. Mirrors CanManageStockMovements. */
-export function canManageInventory(user: AuthUser | null): boolean {
-  return (
-    user?.role === 'inventory' ||
-    user?.role === 'admin' ||
-    user?.role === 'superadmin'
-  );
-}
-
-/** Phase 6.0 — may issue and download INTERNAL sales notes. Mirrors CanManageSalesNotes. */
-export function canManageSalesNotes(user: AuthUser | null): boolean {
-  return (
-    user?.role === 'sales' ||
-    user?.role === 'admin' ||
-    user?.role === 'superadmin'
-  );
 }
 
 const ROLE_LABELS: Record<string, string> = {

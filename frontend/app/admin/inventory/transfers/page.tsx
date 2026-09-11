@@ -15,7 +15,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
-import { StaffGuard } from "../../components/StaffGuard";
+import { AccessGuard } from "../../components/AccessGuard";
+import type { InternalAccess } from "../../lib/internal-access";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import {
   EmptyBox,
@@ -33,7 +34,7 @@ import {
   type StockTransfer,
   type TransferStatus,
 } from "../../../lib/inventory";
-import { canManageInventory, type AuthUser } from "../../../lib/auth";
+import type { AuthUser } from "../../../lib/auth";
 
 const STATUS_FILTERS: { value: "" | TransferStatus; label: string }[] = [
   { value: "", label: "Todas" },
@@ -63,7 +64,7 @@ export function TransferStatusBadge({ transfer }: { transfer: StockTransfer }) {
   );
 }
 
-function TransfersContent({ user }: { user: AuthUser }) {
+function TransfersContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const scope = useBranchScope({ preferAggregate: true });
   const [transfers, setTransfers] = useState<StockTransfer[]>([]);
   const [statusFilter, setStatusFilter] = useState<"" | TransferStatus>("");
@@ -77,7 +78,7 @@ function TransfersContent({ user }: { user: AuthUser }) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const mayTransfer = canManageInventory(user);
+  const mayTransfer = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
   const branches = scope.access?.results ?? [];
 
   const load = useCallback(async () => {
@@ -304,5 +305,9 @@ function TransfersContent({ user }: { user: AuthUser }) {
 }
 
 export default function TransfersPage() {
-  return <StaffGuard>{(user) => <TransfersContent user={user} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+      {(access) => <TransfersContent user={access.user} access={access} />}
+    </AccessGuard>
+  );
 }

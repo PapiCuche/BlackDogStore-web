@@ -11,7 +11,7 @@
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
 import { AdminShell } from "../../../components/AdminShell";
-import { StaffGuard } from "../../../components/StaffGuard";
+import { AccessGuard } from "../../../components/AccessGuard";
 import {
   EmptyBox,
   ErrorBox,
@@ -233,15 +233,19 @@ export default function StockCardPage({ params }: { params: Promise<{ id: string
 
   if (!Number.isFinite(productId)) {
     return (
-      <StaffGuard>
-        {(user) => (
-          <AdminShell user={user}>
+      <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+        {(access) => (
+          <AdminShell user={access.user}>
             <ErrorBox message="Identificador de producto inválido." />
           </AdminShell>
         )}
-      </StaffGuard>
+      </AccessGuard>
     );
   }
 
-  return <StaffGuard>{(user) => <StockCardContent user={user} productId={productId} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+      {(access) => <StockCardContent user={access.user} productId={productId} />}
+    </AccessGuard>
+  );
 }

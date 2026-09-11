@@ -8,9 +8,8 @@
  * one application rather than an extension of the storefront.
  *
  * IMPORTANT — this is layout, not authorisation.
- * Each page keeps its own guard (StaffGuard / AdminGuard / InternalControlGuard)
- * and every endpoint re-checks server-side. Changing the frame changed no
- * permission.
+ * Each page keeps its own guard (AccessGuard / InternalControlGuard) and every
+ * endpoint re-checks server-side. Changing the frame changed no permission.
  *
  * The shell fetches the company context itself and DEGRADES GRACEFULLY: an
  * operator with a legacy staff role but no Membership still gets the panel, with
@@ -18,7 +17,8 @@
  * out every existing operator until their company adopts memberships.
  */
 
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import { InternalAccessContext } from "./AccessGuard";
 import { InternalSidebar, MobileSidebar } from "./InternalSidebar";
 import { InternalTopbar } from "./InternalTopbar";
 import {
@@ -53,11 +53,14 @@ export function buildAccessContext(
 export function AdminShell({ user, dashboard, onSelectCompany, children }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [ownDashboard, setOwnDashboard] = useState<InternalDashboard | null>(null);
-  const [selfLoaded, setSelfLoaded] = useState(dashboard !== undefined);
+  // H4.1.2A: `AccessGuard` ya preguntó el contexto para decidir si abría la
+  // pantalla. Reutilizarlo evita una segunda petición idéntica por navegación.
+  const guarded = useContext(InternalAccessContext);
+  const [selfLoaded, setSelfLoaded] = useState(dashboard !== undefined || guarded !== null);
 
   // Only pages that did not already load the context pay for a request.
   useEffect(() => {
-    if (dashboard !== undefined) return;
+    if (dashboard !== undefined || guarded !== null) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -75,9 +78,10 @@ export function AdminShell({ user, dashboard, onSelectCompany, children }: Props
     return () => {
       cancelled = true;
     };
-  }, [dashboard]);
+  }, [dashboard, guarded]);
 
-  const effective = dashboard !== undefined ? dashboard : ownDashboard;
+  const effective =
+    dashboard !== undefined ? dashboard : guarded !== null ? guarded.dashboard : ownDashboard;
   const access = buildAccessContext(user, effective);
 
   return (

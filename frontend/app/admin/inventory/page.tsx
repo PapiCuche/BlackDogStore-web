@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
-import { StaffGuard } from "../components/StaffGuard";
+import { AccessGuard } from "../components/AccessGuard";
 import { BranchSelector, ScopeNote } from "../components/BranchSelector";
 import { useBranchScope } from "../lib/use-branch-scope";
 import { HorizontalBarChart, VerticalBarChart } from "../components/charts";
@@ -291,5 +291,9 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
 }
 
 export default function InventoryPage() {
-  return <StaffGuard>{(user) => <InventoryDashboardPage user={user} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+      {(access) => <InventoryDashboardPage user={access.user} />}
+    </AccessGuard>
+  );
 }

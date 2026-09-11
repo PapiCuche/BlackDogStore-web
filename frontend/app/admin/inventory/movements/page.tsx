@@ -10,7 +10,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
-import { StaffGuard } from "../../components/StaffGuard";
+import { AccessGuard } from "../../components/AccessGuard";
+import type { InternalAccess } from "../../lib/internal-access";
 import { StockMovementForm } from "../../components/StockMovementForm";
 import {
   EmptyBox,
@@ -35,7 +36,7 @@ import {
 import { fetchAdminProducts, type AdminProduct } from "../../../lib/admin";
 import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
 import { useBranchScope } from "../../lib/use-branch-scope";
-import { canManageInventory, type AuthUser } from "../../../lib/auth";
+import type { AuthUser } from "../../../lib/auth";
 
 type Filters = {
   product: string;
@@ -53,7 +54,7 @@ const EMPTY_FILTERS: Filters = {
   search: "",
 };
 
-function MovementsContent({ user }: { user: AuthUser }) {
+function MovementsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const scope = useBranchScope({ preferAggregate: true });
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS);
@@ -69,7 +70,7 @@ function MovementsContent({ user }: { user: AuthUser }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [resultScope, setResultScope] = useState<InventoryScope | null>(null);
 
-  const mayMoveStock = canManageInventory(user);
+  const mayMoveStock = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
   const branch = scope.branch;
 
   const loadMovements = useCallback(async () => {
@@ -378,5 +379,9 @@ function MovementsContent({ user }: { user: AuthUser }) {
 }
 
 export default function MovementsPage() {
-  return <StaffGuard>{(user) => <MovementsContent user={user} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+      {(access) => <MovementsContent user={access.user} access={access} />}
+    </AccessGuard>
+  );
 }

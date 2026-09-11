@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AdminGuard } from "../components/AdminGuard";
+import { AccessGuard } from "../components/AccessGuard";
 import { AdminShell } from "../components/AdminShell";
 import { AuditLogTable } from "../components/AuditLogTable";
 import {
@@ -141,5 +141,11 @@ function AuditLogsContent({ user }: { user: AuthUser }) {
 }
 
 export default function AuditLogsPage() {
-  return <AdminGuard>{(user) => <AuditLogsContent user={user} />}</AdminGuard>;
+  // La bitácora pide `memberships.view` en la empresa y NO tiene puente
+  // legacy: sin membresía, el backend responde 403 venga el rol que venga.
+  return (
+    <AccessGuard capability="memberships.view" legacyRoles={[]}>
+      {(access) => <AuditLogsContent user={access.user} />}
+    </AccessGuard>
+  );
 }
