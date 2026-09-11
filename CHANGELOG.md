@@ -9,6 +9,58 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## H4.1.2 — Autoridad interna: pedidos por sucursal y RBAC por capability
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Cierra BRANCH-SCOPE-01 y
+RBAC-LEGACY-01 (decisiones D1–D4).
+
+Un miembro limitado a una sucursal veía, imprimía, reenviaba, movía, anotaba y
+facturaba los pedidos de las demás, por web y por app, y leía en el panel los
+ingresos de toda la empresa.
+
+- **`tenancy.visible_orders(user, company)`**: una sola frontera, aplicada antes de
+  buscar, contar, agregar o paginar. La usan v1 y web (lista, detalle, despacho),
+  el recibo PDF, el reenvío de correo, la nota de venta (GET, POST, PDF), el
+  comprobante fiscal por pedido y por id, los KPIs de ventas del dashboard y el
+  historial de la ficha de cliente. Fuera de alcance: 404.
+- **Pedidos sin sucursal o de sucursal cerrada:** sólo para master, puente legacy y
+  membresía `ALL`. Sin backfill, y `visible_branches()` no se amplía.
+- **Una escalera de autoridad** (`_branch_authority`) compartida por sucursales y
+  pedidos. `visible_branches()` no cambia de comportamiento.
+- **RBAC:** `allowed_fulfillment_statuses(user, company)`. En SaaS decide
+  `sales.orders.manage`; el rol global sólo cuenta en el puente legacy. Quien sólo
+  puede ver recibe `[]`.
+- **El panel web** pinta los estados que devuelve el servidor en vez de filtrar por
+  `user.role`. Se borró la copia muerta de la regla que había en `admin_views`.
+
+Cuatro pruebas cambiaron a propósito. Dos M6 fijaban la regla por rol global
+dentro de una empresa. Dos M12B movían el despacho con un cliente como actor, algo
+que la regla vieja permitía; ahora usan personal con autoridad. Servicio técnico y
+trade-in quedan registrados en el estado actual, sin implementar.
+
+Verificado:
+
+- Batería H4.1.2: 67 OK.
+- Dirigido en SQLite: 1030 OK. En PostgreSQL: 310 OK.
+- Backend completo: 4019 OK. La primera ejecución encontró 3 roturas, ya
+  corregidas; la segunda tropezó con TEST-H41-TOKEN-FLAKY, un defecto
+  preexistente.
+- Jest 294 OK; `tsc` y ESLint sin errores; build 44/44.
+- Playwright dirigido: 24 OK. Los 2 omitidos se deben al limitador del arnés, y
+  aislados pasan.
+- Sin migraciones.
+
+Sabotaje: retirar cada protección deja 5, 1, 2, 1 y 6 pruebas en rojo.
+
+**Deuda nueva:** SVC-ASSIGNEE-01, REFURB-UNIT, TRADEIN-REVERSAL, RBAC-LEGACY-UI-01,
+DASH-SCOPE-LABEL, CRM-HISTORY-CAP, AUDIT-BRANCH-SCOPE-01, POS-IDEMP-409,
+ORDER-BACKFILL-01, E2E-FISCAL-THROTTLE y TEST-H41-TOKEN-FLAKY. Quedan
+registradas también SVC-INTAKE-WEB, SVC-CAP-SPLIT, SVC-QUOTE-INSHOP,
+SVC-QC-SEGREGATION, TRADE-IN, TRADEIN-OWNERSHIP, INV-SERIAL, SALE-TENDER-LEDGER,
+TRADEIN-MARGIN y FISCAL-TRADEIN.
+
+---
+
 ## H4.1.1 — Web ↔ v1 interno: autenticación y acceso real del técnico
 
 **Estado: IMPLEMENTADO.** Sin migraciones. DEC-API-004 ·

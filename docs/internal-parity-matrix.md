@@ -72,6 +72,13 @@ automáticamente, y eso es lo que hace el guard.
 | Anulación / devolución POS | **no existe** | — | — | — | — | **E** |
 | Arqueo / sesión de caja | **no existe** | — | — | — | — | **E** |
 
+> **Alcance de sucursal — H4.1.2.** La capability de la tabla dice *si* alguien
+> puede operar pedidos, despacho y notas de venta, no *cuáles*. Las superficies de
+> pedidos parten de `tenancy.visible_orders`: una membresía `SELECTED` sólo alcanza
+> los pedidos de sus sucursales, y lo que queda fuera responde 404, igual por web,
+> por cookie y por Bearer. En despacho, dentro de una empresa decide
+> `sales.orders.manage`, y el rol global sólo cuenta en el puente legacy.
+
 ## INVENTARIO
 
 | Función | Backend | Web | V1 | Mobile | Capability | TIPO |

@@ -25479,9 +25479,18 @@ class M6InternalFulfillmentTest(M6InternalBase):
         self.assertEqual(entry.metadata['old_fulfillment_status'], before)
         self.assertEqual(entry.metadata['new_fulfillment_status'], 'shipped')
 
-    def test_an_INVENTORY_role_is_limited_to_moving_goods(self):
-        # Warehouse staff move goods; they do not cancel sales. Preserved
-        # exactly from the web admin.
+    def test_a_global_INVENTORY_role_does_not_narrow_what_the_company_granted(self):
+        """
+        H4.1.2 CAMBIÓ ESTE TEST A PROPÓSITO (RBAC-LEGACY-01, decisión D4 · opción A).
+
+        Se llamaba `test_an_INVENTORY_role_is_limited_to_moving_goods` y fijaba
+        que perfil global `inventory` + rol de empresa con `sales.orders.manage`
+        daba 403 al cancelar: la regla leía `UserProfile.role` dentro de una
+        empresa SaaS. Dentro de una empresa manda la capability — la empresa le
+        dio `manage`, así que fija cualquier estado. La regla por rol sigue viva
+        sólo en el puente legacy (Phase33FulfillmentStatusChangeTest y
+        H412LegacyBridgeTest).
+        """
         inventory = _m6_user('almacen')
         Membership.objects.create(user=inventory, company=self.company, role='inventory')
         profile, _ = UserProfile.objects.get_or_create(user=inventory)
@@ -25494,19 +25503,26 @@ class M6InternalFulfillmentTest(M6InternalBase):
         _assign(Membership.objects.get(user=inventory, company=self.company), role)
         client, _ = _m6_login('almacen')
 
-        allowed = client.patch(
+        shipped = client.patch(
             _m6_fulfillment_url('m6-shop', self.order.id),
             {'fulfillment_status': 'shipped'}, format='json',
         )
-        refused = client.patch(
+        cancelled = client.patch(
             _m6_fulfillment_url('m6-shop', self.order.id),
             {'fulfillment_status': 'cancelled'}, format='json',
         )
 
-        self.assertEqual(allowed.status_code, 200)
-        self.assertEqual(refused.status_code, 403)
+        self.assertEqual(shipped.status_code, 200)
+        self.assertEqual(cancelled.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.fulfillment_status, 'cancelled')
 
     def test_it_reports_the_transitions_that_actor_may_use(self):
+        """
+        H4.1.2: quien sólo tiene `sales.orders.view` no puede mover nada, y eso es
+        lo que se le informa — una lista vacía, no botones que fallan. Antes se le
+        quitaba sólo «cancelled», porque su perfil GLOBAL decía inventory.
+        """
         inventory = _m6_user('almacen2')
         Membership.objects.create(user=inventory, company=self.company, role='inventory')
         profile, _ = UserProfile.objects.get_or_create(user=inventory)
@@ -25521,7 +25537,7 @@ class M6InternalFulfillmentTest(M6InternalBase):
 
         payload = client.get(_m6_order_url('m6-shop', self.order.id)).json()
 
-        self.assertNotIn('cancelled', payload['available_fulfillment_transitions'])
+        self.assertEqual(payload['available_fulfillment_transitions'], [])
 
     def test_an_invalid_status_is_400(self):
         client = self._manage_client()
@@ -41626,12 +41642,28 @@ class M12BCommerceEventsTest(TestCase):
         self.assertEqual(User.objects.count(), before_users, 'no se inventa usuario')
         self.assertEqual(_Notif.objects.filter(target_id=guest.pk).count(), 0)
 
+    def _staff_actor(self):
+        """
+        Quien mueve el despacho es PERSONAL con autoridad en la empresa.
+
+        H4.1.2 CAMBIÓ ESTE FIXTURE A PROPÓSITO (RBAC-LEGACY-01). Las dos pruebas de
+        abajo pasaban al propio comprador como `actor`, y el servicio lo aceptaba
+        porque decidía por `UserProfile.role`: cualquier rol que no fuera inventory
+        podía fijar cualquier estado. Ahora el servicio aplica la regla de las
+        vistas —sin `sales.orders.manage` en la empresa no hay transición—, así que
+        el actor es una vendedora del piloto. Lo que se prueba no cambia: que el
+        CLIENTE del pedido reciba el aviso.
+        """
+        staff = _saas_user('m12b_staff')
+        Membership.objects.create(user=staff, company=self.company, role='sales')
+        return staff
+
     def test_28_fulfillment_ready_notifies_the_customer(self):
         from . import order_fulfillment_services as fulfil
         self._pay()
         fulfil.change_fulfillment_status(
             order=self.order, company=self.company,
-            new_status=Order.FulfillmentStatus.READY_FOR_PICKUP, actor=self.user,
+            new_status=Order.FulfillmentStatus.READY_FOR_PICKUP, actor=self._staff_actor(),
         )
         note = _Notif.objects.filter(
             event__event_type=_ev.COMMERCE_FULFILLMENT_READY,
@@ -41642,10 +41674,11 @@ class M12BCommerceEventsTest(TestCase):
     def test_29_shipped_promises_no_tracking_it_does_not_have(self):
         from . import order_fulfillment_services as fulfil
         self._pay()
+        staff = self._staff_actor()
         for status_value in (Order.FulfillmentStatus.SHIPPED,):
             fulfil.change_fulfillment_status(
                 order=self.order, company=self.company,
-                new_status=status_value, actor=self.user,
+                new_status=status_value, actor=staff,
             )
         note = _Notif.objects.filter(
             event__event_type=_ev.COMMERCE_FULFILLMENT_SHIPPED,
@@ -51618,3 +51651,627 @@ class H411PurgeE2EDataTest(M8ServiceBase):
         self._purge()
         self.assertFalse(StaffInvitation.objects.filter(pk=e2e.pk).exists())
         self.assertTrue(StaffInvitation.objects.filter(pk=real.pk).exists())
+
+
+# ===========================================================================
+# H4.1.2 — INTERNAL AUTHORITY HARDENING
+# ===========================================================================
+#
+# BRANCH-SCOPE-01  Toda superficie interna de pedidos ve SÓLO lo que deja ver
+#                  tenancy.visible_orders(): tenant Y sucursal, antes de buscar,
+#                  contar, agregar o paginar. Fuera de alcance = 404.
+# RBAC-LEGACY-01   En SaaS decide `sales.orders.manage`; el rol global sólo manda
+#                  en el puente legacy del piloto.
+#
+# El escenario del enunciado, en una empresa: sucursales A, B y CLOSED, y los
+# pedidos A1, A2, B1, B2, CLOSED1 y LEGACY_NULL. Otra empresa con uno propio.
+
+from .fiscal_services import get_or_create_fiscal_document as _h412_issue  # noqa: E402
+from .models import (  # noqa: E402
+    AdminAuditLog as _H412Audit,
+    Branch as _H412Branch,
+    Customer as _H412Customer,
+    FiscalDocument as _H412FiscalDocument,
+    FiscalDocumentType as _H412DocType,
+    FiscalSeries as _H412Series,
+    MembershipBranchAccess as _H412Access,
+    OrderItem as _H412OrderItem,
+    SalesNote as _H412SalesNote,
+)
+from .order_fulfillment_services import (  # noqa: E402
+    ALL_FULFILLMENT_STATUSES as _H412_ALL_STATES,
+    allowed_fulfillment_statuses as _h412_allowed,
+)
+from .tenancy import (  # noqa: E402
+    visible_branches as _h412_branches,
+    visible_orders as _h412_orders,
+)
+
+_H412_ORDER_CAPS = (
+    'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage',
+    'sales.fiscal.view', 'sales.fiscal.issue',
+)
+_H412_LEGACY_INVENTORY_STATES = ['preparing', 'ready_for_pickup', 'shipped', 'delivered']
+_H412_ORDER_404 = 'Orden no encontrada.'
+_H412_FISCAL_ORDER_404 = 'No se encontró el pedido.'
+_H412_FISCAL_DOC_404 = 'No se encontró el comprobante.'
+
+
+def _h412_ids(response):
+    return {row['id'] for row in response.json()['results']}
+
+
+class H412ScopeBase(TestCase):
+    """La empresa del enunciado, sus actores y un cliente HTTP por canal."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'h412-shop', 'Empresa H412', tax_id='20100066603', legal_name='EMPRESA H412 SAC',
+        )
+        self.other = _p3_company(
+            'h412-otra', 'Empresa Ajena H412', tax_id='20522222222', legal_name='AJENA H412 SAC',
+        )
+        self.branch_a = _p2d_branch(self.company, 'Sucursal A')
+        self.branch_b = _p2d_branch(self.company, 'Sucursal B')
+        self.branch_closed = _p2d_branch(self.company, 'Sucursal Cerrada')
+        self.product = _c1_product(self.company, 'Articulo H412', '118.00')
+        self.foreign_product = _c1_product(self.other, 'Articulo Ajeno H412', '118.00')
+
+        self.a1 = self._order(self.branch_a)
+        self.a2 = self._order(self.branch_a)
+        self.b1 = self._order(self.branch_b)
+        self.b2 = self._order(self.branch_b)
+        self.closed1 = self._order(self.branch_closed)
+        self.legacy_null = self._order(None)
+        self.foreign = self._order(self.other.default_inventory_branch, company=self.other)
+        # Cerrada DESPUÉS de vender: el pedido existe y su sucursal ya no opera.
+        _H412Branch.objects.filter(pk=self.branch_closed.pk).update(is_active=False)
+
+        self.selected_a, self.selected_a_membership = _p2d_member(
+            self.company, 'h412_sel_a', _H412_ORDER_CAPS, branches=[self.branch_a],
+        )
+        self.all_staff, _ = _p2d_member(self.company, 'h412_all', _H412_ORDER_CAPS)
+        self.master = User.objects.create_user(
+            username='h412_master', password='Pass123!', is_superuser=True,
+        )
+
+    # -- fixtures -------------------------------------------------------------
+
+    def _order(self, branch, *, company=None):
+        company = company or self.company
+        product = self.product if company.pk == self.company.pk else self.foreign_product
+        order = Order.objects.create(
+            company=company,
+            customer_name='CLIENTE H412 SAC',
+            customer_email='cliente-h412@example.invalid',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=branch,
+        )
+        _H412OrderItem.objects.create(
+            order=order, product=product, quantity=1, price=Decimal('118.00'),
+        )
+        return order
+
+    def everything(self):
+        return {
+            self.a1.pk, self.a2.pk, self.b1.pk, self.b2.pk,
+            self.closed1.pk, self.legacy_null.pk,
+        }
+
+    # -- canales: web cookie, v1 cookie, v1 Bearer ----------------------------
+
+    def web_get(self, user, url):
+        cache.clear()
+        return _h411_cookie(user).get(url)
+
+    def web_send(self, user, method, url, data=None):
+        cache.clear()
+        client = _h411_cookie(user)
+        token = _h411_csrf(client)
+        return getattr(client, method)(url, data or {}, format='json', HTTP_X_CSRFTOKEN=token)
+
+    def v1_get(self, channel, user, url):
+        cache.clear()
+        client = _h411_bearer(user) if channel == 'bearer' else _h411_cookie(user)
+        return client.get(url)
+
+    def v1_patch(self, channel, user, url, data):
+        cache.clear()
+        if channel == 'bearer':
+            return _h411_bearer(user).patch(url, data, format='json')
+        client = _h411_cookie(user)
+        token = _h411_csrf(client)
+        return client.patch(url, data, format='json', HTTP_X_CSRFTOKEN=token)
+
+    @staticmethod
+    def web(path=''):
+        return f'/api/admin/orders/{path}'
+
+    def v1(self, path=''):
+        return f'/api/v1/internal/{self.company.slug}/orders/{path}'
+
+
+class H412VisibleOrdersHelperTest(H412ScopeBase):
+    """§2 — la frontera en sí, sin HTTP de por medio."""
+
+    def _pks(self, user, company):
+        return set(_h412_orders(user, company).values_list('pk', flat=True))
+
+    def test_SELECTED_A_sees_exactly_A1_and_A2(self):
+        self.assertEqual(self._pks(self.selected_a, self.company), {self.a1.pk, self.a2.pk})
+
+    def test_ALL_sees_A_B_CLOSED_and_NULL_of_its_company(self):
+        self.assertEqual(self._pks(self.all_staff, self.company), self.everything())
+
+    def test_the_master_sees_the_named_company_whole_and_only_it(self):
+        self.assertEqual(self._pks(self.master, self.company), self.everything())
+        self.assertEqual(self._pks(self.master, self.other), {self.foreign.pk})
+
+    def test_nobody_crosses_tenants(self):
+        self.assertEqual(self._pks(self.selected_a, self.other), set())
+        self.assertEqual(self._pks(self.all_staff, self.other), set())
+
+    def test_anonymous_and_no_company_see_nothing(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        self.assertEqual(self._pks(AnonymousUser(), self.company), set())
+        self.assertEqual(self._pks(self.all_staff, None), set())
+
+    def test_an_inactive_membership_sees_nothing(self):
+        Membership.objects.filter(pk=self.selected_a_membership.pk).update(is_active=False)
+        self.assertEqual(self._pks(self.selected_a, self.company), set())
+
+    def test_D1_is_not_solved_by_widening_visible_branches(self):
+        """Los pedidos NULL y CLOSED no se recuperan dándole más sucursales a nadie."""
+        self.assertEqual(list(_h412_branches(self.selected_a, self.company)), [self.branch_a])
+        self.assertNotIn(
+            self.branch_closed.pk,
+            set(_h412_branches(self.all_staff, self.company).values_list('pk', flat=True)),
+        )
+
+
+class H412SelectedBranchWebTest(H412ScopeBase):
+    """§11-13 — un SELECTED de A por la web (cookie + CSRF), superficie por superficie."""
+
+    def test_the_list_shows_A1_and_A2_and_counts_two(self):
+        res = self.web_get(self.selected_a, self.web())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(_h412_ids(res), {self.a1.pk, self.a2.pk})
+        self.assertEqual(res.json()['count'], 2)
+
+    def test_the_count_is_computed_after_the_scope(self):
+        """§4 — A tiene 2 y B tiene 5: el SELECTED de A cuenta 2, no 7."""
+        for _ in range(3):
+            self._order(self.branch_b)
+
+        self.assertEqual(self.web_get(self.selected_a, self.web()).json()['count'], 2)
+        self.assertEqual(self.web_get(self.selected_a, self.web('?paid=true')).json()['count'], 2)
+        self.assertEqual(self.web_get(self.selected_a, self.web('?search=H412')).json()['count'], 2)
+        for channel in ('cookie', 'bearer'):
+            with self.subTest(channel=channel):
+                self.assertEqual(
+                    self.v1_get(channel, self.selected_a, self.v1()).json()['count'], 2,
+                )
+        # Paginar tampoco asoma B: página a página sólo aparecen A1 y A2.
+        seen = set()
+        for page in (1, 2, 3):
+            seen |= _h412_ids(self.web_get(self.selected_a, self.web(f'?page={page}&page_size=1')))
+        self.assertEqual(seen, {self.a1.pk, self.a2.pk})
+        # Y la empresa entera sí cuenta sus nueve.
+        self.assertEqual(self.web_get(self.all_staff, self.web()).json()['count'], 9)
+
+    def test_B_CLOSED_and_NULL_answer_like_an_order_that_does_not_exist(self):
+        missing = self.web_get(self.selected_a, self.web('999999/'))
+        self.assertEqual(missing.status_code, 404)
+        for order in (self.b1, self.closed1, self.legacy_null, self.foreign):
+            with self.subTest(order=order.pk):
+                res = self.web_get(self.selected_a, self.web(f'{order.pk}/'))
+                self.assertEqual(res.status_code, 404)
+                self.assertEqual(res.json(), missing.json())
+        self.assertEqual(self.web_get(self.selected_a, self.web(f'{self.a1.pk}/')).status_code, 200)
+
+    def test_moving_B_is_404_and_changes_nothing(self):
+        before = self.b1.fulfillment_status
+        res = self.web_send(
+            self.selected_a, 'patch', self.web(f'{self.b1.pk}/fulfillment-status/'),
+            {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual(res.status_code, 404)
+        self.b1.refresh_from_db()
+        self.assertEqual(self.b1.fulfillment_status, before)
+        self.assertFalse(_H412Audit.objects.filter(
+            action='order_fulfillment_status_changed', target_id=str(self.b1.pk),
+        ).exists())
+
+        ok = self.web_send(
+            self.selected_a, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'),
+            {'fulfillment_status': 'shipped'},
+        )
+        self.assertEqual(ok.status_code, 200)
+
+    def test_the_receipt_of_B_is_404_and_A_downloads(self):
+        res = self.web_get(self.selected_a, self.web(f'{self.b1.pk}/receipt-pdf/'))
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(res.json()['detail'], _H412_ORDER_404)
+
+        own = self.web_get(self.selected_a, self.web(f'{self.a1.pk}/receipt-pdf/'))
+        self.assertEqual(own.status_code, 200)
+        self.assertEqual(own['Content-Type'], 'application/pdf')
+
+    def test_resending_the_email_of_B_is_404_and_sends_nothing(self):
+        mail.outbox = []
+        res = self.web_send(self.selected_a, 'post', self.web(f'{self.b1.pk}/resend-confirmation-email/'))
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(res.json()['detail'], _H412_ORDER_404)
+        self.assertEqual(mail.outbox, [])
+
+        own = self.web_send(self.selected_a, 'post', self.web(f'{self.a1.pk}/resend-confirmation-email/'))
+        self.assertEqual(own.status_code, 200)
+        self.assertGreaterEqual(len(mail.outbox), 1)
+
+    def test_the_sales_note_of_B_is_404_everywhere_and_spends_no_number(self):
+        for path in ('sales-note/', 'sales-note/pdf/'):
+            with self.subTest(path=path):
+                res = self.web_get(self.selected_a, self.web(f'{self.b1.pk}/{path}'))
+                self.assertEqual(res.status_code, 404)
+                # «Orden no encontrada», no «todavía no tiene nota»: es la frontera.
+                self.assertEqual(res.json()['detail'], _H412_ORDER_404)
+        issued = self.web_send(self.selected_a, 'post', self.web(f'{self.b1.pk}/sales-note/'))
+        self.assertEqual(issued.status_code, 404)
+        self.assertFalse(_H412SalesNote.objects.filter(order=self.b1).exists())
+
+        created = self.web_send(self.selected_a, 'post', self.web(f'{self.a1.pk}/sales-note/'))
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(self.web_get(self.selected_a, self.web(f'{self.a1.pk}/sales-note/')).status_code, 200)
+        self.assertEqual(self.web_get(self.selected_a, self.web(f'{self.a1.pk}/sales-note/pdf/')).status_code, 200)
+
+    def test_issuing_the_fiscal_document_of_B_is_404_and_spends_no_number(self):
+        """§6 — con `sales.fiscal.issue` y sin la sucursal B: 404, serie intacta."""
+        series = _H412Series.objects.create(
+            company=self.company, document_type=_H412DocType.INVOICE,
+            series='F001', next_number=1,
+        )
+        issued = self.web_send(self.selected_a, 'post', self.web(f'{self.b1.pk}/fiscal-document/'))
+        self.assertEqual(issued.status_code, 404)
+        self.assertEqual(issued.json()['detail'], _H412_FISCAL_ORDER_404)
+        read = self.web_get(self.selected_a, self.web(f'{self.b1.pk}/fiscal-document/'))
+        self.assertEqual(read.status_code, 404)
+        self.assertEqual(read.json()['detail'], _H412_FISCAL_ORDER_404)
+        self.assertFalse(_H412FiscalDocument.objects.filter(order=self.b1).exists())
+        series.refresh_from_db()
+        self.assertEqual(series.next_number, 1)
+
+        # El pedido de A SÍ se resuelve: quien contesta es el dominio fiscal.
+        own = self.web_get(self.selected_a, self.web(f'{self.a1.pk}/fiscal-document/'))
+        self.assertEqual(own.status_code, 404)
+        self.assertNotEqual(own.json()['detail'], _H412_FISCAL_ORDER_404)
+
+    def test_every_route_of_a_fiscal_document_of_B_is_404(self):
+        _H412Series.objects.create(
+            company=self.company, document_type=_H412DocType.INVOICE,
+            series='F001', next_number=1,
+        )
+        doc_b, _ = _h412_issue(self.b1)
+        doc_a, _ = _h412_issue(self.a1)
+        base = '/api/admin/fiscal-documents'
+
+        submitted = self.web_send(self.selected_a, 'post', f'{base}/{doc_b.pk}/submit/')
+        self.assertEqual(submitted.status_code, 404)
+        self.assertEqual(submitted.json()['detail'], _H412_FISCAL_DOC_404)
+        for suffix in ('xml/', 'cdr/', 'pdf/'):
+            with self.subTest(route=suffix):
+                res = self.web_get(self.selected_a, f'{base}/{doc_b.pk}/{suffix}')
+                self.assertEqual(res.status_code, 404)
+                self.assertEqual(res.json()['detail'], _H412_FISCAL_DOC_404)
+
+                own = self.web_get(self.selected_a, f'{base}/{doc_a.pk}/{suffix}')
+                is_boundary = (
+                    own.status_code == 404
+                    and own['Content-Type'].startswith('application/json')
+                    and own.json().get('detail') == _H412_FISCAL_DOC_404
+                )
+                self.assertFalse(is_boundary)
+
+    def test_the_dashboard_counts_only_branch_A(self):
+        """§5 — la misma frontera en todos los KPIs, sin copiar lógica por métrica."""
+        sales = self.web_get(self.selected_a, '/api/me/internal-dashboard/').json()['sales']
+        self.assertEqual(sales['total_paid_orders'], 2)
+        self.assertEqual(sales['today_orders'], 2)
+        self.assertEqual(sales['total_revenue'], '236.00')
+        self.assertEqual(sales['today_revenue'], '236.00')
+        self.assertEqual(sales['awaiting_fulfillment'], 2)
+        self.assertEqual(sum(row['value'] for row in sales['orders_by_status']), 2)
+        self.assertEqual(sum(row['value'] for row in sales['revenue_trend']), 236.0)
+
+        wide = self.web_get(self.all_staff, '/api/me/internal-dashboard/').json()['sales']
+        self.assertEqual(wide['total_paid_orders'], 6)
+        self.assertEqual(wide['total_revenue'], '708.00')
+        self.assertEqual(sum(row['value'] for row in wide['orders_by_status']), 6)
+
+    def test_the_customer_file_lists_only_the_purchases_of_branch_A(self):
+        customer = _H412Customer.objects.create(
+            company=self.company, first_name='Cliente', last_name='Compartido',
+        )
+        Order.objects.filter(
+            pk__in=[self.a1.pk, self.b1.pk, self.legacy_null.pk],
+        ).update(customer=customer)
+        reader_a, _ = _p2d_member(
+            self.company, 'h412_crm_a', ['service.customers.view'], branches=[self.branch_a],
+        )
+        reader_all, _ = _p2d_member(self.company, 'h412_crm_all', ['service.customers.view'])
+
+        narrow = self.web_get(reader_a, f'/api/admin/customers/{customer.pk}/').json()
+        self.assertEqual({row['id'] for row in narrow['orders']}, {self.a1.pk})
+        self.assertEqual(narrow['summary']['orders_total'], 1)
+        # La ficha misma no se fragmenta: la ven los dos.
+        wide = self.web_get(reader_all, f'/api/admin/customers/{customer.pk}/').json()
+        self.assertEqual(
+            {row['id'] for row in wide['orders']},
+            {self.a1.pk, self.b1.pk, self.legacy_null.pk},
+        )
+
+    def test_a_grant_to_the_CLOSED_branch_does_not_bring_CLOSED1_back(self):
+        _H412Branch.objects.filter(pk=self.branch_closed.pk).update(is_active=True)
+        both, _ = _p2d_member(
+            self.company, 'h412_sel_closed', _H412_ORDER_CAPS,
+            branches=[self.branch_a, self.branch_closed],
+        )
+        _H412Branch.objects.filter(pk=self.branch_closed.pk).update(is_active=False)
+
+        self.assertEqual(_h412_ids(self.web_get(both, self.web())), {self.a1.pk, self.a2.pk})
+        self.assertEqual(self.web_get(both, self.web(f'{self.closed1.pk}/')).status_code, 404)
+
+    def test_a_revoked_grant_hides_the_branch_on_the_next_request(self):
+        _H412Access.objects.filter(membership=self.selected_a_membership).update(is_active=False)
+        self.assertEqual(self.web_get(self.selected_a, self.web()).json()['count'], 0)
+        self.assertEqual(self.web_get(self.selected_a, self.web(f'{self.a1.pk}/')).status_code, 404)
+
+    def test_SELECTED_without_any_grant_sees_no_order(self):
+        nobody, _ = _p2d_member(self.company, 'h412_sel_none', _H412_ORDER_CAPS, branches=[])
+        self.assertEqual(self.web_get(nobody, self.web()).json()['count'], 0)
+
+
+class H412SelectedBranchV1Test(H412ScopeBase):
+    """§15 — la misma frontera por v1, con cookie y con Bearer."""
+
+    def test_list_detail_and_fulfillment_by_both_channels(self):
+        for channel in ('cookie', 'bearer'):
+            with self.subTest(channel=channel):
+                listed = self.v1_get(channel, self.selected_a, self.v1())
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(_h412_ids(listed), {self.a1.pk, self.a2.pk})
+                self.assertEqual(listed.json()['count'], 2)
+
+                for order in (self.b1, self.closed1, self.legacy_null):
+                    detail = self.v1_get(channel, self.selected_a, self.v1(f'{order.pk}/'))
+                    self.assertEqual(detail.status_code, 404)
+                    moved = self.v1_patch(
+                        channel, self.selected_a, self.v1(f'{order.pk}/fulfillment/'),
+                        {'fulfillment_status': 'cancelled'},
+                    )
+                    self.assertEqual(moved.status_code, 404)
+                    order.refresh_from_db()
+                    self.assertNotEqual(order.fulfillment_status, 'cancelled')
+
+                self.assertEqual(
+                    self.v1_get(channel, self.selected_a, self.v1(f'{self.a1.pk}/')).status_code, 200,
+                )
+                ok = self.v1_patch(
+                    channel, self.selected_a, self.v1(f'{self.a1.pk}/fulfillment/'),
+                    {'fulfillment_status': 'shipped'},
+                )
+                self.assertEqual(ok.status_code, 200)
+
+    def test_one_person_three_channels_one_scope(self):
+        for order in (self.a1, self.a2, self.b1, self.b2, self.closed1, self.legacy_null, self.foreign):
+            with self.subTest(order=order.pk):
+                expected = 200 if order.pk in (self.a1.pk, self.a2.pk) else 404
+                answers = {
+                    'web': self.web_get(self.selected_a, self.web(f'{order.pk}/')).status_code,
+                    'v1-cookie': self.v1_get('cookie', self.selected_a, self.v1(f'{order.pk}/')).status_code,
+                    'v1-bearer': self.v1_get('bearer', self.selected_a, self.v1(f'{order.pk}/')).status_code,
+                }
+                self.assertEqual(set(answers.values()), {expected}, answers)
+
+
+class H412CompanyWideTest(H412ScopeBase):
+    """§12-14 — ALL y master ven la empresa entera; ninguno cruza a otra."""
+
+    def test_ALL_sees_A_B_CLOSED_and_NULL_on_every_channel(self):
+        self.assertEqual(_h412_ids(self.web_get(self.all_staff, self.web())), self.everything())
+        for channel in ('cookie', 'bearer'):
+            with self.subTest(channel=channel):
+                self.assertEqual(
+                    _h412_ids(self.v1_get(channel, self.all_staff, self.v1())), self.everything(),
+                )
+        for order in (self.closed1, self.legacy_null):
+            self.assertEqual(self.web_get(self.all_staff, self.web(f'{order.pk}/')).status_code, 200)
+
+    def test_ALL_never_sees_another_company(self):
+        self.assertEqual(self.web_get(self.all_staff, self.web(f'{self.foreign.pk}/')).status_code, 404)
+        self.assertEqual(self.web_get(self.all_staff, self.web(f'?company={self.other.pk}')).status_code, 403)
+        self.assertEqual(
+            self.v1_get('bearer', self.all_staff, f'/api/v1/internal/{self.other.slug}/orders/').status_code,
+            404,
+        )
+
+    def test_the_master_names_the_company_and_sees_it_whole_without_a_membership(self):
+        self.assertFalse(Membership.objects.filter(user=self.master).exists())
+
+        named = self.web_get(self.master, self.web(f'?company={self.company.pk}'))
+        self.assertEqual(_h412_ids(named), self.everything())
+        other = self.web_get(self.master, self.web(f'?company={self.other.pk}'))
+        self.assertEqual(_h412_ids(other), {self.foreign.pk})
+        # Con la otra empresa elegida, un pedido de ésta no existe.
+        self.assertEqual(
+            self.web_get(self.master, self.web(f'{self.b1.pk}/?company={self.other.pk}')).status_code, 404,
+        )
+        # Sin empresa elegida no se le escoge ninguna.
+        self.assertEqual(self.web_get(self.master, self.web()).status_code, 403)
+        self.assertEqual(_h412_ids(self.v1_get('bearer', self.master, self.v1())), self.everything())
+
+        self.assertFalse(Membership.objects.filter(user=self.master).exists())
+
+
+class H412LegacyBridgeTest(TestCase):
+    """§10 — el operador pre-SaaS sin Membership: sólo el piloto, con sus NULL."""
+
+    def setUp(self):
+        cache.clear()
+        self.pilot = _pilot_company()
+        self.other = _saas_company('Ajena legado H412', 'h412-legado-otra', tax_id='20790000009')
+        branch_a = _p2d_branch(self.pilot, 'Legado A')
+        branch_b = _p2d_branch(self.pilot, 'Legado B')
+        closed = _p2d_branch(self.pilot, 'Legado Cerrada')
+        self.a = self._order(self.pilot, branch_a)
+        self.b = self._order(self.pilot, branch_b)
+        self.closed = self._order(self.pilot, closed)
+        self.null = self._order(self.pilot, None)
+        _H412Branch.objects.filter(pk=closed.pk).update(is_active=False)
+        self.foreign = self._order(self.other, None)
+        self.sales = self._legacy('h412_legacy_sales', UserProfile.ROLE_SALES)
+        self.inventory = self._legacy('h412_legacy_inv', UserProfile.ROLE_INVENTORY)
+
+    @staticmethod
+    def _order(company, branch):
+        return Order.objects.create(
+            company=company, customer_email='legado-h412@example.invalid',
+            total=Decimal('50.00'), status=Order.Status.PAID, paid=True,
+            paid_at=timezone.now(), fulfillment_branch=branch,
+        )
+
+    @staticmethod
+    def _legacy(username, role):
+        user = User.objects.create_user(username=username, password='Pass123!')
+        user.profile.role = role
+        user.profile.save()
+        return user
+
+    def _get(self, user, url):
+        cache.clear()
+        return _h411_cookie(user).get(url)
+
+    def _patch(self, user, url, data):
+        cache.clear()
+        client = _h411_cookie(user)
+        token = _h411_csrf(client)
+        return client.patch(url, data, format='json', HTTP_X_CSRFTOKEN=token)
+
+    def test_it_sees_the_pilot_whole_including_NULL_and_CLOSED(self):
+        ids = _h412_ids(self._get(self.sales, '/api/admin/orders/'))
+        self.assertTrue({self.a.pk, self.b.pk, self.closed.pk, self.null.pk} <= ids)
+        self.assertNotIn(self.foreign.pk, ids)
+        self.assertEqual(self._get(self.sales, f'/api/admin/orders/{self.null.pk}/').status_code, 200)
+
+    def test_it_never_reaches_another_company(self):
+        self.assertEqual(self._get(self.sales, f'/api/admin/orders/{self.foreign.pk}/').status_code, 404)
+        self.assertEqual(self._get(self.sales, f'/api/admin/orders/?company={self.other.pk}').status_code, 403)
+        self.assertFalse(_h412_orders(self.sales, self.other).exists())
+
+    def test_the_bridge_creates_no_membership(self):
+        self._get(self.sales, '/api/admin/orders/')
+        self._patch(
+            self.sales, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+        )
+        self.assertFalse(Membership.objects.filter(user__in=[self.sales, self.inventory]).exists())
+
+    def test_legacy_inventory_keeps_the_historical_rule(self):
+        detail = self._get(self.inventory, f'/api/admin/orders/{self.a.pk}/').json()
+        self.assertEqual(detail['available_fulfillment_transitions'], _H412_LEGACY_INVENTORY_STATES)
+
+        refused = self._patch(
+            self.inventory, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual(refused.status_code, 403)
+        self.assertIn('inventario', refused.json()['detail'])
+        moved = self._patch(
+            self.inventory, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'shipped'},
+        )
+        self.assertEqual(moved.status_code, 200)
+
+    def test_legacy_sales_may_set_every_state(self):
+        detail = self._get(self.sales, f'/api/admin/orders/{self.a.pk}/').json()
+        self.assertEqual(detail['available_fulfillment_transitions'], list(_H412_ALL_STATES))
+
+    def test_a_membership_anywhere_turns_the_bridge_off(self):
+        Membership.objects.create(user=self.sales, company=self.other, role='sales')
+        self.assertFalse(_h412_orders(self.sales, self.pilot).exists())
+        self.assertEqual(_h412_allowed(self.sales, self.pilot), ())
+
+
+class H412SaasCapabilityAuthorityTest(H412ScopeBase):
+    """§9 — dentro de una empresa manda la capability; el rol global no limita ni amplía."""
+
+    def _member(self, username, capabilities, profile_role):
+        user, _membership = _p2d_member(self.company, username, capabilities)
+        user.profile.role = profile_role
+        user.profile.save()
+        return user
+
+    def test_a_global_INVENTORY_profile_with_manage_may_set_every_state(self):
+        user = self._member(
+            'h412_inv_manage', ['sales.orders.view', 'sales.orders.manage'], UserProfile.ROLE_INVENTORY,
+        )
+        web = self.web_get(user, self.web(f'{self.a1.pk}/')).json()
+        self.assertEqual(web['available_fulfillment_transitions'], list(_H412_ALL_STATES))
+        v1 = self.v1_get('bearer', user, self.v1(f'{self.a1.pk}/')).json()
+        self.assertEqual(v1['available_fulfillment_transitions'], list(_H412_ALL_STATES))
+
+        by_web = self.web_send(
+            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), {'fulfillment_status': 'cancelled'},
+        )
+        by_v1 = self.v1_patch(
+            'bearer', user, self.v1(f'{self.a2.pk}/fulfillment/'), {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual((by_web.status_code, by_v1.status_code), (200, 200))
+        self.a1.refresh_from_db()
+        self.a2.refresh_from_db()
+        self.assertEqual((self.a1.fulfillment_status, self.a2.fulfillment_status), ('cancelled', 'cancelled'))
+
+    def test_a_global_ADMIN_profile_without_manage_has_nothing_to_move(self):
+        user = self._member('h412_admin_view', ['sales.orders.view'], UserProfile.ROLE_ADMIN)
+        web = self.web_get(user, self.web(f'{self.a1.pk}/')).json()
+        self.assertEqual(web['available_fulfillment_transitions'], [])
+        v1 = self.v1_get('bearer', user, self.v1(f'{self.a1.pk}/')).json()
+        self.assertEqual(v1['available_fulfillment_transitions'], [])
+
+        by_web = self.web_send(
+            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), {'fulfillment_status': 'shipped'},
+        )
+        by_v1 = self.v1_patch(
+            'bearer', user, self.v1(f'{self.a1.pk}/fulfillment/'), {'fulfillment_status': 'shipped'},
+        )
+        self.assertEqual((by_web.status_code, by_v1.status_code), (403, 403))
+
+    def test_a_CUSTOMER_profile_with_manage_may_set_every_state(self):
+        user = self._member(
+            'h412_cust_manage', ['sales.orders.view', 'sales.orders.manage'], UserProfile.ROLE_CUSTOMER,
+        )
+        res = self.web_send(
+            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual(res.status_code, 200)
+
+    def test_manage_does_not_open_a_branch(self):
+        """Tener `manage` es poder mover pedidos, no poder moverlos en CUALQUIER sucursal."""
+        res = self.web_send(
+            self.selected_a, 'patch', self.web(f'{self.b2.pk}/fulfillment-status/'),
+            {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_rule_as_a_function(self):
+        self.assertEqual(_h412_allowed(self.master, self.company), _H412_ALL_STATES)
+        self.assertEqual(_h412_allowed(self.all_staff, self.company), _H412_ALL_STATES)
+        self.assertEqual(_h412_allowed(self.all_staff, self.other), ())
+        self.assertEqual(_h412_allowed(self.all_staff, None), ())

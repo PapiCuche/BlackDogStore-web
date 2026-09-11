@@ -22,6 +22,7 @@ from .tenancy import (
     BranchAccessError, CATALOG_SOURCE_LEGACY, NoBranchError,
     active_memberships, has_capability, is_platform_admin,
     resolve_branch_for_user, resolve_catalog_company, visible_companies,
+    visible_orders,
 )
 from .permissions import (
     CanManageInventory, CanManageOrderFulfillment, CanManageProducts,
@@ -786,13 +787,26 @@ class AdminCategoryListView(APIView):
 # Phase 3.3 — Admin order views
 # ---------------------------------------------------------------------------
 
-# inventory role can only set these operational statuses
-_INVENTORY_ALLOWED_FULFILLMENT = frozenset([
-    Order.FulfillmentStatus.PREPARING,
-    Order.FulfillmentStatus.READY_FOR_PICKUP,
-    Order.FulfillmentStatus.SHIPPED,
-    Order.FulfillmentStatus.DELIVERED,
-])
+# H4.1.2 — every view below starts from tenancy.visible_orders(): tenant AND
+# branch, applied before any lookup, count or page. An order outside it answers
+# 404 exactly like one that does not exist. The role-keyed copy of the inventory
+# fulfilment rule that used to sit here was dead code; the one rule lives in
+# order_fulfillment_services.allowed_fulfillment_statuses().
+
+_ORDER_NOT_FOUND = 'Orden no encontrada.'
+
+
+def _order_detail_payload(request, order, company):
+    """
+    The order as the web panel shows it, plus the fulfilment states THIS caller
+    may set — computed by the server, exactly as the native surface already
+    does, so the panel no longer keeps its own role-keyed copy of the rule.
+    """
+    return {
+        **AdminOrderDetailSerializer(order).data,
+        'available_fulfillment_transitions':
+            list(fulfillment.allowed_fulfillment_statuses(request.user, company)),
+    }
 
 
 class AdminOrderListView(APIView):
@@ -812,10 +826,9 @@ class AdminOrderListView(APIView):
         if error:
             return error
 
-        # Born scoped: every filter below narrows within the tenant.
+        # Born scoped: tenant and branch first; every filter below narrows within.
         orders = (
-            Order.objects
-            .filter(company=company)
+            visible_orders(request.user, company)
             .select_related('user')
             .prefetch_related('items')
             .order_by('-created_at')
@@ -875,13 +888,16 @@ class AdminOrderDetailView(APIView):
         company, error = _company_context(request, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES)
         if error:
             return error
-        # An order of another tenant answers exactly like one that does not exist.
-        order = get_object_or_404(
-            Order.objects.filter(company=company)
-            .select_related('user').prefetch_related('items__product'),
-            pk=pk,
+        # An order of another tenant — or of a branch this caller does not
+        # operate — answers exactly like one that does not exist.
+        order = (
+            visible_orders(request.user, company)
+            .select_related('user').prefetch_related('items__product')
+            .filter(pk=pk).first()
         )
-        return Response(AdminOrderDetailSerializer(order).data)
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_order_detail_payload(request, order, company))
 
 
 class AdminOrderResendEmailView(APIView):
@@ -900,11 +916,14 @@ class AdminOrderResendEmailView(APIView):
         if error:
             return error
 
-        try:
-            order = Order.objects.filter(company=company).prefetch_related(
-                "items__product").get(pk=pk)
-        except Order.DoesNotExist:
-            return Response({"detail": "Orden no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+        # Out of scope is 404 BEFORE anything is sent: an e-mail is not a lookup
+        # that can be undone once it reaches a customer's inbox.
+        order = (
+            visible_orders(request.user, company)
+            .prefetch_related("items__product").filter(pk=pk).first()
+        )
+        if order is None:
+            return Response({"detail": _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         if not order.paid or order.status != Order.Status.PAID:
             return Response(
@@ -962,11 +981,12 @@ class AdminOrderReceiptPdfView(APIView):
         if error:
             return error
 
-        try:
-            order = Order.objects.filter(company=company).prefetch_related(
-                "items__product").get(pk=pk)
-        except Order.DoesNotExist:
-            return Response({"detail": "Orden no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+        order = (
+            visible_orders(request.user, company)
+            .prefetch_related("items__product").filter(pk=pk).first()
+        )
+        if order is None:
+            return Response({"detail": _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         if not order.paid or order.status != Order.Status.PAID:
             return Response(
@@ -1004,8 +1024,9 @@ class AdminOrderFulfillmentView(APIView):
     """
     PATCH /api/admin/orders/{pk}/fulfillment-status/
     Changes fulfillment_status only. Creates audit log.
-    inventory role: limited to preparing/ready_for_pickup/shipped/delivered.
-    sales/admin/superadmin: any value.
+    SaaS: `sales.orders.manage` in the company decides, whatever the global role.
+    Legacy bridge: inventory limited to preparing/ready_for_pickup/shipped/delivered;
+    sales/admin/superadmin any value. See order_fulfillment_services.
     """
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrderStatusChangeThrottle]
@@ -1021,11 +1042,14 @@ class AdminOrderFulfillmentView(APIView):
         new_fs = ser.validated_data['fulfillment_status']
         note = ser.validated_data.get('note', '').strip()
 
-        # Scoped: an admin of company A can never move company B's order.
-        order = get_object_or_404(Order.objects.filter(company=company), pk=pk)
+        # Scoped: an admin of company A can never move company B's order, and a
+        # member granted branch A can never move branch B's.
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         # M6 — the rule and the audit entry moved to a shared service, so the
-        # native surface cannot drift from this one. Behaviour is unchanged.
+        # native surface cannot drift from this one.
         try:
             fulfillment.change_fulfillment_status(
                 order=order, new_status=new_fs, actor=request.user,
@@ -1035,4 +1059,4 @@ class AdminOrderFulfillmentView(APIView):
             return Response({'detail': exc.detail}, status=status.HTTP_403_FORBIDDEN)
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
-        return Response(AdminOrderDetailSerializer(order).data)
+        return Response(_order_detail_payload(request, order, company))

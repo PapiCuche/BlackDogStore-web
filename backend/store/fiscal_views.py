@@ -34,7 +34,8 @@ from .fiscal_services import (
     sign_fiscal_document, submit_fiscal_document,
 )
 from .inventory_views import _company_context
-from .models import AdminAuditLog, FiscalDocument, FiscalDocumentStatus, Order
+from .models import AdminAuditLog, FiscalDocument, FiscalDocumentStatus
+from .tenancy import visible_orders
 from .throttles import FiscalIssueThrottle, FiscalReadThrottle
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,11 @@ def _fiscal_order(request, pk, capability):
 
     Un pedido de otra empresa responde exactamente igual que uno inexistente:
     un 403 confirmaría que ese identificador existe.
+
+    H4.1.2: y uno de una sucursal que quien llama no opera, también. Tener
+    `sales.fiscal.issue` es poder emitir, no poder emitir en CUALQUIER sucursal:
+    el pedido se resuelve con visible_orders() ANTES de tocar serie, correlativo
+    o firma, así que fuera de alcance no se gasta ningún número.
     """
     company, error = _company_context(request, capability, _NO_LEGACY_BRIDGE)
     if error:
@@ -64,7 +70,7 @@ def _fiscal_order(request, pk, capability):
             error.data['detail'] = 'No tienes permisos sobre comprobantes electrónicos.'
         return None, None, error
 
-    order = Order.objects.filter(company=company, pk=pk).first()
+    order = visible_orders(request.user, company).filter(pk=pk).first()
     if order is None:
         return None, None, Response(
             {'detail': 'No se encontró el pedido.'},
@@ -74,12 +80,21 @@ def _fiscal_order(request, pk, capability):
 
 
 def _fiscal_document(request, pk, capability):
-    """El comprobante, con el mismo criterio de tenant que la venta."""
+    """
+    El comprobante, con el mismo criterio de tenant Y DE SUCURSAL que la venta.
+
+    Un comprobante no tiene alcance propio: es de su pedido. Si quien llama no
+    puede ver el pedido, el comprobante —su XML, su CDR, su PDF, su envío— no
+    existe para él (H4.1.2).
+    """
     company, error = _company_context(request, capability, _NO_LEGACY_BRIDGE)
     if error:
         return None, error
     document = (
-        FiscalDocument.objects.filter(company=company, pk=pk)
+        FiscalDocument.objects.filter(
+            company=company, pk=pk,
+            order__in=visible_orders(request.user, company),
+        )
         .select_related('order', 'series_ref').first()
     )
     if document is None:

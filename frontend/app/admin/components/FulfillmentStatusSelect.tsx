@@ -2,28 +2,36 @@
 
 import { useState } from "react";
 import { FULFILLMENT_STATUS_OPTIONS, updateOrderFulfillment } from "../../lib/admin";
-import type { AuthUser } from "../../lib/auth";
-
-const INVENTORY_ALLOWED = new Set(["preparing", "ready_for_pickup", "shipped", "delivered"]);
 
 type Props = {
   orderId: number;
   current: string;
-  currentUser: AuthUser;
+  /**
+   * The states this person may set, AS THE SERVER SAYS — the order detail's
+   * `available_fulfillment_transitions` (H4.1.2).
+   *
+   * This component used to decide it from `user.role`, the global legacy label.
+   * Inside a company the capability decides, so a panel carrying its own
+   * role-keyed copy of the rule showed four options where the server allowed
+   * seven. The PATCH is re-checked on the server regardless.
+   */
+  allowed: readonly string[];
   onChanged: (newStatus: string) => void;
 };
 
-export function FulfillmentStatusSelect({ orderId, current, currentUser, onChanged }: Props) {
+export function FulfillmentStatusSelect({ orderId, current, allowed, onChanged }: Props) {
   const [value, setValue] = useState(current);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
-  const isInventory = currentUser.role === "inventory";
-  const options = isInventory
-    ? FULFILLMENT_STATUS_OPTIONS.filter((o) => INVENTORY_ALLOWED.has(o.value))
-    : FULFILLMENT_STATUS_OPTIONS;
+  const allowedSet = new Set(allowed);
+  // The order's current state stays listed even when this person could not set
+  // it, so the control never shows the order somewhere it is not.
+  const options = FULFILLMENT_STATUS_OPTIONS.filter(
+    (o) => allowedSet.has(o.value) || o.value === current,
+  );
 
   const hasChanged = value !== current;
 
@@ -51,10 +59,11 @@ export function FulfillmentStatusSelect({ orderId, current, currentUser, onChang
           value={value}
           onChange={(e) => { setValue(e.target.value); setSuccess(false); }}
           disabled={saving}
+          aria-label="Estado de despacho"
           className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground focus:outline-none focus:border-bd-border disabled:opacity-50"
         >
           {options.map((o) => (
-            <option key={o.value} value={o.value}>
+            <option key={o.value} value={o.value} disabled={!allowedSet.has(o.value)}>
               {o.label}
             </option>
           ))}

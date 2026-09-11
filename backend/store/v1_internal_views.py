@@ -28,7 +28,6 @@ TWO GATES, IN ORDER, AND THEY ANSWER DIFFERENTLY
 from datetime import datetime
 
 from django.db.models import Q
-from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.response import Response
@@ -42,6 +41,7 @@ from .tenancy import (
     is_platform_admin,
     resolve_capabilities,
     resolve_public_storefront_company,
+    visible_orders,
 )
 from .throttles import AdminOrdersThrottle, AdminOrderStatusChangeThrottle
 from .v1_internal_authentication import V1InternalAuthentication
@@ -76,6 +76,24 @@ def _is_internal_member(user, company) -> bool:
     return Membership.objects.filter(
         user=user, company=company, is_active=True, company__is_active=True,
     ).exists()
+
+
+def _visible_order(request, company, pk, *prefetch):
+    """
+    Order `pk`, if and only if this caller may see it (H4.1.2, BRANCH-SCOPE-01).
+
+    Filtered BEFORE the lookup. An order of another tenant, of a branch the
+    caller does not operate, or with no branch at all for a SELECTED member is
+    not in the queryset — so it is not found, rather than found and refused,
+    which would confirm that the id exists.
+    """
+    queryset = visible_orders(request.user, company)
+    if prefetch:
+        queryset = queryset.prefetch_related(*prefetch)
+    order = queryset.filter(pk=pk).first()
+    if order is None:
+        raise NotFound('No encontrado.')
+    return order
 
 
 class V1InternalSurfaceMixin:
@@ -153,11 +171,11 @@ class V1InternalOrderListView(V1InternalSurfaceMixin, APIView):
         company = self.get_internal_company()
         self.require_capability(company, CAP_ORDERS_VIEW)
 
-        # BORN SCOPED. Every filter below narrows within the tenant; none can
-        # widen it, because the company constraint is applied before any of them.
+        # BORN SCOPED — by tenant AND by branch (H4.1.2). Every filter below, the
+        # count and the page narrow within what this caller may see; none can
+        # widen it, because the boundary is applied before any of them.
         orders = (
-            Order.objects
-            .filter(company=company)
+            visible_orders(request.user, company)
             .prefetch_related('items')
             .order_by('-created_at')
         )
@@ -228,14 +246,10 @@ class V1InternalOrderDetailView(V1InternalSurfaceMixin, APIView):
         company = self.get_internal_company()
         self.require_capability(company, CAP_ORDERS_VIEW)
 
-        # Scoped in the queryset, so another tenant's id is simply not found —
-        # rather than found and then refused, which leaks that it exists.
-        order = get_object_or_404(
-            Order.objects.filter(company=company).prefetch_related('items__product'), pk=pk,
-        )
-        return Response(self._payload(request, order))
+        order = _visible_order(request, company, pk, 'items__product')
+        return Response(self._payload(request, order, company))
 
-    def _payload(self, request, order):
+    def _payload(self, request, order, company):
         return {
             **V1InternalOrderDetailSerializer(order).data,
             # The allowed next states, FROM THE SERVER.
@@ -247,7 +261,7 @@ class V1InternalOrderDetailView(V1InternalSurfaceMixin, APIView):
             #
             # Presentation input, not permission: the PATCH re-checks.
             'available_fulfillment_transitions':
-                list(fulfillment.allowed_fulfillment_statuses(request.user)),
+                list(fulfillment.allowed_fulfillment_statuses(request.user, company)),
         }
 
 
@@ -279,7 +293,7 @@ class V1InternalOrderFulfillmentView(V1InternalOrderDetailView):
         serializer = V1InternalFulfillmentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        order = get_object_or_404(Order.objects.filter(company=company), pk=pk)
+        order = _visible_order(request, company, pk)
 
         try:
             fulfillment.change_fulfillment_status(
@@ -294,4 +308,4 @@ class V1InternalOrderFulfillmentView(V1InternalOrderDetailView):
             return Response({'detail': exc.detail}, status=status.HTTP_403_FORBIDDEN)
 
         order = Order.objects.prefetch_related('items__product').get(pk=order.pk)
-        return Response(self._payload(request, order))
+        return Response(self._payload(request, order, company))

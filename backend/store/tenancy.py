@@ -1240,6 +1240,83 @@ def company_branches(company):
     ).order_by('pk')
 
 
+# How far a caller's authority reaches inside ONE company. Resolved in exactly
+# one place and read by every branch-scoped question — which branches, which
+# orders — so those questions can never disagree about who is company-wide
+# (H4.1.2). A second copy of this ladder is how a list and its detail end up
+# answering differently for the same person.
+_SCOPE_NONE = 'none'          # nothing in this company
+_SCOPE_COMPANY = 'company'    # platform master, legacy bridge, Membership ALL
+_SCOPE_SELECTED = 'selected'  # exactly the membership's active branch grants
+
+
+def uses_legacy_bridge(user, company) -> bool:
+    """
+    Whether `user` acts on `company` through the LEGACY BRIDGE.
+
+    True only for a pre-SaaS operator — a staff UserProfile.role, no Membership
+    anywhere, no platform authority — and only for the pilot tenant. It is the
+    answer resolve_catalog_company() already gives the views, for code that
+    holds a company and needs to know WHICH authority applies inside it: the
+    legacy role on this path, the company capability on every other.
+    """
+    if company is None:
+        return False
+    bridged = legacy_catalog_company(user)
+    return bridged is not None and bridged.pk == getattr(company, 'pk', company)
+
+
+def _branch_authority(user, company):
+    """
+    `(scope, membership)` for the caller inside `company`. See `_SCOPE_*`.
+
+    The order of the checks IS the contract visible_branches() always had: a
+    platform master is company-wide even inside a deactivated company they
+    selected; anyone else gets nothing from an inactive company, an inactive
+    membership or no membership at all — except through the legacy bridge.
+    """
+    from .models import Membership
+
+    if company is None:
+        return _SCOPE_NONE, None
+
+    if is_platform_admin(user):
+        return _SCOPE_COMPANY, None
+
+    if not company.is_active:
+        return _SCOPE_NONE, None
+
+    membership = get_membership(user, company)
+    if membership is None:
+        # LEGACY BRIDGE, same one the catalogue and the Kardex use.
+        #
+        # A pre-SaaS operator has a staff role and no Membership. Phase 2B gave
+        # them the pilot company; without this they would reach that company and
+        # then find it has no branches THEY can operate, which is a 403 dressed
+        # up as an empty list. The bridge is company-wide by construction — it
+        # predates branches entirely — so it grants the pilot's active branches
+        # and nothing else, and never fires for anyone who has a real Membership.
+        if uses_legacy_bridge(user, company):
+            return _SCOPE_COMPANY, None
+        return _SCOPE_NONE, None
+
+    if not membership.grants_business_access:
+        return _SCOPE_NONE, membership
+
+    if membership.branch_access_mode == Membership.ACCESS_MODE_ALL:
+        return _SCOPE_COMPANY, membership
+
+    return _SCOPE_SELECTED, membership
+
+
+def _granted_branches(company, membership):
+    """The ACTIVE branches a SELECTED membership holds an ACTIVE grant for."""
+    return company_branches(company).filter(
+        membership_access__membership=membership,
+        membership_access__is_active=True,
+    )
+
+
 def visible_branches(user, company):
     """
     Every ACTIVE branch of `company` the caller may operate in.
@@ -1259,45 +1336,58 @@ def visible_branches(user, company):
 
     Returns an EMPTY queryset rather than raising, so callers can compose it into
     a larger query. Use assert_branch_access() when you need the refusal.
+
+    The ladder itself lives in _branch_authority(), shared with visible_orders().
     """
-    from .models import Branch, Membership
+    from .models import Branch
 
-    if company is None:
-        return Branch.objects.none()
+    scope, membership = _branch_authority(user, company)
+    if scope == _SCOPE_COMPANY:
+        return company_branches(company)
+    if scope == _SCOPE_SELECTED:
+        return _granted_branches(company, membership)
+    return Branch.objects.none()
 
-    active = company_branches(company)
 
-    if is_platform_admin(user):
-        return active
+def visible_orders(user, company):
+    """
+    Every order of `company` the caller may see — the ONE boundary of every
+    internal order surface (H4.1.2, BRANCH-SCOPE-01).
 
-    if not company.is_active:
-        return Branch.objects.none()
+    List, detail, fulfilment, receipt, e-mail resend, sales note, fiscal document,
+    the customer file and the dashboard KPIs all start FROM this queryset, before
+    any lookup, count, aggregate or page. An order outside it does not exist for
+    the caller: views answer 404, never 403, so an id cannot be probed.
 
-    membership = get_membership(user, company)
-    if membership is None:
-        # LEGACY BRIDGE, same one the catalogue and the Kardex use.
-        #
-        # A pre-SaaS operator has a staff role and no Membership. Phase 2B gave
-        # them the pilot company; without this they would reach that company and
-        # then find it has no branches THEY can operate, which is a 403 dressed
-        # up as an empty list. The bridge is company-wide by construction — it
-        # predates branches entirely — so it grants the pilot's active branches
-        # and nothing else, and never fires for anyone who has a real Membership.
-        bridged = legacy_catalog_company(user)
-        if bridged is not None and bridged.pk == company.pk:
-            return active
-        return Branch.objects.none()
+      Platform master, company named   → every order of that company.
+      Legacy bridge (pilot only)       → every order of the pilot.
+      Membership in mode ALL           → every order of the company.
+      Membership in mode SELECTED      → orders FULFILLED BY a branch it may
+                                         operate: active, and actively granted.
 
-    if not membership.grants_business_access:
-        return Branch.objects.none()
+    ORDERS NO BRANCH CAN ANSWER FOR (decision D1)
+    ---------------------------------------------
+    `fulfillment_branch` is NULL on history that predates it, and a branch can be
+    deactivated after it sold. Neither order belongs to a branch a SELECTED member
+    operates, so a SELECTED member does not see it; the company-wide callers
+    above do. This deliberately does NOT widen visible_branches() to bring them
+    back: a person granted one shop is not thereby granted the chain's history.
 
-    if membership.branch_access_mode == Membership.ACCESS_MODE_ALL:
-        return active
+    Capability is a separate question, asked by the view. This answers WHICH
+    orders, never WHETHER the caller may look at orders at all. And it is not a
+    customer surface: what a buyer owns is customer_owned_orders().
+    """
+    from .models import Order
 
-    return active.filter(
-        membership_access__membership=membership,
-        membership_access__is_active=True,
-    )
+    scope, membership = _branch_authority(user, company)
+    if scope == _SCOPE_COMPANY:
+        return Order.objects.filter(company=company)
+    if scope == _SCOPE_SELECTED:
+        return Order.objects.filter(
+            company=company,
+            fulfillment_branch__in=_granted_branches(company, membership),
+        )
+    return Order.objects.none()
 
 
 def visible_branch_ids(user, company) -> list[int]:

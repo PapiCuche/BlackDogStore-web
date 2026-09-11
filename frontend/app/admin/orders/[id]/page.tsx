@@ -77,12 +77,6 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
   const canResendEmail =
     user.role === "admin" || user.role === "superadmin";
 
-  const canManageFulfillment =
-    user.role === "sales" ||
-    user.role === "inventory" ||
-    user.role === "admin" ||
-    user.role === "superadmin";
-
   useEffect(() => {
     fetchAdminOrderDetail(orderId)
       .then(setOrder)
@@ -110,6 +104,9 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
   }
 
   const subtotal = parseFloat(order.total) + parseFloat(order.discount_amount);
+  // Who may move this order, and to where, is the server's answer for THIS
+  // company — never the global `user.role` (H4.1.2). Empty means read-only.
+  const fulfillmentTransitions = order.available_fulfillment_transitions ?? [];
 
   return (
     <AdminShell user={user}>
@@ -376,7 +373,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
         />
 
         {/* Fulfillment management */}
-        {canManageFulfillment && (
+        {fulfillmentTransitions.length > 0 && (
           <section className="rounded-xl border border-bd-border bg-surface p-6">
             <h2 className="text-sm font-semibold text-foreground mb-1">Estado de despacho</h2>
             <p className="text-xs text-muted mb-4">
@@ -385,7 +382,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
             <FulfillmentStatusSelect
               orderId={order.id}
               current={order.fulfillment_status}
-              currentUser={user}
+              allowed={fulfillmentTransitions}
               onChanged={(newStatus) =>
                 setOrder((prev) => prev ? { ...prev, fulfillment_status: newStatus } : prev)
               }

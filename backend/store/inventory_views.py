@@ -96,6 +96,7 @@ from .tenancy import (
     resolve_branch_for_user,
     resolve_catalog_company,
     visible_branches,
+    visible_orders,
 )
 from .sales_note_services import (
     SalesNoteError,
@@ -1435,9 +1436,13 @@ def _sales_note_order(request, pk):
     the caller has company context, the legacy role when they reach the pilot
     through the bridge. Returns (order, error_response).
 
-    Deliberately NOT branch-scoped. A sales note is a commercial document about
-    a sale, not a stock operation; gating it on branch access would hide a
-    company's own paperwork from its own sales staff.
+    BRANCH-SCOPED since H4.1.2 (decision D2). This used to say the opposite: a
+    sales note is paperwork about a sale, so branch access "did not apply". But
+    the note carries the sale — customer, document, lines, amounts — and a
+    member granted one shop who may not open an order of another shop must not
+    read or issue that order's note either. The order is resolved through
+    visible_orders(), exactly like the order detail, so the two cannot disagree.
+    Company-wide staff (mode ALL, platform master, legacy bridge) see every note.
     """
     company, error = _company_context(
         request, CAP_SALES_NOTES, _LEGACY_SALES_NOTES_ROLES,
@@ -1449,9 +1454,11 @@ def _sales_note_order(request, pk):
             error.data['detail'] = 'No tienes permisos sobre las notas de venta.'
         return None, error
 
-    # An order of another tenant answers exactly like one that does not exist.
+    # An order of another tenant, or of a branch this caller does not operate,
+    # answers exactly like one that does not exist — before any note is read or
+    # a number is spent.
     order = (
-        Order.objects.filter(company=company)
+        visible_orders(request.user, company)
         .prefetch_related('items__product')
         .filter(pk=pk)
         .first()

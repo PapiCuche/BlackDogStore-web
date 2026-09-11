@@ -12,6 +12,20 @@ written to the audit log — a rule enforced in one place and forgotten in the
 other is how an operation becomes possible from a phone that is refused on a
 desk.
 
+WHO DECIDES — TWO AUTHORITY PATHS, NEVER MIXED (H4.1.2, RBAC-LEGACY-01)
+
+  SaaS — a Membership, or a platform master naming the company. The company
+  capability `sales.orders.manage` decides, and nothing else. `UserProfile.role`
+  is a global label that predates companies: inside a company it neither narrows
+  nor widens what that company granted. Someone whose profile still says
+  `inventory` and whose company gave them `sales.orders.manage` may set every
+  state, because the company said so; someone whose profile says `admin` and
+  whose company gave them only `sales.orders.view` may set none.
+
+  LEGACY BRIDGE — a pre-SaaS operator on the pilot, with no Membership. On that
+  path the legacy role IS the authority, so the historical rule stands exactly
+  as it was: warehouse staff move goods, they do not cancel sales.
+
 WHAT THIS DELIBERATELY DOES NOT DO
 
 No email. No stock movement. No sales note. The legacy view does none of those
@@ -23,14 +37,15 @@ from django.db import transaction
 from .commerce_notifications import emit_fulfillment_changed
 from .models import AdminAuditLog, Order, UserProfile
 from .permissions import get_user_role
+from .tenancy import has_capability, uses_legacy_bridge
 
-# Warehouse staff move goods; they do not cancel sales.
+CAP_ORDERS_MANAGE = 'sales.orders.manage'
+
+# LEGACY BRIDGE ONLY. Warehouse staff move goods; they do not cancel sales.
 #
-# Preserved EXACTLY from `admin_views._INVENTORY_ALLOWED_FULFILLMENT`. The
-# restriction is keyed on the legacy `UserProfile.role` rather than on a
-# capability, which is not how the rest of the system reasons any more — but it
-# is the rule in force today, and quietly widening what an inventory user may do
-# is not something a refactor gets to decide.
+# Keyed on the legacy `UserProfile.role`, which is right on the one path where
+# that role is still the authority and wrong everywhere else — which is why
+# allowed_fulfillment_statuses() never reads it for a Membership.
 INVENTORY_ALLOWED_FULFILLMENT = frozenset([
     Order.FulfillmentStatus.PREPARING,
     Order.FulfillmentStatus.READY_FOR_PICKUP,
@@ -49,21 +64,34 @@ class FulfillmentNotAllowed(Exception):
         self.detail = detail
 
 
-def allowed_fulfillment_statuses(user) -> tuple[str, ...]:
+def allowed_fulfillment_statuses(user, company) -> tuple[str, ...]:
     """
-    Every status `user` may set, in the model's own order.
+    Every status `user` may set on an order of `company`, in the model's own order.
 
-    Returned to the client so a native app does not have to carry a second copy
-    of this table. A UI that computes its own allowed transitions is a UI that
-    drifts from the server the first time the rule changes — and the drift shows
-    up as a button that fails, which reads as a broken app rather than a rule.
+      Legacy bridge → the historical role rule: `inventory` gets the four
+                      goods-moving states; sales, admin and superadmin get all.
+      Anyone else   → `sales.orders.manage` in THIS company gets all of them, and
+                      without it, none. The global role is not consulted.
 
-    This is presentation input, not authorisation: `change_fulfillment_status`
-    re-checks regardless of what the client did with it.
+    Empty is an honest answer: someone who may read an order but not manage it
+    has no transition to offer, and a row of buttons that all fail says the
+    opposite.
+
+    Returned to the clients so neither the app nor the web panel carries a second
+    copy of this table. A UI that computes its own allowed transitions drifts
+    from the server the first time the rule changes — and the drift shows up as
+    a button that fails, which reads as a broken app rather than a rule. The
+    server still re-checks: change_fulfillment_status() asks this same function.
     """
-    if get_user_role(user) == UserProfile.ROLE_INVENTORY:
-        return tuple(s for s in ALL_FULFILLMENT_STATUSES if s in INVENTORY_ALLOWED_FULFILLMENT)
-    return ALL_FULFILLMENT_STATUSES
+    if company is None:
+        return ()
+    if uses_legacy_bridge(user, company):
+        if get_user_role(user) == UserProfile.ROLE_INVENTORY:
+            return tuple(s for s in ALL_FULFILLMENT_STATUSES if s in INVENTORY_ALLOWED_FULFILLMENT)
+        return ALL_FULFILLMENT_STATUSES
+    if has_capability(user, company, CAP_ORDERS_MANAGE):
+        return ALL_FULFILLMENT_STATUSES
+    return ()
 
 
 def change_fulfillment_status(
@@ -73,19 +101,24 @@ def change_fulfillment_status(
     Move one order's fulfilment state and record who did it.
 
     The caller has already established that `actor` may manage orders in
-    `company` and that `order` belongs to it. What is decided HERE is the
-    narrower question of whether this particular actor may set this particular
-    status.
+    `company` and resolved `order` from visible_orders(actor, company), so it is
+    an order this actor may see. What is decided HERE is the narrower question
+    of whether this particular actor may set this particular status.
 
     The write and the audit entry share a transaction: a status change nobody
     can account for is worse than a status change that did not happen.
     """
-    allowed = allowed_fulfillment_statuses(actor)
+    allowed = allowed_fulfillment_statuses(actor, company)
     if new_status not in allowed:
-        raise FulfillmentNotAllowed(
-            f'El rol de inventario no puede establecer el estado "{new_status}". '
-            f'Estados permitidos: {", ".join(sorted(allowed))}.'
-        )
+        if allowed:
+            # Only the legacy inventory rule yields a partial list.
+            detail = (
+                f'El rol de inventario no puede establecer el estado "{new_status}". '
+                f'Estados permitidos: {", ".join(sorted(allowed))}.'
+            )
+        else:
+            detail = 'No tienes permiso para cambiar el estado de despacho en esta empresa.'
+        raise FulfillmentNotAllowed(detail)
 
     previous = order.fulfillment_status
     with transaction.atomic():

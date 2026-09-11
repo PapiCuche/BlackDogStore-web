@@ -3243,6 +3243,10 @@ cancelar ventas no— aunque esté clavada al `UserProfile.role` legacy y no a u
 capability. Ensanchar en silencio lo que puede hacer un almacenero no es algo que
 decida un refactor.
 
+> **H4.1.2 (D4 · opción A):** esa restricción queda **sólo en el puente legacy**.
+> Dentro de una empresa decide `sales.orders.manage`, y el rol global no limita ni
+> amplía. Ver «H4.1.2 — Autoridad interna sobre pedidos» al final.
+
 El detalle devuelve `available_fulfillment_transitions`, **desde el servidor**,
 para que la app no cargue una segunda copia de la tabla. Es entrada de
 presentación: el PATCH vuelve a comprobar.
@@ -4631,3 +4635,45 @@ Tres consecuencias que forman parte de la decisión:
 
 Detalle, amenazas y alternativas descartadas:
 [adr-auth-v1-internal.md](adr-auth-v1-internal.md).
+
+---
+
+## H4.1.2 — Autoridad interna sobre pedidos
+
+### Dónde trabaja alguien decide qué pedidos ve
+
+`tenancy.visible_orders(user, company)` es la frontera de toda superficie interna
+de pedidos: lista, detalle, despacho, recibo, correo, nota de venta, comprobante,
+ficha de cliente y KPIs. Se aplica antes de buscar, contar, agregar o paginar, y
+fuera de ella la respuesta es 404.
+
+| Autoridad | Pedidos que ve |
+|---|---|
+| Master con empresa explícita | todos los de esa empresa |
+| Puente legacy | todos los del piloto |
+| Membresía `ALL` | todos los de la empresa |
+| Membresía `SELECTED` | los despachados por sus sucursales **activas** con concesión **activa** |
+
+**Decisión D1.** Los pedidos sin sucursal o de sucursales desactivadas sólo los ve
+la autoridad de toda la empresa. `visible_branches()` no se amplía para
+recuperarlos: dice dónde opera hoy una persona, no qué historial hereda. Un
+auditor histórico por sucursal cerrada sería otra decisión.
+
+Las dos preguntas de sucursal —¿qué sucursales?, ¿qué pedidos?— leen la misma
+escalera de autoridad (`_branch_authority`), así que no pueden discrepar sobre
+quién es de toda la empresa.
+
+**La ficha de cliente sigue sin sucursal**, como decidió la Fase 4: un cliente es
+de la empresa. **Su historial de compras, no**: cada compra la despachó una
+sucursal.
+
+### Dos caminos de autoridad, nunca mezclados — D4
+
+| Camino | Quién decide los estados de despacho |
+|---|---|
+| SaaS (membresía o master) | `sales.orders.manage` en esa empresa; `UserProfile.role` no limita ni amplía |
+| Puente legacy (piloto, sin membresía) | el rol legacy: `inventory` mueve mercancía y no cancela |
+
+No se creó ninguna capability. La app y el panel web pintan
+`available_fulfillment_transitions`, que calcula el servidor; ninguno guarda una
+copia de la regla.
