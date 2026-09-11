@@ -33,6 +33,23 @@ export type MembershipSummary = {
   branch: BranchSummary | null;
 };
 
+/**
+ * Dónde puede trabajar quien mira — H4.1.2A.
+ *
+ * Viene del contexto de ACCESO, no del resumen de inventario. Antes la barra
+ * leía las sucursales de `inventory`, que el backend sólo construye para quien
+ * tiene capacidad de inventario: un técnico con sucursal veía «Sin sucursal».
+ *
+ * Ids y nombres, nada más. No es autoridad: el servidor vuelve a decidir en cada
+ * petición. `null` cuando todavía no hay empresa resuelta.
+ */
+export type BranchScope = {
+  mode: "platform" | "legacy" | "all" | "selected" | "none";
+  /** Dónde abre el panel. Ausente no significa «sin alcance». */
+  default_branch: BranchSummary | null;
+  branches: BranchSummary[];
+};
+
 export type CompanyRoleSummary = {
   id: number;
   name: string;
@@ -125,6 +142,8 @@ export type DashboardAlert = {
 export type InternalDashboard = {
   company: CompanySummary | null;
   membership: MembershipSummary | null;
+  /** H4.1.2A: las sucursales que alcanza, independientes de inventario. */
+  branch_scope: BranchScope | null;
   access: CompanyAccess;
   organization: OrganizationCounts | null;
   /** Phase 2B: per-tenant catalogue counters. Null without `products.view`. */
