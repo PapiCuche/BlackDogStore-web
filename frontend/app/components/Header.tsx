@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { logout, getCurrentUser, isAdminRole, type AuthUser } from "../lib/auth";
+import {
+  logout, getCurrentUser, hasInternalAccess, forgetInternalAccess, type AuthUser,
+} from "../lib/auth";
 import { BrandLogo } from "./BrandLogo";
 import { ThemeToggle } from "./ThemeToggle";
 import { useTheme } from "./ThemeProvider";
@@ -31,6 +33,11 @@ export function Header() {
   // La cabecera usa `bg-background`, así que su superficie ES el tema.
   const { resolved } = useTheme();
   const [user, setUser] = useState<AuthUser | null>(null);
+  // H4.1.1 — ¿trabaja esta persona en alguna empresa? Lo decide el servidor
+  // (membresía activa o master de plataforma), nunca `user.role`: un técnico
+  // con membresía es trabajador aunque su rol legacy no lo diga, y quien
+  // además compra aquí sigue viendo «Pedidos» al lado.
+  const [internalAccess, setInternalAccess] = useState(false);
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
@@ -47,9 +54,17 @@ export function Header() {
   }
 
   useEffect(() => {
-    getCurrentUser().then((u) => setUser(u));
+    const sync = async () => {
+      const current = await getCurrentUser();
+      setUser(current);
+      setInternalAccess(current ? await hasInternalAccess() : false);
+    };
+    void sync();
 
-    const handleAuthChange = () => getCurrentUser().then((u) => setUser(u));
+    const handleAuthChange = () => {
+      forgetInternalAccess();
+      void sync();
+    };
     fetchCartCount();
     window.addEventListener("authChange", handleAuthChange);
     window.addEventListener("cartChange", fetchCartCount);
@@ -61,6 +76,7 @@ export function Header() {
 
   function handleLogout() {
     logout().finally(() => {
+      forgetInternalAccess();
       setUser(null);
       window.location.href = "/";
     });
@@ -174,9 +190,9 @@ export function Header() {
               <Link href="/orders" className="rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
                 Pedidos
               </Link>
-              {isAdminRole(user) && (
+              {internalAccess && (
                 <Link href="/admin" className="rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
-                  Admin
+                  Control interno
                 </Link>
               )}
               <button
@@ -270,13 +286,13 @@ export function Header() {
                 >
                   Mis pedidos
                 </Link>
-                {isAdminRole(user) && (
+                {internalAccess && (
                   <Link
                     href="/admin"
                     onClick={() => setMenuOpen(false)}
                     className="rounded-lg px-3 py-2.5 text-muted hover:bg-surface-2 hover:text-foreground"
                   >
-                    Admin
+                    Control interno
                   </Link>
                 )}
                 <button

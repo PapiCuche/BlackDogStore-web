@@ -9455,14 +9455,54 @@ class DemoUsersCommandTest(TestCase):
 
     # --- 2: the six accounts ---
 
-    def test_02_creates_the_six_demo_users(self):
+    def test_02_creates_the_seven_demo_users(self):
         self._seed()
         for username in ALL_DEMO_USERNAMES:
             user = User.objects.filter(username=username).first()
             self.assertIsNotNone(user, username)
             self.assertEqual(user.email, demo_email(username))
             self.assertTrue(user.check_password(DEMO_PASSWORD), username)
-        self.assertEqual(len(ALL_DEMO_USERNAMES), 6)
+        # Seis desde el principio, más la cuenta cliente-y-técnico de H4.1.1.
+        self.assertEqual(len(ALL_DEMO_USERNAMES), 7)
+
+    def test_02b_the_customer_technician_is_both_things_at_once(self):
+        """
+        H4.1.1 — una cuenta que COMPRA en la tienda y TRABAJA en la empresa.
+
+        Cliente por su ficha `Customer`; técnico por su Membership y su rol de
+        empresa. El rol legacy del perfil sigue siendo «customer»: la autoridad
+        interna no sale de ahí, sale de la membresía.
+        """
+        from .management.commands.seed_demo_users import DEMO_STAFF_CUSTOMER_USERNAME
+        from .models import Customer
+        self._seed()
+        person = User.objects.get(username=DEMO_STAFF_CUSTOMER_USERNAME)
+        self.assertTrue(Customer.objects.filter(
+            company=self.company, user=person, is_active=True).exists())
+        membership = Membership.objects.get(user=person, company=self.company, is_active=True)
+        self.assertEqual(
+            set(membership.role_assignments.filter(is_active=True)
+                .values_list('role__slug', flat=True)),
+            {'servicio-tecnico'},
+        )
+        self.assertEqual(person.profile.role, 'customer')
+
+    def test_02c_seeding_twice_keeps_ONE_customer_record(self):
+        from .management.commands.seed_demo_users import DEMO_STAFF_CUSTOMER_USERNAME
+        from .models import Customer
+        self._seed()
+        self._seed()
+        self.assertEqual(
+            Customer.objects.filter(user__username=DEMO_STAFF_CUSTOMER_USERNAME).count(), 1)
+
+    def test_02d_purge_removes_the_customer_record_too(self):
+        """`Customer.user` es SET_NULL: borrar sólo la cuenta dejaría la ficha huérfana."""
+        from .management.commands.seed_demo_users import DEMO_STAFF_CUSTOMER_USERNAME
+        from .models import Customer
+        self._seed()
+        self._purge()
+        self.assertFalse(Customer.objects.filter(
+            email=demo_email(DEMO_STAFF_CUSTOMER_USERNAME)).exists())
 
     # --- 3-7: memberships ---
 
@@ -9603,8 +9643,9 @@ class DemoUsersCommandTest(TestCase):
         other = _saas_company('Servicio Técnico X', 'servicio-tecnico-x',
                               tax_id='20777777777')
         self._seed(slug='servicio-tecnico-x')
+        # El personal interno y la cuenta cliente-y-técnico (H4.1.1).
         self.assertEqual(
-            Membership.objects.filter(company=other).count(), len(DEMO_INTERNAL_USERS))
+            Membership.objects.filter(company=other).count(), len(DEMO_INTERNAL_USERS) + 1)
         self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
 
     def test_15d_command_source_hardcodes_no_tenant(self):
@@ -9632,7 +9673,7 @@ class DemoUsersCommandTest(TestCase):
     def test_17_purge_removes_the_demo_users(self):
         self._seed()
         self.assertEqual(
-            User.objects.filter(username__startswith='dev_').count(), 6)
+            User.objects.filter(username__startswith='dev_').count(), len(ALL_DEMO_USERNAMES))  # siete desde H4.1.1
         self._purge()
         self.assertEqual(
             User.objects.filter(username__startswith='dev_').count(), 0)
@@ -51447,3 +51488,133 @@ class H411CredentialChannelTest(M8ServiceBase):
         for text in bodies + collect.lines:
             self.assertNotIn(good, text)
 
+
+@override_settings(**_EVIDENCE_TEST_STORAGE)
+class H411PurgeE2EDataTest(M8ServiceBase):
+    """
+    `purge_e2e_data` — la limpieza de lo que dejan las pruebas de navegador.
+
+    H4.1 llenó la base de desarrollo de invitaciones de prueba. Las pruebas de
+    H4.1.1 crean clientes, equipos, órdenes, asignaciones y fotos, así que la
+    limpieza tiene que existir, y tiene que ser INCAPAZ de tocar nada que no
+    lleve la marca.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from store.models import Customer, Device
+
+        self.e2e_customer = Customer.objects.create(
+            company=self.company, first_name='Prueba', last_name='Navegador',
+            notes='[E2E] cliente creado por una prueba',
+        )
+        self.e2e_device = Device.objects.create(
+            company=self.company, customer=self.e2e_customer,
+            device_type=Device.TYPE_PHONE, brand='Prueba', model='E2E',
+            notes='[E2E] equipo creado por una prueba',
+        )
+        self.e2e_order = _m8_service.create_repair_order(
+            company=self.company, branch=self.branch_a, customer=self.e2e_customer,
+            device=self.e2e_device, reported_issue='[E2E] no enciende', actor=self.staff,
+        )
+        _m8_service.assign_technician(
+            repair_order=self.e2e_order, technician=self.staff, actor=self.staff,
+        )
+        self.evidence = _ev_svc.upload_evidence(
+            repair_order=self.e2e_order, stage=_Ev.Stage.INTAKE,
+            content=_photo(800, 600), actor=self.staff,
+        )
+        self.real_order = self.make_order()
+
+    def _purge(self, **extra):
+        from io import StringIO
+        from django.core.management import call_command
+
+        out = StringIO()
+        with override_settings(DEBUG=True):
+            call_command('purge_e2e_data', company_slug=self.company.slug, stdout=out, **extra)
+        return out.getvalue()
+
+    def test_it_refuses_to_run_outside_development(self):
+        from django.core.management import CommandError, call_command
+        with override_settings(DEBUG=False):
+            with self.assertRaises(CommandError):
+                call_command('purge_e2e_data', company_slug=self.company.slug)
+        self.assertTrue(type(self.e2e_order).objects.filter(pk=self.e2e_order.pk).exists())
+
+    def test_it_removes_the_marked_order_and_everything_hanging_from_it(self):
+        from store.models import (
+            Customer, Device, Notification, RepairEvidence, RepairOrder,
+            RepairStatusHistory, TechnicianAssignment,
+        )
+        order_id, key = self.e2e_order.pk, self.evidence.storage_key
+        self.assertTrue(Notification.objects.filter(
+            target_type='repair_order', target_id=order_id).exists(),
+            'la asignación debía notificar; sin eso la prueba no comprueba nada')
+
+        self._purge()
+
+        self.assertFalse(RepairOrder.objects.filter(pk=order_id).exists())
+        self.assertFalse(TechnicianAssignment.objects.filter(repair_order_id=order_id).exists())
+        self.assertFalse(RepairStatusHistory.objects.filter(repair_order_id=order_id).exists())
+        self.assertFalse(RepairEvidence.objects.filter(pk=self.evidence.pk).exists())
+        self.assertFalse(Notification.objects.filter(
+            target_type='repair_order', target_id=order_id).exists())
+        self.assertFalse(Device.objects.filter(pk=self.e2e_device.pk).exists())
+        self.assertFalse(Customer.objects.filter(pk=self.e2e_customer.pk).exists())
+        with self.assertRaises(Exception):
+            with _ev_store.open_stream(key):
+                pass
+
+    def test_it_never_touches_what_is_not_marked(self):
+        from store.models import Customer, Device, RepairOrder
+        self._purge()
+        self.assertTrue(RepairOrder.objects.filter(pk=self.real_order.pk).exists())
+        self.assertTrue(Device.objects.filter(pk=self.device.pk).exists())
+        self.assertTrue(Customer.objects.filter(pk=self.customer.pk).exists())
+
+    def test_a_dry_run_deletes_nothing(self):
+        from store.models import RepairOrder
+        output = self._purge(dry_run=True)
+        self.assertIn('Simulación', output)
+        self.assertTrue(RepairOrder.objects.filter(pk=self.e2e_order.pk).exists())
+
+    def test_a_marked_order_that_was_worked_on_is_refused(self):
+        """Una orden con diagnóstico es un registro de trabajo, no una prueba."""
+        from django.core.management import CommandError
+        from store.models import RepairOrder
+        _m8_service.transition_repair_order(
+            repair_order=self.e2e_order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        _m8_service.create_diagnostic(
+            repair_order=self.e2e_order, actor=self.staff,
+            description='Revisado.', recommended_action='Nada.',
+        )
+        with self.assertRaises(CommandError):
+            self._purge()
+        self.assertTrue(RepairOrder.objects.filter(pk=self.e2e_order.pk).exists())
+
+    def test_running_it_twice_is_harmless(self):
+        self._purge()
+        self._purge()
+
+    def test_it_removes_e2e_invitations_and_only_those(self):
+        """La prueba de invitación crea una; su dominio `.invalid` es la marca."""
+        from datetime import timedelta
+        from django.utils import timezone
+        from store.models import StaffInvitation, hash_token, make_raw_token
+
+        role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+        def invite(email):
+            return StaffInvitation.objects.create(
+                company=self.company, email=email, role=role, invited_by=self.staff,
+                token_hash=hash_token(make_raw_token()),
+                expires_at=timezone.now() + timedelta(days=7),
+            )
+
+        e2e = invite('persona.h411@e2e.invalid')
+        real = invite('persona.real@empresa.com')
+        self._purge()
+        self.assertFalse(StaffInvitation.objects.filter(pk=e2e.pk).exists())
+        self.assertTrue(StaffInvitation.objects.filter(pk=real.pk).exists())

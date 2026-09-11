@@ -5,8 +5,9 @@
  *
  * Replaces AdminGuard on the SHELL and DASHBOARD only. Entering the internal
  * control means: an active Membership in an active Company, or platform master.
- * It explicitly does NOT mean UserProfile.role === "admin", which is why a
- * salesperson or a technician can now open the dashboard at all.
+ * It explicitly does NOT mean UserProfile.role === "admin". A salesperson or a
+ * technician WITH an active Membership opens the dashboard through that
+ * Membership and its capabilities — never through their legacy role.
  *
  * Opening the dashboard is not opening every module: each business page keeps
  * its own guard, and every endpoint enforces its own permissions server-side.
@@ -17,6 +18,13 @@
  * guard passes with `dashboard === null`, and the shell renders in legacy mode:
  * no company header, sidebar driven by the legacy role. Requiring a Membership
  * here would lock existing operators out of a panel they use today.
+ *
+ * `technician` IS NOT A LEGACY STAFF ROLE, on purpose (H4.1.1). `isStaffRole`
+ * mirrors the backend's legacy permission tuples (store/permissions.py), and
+ * none of them admits a technician. A technician without a Membership gets no
+ * panel through this fallback — and would get nothing from one: the service
+ * surface requires a Membership. Adding `technician` to `isStaffRole` would
+ * open thirteen legacy pages whose backend answers 403.
  */
 
 import Link from "next/link";

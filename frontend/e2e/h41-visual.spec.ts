@@ -19,6 +19,7 @@ const TAMAÑOS = [
 let COOKIES: Awaited<ReturnType<import("@playwright/test").BrowserContext["cookies"]>> = [];
 
 test.beforeAll(async ({ browser, baseURL }) => {
+  test.setTimeout(240_000);
   const context = await browser.newContext({ baseURL });
   const page = await context.newPage();
   await page.goto("/auth", { waitUntil: "networkidle" });
@@ -26,8 +27,20 @@ test.beforeAll(async ({ browser, baseURL }) => {
   if ((await card.count()) === 0) test.skip(true, "sin accesos de desarrollo");
   await card.locator("li").filter({ hasText: "dev_admin" })
     .getByRole("button", { name: "Usar cuenta" }).click();
-  await page.getByRole("button", { name: /iniciar sesión/i }).first().click();
-  await page.waitForURL((u) => !u.pathname.startsWith("/auth"), { timeout: 20_000 });
+  // EL LIMITADOR DE LOGIN (5 por minuto por IP) es una defensa real. En la suite
+  // completa esta entrada llega detrás de los ocho inicios de sesión de las
+  // cuentas demo y del comprobante fiscal, y lo encuentra agotado. Se espera la
+  // ventana en lugar de fallar o de desactivarlo (H4.1.1).
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await page.getByRole("button", { name: /iniciar sesión/i }).first().click();
+    try {
+      await page.waitForURL((u) => !u.pathname.startsWith("/auth"), { timeout: 12_000 });
+      break;
+    } catch {
+      if (attempt === 2) throw new Error("no se pudo iniciar sesión como dev_admin");
+      await page.waitForTimeout(62_000);
+    }
+  }
   COOKIES = await context.cookies();
   await context.close();
 });

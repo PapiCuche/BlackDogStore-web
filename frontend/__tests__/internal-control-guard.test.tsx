@@ -148,3 +148,46 @@ describe('InternalControlGuard', () => {
     await waitFor(() => expect(mockFetchDashboard).toHaveBeenLastCalledWith(8));
   });
 });
+
+/**
+ * H4.1.1 — el técnico entra por su MEMBRESÍA, nunca por su rol legacy.
+ *
+ * `isStaffRole` es compatibilidad: refleja las tuplas de permisos legacy del
+ * backend (store/permissions.py), y ninguna admite a un técnico. Añadirlo
+ * abriría trece páginas legacy cuyo backend responde 403. Estas pruebas fijan
+ * las dos mitades de esa decisión.
+ */
+describe('InternalControlGuard · el técnico (H4.1.1)', () => {
+  const actual = jest.requireActual('@/app/lib/auth') as {
+    isStaffRole: (u: unknown) => boolean;
+  };
+
+  it('isStaffRole NO incluye al técnico', () => {
+    expect(actual.isStaffRole(user({ role: 'technician' }))).toBe(false);
+  });
+
+  it('un técnico SIN membresía no obtiene el panel por el fallback legacy', async () => {
+    mockGetCurrentUser.mockResolvedValue(user({ role: 'technician' }));
+    mockFetchDashboard.mockRejectedValue(new MockNoInternalAccessError('sin membresía'));
+    mockIsStaffRole.mockImplementation((u: unknown) => actual.isStaffRole(u));
+    renderGuard();
+    await waitFor(() => expect(screen.getByText('Sin acceso interno')).toBeInTheDocument());
+    expect(screen.queryByTestId('caps')).not.toBeInTheDocument();
+  });
+
+  it('un técnico CON membresía entra por el servidor, sin consultar su rol legacy', async () => {
+    mockGetCurrentUser.mockResolvedValue(user({ role: 'technician' }));
+    mockFetchDashboard.mockResolvedValue(
+      dashboard(['service.orders.view', 'service.repair.manage']),
+    );
+    mockIsStaffRole.mockReset();
+    mockIsStaffRole.mockReturnValue(false);
+    renderGuard();
+    await waitFor(() =>
+      expect(screen.getByTestId('caps')).toHaveTextContent(
+        'service.orders.view,service.repair.manage',
+      ),
+    );
+    expect(mockIsStaffRole).not.toHaveBeenCalled();
+  });
+});

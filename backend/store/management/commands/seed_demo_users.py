@@ -57,9 +57,17 @@ DEMO_INTERNAL_USERS = (
 DEMO_CUSTOMER_USERNAME = 'dev_customer'
 DEMO_MASTER_USERNAME = 'dev_master'
 
+# H4.1.1 — una persona que COMPRA en la tienda y además TRABAJA en la empresa.
+# Una cuenta puede ser las dos cosas a la vez, y la web tiene que ofrecerle las
+# dos superficies. Cliente por su ficha `Customer`; técnico por su Membership y
+# su rol de empresa. Ninguna de las dos se deduce de la otra.
+DEMO_STAFF_CUSTOMER_USERNAME = 'dev_customer_technician'
+DEMO_STAFF_CUSTOMER_ROLE = ('servicio-tecnico', 'servicio-tecnico')  # rol, área
+
 ALL_DEMO_USERNAMES = (
     DEMO_CUSTOMER_USERNAME,
     *(u for u, _r, _rs, _a in DEMO_INTERNAL_USERS),
+    DEMO_STAFF_CUSTOMER_USERNAME,
     DEMO_MASTER_USERNAME,
 )
 
@@ -131,7 +139,7 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def _purge(self):
-        from store.models import Membership, MembershipRoleAssignment
+        from store.models import Customer, Membership, MembershipRoleAssignment
 
         User = self._get_user_model()
         removed, skipped = [], []
@@ -147,6 +155,9 @@ class Command(BaseCommand):
 
             MembershipRoleAssignment.objects.filter(membership__user=user).delete()
             Membership.objects.filter(user=user).delete()
+            # Su ficha de cliente también. `Customer.user` es SET_NULL: borrar sólo
+            # la cuenta dejaría un cliente huérfano con el nombre de la demo.
+            Customer.objects.filter(user=user).delete()
             user.delete()
             removed.append(username)
 
@@ -234,6 +245,40 @@ class Command(BaseCommand):
             company.default_inventory_branch = first
             company.save(update_fields=['default_inventory_branch', 'updated_at'])
 
+        # --- 5c. cliente Y técnico (H4.1.1) ---
+        staff_customer = self._upsert_user(
+            User, DEMO_STAFF_CUSTOMER_USERNAME, legacy_role='customer',
+        )
+        membership, _ = Membership.objects.get_or_create(
+            user=staff_customer, company=company,
+            defaults={'role': 'technician', 'is_active': True},
+        )
+        if not membership.is_active:
+            membership.is_active = True
+            membership.save(update_fields=['is_active'])
+        role_slug, area_slug = DEMO_STAFF_CUSTOMER_ROLE
+        role = CompanyRole.objects.filter(company=company, slug=role_slug).first()
+        area = CompanyArea.objects.filter(company=company, slug=area_slug).first()
+        if role is None:
+            raise CommandError(
+                f'La empresa "{company_slug}" no tiene el rol preset "{role_slug}".'
+            )
+        assignment, created = MembershipRoleAssignment.objects.get_or_create(
+            membership=membership, role=role, area=area, defaults={'is_active': True},
+        )
+        if not created and not assignment.is_active:
+            assignment.is_active = True
+            assignment.save()
+        from store.models import Customer
+        Customer.objects.get_or_create(
+            company=company, user=staff_customer,
+            defaults={
+                'first_name': 'Cliente', 'last_name': 'y Técnico',
+                'email': demo_email(DEMO_STAFF_CUSTOMER_USERNAME),
+                'notes': 'Cuenta demo: compra en la tienda y trabaja en servicio técnico.',
+            },
+        )
+
         # --- 6. platform master ---
         # Authority comes from is_superuser ALONE. No Membership is created:
         # a Membership would suggest company authority is what makes a master.
@@ -289,15 +334,16 @@ class Command(BaseCommand):
             ('dev_inventory', 'Inventario', company.slug),
             ('dev_technician', 'Servicio Técnico', company.slug),
             ('dev_admin', 'Admin de empresa', company.slug),
+            ('dev_customer_technician', 'Cliente y técnico', company.slug),
             ('dev_master', 'PLATFORM MASTER (is_superuser)', '—'),
         ]
         self.stdout.write(self.style.SUCCESS(
             f'\nUsuarios demo listos en la empresa "{company.name}".\n'
         ))
-        self.stdout.write(f'  {"usuario":<16}{"perfil":<34}empresa')
-        self.stdout.write(f'  {"-" * 16}{"-" * 34}{"-" * 20}')
+        self.stdout.write(f'  {"usuario":<26}{"perfil":<34}empresa')
+        self.stdout.write(f'  {"-" * 26}{"-" * 34}{"-" * 20}')
         for username, label, scope in rows:
-            self.stdout.write(f'  {username:<16}{label:<34}{scope}')
+            self.stdout.write(f'  {username:<26}{label:<34}{scope}')
         company.refresh_from_db()
         branch = company.default_inventory_branch
         self.stdout.write(

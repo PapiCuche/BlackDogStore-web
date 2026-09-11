@@ -62,6 +62,7 @@ export function NotificationBell({ slug }: { slug: string | null }) {
   const [unread, setUnread] = useState<number | null>(null);
   const [items, setItems] = useState<Notification[] | null>(null);
   const [open, setOpen] = useState(false);
+  const [markError, setMarkError] = useState<string | null>(null);
 
   const base = slug ? `${API_BASE}/v1/internal/${slug}/notifications` : null;
 
@@ -69,11 +70,14 @@ export function NotificationBell({ slug }: { slug: string | null }) {
     if (!base) return;
     try {
       const res = await fetchWithAuth(`${base}/unread-count/`);
-      if (!res.ok) return;
+      if (!res.ok) throw new Error("sin contador");
       setUnread((await res.json()).unread ?? 0);
     } catch {
       // A badge that cannot load is not an error worth interrupting anybody
-      // with. It stays unknown, which is honest, rather than showing 0.
+      // with. It goes back to UNKNOWN — not 0, and not the last number it
+      // showed: keeping a stale count would assert a fact the client no longer
+      // has (H4.1.1).
+      setUnread(null);
     }
   }, [base]);
 
@@ -99,7 +103,16 @@ export function NotificationBell({ slug }: { slug: string | null }) {
 
   async function markRead(id: number) {
     if (!base) return;
-    await fetchWithAuth(`${base}/${id}/read/`, { method: "POST" });
+    setMarkError(null);
+    try {
+      const res = await fetchWithAuth(`${base}/${id}/read/`, { method: "POST" });
+      if (!res.ok) throw new Error("no marcada");
+    } catch {
+      // NOT drawn as read. Saying something happened when the server did not
+      // do it is worse than saying nothing (H4.1.1).
+      setMarkError("No se pudo marcar como leída.");
+      return;
+    }
     setItems((current) =>
       current?.map((n) => (n.id === id ? { ...n, read_at: new Date().toISOString() } : n)) ?? null,
     );
@@ -140,6 +153,12 @@ export function NotificationBell({ slug }: { slug: string | null }) {
               Ver todas
             </Link>
           </div>
+
+          {markError ? (
+            <p role="alert" className="px-2 pb-1 text-[11px] text-danger">
+              {markError}
+            </p>
+          ) : null}
 
           {items === null ? (
             <p className="px-2 py-6 text-center text-xs text-muted">Cargando…</p>

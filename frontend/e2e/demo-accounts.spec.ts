@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
 /**
- * Los seis accesos de desarrollo, probados de extremo a extremo.
+ * Los siete accesos de desarrollo, probados de extremo a extremo.
  *
  * EL DEFECTO QUE ESTA PRUEBA EXISTE PARA IMPEDIR.
  * La auditoría anterior capturó `/auth` 108 veces y nunca pulsó «Usar cuenta».
@@ -37,6 +37,8 @@ const ACCOUNTS: Expectation[] = [
   { username: "dev_inventory", internal: true, allowed: ["/admin/inventory"] },
   { username: "dev_technician", internal: true, allowed: ["/admin/service"] },
   { username: "dev_admin", internal: true, allowed: ["/admin/products", "/admin/settings"] },
+  // H4.1.1 — compra en la tienda Y trabaja en el taller: las dos superficies.
+  { username: "dev_customer_technician", internal: true, allowed: ["/admin/service"] },
   { username: "dev_master", internal: true, allowed: ["/admin"], master: true },
 ];
 
@@ -50,7 +52,10 @@ async function signInThroughCard(page: Page, username: string) {
     "la tarjeta de accesos de desarrollo no se muestra",
   ).toBeVisible();
 
-  const row = card.locator("li").filter({ hasText: username });
+  // Coincidencia EXACTA con el usuario: `dev_customer` también está contenido
+  // en `dev_customer_technician`, y un filtro por texto contenido encontraría
+  // las dos filas.
+  const row = card.locator("li").filter({ has: page.getByText(username, { exact: true }) });
   await expect(
     row,
     `la tarjeta no ofrece ${username}`,
@@ -87,7 +92,7 @@ async function signInThroughCard(page: Page, username: string) {
   }
 }
 
-test.describe("los seis accesos de desarrollo funcionan", () => {
+test.describe("los siete accesos de desarrollo funcionan", () => {
   // Secuencial y con margen: comparten el limitador por IP.
   test.describe.configure({ mode: "serial" });
 
@@ -103,10 +108,24 @@ test.describe("los seis accesos de desarrollo funcionan", () => {
       //
       // Que la cabecera ofrezca «Salir» en vez de «Ingresar» es la señal de
       // que el backend reconoció la sesión: sale de `getCurrentUser()`.
-      await expect(
-        page.getByRole("button", { name: /^salir$/i }).first(),
-        `${account.username} no quedó con sesión iniciada`,
-      ).toBeVisible({ timeout: 15_000 });
+      //
+      // H4.1.1 — DÓNDE ATERRIZA ES PARTE DEL CONTRATO. Quien trabaja en una
+      // empresa va al control interno; el cliente, a la tienda. Antes todos
+      // iban a «/» y esta prueba buscaba ahí el «Salir» de la cabecera de la
+      // tienda, que el panel no tiene. Llegar a /admin ya prueba la sesión: la
+      // decisión la tomó el servidor al responder las membresías.
+      if (account.internal) {
+        await expect(
+          page,
+          `${account.username} no aterrizó en el control interno`,
+        ).toHaveURL(/\/admin$/, { timeout: 15_000 });
+      } else {
+        await expect(page).toHaveURL(/\/$/, { timeout: 15_000 });
+        await expect(
+          page.getByRole("button", { name: /^salir$/i }).first(),
+          `${account.username} no quedó con sesión iniciada`,
+        ).toBeVisible({ timeout: 15_000 });
+      }
 
       await page.goto("/admin", { waitUntil: "networkidle" });
       const text = await page.locator("body").innerText();
@@ -165,7 +184,8 @@ test.describe("la tarjeta no promete lo que no existe", () => {
 
     const card = page.locator("section").filter({ hasText: "Accesos de desarrollo" });
     for (const account of data.accounts as Array<{ username: string; usable: boolean }>) {
-      const row = card.locator("li").filter({ hasText: account.username });
+      // Exacta: `dev_customer` también está contenido en `dev_customer_technician`.
+      const row = card.locator("li").filter({ has: page.getByText(account.username, { exact: true }) });
       await expect(row).toHaveCount(1);
       await expect(
         row.getByRole("button", { name: "Usar cuenta" }),
