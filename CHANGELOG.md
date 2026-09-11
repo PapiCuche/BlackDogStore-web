@@ -9,6 +9,47 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## H4.1.1 — Web ↔ v1 interno: autenticación y acceso real del técnico
+
+**Estado: IMPLEMENTADO.** Sin migraciones. DEC-API-004 ·
+[docs/adr-auth-v1-internal.md](docs/adr-auth-v1-internal.md).
+
+El panel web consume la API interna v1 y esa superficie sólo aceptaba Bearer: con
+la sesión de cookie válida, servicio técnico, evidencias, notificaciones y
+comunicados respondían 401.
+
+- **Una request, un canal.** `V1InternalAuthentication` orquesta las dos clases
+  existentes: header y cookie a la vez → 401; un `Authorization` explícito nunca
+  cae a la cookie; la cookie trae CSRF y el Bearer no. Declarado sólo en
+  `V1InternalSurfaceMixin`; el default global, `/api/admin/` y el contrato móvil no
+  cambian.
+- **Métodos seguros auditados antes de activar la cookie**: 70 rutas ejecutadas,
+  cero escrituras en GET/HEAD/OPTIONS. Prueba permanente.
+- **Refresh single-flight** y un único reintento: acaba la rotación de tokens por
+  cada 401.
+- **FormData** sin `Content-Type` forzado: la subida de evidencias funciona.
+- **Control interno** visible para quien trabaja en una empresa, decidido por el
+  servidor; destino tras login con `next` local validado — la invitación de H4.1
+  vuelve a abrirse tras iniciar sesión.
+- La campana y la bandeja ya no dan por hecho lo que falla.
+- Cuenta demo `dev_customer_technician` y comando `purge_e2e_data` para que las
+  pruebas de navegador no dejen basura.
+
+Cinco pruebas que fijaban el contrato viejo se reescribieron conservando su
+intención. `isStaffRole` NO incluye al técnico, a propósito: es espejo de permisos
+legacy que tampoco lo admiten.
+
+Verificado: backend completo 3982 OK · PostgreSQL 120 OK · Jest 291 OK · build
+44/44 · Playwright H4.1.1 8/8 · suite completa 108 OK con el inestable conocido de
+C2.1 · sin migraciones. Sabotaje: quitar cada protección deja 2, 9, 5 y 3
+pruebas en rojo.
+
+**Deuda declarada:** BRANCH-SCOPE-01, RBAC-LEGACY-01, AUTH-REVOCATION-01,
+AUDIT-INTERNAL-01, NAV-SERVICE-01, NAV-01, CAT-01, LEGAL-01/02/03, INV-ALERTS, más
+lo ya registrado.
+
+---
+
 ## H4.1 — Personal, onboarding y áreas internas
 
 **Estado: IMPLEMENTADO.** Migración `0083_staff_invitations`, la única de la fase.

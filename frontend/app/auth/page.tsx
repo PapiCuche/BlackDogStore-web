@@ -4,8 +4,33 @@ import { useEffect, useState } from "react";
 import { BrandLogo } from "../components/BrandLogo";
 import { useStorefront } from "../components/StorefrontProvider";
 import { useRouter } from "next/navigation";
-import { login, logout, getCurrentUser, register, AuthUser } from "../lib/auth";
+import {
+  login, logout, getCurrentUser, register, AuthUser,
+  forgetInternalAccess, hasInternalAccess,
+} from "../lib/auth";
+import { safeInternalNextPath } from "../lib/safe-next";
 import { DevQuickLogin } from "./components/DevQuickLogin";
+
+/**
+ * Adónde lleva un login correcto — H4.1.1.
+ *
+ *   1. `?next=` si es una ruta local. Es lo que permite volver a la invitación
+ *      que pidió iniciar sesión, en lugar de perderla en la portada.
+ *   2. Sin `next`: al control interno si el SERVIDOR dice que hay acceso; si
+ *      no, a la tienda.
+ *
+ * Quien es cliente y trabajador aterriza en el panel y conserva la tienda: la
+ * cabecera le ofrece «Pedidos» y «Control interno», y el panel tiene «Volver a
+ * la tienda». Ser trabajador no le quita ser cliente.
+ *
+ * `next` se lee de `window.location` al enviar, no con `useSearchParams`: así
+ * la página no necesita un límite de Suspense sólo para esto.
+ */
+async function destinationAfterLogin(): Promise<string> {
+  const next = safeInternalNextPath(new URLSearchParams(window.location.search).get("next"));
+  if (next) return next;
+  return (await hasInternalAccess()) ? "/admin" : "/";
+}
 
 export default function AuthPage() {
   // The storefront this visitor arrived at. The ACCOUNT they log into is
@@ -38,8 +63,9 @@ export default function AuthPage() {
         const data = await login(username, password);
         setUser(data.user);
         setSuccess("Inicio de sesión correcto.");
+        forgetInternalAccess();
         window.dispatchEvent(new Event("authChange"));
-        router.push("/");
+        router.push(await destinationAfterLogin());
       } else {
         const result = await register({ username, email, password, password_confirm: passwordConfirm });
         if (result.requires_verification) {
@@ -56,6 +82,7 @@ export default function AuthPage() {
 
   async function handleLogout() {
     await logout().catch(() => {});
+    forgetInternalAccess();
     setUser(null);
     window.dispatchEvent(new Event("authChange"));
     router.push("/");

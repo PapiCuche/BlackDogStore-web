@@ -4593,3 +4593,41 @@ Las excepciones van a mano y llevan su motivo escrito: texto blanco sobre
 relleno saturado —donde el fondo no cambia con el tema, así que el texto tampoco
 puede— y el verde oficial de WhatsApp, que es identidad de un tercero y no una
 decisión de tema nuestra.
+
+---
+
+## H4.1.1 — Web y nativo en la superficie interna
+
+### Una request, un canal de autenticación — DEC-API-004
+
+La superficie interna `/api/v1/internal/<empresa>/…` sirve a los **dos** clientes
+de la plataforma: la app nativa con `Authorization: Bearer` y el panel web con
+su cookie HttpOnly. No hay una API web paralela. Web y Mobile responden a las
+mismas reglas de dominio, escritas una vez.
+
+Aceptar dos credenciales sólo es seguro con una regla que no admite
+interpretación:
+
+| Lo que el cliente presenta | Resultado |
+|---|---|
+| `Authorization` **y** cookie de acceso | **401** — no se elige identidad, ni siquiera si son del mismo usuario |
+| `Authorization: Bearer <token>` | canal nativo, sin CSRF |
+| `Authorization` de otro esquema, vacío o malformado | **401** — nunca cae a la cookie |
+| sólo la cookie | canal web, **con CSRF** en todo método no seguro |
+| nada | anónimo → 401 |
+
+Tres consecuencias que forman parte de la decisión:
+
+1. **El orquestador es exclusivo de esta superficie.** Se declara en
+   `V1InternalSurfaceMixin` y en ningún otro sitio; el default global sigue siendo
+   sólo cookie, y `/api/admin/`, `/api/auth/`, `/api/v1/auth/`, `/api/v1/customer/`
+   y `/api/v1/platform/` no cambian.
+2. **Los métodos seguros de esta superficie no escriben.** Es la condición que hace
+   aceptable eximirlos de CSRF por cookie, y una prueba permanente la ejecuta en
+   las 70 rutas.
+3. **Las puertas de tenant, sucursal y capacidad no saben por qué canal entró la
+   petición.** Leen `request.user` y el slug de la ruta, y responden igual por
+   Bearer que por cookie.
+
+Detalle, amenazas y alternativas descartadas:
+[adr-auth-v1-internal.md](adr-auth-v1-internal.md).

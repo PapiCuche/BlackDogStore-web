@@ -3177,3 +3177,140 @@ fue el defecto 1.
   con `DEBUG`, que es lo correcto, pero deja el camino del correo sin probar
   end-to-end.
 - **H4.2 y H4.3**: fuera de alcance por decisión.
+
+---
+
+## Fase H4.1.1 — Web ↔ v1 interno: autenticación y acceso real del técnico
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Rama `feat/h4-1-1-web-v1-auth-interop`,
+apilada sobre H4.1. Decisión: [adr-auth-v1-internal.md](adr-auth-v1-internal.md)
+(DEC-API-004).
+
+### El problema
+
+El panel web consume la API interna v1 —servicio técnico, evidencias,
+notificaciones, comunicados— porque la regla del proyecto es una sola API por
+dominio. Esa superficie aceptaba **sólo Bearer**, y la web se autentica con cookie
+HttpOnly. Con la sesión válida, todo respondía 401: 51 de las 70 rutas internas
+tienen consumidor web y ninguna funcionaba desde el navegador. La campana, que
+vive en todo el panel, fallaba en silencio.
+
+Y cada 401 tenía un coste escondido: disparaba un refresh que rota el token y lo
+deja en lista negra, para volver a recibir 401. La base de desarrollo acumulaba
+978 tokens emitidos y 695 revocados.
+
+A eso se sumaba que un técnico **no podía descubrir** el panel: la cabecera sólo
+lo ofrecía a administradores y el login llevaba siempre a la tienda.
+
+### La decisión: una request, un canal
+
+`V1InternalAuthentication` elige qué credencial se evalúa según lo que el cliente
+**presentó**. Header y cookie a la vez es 401, sin comparar identidades; un
+`Authorization` explícito —aunque sea `Basic`, esté vacío o mal formado— nunca cae
+a la cookie; la cookie trae su CSRF y el Bearer no lo necesita. No reimplementa
+nada: orquesta las dos clases existentes, que no cambian.
+
+**Por qué no simplemente apilar las dos clases de DRF.** Se ejecutó antes de
+decidir. Con Bearer primero, «Bearer de A + cookie de B» entraba como A y sin
+CSRF; con la cookie primero, un Bearer inválido caía a la cookie.
+
+### La condición previa: métodos seguros que no escriben
+
+La cookie exime de CSRF a GET, HEAD y OPTIONS. Antes de activarla se ejecutaron
+las 70 rutas con una orden llevada al final de su ciclo, contando SQL:
+**OPTIONS en 70 rutas y GET/HEAD en 41, cero escrituras**. La primera ejecución
+marcó escrituras que venían del propio arnés —acuñar el token dentro de la
+medición registra el token emitido— y se corrigió el arnés, no la conclusión.
+Queda como prueba permanente por los dos canales.
+
+### Defectos encontrados por el camino
+
+1. **Cinco pruebas fijaban el contrato viejo** («la cookie web no abre la
+   superficie interna», «cada vista declara sólo Bearer»). El PASO 1 afirmó que
+   no había ninguna: la búsqueda que lo sostenía no las encontró, y aparecieron al
+   ejecutar la suite. Se reescribieron conservando su intención.
+2. **La subida de evidencias no habría funcionado aun con la autenticación
+   resuelta**: `fetchWithAuth` forzaba `Content-Type: application/json` sobre un
+   `FormData`, sin boundary, y el servidor no encontraba el archivo.
+3. **Tormenta de refresh**: cada 401 refrescaba por su cuenta. Ahora hay un refresh
+   compartido y un único reintento; 403, 404, las rutas de autenticación y las
+   peticiones con `Authorization` explícito no refrescan.
+4. **`?next=` se ignoraba**: el enlace «Iniciar sesión» de la invitación de H4.1
+   devolvía a la portada en vez de a la invitación.
+5. **La campana y la bandeja daban por hecho lo que fallaba**: marcar como leída no
+   miraba la respuesta, y un contador que dejaba de cargar conservaba el último
+   número.
+6. **`isStaffRole` no es el defecto que parecía.** Excluye al técnico, pero es
+   espejo de los permisos legacy del backend, que tampoco lo admiten. Añadirlo
+   abriría 13 páginas cuyo backend responde 403. Se corrigió el docstring del
+   guard que afirmaba lo contrario y se fijó con pruebas.
+7. **El arnés de Playwright confundía la 308 del proxy de Next con la respuesta
+   de la API**: las rutas con barra final se redirigen y el navegador las repite.
+
+### Acceso del técnico y del cliente
+
+La cabecera muestra **Control interno** cuando el servidor dice que hay acceso
+interno —membresía activa o master— y nunca por `user.role`. Tras el login, un
+`next` local manda; sin él, el panel para quien trabaja en una empresa y la
+tienda para quien no. Quien es cliente y trabajador conserva las dos cosas.
+
+Para probarlo existe una séptima cuenta demo, `dev_customer_technician`, con
+ficha de cliente y membresía de técnico. `purge_e2e_data` borra lo que crean las
+pruebas de navegador —sólo lo marcado `[E2E]` o con correo en `e2e.invalid`— para
+no repetir la basura que dejó H4.1.
+
+### Verificación
+
+| Qué | Resultado |
+|---|---|
+| Backend completo (SQLite) | **3982 OK**, 22 saltadas, 0 errores (1197 s) — baseline 3934 |
+| H4.1.1 dirigido en PostgreSQL 14 | **120 OK, 0 saltadas** |
+| Jest | **291 OK** en 22 suites — baseline 227 en 18 |
+| `tsc --noEmit` | limpio |
+| ESLint | 0 errores, 33 avisos — sin regresión |
+| `next build` | 44/44 |
+| Playwright H4.1.1 | **8/8** |
+| Playwright completo | **108 OK** · 1 fallo · 7 no ejecutados · 1 omitido |
+| `makemigrations --check` · `migrate --plan` | sin cambios · sin operaciones |
+
+**El fallo y el omitido de la suite completa no son de H4.1.1**, y cada uno se repitió aislado:
+
+- `tax-breakdown · light · 320px` es el inestable conocido de C2.1: el navegador ve el carrito vacío y no pide cotización. Aislado pasa en 1,3 s. Los 7 no ejecutados son las combinaciones que van en serie detrás. **Deuda preexistente C2.1.**
+- `fiscal-invoice · dark · 1440px` se omite cuando esa pasada no encuentra un pedido pagado con factura. Aislado pasa en 1,8 s.
+
+**Auditoría de métodos seguros:** OPTIONS en 70 rutas y GET/HEAD en 41, **0 escrituras**.
+
+**Sabotaje** (sin commitear, archivos restaurados con hash idéntico):
+
+| Protección retirada | Pruebas en rojo |
+|---|---|
+| Rechazo de doble credencial | 2 |
+| Bearer inválido no cae a la cookie | 9 |
+| CSRF del canal cookie | 5 |
+| Puerta de tenant | 3 |
+
+**Tormenta de refresh:** antes, cada 401 costaba una fila `OutstandingToken` y una `BlacklistedToken`. Después, cinco 401 simultáneos hacen **un** refresh, y la navegación del técnico en el navegador no hizo **ninguno**.
+
+**Arnés de navegador.** Además de los tres fallos anotados en el ADR (la 308 del proxy, el anunciador de rutas y la carrera de la tarjeta de accesos), la suite completa destapó que añadir una séptima cuenta demo agota antes el limitador de login y el de peticiones del panel. Las pruebas esperan lo que el servidor indica en vez de desactivarlos.
+
+### Deuda registrada
+
+| Clave | Estado | Qué |
+|---|---|---|
+| **BRANCH-SCOPE-01** | DEFECTO | Los pedidos comerciales de v1 interno no filtran por sucursal. **Preexistente, no introducido por H4.1.1**, igual por ambos canales. Servicio técnico sí filtra, y sus pruebas siguen verdes |
+| **RBAC-LEGACY-01** | DEFECTO | `order_fulfillment_services` decide estados permitidos con `UserProfile.role` global, no con capacidades de empresa |
+| **AUTH-REVOCATION-01** | PENDIENTE — deuda de seguridad | El access token no consulta la lista negra: tras el logout sigue válido hasta ~30 min. Evaluar antes de producción |
+| **AUDIT-INTERNAL-01** | PENDIENTE | Lecturas y rechazos de v1 interno no se auditan; requiere diseño para no generar volúmenes enormes |
+| **NAV-SERVICE-01** | DEFECTO / PENDIENTE | Seis entradas del menú llevan a `/admin/service` |
+| **NAV-01** | DEFECTO / PENDIENTE | «Inventario › Reportes» y «Reportes › Inventario» son la misma pantalla |
+| **CAT-01** | PENDIENTE | Una sola `image_url` por producto; sin subida, galería ni orden. Sin separación activo/publicado: una única bandera decide escaparate y POS |
+| **LEGAL-01** | PENDIENTE | No existen `/terminos`, `/privacidad`, `/garantia`, `/preguntas-frecuentes` ni `/contacto`. Las URLs legales se editan en el panel pero no se enlazan |
+| **LEGAL-02** | PENDIENTE | Sin documento legal versionado |
+| **LEGAL-03** | PARCIAL | `Order` guarda dos booleanos; la garantía queda congelada en `company_snapshot`, los términos no |
+| FAQ | IMPLEMENTADO como dato · PARCIAL en publicación | `StorefrontFaq` completo; sólo se pinta dentro de `/services` |
+| Dirección/contacto | IMPLEMENTADO + DEFECTO | El footer lee el tenant; quedan restos del piloto en código (`DELIVERY_AREQUIPA`, categorías del footer) |
+| **INV-ALERTS** | Infraestructura PARCIAL · alertas PENDIENTE | Riesgo calculado en cada GET y no persistido; sin eventos de inventario ni estado de alerta; `safety_stock` y `lead_time_days` sin escritura por API |
+| INV-SERIAL, SVC-EVIDENCE-UX, NOTIFY-RT, FISCAL-SERVICE | PENDIENTE / PARCIAL | Sin cambios en esta fase |
+| H4.2, H4.3 | PENDIENTE | Fuera de alcance por decisión |
+| Fiscal | PENDIENTE | Factura con descuento, boleta y resumen diario, producción SUNAT |
+| Proxy 308 | OBSERVACIÓN | Toda llamada del navegador con barra final hace una redirección 308 en Next antes de llegar a Django: un viaje de ida y vuelta extra por petición. Preexistente |

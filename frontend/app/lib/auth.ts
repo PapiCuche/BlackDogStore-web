@@ -102,6 +102,59 @@ async function tryRefresh(): Promise<boolean> {
 }
 
 /**
+ * UN SOLO REFRESH A LA VEZ — H4.1.1.
+ *
+ * Al abrir una pantalla del panel salen varias peticiones juntas (la campana,
+ * la lista, el contexto), y si la sesión caducó reciben 401 a la vez. Cada
+ * refresh ROTA el refresh token y deja el anterior en lista negra: diez
+ * refrescos simultáneos son diez pares de filas escritas y nueve tokens que
+ * nacen muertos. La auditoría lo midió en la base de desarrollo: 978 emitidos,
+ * 695 en lista negra.
+ *
+ * Así que comparten UNA promesa. Cuando se resuelve se suelta, y una tanda
+ * posterior puede pedir la suya.
+ */
+let refreshInFlight: Promise<boolean> | null = null;
+
+export function refreshSessionOnce(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = tryRefresh().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+/** Lectura sin distinguir mayúsculas: HTTP no las distingue en los nombres. */
+function headerRecord(init: HeadersInit | undefined): Record<string, string> {
+  if (!init) return {};
+  if (Array.isArray(init)) return Object.fromEntries(init);
+  if (typeof Headers !== "undefined" && init instanceof Headers) {
+    const out: Record<string, string> = {};
+    init.forEach((value, key) => {
+      out[key] = value;
+    });
+    return out;
+  }
+  return { ...(init as Record<string, string>) };
+}
+
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+  const wanted = name.toLowerCase();
+  return Object.keys(headers).some((key) => key.toLowerCase() === wanted);
+}
+
+function setHeader(headers: Record<string, string>, name: string, value: string): void {
+  const wanted = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === wanted) delete headers[key];
+  }
+  headers[name] = value;
+}
+
+const AUTH_ENDPOINTS = ["/auth/login", "/auth/refresh", "/auth/logout"];
+
+/**
  * La clave donde el panel guarda la empresa que el master está mirando.
  *
  * Duplicada a propósito en vez de importada: `auth.ts` es infraestructura del
@@ -143,6 +196,25 @@ function withSelectedCompany(url: string): string {
   return url + (url.includes("?") ? "&" : "?") + `company=${encodeURIComponent(id)}`;
 }
 
+/**
+ * `fetch` con la sesión web: cookies, CSRF y un refresh si hace falta.
+ *
+ * QUÉ 401 PUEDE REFRESCAR (H4.1.1):
+ *   · una petición normal por cookie → UN refresh compartido y UN reintento.
+ *     Si el reintento vuelve a ser 401, ése es el resultado: no hay segundo.
+ *   · con `Authorization` explícito → no: es otro canal, y la cookie de
+ *     refresh no le pertenece.
+ *   · login, refresh y logout → no: reintentarlos sería recursivo.
+ *   · 403 y 404 → nunca: no son sesiones caducadas, son respuestas.
+ *
+ * CONTENT-TYPE:
+ *   · `FormData` → no se fija. El navegador escribe
+ *     `multipart/form-data; boundary=…`; fijarlo a mano —o dejar el JSON por
+ *     defecto, como hacía esta función— borra el boundary y el servidor no
+ *     encuentra el archivo. Así fallaba la subida de evidencias.
+ *   · un `Content-Type` del llamador → se respeta.
+ *   · lo demás → `application/json`.
+ */
 export async function fetchWithAuth(
   rawUrl: string,
   options: RequestInit = {}
@@ -151,37 +223,32 @@ export async function fetchWithAuth(
   const method = ((options.method as string) || "GET").toUpperCase();
   const needsCsrf = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...((options.headers as Record<string, string>) ?? {}),
-  };
+  const headers = headerRecord(options.headers);
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (!isFormData && !hasHeader(headers, "Content-Type")) {
+    setHeader(headers, "Content-Type", "application/json");
+  }
 
   if (needsCsrf) {
     const csrf = await ensureCsrfToken();
-    if (csrf) headers["X-CSRFToken"] = csrf;
+    if (csrf) setHeader(headers, "X-CSRFToken", csrf);
   }
 
-  const response = await fetch(url, { ...options, headers, credentials: "include" });
+  const send = () => fetch(url, { ...options, headers, credentials: "include" });
+  const response = await send();
 
-  if (response.status === 401) {
-    const isAuthEndpoint =
-      url.includes("/auth/login") ||
-      url.includes("/auth/refresh") ||
-      url.includes("/auth/logout");
+  if (response.status !== 401) return response;
+  if (hasHeader(headers, "Authorization")) return response;
+  if (AUTH_ENDPOINTS.some((path) => url.includes(path))) return response;
 
-    if (!isAuthEndpoint) {
-      const refreshed = await tryRefresh();
-      if (refreshed) {
-        if (needsCsrf) {
-          const freshCsrf = getCsrfTokenFromCookie();
-          if (freshCsrf) headers["X-CSRFToken"] = freshCsrf;
-        }
-        return fetch(url, { ...options, headers, credentials: "include" });
-      }
-    }
+  const refreshed = await refreshSessionOnce();
+  if (!refreshed) return response;
+
+  if (needsCsrf) {
+    const fresh = getCsrfTokenFromCookie();
+    if (fresh) setHeader(headers, "X-CSRFToken", fresh);
   }
-
-  return response;
+  return send();
 }
 
 export async function login(
@@ -225,6 +292,47 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * ¿Esta sesión puede entrar al control interno? Lo responde el SERVIDOR.
+ *
+ * Membresía activa en una empresa activa, o master de plataforma: la misma
+ * definición con la que `/api/me/internal-dashboard/` abre o niega el panel.
+ * NO `UserProfile.role`. Un técnico con membresía entra aunque su rol legacy
+ * no figure en `isStaffRole`, y un rol legacy sin membresía no convierte a
+ * nadie en trabajador de ninguna empresa.
+ *
+ * Una promesa por sesión: la cabecera y la página de login preguntan lo mismo
+ * y no hace falta preguntarlo dos veces. `forgetInternalAccess()` la suelta
+ * cuando la sesión cambia. Un fallo no se guarda: la próxima pregunta vuelve
+ * a intentarlo en lugar de recordar un «no» que no era cierto.
+ */
+let internalAccess: Promise<boolean> | null = null;
+// Cada sesión nueva es una generación nueva: un intento que falla tarde no
+// puede borrar la respuesta de una sesión posterior.
+let accessGeneration = 0;
+
+export function hasInternalAccess(): Promise<boolean> {
+  if (!internalAccess) {
+    const generation = accessGeneration;
+    internalAccess = fetchWithAuth(`${API_BASE}/me/memberships/`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error("sin respuesta");
+        const body = await res.json();
+        return Boolean(body?.is_platform_admin) || Number(body?.count ?? 0) > 0;
+      })
+      .catch(() => {
+        if (generation === accessGeneration) internalAccess = null;
+        return false;
+      });
+  }
+  return internalAccess;
+}
+
+export function forgetInternalAccess(): void {
+  internalAccess = null;
+  accessGeneration += 1;
 }
 
 export async function register(data: {

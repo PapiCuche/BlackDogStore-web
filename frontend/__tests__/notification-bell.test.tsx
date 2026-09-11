@@ -113,3 +113,48 @@ describe('NotificationBell', () => {
     expect(screen.getByLabelText('Notificaciones')).toBeInTheDocument();
   });
 });
+
+/**
+ * H4.1.1 — una falla no se cuenta como éxito.
+ *
+ * La campana marcaba una notificación como leída sin mirar la respuesta, y un
+ * contador que dejaba de cargar se quedaba con el último número. Las dos cosas
+ * afirmaban algo que el servidor no había dicho.
+ */
+describe('NotificationBell · fallos honestos (H4.1.1)', () => {
+  it('una marca de leída que falla no se pinta como hecha', async () => {
+    fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) => {
+      if (url.includes('unread-count')) return reply({ unread: 1 });
+      if (init?.method === 'POST') return reply({ detail: 'no' }, false);
+      return reply({
+        results: [{
+          id: 7, title: 'Aviso sin destino', body: '', priority: 'info',
+          target_type: 'desconocido', target_id: null,
+          read_at: null, created_at: '2026-09-10T10:00:00Z',
+        }],
+      });
+    });
+
+    render(<NotificationBell slug="taller" />);
+    await userEvent.click(screen.getByLabelText('Notificaciones'));
+    const title = await screen.findByText('Aviso sin destino');
+    await userEvent.click(title);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo marcar como leída.');
+    expect(title.parentElement?.className ?? '').not.toContain('opacity-60');
+  });
+
+  it('un contador que deja de cargar no conserva el número viejo', async () => {
+    let count = 0;
+    fetchWithAuth.mockImplementation(() => {
+      count += 1;
+      return count === 1 ? reply({ unread: 3 }) : Promise.reject(new Error('red caída'));
+    });
+
+    render(<NotificationBell slug="taller" />);
+    expect(await screen.findByText('3')).toBeInTheDocument();
+
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(screen.queryByText('3')).not.toBeInTheDocument());
+  });
+});

@@ -51,6 +51,9 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Un fallo al MARCAR no es un fallo al CARGAR: la lista sigue siendo cierta,
+  // así que se avisa encima sin esconderla (H4.1.1).
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!base) return;
@@ -75,16 +78,26 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
 
   async function markRead(id: number) {
     if (!base) return;
-    await fetchWithAuth(`${base}/${id}/read/`, { method: "POST" });
-    await load();
+    setActionError(null);
+    try {
+      const res = await fetchWithAuth(`${base}/${id}/read/`, { method: "POST" });
+      if (!res.ok) throw new Error("No se pudo marcar la notificación como leída.");
+      await load();
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : "No se pudo marcar la notificación como leída.");
+    }
   }
 
   async function markAll() {
     if (!base) return;
     setBusy(true);
+    setActionError(null);
     try {
-      await fetchWithAuth(`${base}/read-all/`, { method: "POST" });
+      const res = await fetchWithAuth(`${base}/read-all/`, { method: "POST" });
+      if (!res.ok) throw new Error("No se pudieron marcar todas como leídas.");
       await load();
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : "No se pudieron marcar todas como leídas.");
     } finally {
       setBusy(false);
     }
@@ -136,6 +149,12 @@ function Inbox({ ctx }: { ctx: InternalContext }) {
           </button>
         ))}
       </div>
+
+      {actionError ? (
+        <p role="alert" className="rounded-xl border border-danger-border bg-red-500/[0.05] px-4 py-3 text-sm text-danger">
+          {actionError}
+        </p>
+      ) : null}
 
       {error ? (
         <p className="rounded-xl border border-danger-border bg-red-500/[0.05] px-4 py-3 text-sm text-danger">

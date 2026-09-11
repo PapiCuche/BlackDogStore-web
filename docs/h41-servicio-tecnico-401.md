@@ -94,3 +94,34 @@ de H4.1 por decisión y no por olvido.
 Recomendación: tratarlo como fase propia. La decisión de fondo —si el panel web
 debe hablar con la API nativa o tener la suya— afecta a servicio técnico,
 notificaciones y comunicados a la vez.
+
+## Resolución — H4.1.1
+
+**RESUELTO** en la rama `feat/h4-1-1-web-v1-auth-interop`. Decisión completa en
+[adr-auth-v1-internal.md](adr-auth-v1-internal.md).
+
+La salida elegida fue la primera de las dos que este documento dejaba abiertas
+—aceptar la cookie en la API v1— y el riesgo que anotaba se resolvió de frente
+en vez de esquivarlo:
+
+- **CSRF**: la cookie trae su CSRF. `CookieJWTAuthentication` lo exige dentro de
+  `authenticate()` para cada método no seguro, y eso no se tocó.
+- **Confusión de credenciales**: `V1InternalAuthentication` admite **un** canal
+  por request. Header y cookie a la vez es 401; un `Authorization` explícito
+  nunca cae a la cookie.
+- **Métodos seguros sin CSRF**: antes de activar la cookie se ejecutaron las 70
+  rutas internas contando SQL de escritura en GET, HEAD y OPTIONS — cero.
+
+No se creó una API web paralela: el panel sigue hablando con la misma superficie
+que la app nativa.
+
+Verificado contra el servidor en marcha con la cuenta `dev_technician`:
+
+| Petición | Antes | Después |
+|---|---|---|
+| `GET …/service/context/` con cookie | 401 | **200** |
+| `GET …/notifications/unread-count/` con cookie | 401 | **200** |
+| `POST …/notifications/read-all/` con cookie, sin CSRF | 401 | **403** |
+| `POST …/notifications/read-all/` con cookie y CSRF | 401 | **200** |
+| `GET …/service/context/` con Bearer | 200 | 200 |
+| `GET …/service/context/` con Bearer **y** cookie | 200 (sólo Bearer) | **401** |

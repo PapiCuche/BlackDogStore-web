@@ -42,6 +42,7 @@ from rest_framework.views import APIView
 from .management.commands.seed_demo_users import (
     ALL_DEMO_USERNAMES,
     DEMO_CUSTOMER_USERNAME,
+    DEMO_STAFF_CUSTOMER_USERNAME,
     DEMO_INTERNAL_USERS,
     DEMO_MASTER_USERNAME,
     DEMO_PASSWORD,
@@ -76,6 +77,11 @@ DEMO_DESTINATIONS = {
         'destination': 'Control interno completo',
         'authority': 'Autoridad completa sobre SU empresa.',
     },
+    DEMO_STAFF_CUSTOMER_USERNAME: {
+        'label': 'Cliente y técnico',
+        'destination': 'Tienda y control interno · servicio técnico',
+        'authority': 'Compra en la tienda y trabaja en el taller.',
+    },
     DEMO_MASTER_USERNAME: {
         'label': 'Master de plataforma',
         'destination': 'Control interno · elige empresa',
@@ -86,6 +92,7 @@ DEMO_DESTINATIONS = {
 _ORDER = (
     DEMO_CUSTOMER_USERNAME,
     *(u for u, _r, _rs, _a in DEMO_INTERNAL_USERS),
+    DEMO_STAFF_CUSTOMER_USERNAME,
     DEMO_MASTER_USERNAME,
 )
 
