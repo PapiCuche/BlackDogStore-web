@@ -306,6 +306,11 @@ export type AdminOrderDetail = AdminOrder & {
   accepted_terms: boolean;
   accepted_warranty_policy: boolean;
   items: AdminOrderItem[];
+  /**
+   * Fulfilment states THIS caller may set on this order, decided by the server
+   * for this company (H4.1.2). Empty = read-only. Never derive it from the role.
+   */
+  available_fulfillment_transitions: string[];
 };
 
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {
