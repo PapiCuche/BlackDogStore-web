@@ -85,9 +85,10 @@ function StaffScreen({ ctx }: { ctx: InternalContext }) {
     async (current: StaffFilters) => {
       if (!companyId) {
         // Sin empresa NO se deja el estado en «cargando»: una pantalla que gira
-        // para siempre no dice nada de lo que pasa.
+        // para siempre no dice nada de lo que pasa. Tampoco se pone un error:
+        // no hay ningún fallo, sencillamente no hay empresa desde la que mirar,
+        // y la pantalla lo dice con su propio bloque.
         setPeople([]);
-        setError('Selecciona una empresa para ver su personal.');
         return;
       }
       try {
@@ -177,13 +178,15 @@ function StaffScreen({ ctx }: { ctx: InternalContext }) {
               Administra trabajadores, responsabilidades y acceso por sucursal.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowForm((v) => !v)}
-            className="min-h-11 rounded-lg bg-foreground px-4 text-sm font-semibold text-background transition hover:bg-foreground/90"
-          >
-            {showForm ? "Cancelar" : "Añadir trabajador"}
-          </button>
+          {companyId ? (
+            <button
+              type="button"
+              onClick={() => setShowForm((v) => !v)}
+              className="min-h-11 rounded-lg bg-foreground px-4 text-sm font-semibold text-background transition hover:bg-foreground/90"
+            >
+              {showForm ? "Cancelar" : "Añadir trabajador"}
+            </button>
+          ) : null}
         </header>
 
         {error ? (
@@ -193,6 +196,27 @@ function StaffScreen({ ctx }: { ctx: InternalContext }) {
           >
             <p className="text-sm text-danger">{error}</p>
           </div>
+        ) : null}
+
+        {/*
+          TRES ESTADOS DISTINTOS, TRES MENSAJES DISTINTOS.
+
+          «Cargando» es que todavía no se sabe; «no hay personal que coincida»
+          es que la empresa está y la búsqueda no devolvió nada; y esto de aquí
+          es que no hay ninguna empresa desde la que mirar. Confundirlos fue el
+          defecto de esta pantalla: se quedaba girando y quien miraba no podía
+          saber si estaba rota, vacía o tardando.
+        */}
+        {!companyId ? (
+          <section className="rounded-xl border border-bd-border bg-surface p-8 text-center">
+            <p className="text-sm font-medium text-foreground">
+              No hay ninguna empresa seleccionada.
+            </p>
+            <p className="mx-auto mt-2 max-w-md text-sm text-muted">
+              El personal se administra dentro de una empresa. Elige una arriba,
+              o pide que te den acceso a una para poder verlo.
+            </p>
+          </section>
         ) : null}
 
         {showForm && companyId ? (
@@ -209,23 +233,27 @@ function StaffScreen({ ctx }: { ctx: InternalContext }) {
           />
         ) : null}
 
-        <Filters
-          filters={filters}
-          areas={areas}
-          roles={roles}
-          branches={branches}
-          onChange={setFilters}
-        />
+        {companyId ? (
+          <>
+            <Filters
+              filters={filters}
+              areas={areas}
+              roles={roles}
+              branches={branches}
+              onChange={setFilters}
+            />
 
-        {invitations.length ? (
-          <PendingInvitations
-            invitations={invitations}
-            busy={busy}
-            onAction={invitationAction}
-          />
+            {invitations.length ? (
+              <PendingInvitations
+                invitations={invitations}
+                busy={busy}
+                onAction={invitationAction}
+              />
+            ) : null}
+
+            <PeopleList people={people} busy={busy} onToggle={toggleAccess} />
+          </>
         ) : null}
-
-        <PeopleList people={people} busy={busy} onToggle={toggleAccess} />
       </div>
     </AdminShell>
   );
@@ -405,18 +433,31 @@ function PeopleList({
             <Row label="Sucursales">{person.branch_scope_label}</Row>
           </dl>
 
-          <button
-            type="button"
-            onClick={() => onToggle(person)}
-            disabled={busy !== null}
-            className="mt-3 min-h-11 w-full rounded-lg border border-bd-border px-3 text-sm text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {busy === `toggle-${person.id}`
-              ? "Guardando…"
-              : person.is_active
-                ? "Desactivar acceso"
-                : "Reactivar acceso"}
-          </button>
+          {person.is_self ? (
+            /*
+              Tu propia ficha no lleva botón. Quitarte el acceso a ti mismo
+              dejaría a la empresa sin nadie que pueda devolverlo, así que el
+              servidor lo rechaza; ofrecer el botón de todas formas sólo sirve
+              para que el clic acabe en un error.
+            */
+            <p className="mt-3 text-xs text-muted">
+              Esta es tu cuenta. Otra persona con permiso de personal puede
+              cambiar tu acceso.
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onToggle(person)}
+              disabled={busy !== null}
+              className="mt-3 min-h-11 w-full rounded-lg border border-bd-border px-3 text-sm text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy === `toggle-${person.id}`
+                ? "Guardando…"
+                : person.is_active
+                  ? "Desactivar acceso"
+                  : "Reactivar acceso"}
+            </button>
+          )}
         </li>
       ))}
     </ul>

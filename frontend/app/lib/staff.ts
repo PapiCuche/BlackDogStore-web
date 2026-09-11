@@ -17,6 +17,8 @@ export type StaffPerson = {
   last_name: string;
   email: string;
   is_active: boolean;
+  /** La ficha de quien está mirando. Nadie se desactiva a sí mismo. */
+  is_self: boolean;
   areas: { id: number; name: string }[];
   roles: { id: number; name: string }[];
   branch_access_mode: string;

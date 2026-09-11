@@ -67,9 +67,26 @@ async function seedCart(page: Page, request: APIRequestContext, key: string) {
   const product = await sellableProduct(request);
   if (!product) return false;
 
-  const added = await request.post(`${API}/cart/add/`, {
+  // EL LIMITADOR SE RESPETA, NO SE ESQUIVA.
+  //
+  // Sembrar el carrito cuesta una petición por combinación de tema y anchura, y
+  // la suite completa acaba agotando el cupo por IP: el servidor responde 429 y
+  // dice cuántos segundos faltan. Eso es la defensa funcionando. El arnés
+  // espera lo que le piden y reintenta, en vez de fallar y dejar creer que el
+  // desglose está roto. Desactivar el límite para las pruebas sería probar un
+  // servidor que no es el que se despliega.
+  let added = await request.post(`${API}/cart/add/`, {
     data: { session_key: key, product: product.id, quantity: 1 },
   });
+  for (let intento = 0; added.status() === 429 && intento < 3; intento++) {
+    const espera = Number(
+      (await added.text()).match(/(\d+)\s*segundo/)?.[1] ?? 5,
+    );
+    await page.waitForTimeout((espera + 1) * 1000);
+    added = await request.post(`${API}/cart/add/`, {
+      data: { session_key: key, product: product.id, quantity: 1 },
+    });
+  }
   expect(
     added.ok(),
     `no se pudo sembrar el carrito (${added.status()}): ${await added.text()}`,
@@ -108,12 +125,25 @@ test.describe("el comprador ve cuánto es de impuesto antes de pagar", () => {
           test.skip(true, "la API no devuelve ningún producto con stock");
         }
 
+        // La cotización viaja en su propia petición, así que se anota su
+        // respuesta: cuando el desglose no aparece, la causa está ahí y no en
+        // el maquetado. Sin esto el fallo decía «no se ve» y había que
+        // adivinar si el servidor había contestado mal o no había contestado.
+        const cotizaciones: string[] = [];
+        page.on("response", (res) => {
+          if (res.url().includes("/checkout/quote")) {
+            cotizaciones.push(`${res.status()} ${res.url()}`);
+          }
+        });
+
         await page.goto("/checkout", { waitUntil: "networkidle" });
 
         // La cotización es una llamada aparte; hay que darle su turno.
         await expect(
           page.getByText(/Op\. (gravada|exonerada|inafecta)/).first(),
-          "el resumen no muestra el desglose tributario",
+          `el resumen no muestra el desglose tributario · cotización: ${
+            cotizaciones.join(" | ") || "no se pidió"
+          }`,
         ).toBeVisible({ timeout: 20_000 });
 
         const summary = page.locator("aside").first();

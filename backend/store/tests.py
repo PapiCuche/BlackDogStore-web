@@ -50694,3 +50694,137 @@ class H41StaffDeactivationTest(TestCase):
                       (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
         self.membership.refresh_from_db()
         self.assertTrue(self.membership.is_active)
+
+
+class H41AreaCreationTest(TestCase):
+    """
+    Crear un área desde la pantalla, que es escribir un NOMBRE y nada más.
+
+    El defecto que estas pruebas fijan: el serializador exigía `slug`, el
+    formulario no lo mandaba y «Crear área» respondía 400 siempre. La pantalla
+    decía «No se pudo crear el área.» y no había forma de crear ninguna.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-areas', 'Empresa Áreas H41')
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_area_gestor',
+            ['company.view', 'memberships.view', 'areas.manage'])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _crear(self, nombre, user=None, **extra):
+        payload = {'company': self.company.pk, 'name': nombre}
+        payload.update(extra)
+        return self._as(user or self.gestor).post(
+            '/api/admin/areas/', payload, format='json')
+
+    def test_creating_an_area_needs_only_a_name(self):
+        res = self._crear('Taller de pantallas')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data['name'], 'Taller de pantallas')
+        self.assertEqual(res.data['slug'], 'taller-de-pantallas')
+
+    def test_the_slug_follows_the_preset_convention(self):
+        """
+        Las áreas del aprovisionamiento usan `slugify`: «Recepción» es
+        `recepcion`. Una creada a mano no puede seguir otra convención, o dos
+        áreas equivalentes quedarían con identificadores distintos.
+        """
+        res = self._crear('Recepción Norte')
+        self.assertEqual(res.data['slug'], 'recepcion-norte')
+
+    def test_a_repeated_slug_gets_a_suffix_instead_of_a_500(self):
+        """
+        «Postventa» y «Postventa.» dan el mismo slug. El segundo no puede
+        reventar contra la restricción de unicidad.
+        """
+        primera = self._crear('Postventa')
+        self.assertEqual(primera.status_code, status.HTTP_201_CREATED)
+        segunda = self._crear('Postventa.')
+        self.assertEqual(segunda.status_code, status.HTTP_201_CREATED, segunda.data)
+        self.assertEqual(primera.data['slug'], 'postventa')
+        self.assertEqual(segunda.data['slug'], 'postventa-2')
+
+    def test_a_name_with_nothing_sluggable_still_gets_an_identifier(self):
+        res = self._crear('///')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data['slug'], 'area')
+
+    def test_an_explicit_slug_is_still_respected(self):
+        """El aprovisionamiento y las pruebas antiguas lo mandan; sigue valiendo."""
+        res = self._crear('Laboratorio', slug='lab-interno')
+        self.assertEqual(res.data['slug'], 'lab-interno')
+
+    def test_the_derived_slug_does_not_collide_across_companies(self):
+        """
+        Dos empresas pueden tener cada una su «Ventas». La unicidad es por
+        empresa, así que el sufijo no debe contagiarse de la vecina.
+        """
+        otra = _p3_company('h41-areas-b', 'Otra Empresa Áreas')
+        vecino, _ = _p2d_member(
+            otra, 'h41_area_vecino', ['company.view', 'memberships.view', 'areas.manage'])
+        res = self._as(vecino).post(
+            '/api/admin/areas/',
+            {'company': otra.pk, 'name': 'Taller de pantallas'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['slug'], 'taller-de-pantallas')
+
+    def test_viewing_does_not_grant_creating(self):
+        observador, _ = _p2d_member(
+            self.company, 'h41_area_obs', ['company.view', 'memberships.view'])
+        res = self._crear('Intrusa', user=observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertFalse(
+            CompanyArea.objects.filter(company=self.company, name='Intrusa').exists())
+
+
+class H41StaffSelfCardTest(TestCase):
+    """
+    La propia ficha se marca como propia.
+
+    El servidor ya impide que alguien se desactive a sí mismo. Sin esta marca la
+    pantalla no tenía forma de saber cuál era la fila de quien mira, así que
+    ofrecía un botón cuyo único destino era el 400.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-self', 'Empresa Propia H41')
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_self_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+        self.otra, _ = _p2d_member(
+            self.company, 'h41_self_otra', ['company.view'])
+
+    def _marcas(self, user):
+        """{membresía: is_self} tal como lo ve `user`."""
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get('/api/admin/staff/', {'company': self.company.pk})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return {p['id']: p['is_self'] for p in res.data['results']}
+
+    def _membresia(self, user):
+        return Membership.objects.get(company=self.company, user=user).pk
+
+    def test_only_the_callers_own_row_is_marked(self):
+        marcas = self._marcas(self.gestor)
+        self.assertTrue(marcas[self._membresia(self.gestor)])
+        self.assertFalse(marcas[self._membresia(self.otra)])
+        self.assertEqual(sum(marcas.values()), 1,
+                         'debería marcarse exactamente una ficha')
+
+    def test_the_same_row_is_not_marked_for_somebody_else(self):
+        """La marca es de quien pregunta, no una propiedad de la persona."""
+        gestor_b, _ = _p2d_member(
+            self.company, 'h41_self_gestor_b',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+        marcas = self._marcas(gestor_b)
+        self.assertTrue(marcas[self._membresia(gestor_b)])
+        self.assertFalse(marcas[self._membresia(self.gestor)])

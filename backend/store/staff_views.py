@@ -482,7 +482,7 @@ class AdminStaffListView(APIView):
                 | Q(branch_access_mode=Membership.ACCESS_MODE_ALL)
             ).distinct()
 
-        personas = [self._person(m) for m in queryset]
+        personas = [self._person(m, request.user) for m in queryset]
         # Se ordena por nombre visible y no por identificador: una lista de
         # personas ordenada por clave primaria no la puede recorrer nadie.
         personas.sort(key=lambda p: (not p['is_active'], p['full_name'].lower()))
@@ -490,13 +490,18 @@ class AdminStaffListView(APIView):
         return Response({'results': personas, 'count': len(personas)})
 
     @staticmethod
-    def _person(membership) -> dict:
+    def _person(membership, caller=None) -> dict:
         """
         Una persona, tal como se lee. El identificador viaja pero no se muestra.
 
         EL NOMBRE NO ES LA IDENTIDAD: dos personas pueden llamarse igual, y por
         eso el correo va siempre al lado. Cuando no hay nombre se cae al usuario,
         que es feo pero nunca ambiguo.
+
+        `is_self` marca la propia ficha. Nadie puede desactivarse a sí mismo
+        —dejaría a la empresa sin quien devuelva el acceso— y el servidor ya lo
+        rechaza; esto existe para que la pantalla no ofrezca un botón que sólo
+        puede terminar en error.
         """
         usuario = membership.user
         completo = f'{usuario.first_name} {usuario.last_name}'.strip()
@@ -521,6 +526,7 @@ class AdminStaffListView(APIView):
             'last_name': usuario.last_name,
             'email': usuario.email,
             'is_active': membership.is_active,
+            'is_self': caller is not None and membership.user_id == caller.pk,
             'areas': [{'id': k, 'name': v} for k, v in areas.items()],
             'roles': [{'id': k, 'name': v} for k, v in roles.items()],
             'branch_access_mode': membership.branch_access_mode,

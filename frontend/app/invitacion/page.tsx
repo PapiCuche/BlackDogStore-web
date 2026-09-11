@@ -16,7 +16,7 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { API_BASE } from "../lib/api";
-import { fetchWithAuth } from "../lib/auth";
+import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 
 type InvitationInfo = {
   company_name: string;
@@ -47,6 +47,20 @@ function InvitationScreen() {
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  // El correo de la sesión abierta, si hay alguna. Sirve para NO ofrecer un
+  // botón que sólo puede terminar en error: aceptar exige haber iniciado sesión
+  // con el correo invitado, y el servidor lo comprueba de todas formas.
+  // Comparar aquí no relaja nada; sólo evita el clic inútil.
+  const [sessionEmail, setSessionEmail] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const user = await getCurrentUser();
+      if (!cancelled) setSessionEmail(user?.email?.toLowerCase() ?? null);
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,6 +114,15 @@ function InvitationScreen() {
       setSending(false);
     }
   }, [token, sending]);
+
+  // `undefined` es «todavía no se sabe»; `null` es «no hay sesión». Mientras no
+  // se sepa, no se ofrece aceptar: un botón que parpadea de estado es peor que
+  // uno que aparece un momento después.
+  const puedeAceptar =
+    sessionEmail !== undefined &&
+    sessionEmail !== null &&
+    info !== null &&
+    sessionEmail === info.email.toLowerCase();
 
   return (
     <main className="mx-auto w-full max-w-md px-4 py-16">
@@ -157,34 +180,50 @@ function InvitationScreen() {
               </div>
             ) : null}
 
-            {info.requires_authentication ? (
-              <p className="mt-4 text-xs leading-relaxed text-muted">
-                Ya existe una cuenta con este correo. Inicia sesión con ella para
-                aceptar: tener el enlace no basta para vincular una cuenta.
-              </p>
+            {/*
+              QUÉ SE OFRECE DEPENDE DE QUIÉN ESTÉ CONECTADO. Aceptar sólo
+              funciona si la sesión abierta es la del correo invitado, así que
+              en los demás casos se dice qué falta en vez de ofrecer un botón
+              que acaba en un error.
+            */}
+            {puedeAceptar ? (
+              <>
+                <p className="mt-4 text-xs leading-relaxed text-muted">
+                  Aceptar añade tu cuenta a {info.company_name} con el rol
+                  indicado.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void accept()}
+                    disabled={sending}
+                    className="min-h-11 rounded-lg bg-foreground px-4 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {sending ? "Aceptando…" : "Aceptar invitación"}
+                  </button>
+                </div>
+              </>
             ) : (
-              <p className="mt-4 text-xs leading-relaxed text-muted">
-                Crea tu cuenta con este correo y vuelve a este enlace para
-                aceptar.
-              </p>
+              <>
+                <p className="mt-4 text-xs leading-relaxed text-muted">
+                  {sessionEmail
+                    ? `Ahora mismo estás dentro como ${sessionEmail}. Esta invitación es para ${info.email}: cierra sesión y entra con ese correo para aceptarla.`
+                    : info.requires_authentication
+                      ? "Ya existe una cuenta con este correo. Inicia sesión con ella para aceptar: tener el enlace no basta para vincular una cuenta."
+                      : "Crea tu cuenta con este correo y vuelve a este enlace para aceptar."}
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link
+                    href={`/auth?next=${encodeURIComponent(`/invitacion?token=${token}`)}`}
+                    className="inline-flex min-h-11 items-center rounded-lg bg-foreground px-4 text-sm font-semibold text-background transition hover:bg-foreground/90"
+                  >
+                    {info.requires_authentication || sessionEmail
+                      ? "Iniciar sesión"
+                      : "Crear cuenta"}
+                  </Link>
+                </div>
+              </>
             )}
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void accept()}
-                disabled={sending}
-                className="min-h-11 rounded-lg bg-foreground px-4 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {sending ? "Aceptando…" : "Aceptar invitación"}
-              </button>
-              <Link
-                href={`/auth?next=${encodeURIComponent(`/invitacion?token=${token}`)}`}
-                className="inline-flex min-h-11 items-center rounded-lg border border-bd-border px-4 text-sm text-foreground transition hover:bg-surface-2"
-              >
-                {info.requires_authentication ? "Iniciar sesión" : "Crear cuenta"}
-              </Link>
-            </div>
           </>
         ) : (
           <>
