@@ -3714,14 +3714,14 @@ NOTIFY-RT, FISCAL-SERVICE y la deuda fiscal.
 |---|---|---|
 | **BRANCH-SCOPE-01** | RESUELTO | Ver arriba |
 | **RBAC-LEGACY-01** | RESUELTO en el backend y en el selector de despacho | El resto de la interfaz queda en RBAC-LEGACY-UI-01 |
-| **RBAC-LEGACY-UI-01** | PENDIENTE · nuevo | La web todavía decide por `user.role` si muestra «Reenviar email» (`canResendEmail`), el panel de nota de venta (`canManageSalesNotes`) y las páginas de `isStaffRole`. El servidor autoriza bien, pero la interfaz puede esconder la acción a quien tiene la capability o mostrarla a quien recibirá 403 |
+| **RBAC-LEGACY-UI-01** | **RESUELTO en H4.1.2A** | La web todavía decide por `user.role` si muestra «Reenviar email» (`canResendEmail`), el panel de nota de venta (`canManageSalesNotes`) y las páginas de `isStaffRole`. El servidor autoriza bien, pero la interfaz puede esconder la acción a quien tiene la capability o mostrarla a quien recibirá 403 |
 | **DASH-SCOPE-LABEL** | PENDIENTE · nuevo | El bloque de ventas del dashboard ya tiene alcance, pero no declara qué sucursales cubre; el de inventario sí (`scope`) |
 | **CRM-HISTORY-CAP** | OBSERVACIÓN · nueva | La ficha de cliente muestra historial e importes con `service.customers.view`, sin exigir `sales.orders.view`. Ya tiene alcance de sucursal; la pregunta de capacidad sigue abierta |
 | **AUDIT-BRANCH-SCOPE-01** | OBSERVACIÓN · nueva | La bitácora de auditoría es de empresa (`memberships.view`) e incluye entradas de pedidos de todas las sucursales, con el correo del cliente en los metadatos |
 | **POS-IDEMP-409** | OBSERVACIÓN · nueva | Repetir una clave de idempotencia del POS con otra cesta responde 409 con el id del pedido existente. La clave es secreta y la genera el dispositivo |
 | **ORDER-BACKFILL-01** | PENDIENTE | Pedidos sin `fulfillment_branch`: 0 en desarrollo; producción sin medir. Backfill sólo en una fase separada y con certeza sobre la sucursal histórica |
-| **E2E-FISCAL-THROTTLE** | DEFECTO del arnés · preexistente | `fiscal-invoice.spec.ts` busca en cada prueba el pedido con factura abriendo en serie el detalle de cada pedido pagado. Nueve pruebas seguidas superan el limitador `admin_orders` (120/min): las últimas reciben 429, no encuentran pedido y se **omiten en silencio**. Cada venta que crea `pos-ticket` añade una petición por búsqueda: con 26 pedidos se omitía una prueba y con 27, dos. Aisladas pasan. Arreglo en el arnés (buscar una vez y reutilizar el id), no en el limitador |
-| **TEST-H41-TOKEN-FLAKY** | DEFECTO del arnés · preexistente (H4.1) | `H41AcceptEndpointTest.test_every_bad_token_answers_the_same` construye el token «alterado» sustituyendo el último carácter por `z`. Si el token aleatorio ya acababa en `z` (1 de cada 64 veces), no hay alteración y el endpoint responde 200. Reproducido forzando el final del token. Arreglo: sustituir por un carácter distinto del último |
+| **E2E-FISCAL-THROTTLE** | **RESUELTO en H4.1.2A** | `fiscal-invoice.spec.ts` busca en cada prueba el pedido con factura abriendo en serie el detalle de cada pedido pagado. Nueve pruebas seguidas superan el limitador `admin_orders` (120/min): las últimas reciben 429, no encuentran pedido y se **omiten en silencio**. Cada venta que crea `pos-ticket` añade una petición por búsqueda: con 26 pedidos se omitía una prueba y con 27, dos. Aisladas pasan. Arreglo en el arnés (buscar una vez y reutilizar el id), no en el limitador |
+| **TEST-H41-TOKEN-FLAKY** | **RESUELTO en H4.1.2A** | `H41AcceptEndpointTest.test_every_bad_token_answers_the_same` construía el token «alterado» sustituyendo el último carácter por `z`. Si el token aleatorio ya acababa en `z` (1 de cada 64 veces), no había alteración y el endpoint respondía 200 |
 | **SVC-INTAKE-WEB** | PENDIENTE | Nueva orden de servicio en la web |
 | **SVC-CAP-SPLIT** | PROPUESTA PRIORITARIA | Separar `service.orders.manage` |
 | **SVC-ASSIGNEE-01** | DEFECTO · nuevo | Cualquier miembro activo es técnico asignable |
@@ -3739,3 +3739,296 @@ NOTIFY-RT, FISCAL-SERVICE y la deuda fiscal.
 | SALES-FULFILL-CAP | DESCARTADA | Opción B de D4: no se crea capability de despacho |
 | AUTH-REVOCATION-01 · AUDIT-INTERNAL-01 · NAV-01 · NAV-SERVICE-01 · CAT-01 · LEGAL-01/02/03 · INV-ALERTS · NOTIFY-RT · FISCAL-SERVICE · H4.2 · H4.3 · fiscal | Sin cambios | Ver H4.1.1 |
 | Inestable C2.1 (`tax-breakdown`) | PREEXISTENTE | Sin cambios |
+
+---
+
+## Fase H4.1.2A — Estabilización y contexto de sucursal
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Rama `feat/h4-1-2a-stabilization-gate`,
+apilada sobre H4.1.2. Cierra **TEST-H41-TOKEN-FLAKY**, **E2E-FISCAL-THROTTLE** y
+**RBAC-LEGACY-UI-01**, más un defecto nuevo: **BRANCH-CONTEXT-UI-01**. Servicio
+técnico, documentos de venta y cotizaciones se auditan al final de esta sección y
+no se implementan aquí.
+
+### BRANCH-CONTEXT-UI-01 — «Sin sucursal» era una frase sobre inventario
+
+Un técnico veía en la barra del panel «Black Dog Store · Sin sucursal» teniendo
+una sucursal asignada.
+
+**La causa no era el acceso, era de dónde salía el dato.** La barra leía
+`dashboard.inventory.branches`, y el backend sólo construye el bloque
+`inventory` para quien tiene `inventory.view` o `inventory.reports`. El preset
+Servicio Técnico no necesita ninguna de las dos, así que `inventory` llegaba
+`null` y la barra concluía «sin sucursal» de un dato que hablaba de otra cosa.
+
+**Evidencia, con `dev_technician` en un navegador real:**
+
+| | Barra del panel | `inventory` | `branch_scope` |
+|---|---|---|---|
+| Antes | Black Dog Store · **Sin sucursal** | `null` | no existía |
+| Después | Black Dog Store · **Tienda principal** | `null` | `mode: all`, 1 sucursal |
+
+Sigue sin capacidad de inventario; ahora sabe dónde trabaja.
+
+**El arreglo.** `tenancy.describe_branch_scope(user, company)` deriva el alcance
+de `visible_branches()` y de la membresía real, y el dashboard lo publica como
+`branch_scope`, dentro del contexto de ACCESO y no del de inventario:
+
+```
+branch_scope: { mode, default_branch, branches[] }
+      mode: platform · legacy · all · selected · none
+```
+
+- **No pide capacidad de inventario** y no expone stock, dinero ni contadores:
+  ids y nombres de sucursal, nada más.
+- **No es autoridad.** Cada petición vuelve a resolver `visible_branches()` en el
+  servidor; esto es lo que la interfaz puede DECIR.
+- **`default_branch` se resuelve contra las sucursales visibles.** Una membresía
+  cuya sucursal preferida fue revocada o desactivada no tiene preferida, y sigue
+  teniendo alcance.
+
+**Y la barra dice tres cosas distintas**, porque cero sucursales no significa lo
+mismo según cómo se conceden: el nombre cuando hay una, «N sucursales» cuando hay
+varias, «Sin sucursales asignadas» a quien las recibe una a una y todavía no
+tiene ninguna, y «Sin sucursales activas» a quien las alcanza todas en una empresa
+que no tiene ninguna abierta.
+
+### RBAC-LEGACY-UI-01 — la interfaz preguntaba al rol global
+
+Las pantallas internas decidían con `UserProfile.role` mientras el backend
+preguntaba la capacidad de la empresa. Las dos respuestas se contradecían en los
+dos sentidos: a quien entra por una invitación —perfil `customer` con capacidades
+reales— la pantalla lo echaba, y a un perfil `sales` sin la capacidad le pintaba
+botones que respondían 403.
+
+**El sustituto es `AccessGuard` + `buildInternalAccess`**, que preguntan al
+servidor. Con contexto de empresa manda la capacidad; sin él —el operador del
+puente legacy, que no tiene Membership— manda su rol, que es lo que el backend
+comprueba en ese camino. Un fallo de red no cae a rol: se muestra el error, porque
+tirar de rol ahí decidiría con menos información y en la dirección de abrir de más.
+
+| Pantalla | Capability | Roles legacy (espejo del backend) |
+|---|---|---|
+| Pedidos: lista y detalle | `sales.orders.view` | inventory · sales · admin · superadmin |
+| Reenviar correo de confirmación | `sales.orders.manage` | admin · superadmin |
+| Nota de venta en el detalle | `sales.notes.manage` | sales · admin · superadmin |
+| Productos: lista y detalle | `products.view` | inventory · sales · admin · superadmin |
+| Crear producto y editar | `products.manage` | admin · superadmin |
+| Ajustar stock desde el producto | `inventory.adjust` | inventory · admin · superadmin |
+| Inventario, movimientos, transferencias, recuentos y kardex | `inventory.view` para abrir; `inventory.adjust` para actuar | inventory · admin · superadmin |
+| Reportes y reposición | `inventory.reports` | sales · inventory · admin · superadmin (reportes) · inventory · admin · superadmin (reposición) |
+| Bitácora de auditoría | `memberships.view` | **ninguno**: sin membresía el backend responde 403 venga el rol que venga |
+
+- **16 archivos migrados**, `ProductsTable` incluida, que calculaba su propio
+  `canManage` desde el rol de la sesión.
+- **Se borraron `StaffGuard` y `AdminGuard`**, y con ellos `isAdminRole`,
+  `canManageInventory` y `canManageSalesNotes`. `isStaffRole` sobrevive por una
+  razón concreta: es la autoridad del operador legacy en `InternalControlGuard`,
+  donde no hay empresa que preguntar.
+- **`AdminShell` reutiliza el contexto** que el guard acaba de traer, así que la
+  navegación no paga dos veces la misma petición.
+
+### TEST-H41-TOKEN-FLAKY — un token alterado que no alteraba nada
+
+La prueba construía el token «alterado» sustituyendo el último carácter por `z`;
+cuando el token aleatorio ya acababa en `z` —1 de cada 64— el token alterado era
+el bueno y el endpoint respondía 200, con toda la razón. Ahora el sustituto es
+distinto del original y la prueba lo comprueba antes de usarlo.
+
+**Evidencia: 120 pasadas seguidas, 0 fallos**, y 0 también forzando el token a
+terminar en `z`, en `y` y en `A`.
+
+**El arnés de medición tenía su propio defecto**, y merece anotarse: la primera
+versión montaba el runner de Django sin `setup_test_environment()`, así que
+`testserver` no estaba en `ALLOWED_HOSTS` y Django respondía 400 a todo. Informó
+de 360 fallos que no existían — un arnés roto acusando a un código sano.
+
+### E2E-FISCAL-THROTTLE — el arnés agotaba una defensa real
+
+`fiscal-invoice.spec.ts` buscaba el pedido con factura en CADA prueba, y buscarlo
+cuesta una lista más el detalle de cada pedido pagado hasta encontrarlo: con los
+datos de desarrollo, **13 peticiones**. Con la carga de la pantalla, unas 15 por
+prueba; nueve pruebas, ~135 peticiones a `admin_orders` en menos de un minuto.
+El limitador —120/min— devolvía 429 a las últimas, la búsqueda contestaba `null`
+y la prueba se **omitía en silencio**. Cada venta nueva del POS empeoraba el
+reparto: con 26 pedidos se omitía una prueba; con 27, dos.
+
+**No se desactivó el limitador.** El pedido se resuelve una vez en `beforeAll` y
+las nueve pruebas reutilizan el id: de ~135 peticiones a ~22. Y para que nadie
+pueda «arreglar» esto quitando la defensa, `H412aAdminOrdersThrottleTest`
+comprueba contra la tasa REAL leída de la configuración que la petición que la
+supera recibe 429.
+
+### E2E-POS-COMBO-SELECTOR — verde por el motivo equivocado
+
+La ejecución completa de Playwright destapó un segundo defecto del arnés, este
+anterior a la fase. `pos-ticket.spec.ts` pulsaba «el primer `button` que contenga
+el nombre del artículo», y el punto de venta sugiere combos cuyas tarjetas
+nombran esos mismos artículos. El primero del DOM era el combo «1× AirPods Pro +
+1× iPhone 15 Pro».
+
+- **Mientras el combo estuvo disponible, la prueba pasaba comprando un combo de
+  dos artículos**, no el artículo que su propio nombre dice vender.
+- Cuando el iPhone 15 Pro se quedó a cero, el combo pasó a estar deshabilitado
+  —con razón: un combo que no se puede completar no se pulsa— y la prueba se
+  quedó tres minutos esperando a que se habilitara.
+- El volcado del navegador lo demostró: dos botones con ese texto, el del combo
+  deshabilitado y el del catálogo habilitado con «18 disp.», y la búsqueda del
+  POS respondiendo 200.
+
+Ahora la prueba pide lo que quiere de verdad: una fila del catálogo que se pueda
+pulsar y que declare unidades disponibles. Aislada pasa en 11 s.
+
+### E2E-LOGIN-RETRY — dos pruebas que no esperaban al limitador
+
+La segunda pasada completa dejó dos rojos más, y los dos con la misma causa,
+dicha por la propia pantalla: **«Solicitud fue regulada (throttled). Se espera
+que esté disponible en 46 segundos»**.
+
+El login admite 5 intentos por minuto y por IP. La suite completa encadena once
+entradas —siete de `demo-accounts`, las de H4.1.1, la fiscal, la del POS y las dos
+de personal—, así que a alguna le toca esperar. `demo-accounts`,
+`h411-auth-interop`, `fiscal-invoice` y `staff-personnel` ya esperaban la ventana
+y reintentaban; `pos-ticket` y `staff-master-selector` no, y traducían una defensa
+que funciona en un fallo del cambio que se estuviera probando.
+
+Ahora hacen lo mismo que los demás. **El limitador no se tocó**, que es justo lo
+que convertiría estas pruebas en unas que ya no prueban lo que se despliega.
+
+### Verificación
+
+| Qué | Resultado |
+|---|---|
+| Dirigido: `branch_scope`, 429 real y dashboard | **42 OK** |
+| Backend completo (SQLite) | **4029 OK**, 22 saltadas, 0 errores (1184 s) — baseline H4.1.2: 4019, más los 10 de esta fase |
+| Jest | **309 OK** en 25 suites — baseline: 294 en 23 |
+| `tsc --noEmit` | limpio |
+| ESLint | 0 errores y 33 avisos, sin regresión |
+| **Playwright completo** | **111 OK** · 1 fallo · 5 no ejecutados · 0 flaky (7,6 min) |
+| TEST-H41-TOKEN-FLAKY | **120 pasadas seguidas, 0 fallos**, más `z`, `y` y `A` forzados |
+| `makemigrations --check` · `migrate --plan` | sin cambios · sin operaciones |
+
+**La primera ejecución completa del backend marcó 1 fallo, y era un guardia
+haciendo su trabajo:** `Phase2bDashboardCatalogTest.test_dashboard_payload_shape_is_pinned`
+fija el conjunto de claves del dashboard precisamente para que ningún campo nuevo
+entre sin que alguien lo revise ahí. Se actualizó a propósito, añadiendo
+`branch_scope` a la historia del payload —2C trajo `sales`, 2D `inventory`, 3
+`configuration`— y fijando también su forma interna: `mode`, `default_branch` y
+`branches`, sin cifras que pudieran colarse desde inventario.
+
+**El único rojo de Playwright no es de esta fase.** Es
+`tax-breakdown · checkout · light · 768px`, el inestable conocido de C2.1: el
+navegador ve el carrito vacío y nunca pide la cotización, así que no hay desglose
+que mostrar. Aislado pasa (9/9 en 9,8 s), y los 5 «no ejecutados» son las
+combinaciones que corren en serie detrás.
+
+**Las tres pasadas completas cuentan la historia de los dos arneses:**
+
+| Pasada | Resultado | Qué faltaba |
+|---|---|---|
+| 1.ª | 110 OK · 2 fallos | el combo del POS y el inestable de C2.1 |
+| 2.ª | 109 OK · 3 fallos | dos logins limitados y C2.1 |
+| 3.ª | **111 OK · 1 fallo** | sólo C2.1 |
+
+### Servicio técnico — auditado, no implementado
+
+- **SVC-INTAKE-WEB = PARCIAL.** El backend recibe equipos desde hace fases:
+  `POST /api/v1/internal/<slug>/service/orders/` con `service.orders.create`,
+  `POST …/service/devices/` con `service.devices.manage` y la búsqueda de
+  clientes con `service.customers.view`. El preset **Servicio Técnico ya tiene
+  `service.orders.create`**, así que **no hace falta el POS** para abrir una
+  orden. Lo que falta es la experiencia web: `service-console.ts` no exporta
+  ninguna de esas tres llamadas.
+- **SVC-MENU-01 — nuevo.** Los seis módulos de servicio (Recepción, Órdenes,
+  Diagnóstico, Reparación, Control de calidad, Entrega) apuntan todos a
+  `/admin/service`, y `internal-modules` marca `service.intake` como
+  `implemented` aunque no existe pantalla de recepción. La clasificación honesta
+  es `partial`; se corrige en SVC-OPS-01, junto con el menú, para no dejar el
+  panel a medio camino entre dos diseños.
+- **Plan de SVC-OPS-01** (`/admin/service/intake` o ruta equivalente):
+  1. **Sucursal**, desde `service/context.available_branches`: una,
+     preseleccionada; varias, elección obligatoria; ninguna, bloqueo explicado.
+  2. **Cliente**: buscar el existente. Dar de alta uno nuevo exige
+     `service.customers.manage`, que el técnico estándar no tiene; se decide
+     entre que lo cree recepción, que la empresa le conceda `manage`, o una
+     capability estrecha `service.customers.create` — esta última con catálogo,
+     presets y migración, es decir, fase propia.
+  3. **Equipo**: buscar o registrar con `service.devices.manage`. Campos reales
+     del modelo: tipo, marca, modelo, serie e IMEI.
+  4. **Recepción**: falla reportada (obligatoria), condición física, accesorios
+     recibidos y notas internas — los campos que el serializer ya acepta.
+  5. **Evidencias** de etapa `intake`, que piden `service.orders.create`.
+  6. **Confirmación**, creación de la orden y salto a su detalle.
+  El menú por colas (diagnóstico, reparación, calidad, entrega) debe ser un
+  listado con filtros del servidor, no seis pantallas repetidas.
+
+### Documentos de venta — auditado, no implementado
+
+- **SALES-DOC-01 = PENDIENTE.** El POS **no ofrece elegir documento**:
+  `create_pos_sale()` no recibe ni guarda `receipt_type`. En la base de
+  desarrollo se ve el efecto: **26 ventas de mostrador con `receipt_type` vacío**
+  y 1 venta online con factura.
+- Tras cobrar, el POS ofrece la **nota de venta** (`ensureSalesNote`, ticket de
+  80 mm o A4). El panel fiscal sólo aparece con `receipt_type == "factura"` y
+  declara que «esta fase sólo emite facturas».
+- **BOLETA electrónica = PENDIENTE** (ver FISCAL-BOLETA-01).
+- **Lo que el backend exige hoy para una factura**: venta pagada,
+  `receipt_type = factura`, desglose tributario congelado, RUC del emisor
+  configurado, serie resoluble para su sucursal y ambiente, y **sin descuento**
+  —ahí falla cerrado, porque el generador todavía no sabe declarar un
+  `AllowanceCharge`—. Una UX que cobre con descuento prometiendo factura sólo
+  puede terminar en un fallo: el selector tiene que impedirlo o explicarlo antes
+  de cobrar, no después.
+- **Requisito obligatorio cuando se implemente**: el tipo de documento debe
+  entrar en `pos_request_fingerprint`. Hoy la huella incluye empresa, sucursal,
+  cliente, vendedor, medio de pago, líneas, descuentos y notas; si el documento
+  no entra, la misma clave de idempotencia con «Nota» y con «Factura» se
+  consideraría la misma intención.
+- **Semántica**: no se inventa `receipt_type = "nota"`. `ReceiptType` representa
+  documentos fiscales (boleta y factura); la nota de venta interna es
+  precisamente lo que NO es un comprobante, y hoy se corresponde con el valor
+  vacío. Cambiar eso tocaría el histórico y exige auditoría previa.
+- **FISCAL-BOLETA-01 = PENDIENTE**, fase fiscal separada: emisión, series, XML,
+  firma, PDF y ticket, envío, CDR y estado, resumen diario cuando corresponda,
+  pruebas y validación en beta antes de producción.
+
+### Cotizaciones comerciales — auditado, no implementado
+
+- **SALES-QUOTE-01 = PENDIENTE.** `internal-modules` declara `sales.quotes` como
+  `pending` y no existe ningún modelo comercial de cotización. **No se confunde
+  con `RepairQuote`**, que es el presupuesto de una reparación: dominios
+  distintos que no se mezclan.
+- **Diseño propuesto**: `SalesQuote` y `SalesQuoteItem` con empresa, sucursal,
+  cliente, vendedor, número, moneda, estado, validez, notas, totales congelados,
+  autor y fecha. Estados conceptuales: borrador, enviada, aceptada, rechazada,
+  expirada y convertida. Los nombres finales salen de las convenciones del repo.
+- **Reglas**: una cotización no descuenta stock, no genera comisión, no es
+  ingreso, no crea nota de venta, no emite ante SUNAT y no mueve inventario. Al
+  convertirla en venta se revalida el stock, se crea el pedido, se cobra, se
+  mueve inventario, se calcula comisión y se emite el documento; el pedido
+  conserva la referencia a la cotización que lo originó.
+- **Versiones**: una cotización enviada no se sobrescribe. Cambiar producto,
+  precio, cantidad o descuento crea una revisión nueva, y el cliente acepta una
+  revisión concreta — el mismo patrón append-only que ya usa `RepairQuote`.
+- **PDF y envío** (A4, impresión, correo, enlace) se diseñan con la identidad del
+  tenant, nunca con la del piloto en el código.
+
+### Deuda registrada
+
+| Clave | Estado | Qué |
+|---|---|---|
+| **BRANCH-CONTEXT-UI-01** | RESUELTO | Ver arriba |
+| **RBAC-LEGACY-UI-01** | RESUELTO | 16 pantallas migradas; `isStaffRole` sobrevive sólo para el puente legacy |
+| **TEST-H41-TOKEN-FLAKY** | RESUELTO | 120 pasadas y tres finales forzados |
+| **E2E-FISCAL-THROTTLE** | RESUELTO | El limitador intacto, con prueba propia del 429 |
+| **E2E-LOGIN-RETRY** | RESUELTO · nuevo | `pos-ticket` y `staff-master-selector` no reintentaban tras el limitador de login (5/min/IP), así que la ráfaga de entradas de la suite completa los volvía rojos. Preexistente |
+| **E2E-POS-COMBO-SELECTOR** | RESUELTO · nuevo | `pos-ticket` pulsaba la tarjeta del combo en vez de la fila del catálogo: pasaba comprando dos artículos, y se volvió roja cuando el combo dejó de estar disponible. Preexistente, encontrada por la suite completa |
+| **SVC-MENU-01** | DEFECTO · nuevo | Seis módulos de servicio apuntan a `/admin/service` y `service.intake` figura como `implemented` sin pantalla de recepción. Se corrige con SVC-OPS-01 |
+| **SVC-INTAKE-WEB** | PARCIAL | Backend completo; falta la experiencia web |
+| **SALES-DOC-01** | PENDIENTE · nuevo | El POS no elige documento; el tipo debe entrar en la huella de idempotencia |
+| **FISCAL-BOLETA-01** | PENDIENTE · nuevo | Boleta electrónica completa, en fase fiscal propia |
+| **SALES-QUOTE-01** | PENDIENTE · nuevo | Cotización comercial, distinta de `RepairQuote` |
+| SVC-ASSIGNEE-01 · SVC-CAP-SPLIT · SVC-QUOTE-INSHOP · SVC-QC-SEGREGATION | Sin cambios | Ver H4.1.2 |
+| TRADE-IN · INV-SERIAL · REFURB-UNIT · SALE-TENDER-LEDGER · TRADEIN-REVERSAL · TRADEIN-MARGIN · TRADEIN-OWNERSHIP · FISCAL-TRADEIN | Sin cambios | Ver H4.1.2 |
+| DASH-SCOPE-LABEL · CRM-HISTORY-CAP · AUDIT-BRANCH-SCOPE-01 · POS-IDEMP-409 · ORDER-BACKFILL-01 | Sin cambios | Ver H4.1.2 |
+| AUTH-REVOCATION-01 · AUDIT-INTERNAL-01 · NAV-01 · NAV-SERVICE-01 · CAT-01 · LEGAL-01/02/03 · INV-ALERTS · NOTIFY-RT · FISCAL-SERVICE · H4.2 · H4.3 | Sin cambios | Ver H4.1.1 |
