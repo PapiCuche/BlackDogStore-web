@@ -116,7 +116,9 @@ test.describe("el comprador ve cuánto es de impuesto antes de pagar", () => {
   for (const theme of THEMES) {
     for (const viewport of VIEWPORTS) {
       test(`checkout · ${theme} · ${viewport.name}px`, async ({ page, request }) => {
-        test.setTimeout(120_000);
+        // Holgado a propósito: la pantalla puede estar esperando al limitador
+        // (ver abajo), y ese minuto tiene que caber dentro de la prueba.
+        test.setTimeout(180_000);
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
         await useTheme(page, theme);
 
@@ -144,7 +146,13 @@ test.describe("el comprador ve cuánto es de impuesto antes de pagar", () => {
           `el resumen no muestra el desglose tributario · cotización: ${
             cotizaciones.join(" | ") || "no se pidió"
           }`,
-        ).toBeVisible({ timeout: 20_000 });
+        // 90 s, no 20. La suite entera comparte una IP y agota las 60 lecturas
+        // por minuto del carrito; cuando eso pasa, la pantalla espera lo que el
+        // servidor pide y vuelve a leer. Con 20 s la prueba fallaba MIENTRAS la
+        // página estaba legítimamente esperando, y el informe decía «el desglose
+        // no aparece» cuando lo cierto era «todavía no». Esta ventana cubre ese
+        // minuto; lo que no cubre es un desglose que de verdad no llega.
+        ).toBeVisible({ timeout: 90_000 });
 
         const summary = page.locator("aside").first();
         const text = await summary.innerText();
