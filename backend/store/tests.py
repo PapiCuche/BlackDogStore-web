@@ -52474,3 +52474,524 @@ class H412aAdminOrdersThrottleTest(TestCase):
             self.assertEqual(self.client.get('/api/admin/orders/').status_code, 200)
 
         self.assertEqual(self.client.get('/api/admin/orders/').status_code, 429)
+
+
+# ===========================================================================
+# H4.1.2B — SECURITY & PERMISSION GATE
+# ===========================================================================
+#
+# LEGACY-BRIDGE-REVOCATION-01  Revocar una Membership reabría el puente legacy:
+#                              quitarle el acceso a alguien se lo DEVOLVÍA, y
+#                              sobre el piloto aunque su relación fuese con otra
+#                              empresa. Reproducido antes de corregir.
+# ACCESSGUARD-403-LEGACY-01    El 403 del panel dice ahora, explícitamente, si el
+#                              puente aplica. Un rechazo no es una credencial.
+# AUTH-REVOCATION-01           Cerrar sesión y cambiar la contraseña matan el
+#                              access token, no sólo el refresh.
+
+import re as _h412b_re  # noqa: E402
+
+from .admin_views import (  # noqa: E402
+    _LEGACY_MANAGE_CATALOG_ROLES,
+    _LEGACY_VIEW_CATALOG_ROLES,
+    _LEGACY_VIEW_ORDERS_ROLES,
+)
+from .inventory_views import (  # noqa: E402
+    _LEGACY_INVENTORY_VIEW_ROLES,
+    _LEGACY_SALES_REPORT_ROLES,
+)
+
+
+class H412bLegacyBridgeRevocationTest(TestCase):
+    """
+    Una relación SaaS revocada no convierte a nadie en operador pre-SaaS.
+
+    LO QUE PASABA. El puente preguntaba `active_memberships(user).exists()`, y
+    una Membership revocada no está activa: el recuento daba cero y el puente se
+    abría. Medido antes de corregir, `/api/admin/orders/` respondía 200 en los
+    cuatro escenarios de abajo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.pilot = _pilot_company()
+        self.other = _saas_company('Ajena H412B', 'h412b-otra', tax_id='20790000011')
+
+    def _staff(self, username, role=UserProfile.ROLE_ADMIN):
+        user = User.objects.create_user(username=username, password='Pass123!')
+        user.profile.role = role
+        user.profile.save()
+        return user
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _revoked(self, username, company):
+        user = self._staff(username)
+        membership = Membership.objects.create(user=user, company=company, role='admin')
+        Membership.objects.filter(pk=membership.pk).update(is_active=False)
+        return user
+
+    def _sin_acceso(self, user):
+        """Ni puente, ni sucursales, ni pedidos, ni catálogo."""
+        self.assertIsNone(legacy_catalog_company(user))
+        self.assertEqual(_h412_branches(user, self.pilot).count(), 0)
+        self.assertFalse(_h412_orders(user, self.pilot).exists())
+        client = self._as(user)
+        self.assertEqual(client.get('/api/admin/orders/').status_code, 403)
+        self.assertEqual(client.get('/api/admin/products/').status_code, 403)
+
+    def test_a_genuine_pre_saas_operator_still_works(self):
+        """El puente sigue existiendo para quien nunca tuvo Membership."""
+        user = self._staff('h412b_genuino')
+
+        self.assertEqual(legacy_catalog_company(user), self.pilot)
+        self.assertEqual(self._as(user).get('/api/admin/orders/').status_code, 200)
+
+    def test_a_revoked_membership_does_not_reopen_the_bridge(self):
+        self._sin_acceso(self._revoked('h412b_revocado', self.pilot))
+
+    def test_a_revoked_membership_of_ANOTHER_tenant_grants_nothing_here(self):
+        """El peor caso: acceso al piloto por revocar algo de otra empresa."""
+        self._sin_acceso(self._revoked('h412b_ajena', self.other))
+
+    def test_an_inactive_company_does_not_reopen_the_bridge(self):
+        user = self._staff('h412b_empresa_off')
+        Membership.objects.create(user=user, company=self.other, role='admin')
+        Company.objects.filter(pk=self.other.pk).update(is_active=False)
+
+        self._sin_acceso(user)
+
+    def test_two_dead_relationships_are_still_two_relationships(self):
+        user = self._staff('h412b_dos')
+        uno = Membership.objects.create(user=user, company=self.pilot, role='admin')
+        Membership.objects.filter(pk=uno.pk).update(is_active=False)
+        Membership.objects.create(user=user, company=self.other, role='admin')
+        Company.objects.filter(pk=self.other.pk).update(is_active=False)
+
+        self._sin_acceso(user)
+
+    def test_fulfillment_authority_does_not_come_back_either(self):
+        """El puente alimenta la regla de despacho: tampoco resucita ahí."""
+        user = self._revoked('h412b_despacho', self.pilot)
+
+        self.assertEqual(_h412_allowed(user, self.pilot), ())
+
+    def test_an_active_membership_is_not_bridged_either(self):
+        """Quien tiene contexto real pasa por él, no por el puente."""
+        user = self._staff('h412b_activo')
+        Membership.objects.create(user=user, company=self.pilot, role='admin')
+
+        self.assertIsNone(legacy_catalog_company(user))
+
+
+class H412bDashboard403SignalTest(TestCase):
+    """
+    ACCESSGUARD-403-LEGACY-01 — el 403 del panel dice quién es legacy.
+
+    El cliente no puede deducirlo: el mismo 403 lo reciben el operador pre-SaaS
+    y alguien a quien acaban de revocar la membresía. Antes, el panel web
+    trataba a los dos como legacy y devolvía la interfaz según el rol global.
+    """
+
+    URL = '/api/me/internal-dashboard/'
+
+    def setUp(self):
+        cache.clear()
+        self.pilot = _pilot_company()
+
+    def _get(self, user):
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client.get(self.URL)
+
+    def _staff(self, username, role=UserProfile.ROLE_ADMIN):
+        user = User.objects.create_user(username=username, password='Pass123!')
+        user.profile.role = role
+        user.profile.save()
+        return user
+
+    def test_the_genuine_operator_is_announced_as_a_bridge(self):
+        res = self._get(self._staff('h412b_sig_legacy'))
+
+        self.assertEqual(res.status_code, 403)
+        self.assertIs(res.json()['legacy_bridge'], True)
+
+    def test_a_revoked_membership_is_announced_as_no_bridge(self):
+        user = self._staff('h412b_sig_revocado')
+        membership = Membership.objects.create(user=user, company=self.pilot, role='admin')
+        Membership.objects.filter(pk=membership.pk).update(is_active=False)
+
+        res = self._get(user)
+
+        self.assertEqual(res.status_code, 403)
+        self.assertIs(res.json()['legacy_bridge'], False)
+
+    def test_a_customer_is_announced_as_no_bridge(self):
+        res = self._get(self._staff('h412b_sig_cliente', role=UserProfile.ROLE_CUSTOMER))
+
+        self.assertEqual(res.status_code, 403)
+        self.assertIs(res.json()['legacy_bridge'], False)
+
+
+class H412bTokenRevocationTest(TestCase):
+    """
+    AUTH-REVOCATION-01 — cerrar sesión cierra la sesión.
+
+    REPRODUCIDO ANTES DE CORREGIR: login por v1, Bearer contra la superficie
+    interna → 200; logout → 200; el MISMO Bearer → 200 otra vez, durante lo que
+    le quedara de vida al token (hasta 30 minutos). SimpleJWT sólo sabe revocar
+    refresh tokens, y nadie preguntaba por el access.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Revocación', 'h412b-rev', tax_id='20790000012')
+        self.user = User.objects.create_user(
+            username='h412b_rev', email='h412b_rev@example.invalid', password='Pass123!',
+        )
+        Membership.objects.create(user=self.user, company=self.company, role='sales')
+        self.ctx = _m6_ctx_url(self.company.slug)
+
+    def _login(self, password='Pass123!'):
+        cache.clear()
+        res = APIClient().post(
+            '/api/v1/auth/login/',
+            {'email': 'h412b_rev@example.invalid', 'password': password}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        return res.json()['access'], res.json()['refresh']
+
+    def _ctx(self, access):
+        cache.clear()
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        return client.get(self.ctx).status_code
+
+    def test_the_same_bearer_is_dead_after_logout(self):
+        access, refresh = self._login()
+        self.assertEqual(self._ctx(access), 200)
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        self.assertEqual(
+            client.post('/api/v1/auth/logout/', {'refresh': refresh}, format='json').status_code,
+            200,
+        )
+
+        self.assertEqual(self._ctx(access), 401)
+
+    def test_logout_ends_THIS_session_and_not_the_others(self):
+        """Cerrar en el móvil no cierra el mostrador: se revoca por credencial."""
+        movil, movil_refresh = self._login()
+        mostrador, _ = self._login()
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {movil}')
+        client.post('/api/v1/auth/logout/', {'refresh': movil_refresh}, format='json')
+
+        self.assertEqual(self._ctx(movil), 401)
+        self.assertEqual(self._ctx(mostrador), 200)
+
+    def test_changing_the_password_ends_every_session(self):
+        """Aquí sí es global: es lo que esa pantalla promete."""
+        una, _ = self._login()
+        otra, _ = self._login()
+
+        web = APIClient()
+        web.force_authenticate(user=self.user)
+        res = web.post(
+            '/api/auth/change-password/',
+            {'current_password': 'Pass123!', 'new_password': 'Nueva123!Segura'}, format='json',
+        )
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(self._ctx(una), 401)
+        self.assertEqual(self._ctx(otra), 401)
+
+    def test_a_session_opened_after_the_change_is_not_punished(self):
+        """La revocación mira el pasado, no bloquea la cuenta."""
+        import time
+
+        web = APIClient()
+        web.force_authenticate(user=self.user)
+        web.post(
+            '/api/auth/change-password/',
+            {'current_password': 'Pass123!', 'new_password': 'Nueva123!Segura'}, format='json',
+        )
+        # El sello tiene resolución de un segundo y la comparación es inclusiva:
+        # ver «LÍMITE CONOCIDO» en store/token_revocation.py.
+        time.sleep(1.1)
+
+        access, _ = self._login(password='Nueva123!Segura')
+
+        self.assertEqual(self._ctx(access), 200)
+
+    def test_the_web_cookie_dies_with_its_logout_too(self):
+        access, refresh = self._login()
+        client = APIClient(enforce_csrf_checks=True)
+        client.cookies[settings.JWT_COOKIE_ACCESS_NAME] = access
+        client.cookies[settings.JWT_COOKIE_REFRESH_NAME] = refresh
+        client.get('/api/auth/csrf/')
+        token = client.cookies['csrftoken'].value
+
+        self.assertEqual(
+            client.post('/api/auth/logout/', HTTP_X_CSRFTOKEN=token).status_code, 200,
+        )
+
+        reused = APIClient()
+        reused.cookies[settings.JWT_COOKIE_ACCESS_NAME] = access
+        self.assertEqual(reused.get('/api/auth/me/').status_code, 401)
+
+    def test_the_refresh_token_stays_blacklisted(self):
+        """Lo que ya funcionaba sigue funcionando."""
+        _access, refresh = self._login()
+        APIClient().post('/api/v1/auth/logout/', {'refresh': refresh}, format='json')
+
+        res = APIClient().post('/api/v1/auth/refresh/', {'refresh': refresh}, format='json')
+
+        self.assertEqual(res.status_code, 401)
+
+
+class H412bFrontendLegacyRoleParityTest(TestCase):
+    """
+    La interfaz y el backend dicen lo mismo sobre el puente legacy.
+
+    POR QUÉ EXISTE ESTA PRUEBA. `AccessGuard` lleva, por pantalla, la lista de
+    roles que el backend acepta en el puente. Es una duplicación deliberada y
+    temporal —la interfaz tiene que decidir qué ofrece antes de preguntar—, pero
+    una copia que nadie compara deja de ser una copia: basta que alguien cambie
+    `_LEGACY_*_ROLES` en el servidor para que la pantalla siga ofreciendo lo que
+    ya no existe, o escondiendo lo que sí.
+
+    Esta prueba lee los `.tsx` de verdad, como `Ip1ParityManifestTest` lee la
+    matriz de paridad. No concede nada: el servidor sigue siendo la frontera.
+
+    DEUDA: desaparece con el puente. Cuando toda persona tenga Membership, la
+    interfaz preguntará sólo capacidades y estas listas se borran.
+    """
+
+    ADMIN_DIR = 'frontend/app/admin'
+
+    #: Pantalla → (capability que abre, conjunto legacy del endpoint de detrás).
+    EXPECTED = {
+        'orders/page.tsx': ('sales.orders.view', _LEGACY_VIEW_ORDERS_ROLES),
+        'orders/[id]/page.tsx': ('sales.orders.view', _LEGACY_VIEW_ORDERS_ROLES),
+        'products/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'products/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'products/new/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
+        'products/[id]/stock-card/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/movements/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/transfers/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/transfers/[id]/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/counts/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/counts/[id]/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/reports/page.tsx': ('inventory.reports', _LEGACY_SALES_REPORT_ROLES),
+        'inventory/replenishment/page.tsx': ('inventory.reports', _LEGACY_INVENTORY_VIEW_ROLES),
+        # La bitácora no tiene puente: sin Membership el backend responde 403
+        # venga el rol que venga, así que la lista tiene que estar vacía.
+        'audit-logs/page.tsx': ('memberships.view', frozenset()),
+    }
+
+    _GUARD = _h412b_re.compile(
+        r'<AccessGuard\s+capability="([^"]+)"\s+legacyRoles=\{\[([^\]]*)\]\}',
+    )
+
+    def _admin_dir(self):
+        import os
+        from django.conf import settings as dj_settings
+
+        return os.path.join(os.path.dirname(dj_settings.BASE_DIR), self.ADMIN_DIR)
+
+    def _guards(self):
+        """Cada `<AccessGuard>` del panel: (pantalla, capability, roles)."""
+        import os
+
+        found = []
+        for root, _dirs, files in os.walk(self._admin_dir()):
+            for name in files:
+                if not name.endswith('.tsx'):
+                    continue
+                path = os.path.join(root, name)
+                with open(path, encoding='utf-8') as fh:
+                    text = fh.read()
+                screen = os.path.relpath(path, self._admin_dir())
+                for capability, raw in self._GUARD.findall(text):
+                    roles = frozenset(
+                        token.strip().strip('"').strip("'")
+                        for token in raw.split(',') if token.strip()
+                    )
+                    found.append((screen, capability, roles))
+        return found
+
+    def test_every_screen_is_declared_here(self):
+        """Una pantalla nueva con puente tiene que pasar por esta revisión."""
+        screens = {screen for screen, _cap, _roles in self._guards()}
+
+        self.assertGreaterEqual(len(screens), 15, 'no se encontraron los guards')
+        self.assertEqual(screens - set(self.EXPECTED), set())
+
+    def test_each_list_matches_the_endpoint_behind_it(self):
+        for screen, capability, roles in self._guards():
+            with self.subTest(screen=screen):
+                expected_cap, expected_roles = self.EXPECTED[screen]
+                self.assertEqual(capability, expected_cap)
+                self.assertEqual(roles, set(expected_roles))
+
+    def test_no_screen_invents_a_role_the_backend_never_accepts(self):
+        conocidos = {r for r, _ in UserProfile.ROLE_CHOICES}
+        for screen, _cap, roles in self._guards():
+            with self.subTest(screen=screen):
+                self.assertEqual(roles - conocidos, set())
+
+
+class H412bIsolationMatrixTest(TestCase):
+    """
+    Las negativas, una por una: qué NO puede hacer alguien de otra empresa,
+    de otra sucursal, con la membresía revocada o con la empresa apagada.
+
+    Existen pruebas de aislamiento repartidas por fases anteriores. Esta clase
+    las reúne como matriz explícita para que el gate de seguridad tenga UN sitio
+    donde mirar, y para que una regresión no dependa de que alguien recuerde en
+    qué fase se probó cada cosa.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p2d_company('h412b-a')
+        self.b = _p2d_company('h412b-b')
+        self.branch_a1 = _p2d_branch(self.a, 'A1')
+        self.branch_a2 = _p2d_branch(self.a, 'A2')
+        self.prod_a = _p2d_product(self.a, 'De A', 'de-a')
+        self.prod_b = _p2d_product(self.b, 'De B', 'de-b')
+        self.order_a1 = _order(self.a, total='100.00', paid=True, fulfillment_branch=self.branch_a1)
+        self.order_a2 = _order(self.a, total='200.00', paid=True, fulfillment_branch=self.branch_a2)
+        self.order_b = _order(self.b, total='300.00', paid=True)
+
+        caps = ['products.view', 'products.manage', 'sales.orders.view',
+                'sales.orders.manage', 'inventory.view', 'inventory.adjust']
+        self.de_a, self.membership_a = _p2d_member(self.a, 'h412b_de_a', caps)
+        self.selected_a1, self.membership_sel = _p2d_member(
+            self.a, 'h412b_sel_a1', caps, branches=[self.branch_a1],
+        )
+        self.master = User.objects.create_user('h412b_master', password='Pass123!', is_superuser=True)
+
+    def _as(self, user):
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # -- cruce de empresas ----------------------------------------------------
+
+    def test_A_does_not_list_B(self):
+        productos = self._as(self.de_a).get('/api/admin/products/')
+        pedidos = self._as(self.de_a).get('/api/admin/orders/')
+
+        self.assertNotIn('de-b', {p['slug'] for p in productos.json()['results']})
+        self.assertNotIn(self.order_b.pk, {o['id'] for o in pedidos.json()['results']})
+
+    def test_a_real_id_of_B_behaves_like_one_that_does_not_exist(self):
+        client = self._as(self.de_a)
+        real = client.get(f'/api/admin/orders/{self.order_b.pk}/')
+        inventado = client.get('/api/admin/orders/99999999/')
+
+        self.assertEqual(real.status_code, 404)
+        self.assertEqual(real.json(), inventado.json())
+
+    def test_A_cannot_modify_or_adjust_anything_of_B(self):
+        client = self._as(self.de_a)
+
+        editar = client.patch(
+            f'/api/admin/products/{self.prod_b.pk}/', {'name': 'Robado'}, format='json')
+        ajustar = client.post(
+            f'/api/admin/products/{self.prod_b.pk}/inventory-adjust/',
+            {'quantity': 5, 'reason': 'x'}, format='json')
+
+        self.assertEqual(editar.status_code, 404)
+        # 400 o 404 dicen lo mismo aquí —no se tocó nada—; lo que no puede pasar
+        # es un 2xx, y lo que de verdad se comprueba es la invariante de abajo.
+        self.assertIn(ajustar.status_code, (400, 404))
+        self.prod_b.refresh_from_db()
+        self.assertEqual(self.prod_b.name, 'De B')
+
+    # -- sucursal -------------------------------------------------------------
+
+    def test_a_SELECTED_member_does_not_reach_another_branch(self):
+        client = self._as(self.selected_a1)
+
+        self.assertEqual(client.get(f'/api/admin/orders/{self.order_a2.pk}/').status_code, 404)
+        self.assertEqual(
+            {o['id'] for o in client.get('/api/admin/orders/').json()['results']},
+            {self.order_a1.pk},
+        )
+
+    def test_an_inactive_branch_does_not_become_reachable(self):
+        _H412Branch.objects.filter(pk=self.branch_a1.pk).update(is_active=False)
+
+        self.assertEqual(_h412_branches(self.selected_a1, self.a).count(), 0)
+        self.assertFalse(_h412_orders(self.selected_a1, self.a).exists())
+
+    def test_a_revoked_default_branch_does_not_widen_the_scope(self):
+        Membership.objects.filter(pk=self.membership_sel.pk).update(branch=self.branch_a2)
+
+        # La sucursal preferida apunta a A2, que esta persona NO opera.
+        self.assertEqual(
+            {b.pk for b in _h412_branches(self.selected_a1, self.a)}, {self.branch_a1.pk},
+        )
+        self.assertEqual(
+            self._as(self.selected_a1).get(f'/api/admin/orders/{self.order_a2.pk}/').status_code,
+            404,
+        )
+
+    # -- estados que no conceden nada ----------------------------------------
+
+    def test_an_inactive_membership_grants_nothing(self):
+        Membership.objects.filter(pk=self.membership_a.pk).update(is_active=False)
+        client = self._as(self.de_a)
+
+        self.assertEqual(client.get('/api/admin/products/').status_code, 403)
+        self.assertEqual(client.get('/api/admin/orders/').status_code, 403)
+
+    def test_an_inactive_company_grants_nothing(self):
+        Company.objects.filter(pk=self.a.pk).update(is_active=False)
+        client = self._as(self.de_a)
+
+        self.assertEqual(client.get('/api/admin/products/').status_code, 403)
+        self.assertEqual(client.get('/api/admin/orders/').status_code, 403)
+
+    def test_the_master_needs_to_name_the_company(self):
+        client = self._as(self.master)
+
+        self.assertEqual(client.get('/api/admin/orders/').status_code, 403)
+        self.assertEqual(
+            client.get(f'/api/admin/orders/?company={self.a.pk}').status_code, 200,
+        )
+
+    # -- quién NO es personal -------------------------------------------------
+
+    def test_being_a_customer_never_makes_anyone_staff(self):
+        comprador = _saas_user('h412b_comprador')
+        _v1_customer(self.a, comprador)
+
+        self.assertEqual(self._as(comprador).get('/api/admin/orders/').status_code, 403)
+        self.assertEqual(
+            _h411_bearer(comprador).get(_m6_ctx_url(self.a.slug)).status_code, 404,
+        )
+
+    def test_a_custom_role_does_not_inherit_the_global_profile(self):
+        """Una invitación con rol propio manda sobre el `UserProfile.role`."""
+        user, _m = _p2d_member(self.a, 'h412b_solo_ver', ['products.view'])
+        user.profile.role = UserProfile.ROLE_ADMIN
+        user.profile.save()
+        client = self._as(user)
+
+        self.assertEqual(client.get('/api/admin/products/').status_code, 200)
+        self.assertEqual(
+            client.patch(f'/api/admin/products/{self.prod_a.pk}/', {'name': 'X'}, format='json').status_code,
+            403,
+        )

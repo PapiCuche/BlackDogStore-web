@@ -43,6 +43,7 @@ from .tenancy import (
     active_memberships,
     can_delegate_capabilities,
     describe_branch_scope,
+    legacy_catalog_company,
     has_capability,
     is_platform_admin,
     resolve_capabilities,
@@ -775,8 +776,22 @@ class InternalDashboardView(APIView):
         # Business access is never implied by authentication alone, and never by
         # the legacy UserProfile.role.
         if not platform_admin and not memberships:
+            # QUIÉN ES LEGACY LO DICE EL SERVIDOR — H4.1.2B, ACCESSGUARD-403-LEGACY-01.
+            #
+            # Este 403 lo reciben dos personas muy distintas: el operador
+            # pre-SaaS que todavía cruza el puente, y alguien a quien le
+            # revocaron la membresía. El panel no puede distinguirlos por su
+            # cuenta, y antes deducía «legacy» del propio 403: un rechazo se
+            # convertía en autoridad, y el rol global volvía a mandar sobre una
+            # cuenta revocada.
+            #
+            # Así que se dice explícitamente, y lo calcula quien puede saberlo.
+            # No concede nada: cada endpoint sigue decidiendo por su cuenta.
             return Response(
-                {'detail': 'No tienes acceso al control interno de ninguna empresa.'},
+                {
+                    'detail': 'No tienes acceso al control interno de ninguna empresa.',
+                    'legacy_bridge': legacy_catalog_company(user) is not None,
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 

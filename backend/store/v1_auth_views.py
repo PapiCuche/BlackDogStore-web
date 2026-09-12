@@ -27,7 +27,11 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework.authentication import get_authorization_header
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework_simplejwt.tokens import AccessToken
+
+from .token_revocation import revoke_access_token
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .tenancy import access_contexts, is_platform_admin, verified_company_relations
@@ -272,6 +276,24 @@ class V1LogoutView(APIView):
             except (TokenError, AttributeError):
                 # Already dead, or never valid. Either way the session is over,
                 # which is the outcome the caller asked for.
+                pass
+
+        # H4.1.2B — AUTH-REVOCATION-01. Si el cliente presenta su access token,
+        # muere con la sesión; antes seguía abriendo la superficie interna hasta
+        # 30 minutos después de cerrarla. Sin cabecera sólo puede morir el
+        # refresh, que es lo que había: esta ruta sigue sin exigir credenciales
+        # para que se pueda cerrar sesión con el access ya caducado.
+        header = get_authorization_header(request).split()
+        if len(header) == 2 and header[0].lower() == b'bearer':
+            try:
+                token = AccessToken(header[1].decode())
+                revoke_access_token(
+                    get_user_model().objects.filter(
+                        pk=token.payload.get(jwt_settings.USER_ID_CLAIM),
+                    ).first(),
+                    token,
+                )
+            except (TokenError, UnicodeError):
                 pass
 
         return Response({'detail': 'Sesión cerrada.'})

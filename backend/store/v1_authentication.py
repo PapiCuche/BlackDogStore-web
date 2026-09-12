@@ -29,6 +29,8 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import AccessToken
 
+from .token_revocation import token_is_revoked
+
 # The only scheme accepted. Compared case-insensitively because RFC 7235 says the
 # scheme is case-insensitive, but nothing else is tolerated: a `Basic` or `Token`
 # header is a client talking a contract this surface does not speak.
@@ -93,7 +95,8 @@ class V1BearerAuthentication(BaseAuthentication):
             raise exceptions.AuthenticationFailed('Credenciales inválidas.')
 
         try:
-            user = User.objects.get(pk=user_id)
+            # `select_related('profile')`: la revocación lee el sello del perfil.
+            user = User.objects.select_related('profile').get(pk=user_id)
         except User.DoesNotExist:
             raise exceptions.AuthenticationFailed('Credenciales inválidas.')
 
@@ -101,6 +104,12 @@ class V1BearerAuthentication(BaseAuthentication):
         # never verified their email — registration creates the account inactive.
         # Both must be refused, and refused identically.
         if not user.is_active:
+            raise exceptions.AuthenticationFailed('Credenciales inválidas.')
+
+        # H4.1.2B — AUTH-REVOCATION-01. Un token revocado responde EXACTAMENTE
+        # como uno caducado o inventado: quien sostiene una credencial muerta no
+        # tiene por qué enterarse de por qué murió.
+        if token_is_revoked(user, validated):
             raise exceptions.AuthenticationFailed('Credenciales inválidas.')
 
         return (user, validated)

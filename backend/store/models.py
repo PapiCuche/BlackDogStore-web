@@ -859,11 +859,61 @@ class UserProfile(models.Model):
         related_name='profile',
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_CUSTOMER, db_index=True)
+
+    #: Instante desde el cual SÓLO valen credenciales emitidas después.
+    #:
+    #: H4.1.2B (AUTH-REVOCATION-01). Cambiar la contraseña invalidaba el refresh
+    #: y borraba las cookies, pero el access token que el cliente ya tenía seguía
+    #: abriendo la API hasta media hora. Un cambio de contraseña tiene que cerrar
+    #: TODAS las sesiones, así que se sella aquí y las dos clases de
+    #: autenticación lo comparan con el `iat` que SimpleJWT ya emite.
+    #:
+    #: Nulo significa que nunca se revocó nada para esta cuenta.
+    tokens_valid_after = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"Profile({self.user.username}, {self.role})"
+
+
+class RevokedAccessToken(models.Model):
+    """
+    Un access token concreto que ya no vale — H4.1.2B (AUTH-REVOCATION-01).
+
+    POR QUÉ EXISTE. SimpleJWT sólo sabe revocar refresh tokens. El logout metía
+    el refresh en la lista negra y borraba las cookies, y el access token que el
+    cliente ya tenía seguía abriendo la API hasta 30 minutos. Reproducido antes
+    de corregir: el MISMO Bearer respondía 200 después de cerrar sesión.
+
+    POR QUÉ POR `jti` Y NO POR USUARIO. Cerrar sesión termina ESTA sesión, no
+    todas las de la persona: quien cierra en el móvil no espera que se cierre la
+    del mostrador. Lo global —cambiar o restablecer la contraseña— se marca en
+    `UserProfile.tokens_valid_after`.
+
+    POR QUÉ EN BASE DE DATOS Y NO EN CACHÉ. Este despliegue no configura
+    `CACHES`, así que Django usa memoria local por proceso: una revocación ahí no
+    existiría para el proceso de al lado ni sobreviviría a un reinicio, que es
+    justo cuando más importa que siga existiendo.
+
+    Las filas caducan solas: `expires_at` es el `exp` del propio token, y de un
+    token vencido no queda nada que revocar.
+    """
+
+    jti = models.CharField(max_length=255, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='revoked_access_tokens',
+    )
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['expires_at'])]
+
+    def __str__(self):
+        return f"RevokedAccessToken({self.jti[:8]}…)"
 
 
 class AdminAuditLog(models.Model):
