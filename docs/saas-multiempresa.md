@@ -84,7 +84,7 @@ Company ──< Branch
 | Matriz de capacidades empresariales | IMPLEMENTADO | Fase 2A — `COMPANY_CAPABILITIES` |
 | Helpers RBAC empresariales | IMPLEMENTADO | Fase 2A — `can_manage_company_*` |
 | `CompanyContext` | IMPLEMENTADO | Fase 2A |
-| RBAC legacy (`UserProfile.role`) | IMPLEMENTADO / TRANSICIÓN | Sigue gobernando el dominio comercial |
+| RBAC legacy (`UserProfile.role`) | TRANSICIÓN — **ya no es autoridad general** | Desde H4.1.2 el dominio comercial lo deciden las capacidades; el rol sólo cuenta en el puente legacy del piloto, y desde H4.1.2B sólo para quien **nunca** tuvo Membership |
 | Tenantización de `Product`/`Order`/… | PENDIENTE | Fase siguiente — ver §7. |
 | RBAC tenant-aware | PENDIENTE | `get_user_role()` sigue intacto — ver §5. |
 | Branding por empresa | PENDIENTE | Constantes aún en `email_services.py` / `pdf_services.py`. |
@@ -178,7 +178,7 @@ no se puedan sondear ids ajenos.
 | `company_id` arbitrario del cliente | Solo **selecciona** entre empresas ya accesibles; nunca amplía acceso → `CrossTenantError` |
 | Host desconocido / reservado (`www`, `api`, `admin`, `app`) / sin subdominio | `None` — sin tenant, sin fallback |
 | Company inactiva | `has_company_access` = False; `resolve_company_from_host` devuelve `None`; solo el admin de plataforma puede seleccionarla |
-| Membresía inactiva | No cuenta: `active_memberships` la excluye |
+| Membresía inactiva | No cuenta: `active_memberships` la excluye — y **no reabre el puente legacy** (H4.1.2B): haber tenido una Membership es irreversible |
 
 Esta resolución **no** se aplica todavía al e-commerce: catálogo, carrito y
 checkout siguen operando sin tenant, y esa compatibilidad es intencional.
@@ -4271,9 +4271,11 @@ la mentira que toda esta fase evitó.
    sucursal** (modo, concesiones y sucursal predeterminada) sobre la API de
    membresías. Lo que sigue pendiente de esa pantalla es el alta de membresías y
    la edición de roles/áreas personalizados, que siguen siendo deuda de 2A.1.
-33. **Bridge legacy del inventario.** Un operador pre-SaaS sin Membership sigue
-   alcanzando el tenant piloto y **todas** sus sucursales, con su rol legacy como
-   autoridad. Desaparece cuando todo operador tenga Membership.
+33. **Bridge legacy del inventario.** Un operador pre-SaaS que **nunca** tuvo
+   Membership sigue alcanzando el tenant piloto y **todas** sus sucursales, con su
+   rol legacy como autoridad. Desaparece cuando todo operador tenga Membership.
+   H4.1.2B precisó la condición: antes bastaba con no tener ninguna membresía
+   ACTIVA, así que revocar una la reabría.
 
 ### Deuda que deja la Fase 3
 
@@ -4718,3 +4720,43 @@ botones que respondían 403.
 
 `isStaffRole` sobrevive **sólo** para ese puente. Cuando desaparezca el puente,
 desaparece el rol global de la interfaz.
+
+---
+
+## H4.1.2B — Quién es legacy, y quién ya no
+
+### Haber tenido una Membership es irreversible
+
+El puente decidía con «¿tiene membresías **activas**?». Una membresía revocada no
+está activa, así que el recuento daba cero y el puente se abría: **revocarle el
+acceso a alguien se lo devolvía**, ahora como operador del piloto. Reproducido
+antes de corregir, con `/api/admin/orders/` respondiendo 200 en cuatro casos:
+
+| Escenario | Antes | Ahora |
+|---|---|---|
+| Nunca tuvo Membership (legacy genuino) | puente → 200 | puente → 200 |
+| Membership del piloto **revocada** | puente → 200 | sin puente → 403 |
+| Membership de **otra empresa** revocada | puente → 200 | sin puente → 403 |
+| Empresa de la Membership **desactivada** | puente → 200 | sin puente → 403 |
+
+La condición correcta no depende del estado: **si la plataforma llegó a modelar a
+alguien con una Membership, ya no es un operador pre-SaaS**. Que esa relación
+esté revocada significa «sin acceso», que es justo lo que quiso decir quien la
+revocó. El puente sigue existiendo para quien nunca tuvo ninguna, y sólo sobre el
+piloto.
+
+### Un rechazo no es una credencial
+
+El panel interno responde 403 a dos personas muy distintas: el operador pre-SaaS
+que cruza el puente y alguien a quien le revocaron la membresía. La interfaz
+trataba a las dos como legacy —el 403 era su única pista— y devolvía la pantalla
+según el `UserProfile.role`.
+
+Ahora ese 403 **dice cuál de las dos es**, calculado por quien puede saberlo:
+
+```
+403  { "detail": "...", "legacy_bridge": true | false }
+```
+
+El cliente no deduce; pregunta. Y ante un fallo de red no hay puente: sin
+afirmación del servidor, la pantalla no se abre.

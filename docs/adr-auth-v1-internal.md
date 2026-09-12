@@ -131,7 +131,7 @@ Ningún orden cumple a la vez «un Bearer inválido no cae a la cookie» y «dos
 ## 7. Consecuencias y deuda asociada
 
 - La separación web/nativa es **de transporte**: ambos contratos validan el mismo `AccessToken`. La barrera real para la web es `HttpOnly`.
-- **AUTH-REVOCATION-01** — el access token no consulta la lista negra: tras el logout sigue siendo válido hasta 30 minutos. Pendiente antes de producción.
+- **AUTH-REVOCATION-01** — el access token no consultaba nada: tras el logout seguía siendo válido hasta 30 minutos. **Resuelto en H4.1.2B**: el logout revoca esa credencial por `jti` y el cambio de contraseña cierra todas las sesiones con un sello por usuario. Diseño y alternativas descartadas en [adr-token-revocation.md](adr-token-revocation.md).
 - **BRANCH-SCOPE-01** — los pedidos comerciales de v1 interno no filtraban por sucursal. Preexistente e igual por ambos canales; no introducido aquí. **Resuelto en H4.1.2** con `tenancy.visible_orders`, que responde igual por Bearer y por cookie.
 - **AUDIT-INTERNAL-01** — las lecturas y los rechazos de v1 interno no se auditan.
 - `OPTIONS` devuelve metadatos de la vista (nombre y descripción) a cualquier usuario autenticado sin pasar por la puerta de tenant. No revela datos de ninguna empresa ni escribe; queda anotado.
