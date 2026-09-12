@@ -76,6 +76,9 @@ function Notice({
 export function AccessGuard({ capability, legacyRoles, children }: Props) {
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
   const [dashboard, setDashboard] = useState<InternalDashboard | null | undefined>(undefined);
+  // H4.1.2B: lo dice el servidor en el cuerpo del 403. Sin esa afirmación no hay
+  // puente, porque el 403 lo reciben igual las cuentas revocadas.
+  const [legacyBridge, setLegacyBridge] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -98,7 +101,10 @@ export function AccessGuard({ capability, legacyRoles, children }: Props) {
       } catch (err) {
         if (cancelled) return;
         if (err instanceof NoInternalAccessError) {
-          // No es un fallo: es el operador legacy, sin empresa que consultar.
+          // Sin empresa que consultar. Si además es un operador del puente, lo
+          // afirma el servidor; este 403 por sí solo no distingue a un legacy
+          // de alguien a quien le acaban de revocar la membresía.
+          setLegacyBridge(err.legacyBridge);
           setDashboard(null);
         } else {
           // Un fallo de red NO se resuelve tirando de rol: eso decidiría con
@@ -136,7 +142,7 @@ export function AccessGuard({ capability, legacyRoles, children }: Props) {
 
   if (dashboard === undefined) return <Spinner />;
 
-  const access = buildInternalAccess(user, dashboard);
+  const access = buildInternalAccess(user, dashboard, legacyBridge);
 
   if (!access.can(capability, legacyRoles)) {
     const needsCompany = dashboard !== null && !access.hasCompanyContext;

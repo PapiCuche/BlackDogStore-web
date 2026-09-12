@@ -13,9 +13,14 @@
  *   · un perfil `sales` sin la capacidad veía el botón y recibía 403.
  *
  * LA REGLA. Con contexto de empresa manda la capacidad que informa el servidor.
- * Sin contexto de empresa —el operador del puente legacy, que no tiene
- * Membership— sigue mandando su rol legacy, porque es exactamente lo que el
- * backend comprueba en ese camino. El master de plataforma pasa siempre.
+ * Sin contexto de empresa manda el rol legacy, pero SÓLO si el servidor confirma
+ * que esa cuenta cruza el puente: es lo que el backend comprueba en ese camino.
+ * El master de plataforma pasa siempre.
+ *
+ * H4.1.2B — ACCESSGUARD-403-LEGACY-01. Antes bastaba con que el panel
+ * respondiera 403 para tratar a alguien como legacy, y ese mismo 403 lo recibe
+ * quien tiene la membresía REVOCADA: quitarle el acceso le devolvía la interfaz,
+ * decidida por su rol global. Un rechazo no es una credencial.
  *
  * NO ES AUTORIDAD. Es lo que la interfaz muestra; cada endpoint vuelve a
  * decidir, y sigue respondiendo 403 a quien no deba pasar.
@@ -26,10 +31,12 @@ import type { InternalDashboard } from "./internal-api";
 
 export type InternalAccess = {
   user: AuthUser;
-  /** `null` = sin contexto de empresa: el operador del puente legacy. */
+  /** `null` = sin contexto de empresa. Por sí solo no concede nada. */
   dashboard: InternalDashboard | null;
   hasCompanyContext: boolean;
   isPlatformAdmin: boolean;
+  /** Lo dijo el servidor, no se dedujo de un 403. */
+  isLegacyBridge: boolean;
   /**
    * `legacyRoles` reproduce el conjunto que el backend acepta en el puente
    * legacy para ESA operación, y se escribe en cada llamada a propósito: no son
@@ -41,24 +48,28 @@ export type InternalAccess = {
 export function buildInternalAccess(
   user: AuthUser,
   dashboard: InternalDashboard | null,
+  /** Lo afirma el backend en el 403; nunca se infiere del código de estado. */
+  legacyBridge = false,
 ): InternalAccess {
   const isPlatformAdmin = Boolean(dashboard?.access.is_platform_admin);
   const hasCompanyContext = Boolean(dashboard?.company);
   const capabilities = new Set(dashboard?.access.capabilities ?? []);
+  const isLegacyBridge = legacyBridge === true && dashboard === null;
 
   return {
     user,
     dashboard,
     hasCompanyContext,
     isPlatformAdmin,
+    isLegacyBridge,
     can(capability, legacyRoles = []) {
       if (isPlatformAdmin) return true;
       if (hasCompanyContext) return capabilities.has(capability);
-      // Sin empresa resuelta no hay capacidades que preguntar, y el puente
-      // legacy es el único camino que queda. Existe SÓLO para quien no tiene
-      // ninguna membresía: quien sí la tiene y no eligió empresa no pasa por
-      // aquí, igual que no pasa en el servidor.
-      if (dashboard !== null) return false;
+      // Sin empresa resuelta no hay capacidades que preguntar. Queda el puente
+      // legacy, y sólo lo abre quien puede saberlo: el servidor. Una membresía
+      // revocada llega hasta aquí exactamente igual que un operador pre-SaaS, y
+      // la diferencia entre los dos no está en el cliente.
+      if (!isLegacyBridge) return false;
       return typeof user.role === "string" && legacyRoles.includes(user.role);
     },
   };

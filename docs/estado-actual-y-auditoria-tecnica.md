@@ -1257,6 +1257,11 @@ superficies lo llaman, con comportamiento idéntico. La restricción del rol de
 inventario se preservó **exacta**, aunque siga clavada al `UserProfile.role`
 legacy en lugar de a una capability.
 
+> **Ya no es así.** H4.1.2 movió esa decisión a `sales.orders.manage` dentro de
+> una empresa y dejó la regla por rol sólo en el puente legacy; H4.1.2B restringió
+> ese puente a quien nunca tuvo Membership. Se conserva el párrafo porque
+> describe lo que M6 entregó.
+
 `sales.orders.view` y `sales.orders.manage` promovidas a **ACTIVE**: v1 las
 impone sin ruta de rol legacy, que es la definición de ACTIVE en el catálogo.
 
@@ -3275,7 +3280,7 @@ no repetir la basura que dejó H4.1.
 
 **El fallo y el omitido de la suite completa no son de H4.1.1**, y cada uno se repitió aislado:
 
-- `tax-breakdown · light · 320px` es el inestable conocido de C2.1: el navegador ve el carrito vacío y no pide cotización. Aislado pasa en 1,3 s. Los 7 no ejecutados son las combinaciones que van en serie detrás. **Deuda preexistente C2.1.**
+- `tax-breakdown · light · 320px` es el inestable conocido de C2.1: el navegador ve el carrito vacío y no pide cotización. Aislado pasa en 1,3 s. Los 7 no ejecutados son las combinaciones que van en serie detrás. **Deuda preexistente C2.1.** — *Corregido en H4.1.2B: el carrito no estaba vacío. La lectura era **rechazada** con 429 por el limitador `cart` (60/min por IP) y el checkout la guardaba como lista vacía. Ver CART-READ-429-01.*
 - `fiscal-invoice · dark · 1440px` se omite cuando esa pasada no encuentra un pedido pagado con factura. Aislado pasa en 1,8 s.
 
 **Auditoría de métodos seguros:** OPTIONS en 70 rutas y GET/HEAD en 41, **0 escrituras**.
@@ -3299,7 +3304,7 @@ no repetir la basura que dejó H4.1.
 |---|---|---|
 | **BRANCH-SCOPE-01** | **RESUELTO en H4.1.2** | Los pedidos comerciales de v1 interno no filtraban por sucursal. **Preexistente, no introducido por H4.1.1**, igual por ambos canales. Servicio técnico sí filtra, y sus pruebas siguen verdes |
 | **RBAC-LEGACY-01** | **RESUELTO en H4.1.2** | `order_fulfillment_services` decidía los estados permitidos con `UserProfile.role` global, no con capacidades de empresa |
-| **AUTH-REVOCATION-01** | PENDIENTE — deuda de seguridad | El access token no consulta la lista negra: tras el logout sigue válido hasta ~30 min. Evaluar antes de producción |
+| **AUTH-REVOCATION-01** | **RESUELTO en H4.1.2B** | El access token no consultaba nada: tras el logout seguía válido hasta ~30 min. Ahora el logout lo revoca por `jti` y el cambio de contraseña cierra todas las sesiones |
 | **AUDIT-INTERNAL-01** | PENDIENTE | Lecturas y rechazos de v1 interno no se auditan; requiere diseño para no generar volúmenes enormes |
 | **NAV-SERVICE-01** | DEFECTO / PENDIENTE | Seis entradas del menú llevan a `/admin/service` |
 | **NAV-01** | DEFECTO / PENDIENTE | «Inventario › Reportes» y «Reportes › Inventario» son la misma pantalla |
@@ -3738,7 +3743,7 @@ NOTIFY-RT, FISCAL-SERVICE y la deuda fiscal.
 | **FISCAL-TRADEIN** | BLOQUEADO | Pendiente de definición contable y tributaria |
 | SALES-FULFILL-CAP | DESCARTADA | Opción B de D4: no se crea capability de despacho |
 | AUTH-REVOCATION-01 · AUDIT-INTERNAL-01 · NAV-01 · NAV-SERVICE-01 · CAT-01 · LEGAL-01/02/03 · INV-ALERTS · NOTIFY-RT · FISCAL-SERVICE · H4.2 · H4.3 · fiscal | Sin cambios | Ver H4.1.1 |
-| Inestable C2.1 (`tax-breakdown`) | PREEXISTENTE | Sin cambios |
+| Inestable C2.1 (`tax-breakdown`) | PREEXISTENTE | **Causa encontrada y resuelta en H4.1.2B** (CART-READ-429-01) |
 
 ---
 
@@ -3923,6 +3928,13 @@ navegador ve el carrito vacío y nunca pide la cotización, así que no hay desg
 que mostrar. Aislado pasa (9/9 en 9,8 s), y los 5 «no ejecutados» son las
 combinaciones que corren en serie detrás.
 
+> **Corrección de H4.1.2B.** «El navegador ve el carrito vacío» era la
+> descripción equivocada, y por eso el defecto sobrevivió dos fases como
+> «inestable». El volcado de la página lo desmiente: la cabecera mostraba **1**
+> artículo mientras el resumen decía no poder leerlo. No era un carrito vacío
+> sino una lectura **rechazada** (429 del limitador `cart`), y el checkout la
+> guardaba como lista vacía. Causa y arreglo en CART-READ-429-01.
+
 **Las tres pasadas completas cuentan la historia de los dos arneses:**
 
 | Pasada | Resultado | Qué faltaba |
@@ -4032,4 +4044,250 @@ combinaciones que corren en serie detrás.
 | SVC-ASSIGNEE-01 · SVC-CAP-SPLIT · SVC-QUOTE-INSHOP · SVC-QC-SEGREGATION | Sin cambios | Ver H4.1.2 |
 | TRADE-IN · INV-SERIAL · REFURB-UNIT · SALE-TENDER-LEDGER · TRADEIN-REVERSAL · TRADEIN-MARGIN · TRADEIN-OWNERSHIP · FISCAL-TRADEIN | Sin cambios | Ver H4.1.2 |
 | DASH-SCOPE-LABEL · CRM-HISTORY-CAP · AUDIT-BRANCH-SCOPE-01 · POS-IDEMP-409 · ORDER-BACKFILL-01 | Sin cambios | Ver H4.1.2 |
-| AUTH-REVOCATION-01 · AUDIT-INTERNAL-01 · NAV-01 · NAV-SERVICE-01 · CAT-01 · LEGAL-01/02/03 · INV-ALERTS · NOTIFY-RT · FISCAL-SERVICE · H4.2 · H4.3 | Sin cambios | Ver H4.1.1 |
+| AUTH-REVOCATION-01 · AUDIT-INTERNAL-01 · NAV-01 · NAV-SERVICE-01 · CAT-01 · LEGAL-01/02/03 · INV-ALERTS · NOTIFY-RT · FISCAL-SERVICE · H4.2 · H4.3 | Sin cambios | Ver H4.1.1. AUTH-REVOCATION-01 se cierra en H4.1.2B |
+
+---
+
+## Fase H4.1.2B — Puerta de seguridad: revocación, puente legacy y aislamiento
+
+**Estado: IMPLEMENTADO.** Migración `0084`, la única de la fase. Rama
+`feat/h4-1-2b-security-gate`, apilada sobre H4.1.2A. Fase exclusivamente de
+seguridad: no se implementó SVC-OPS, ni boleta, ni cotizaciones.
+
+### Los tres hallazgos, reproducidos antes de tocar nada
+
+| Clave | Severidad | Qué permitía | Evidencia previa |
+|---|---|---|---|
+| **LEGACY-BRIDGE-REVOCATION-01** | **P0** | Revocar una membresía devolvía acceso al piloto, incluso a quien nunca perteneció a él | `/api/admin/orders/` → **200** en 4 escenarios |
+| **ACCESSGUARD-403-LEGACY-01** | **P0** | Una cuenta revocada recuperaba la interfaz interna, decidida por su rol global | El 403 del panel era la única señal, y no distingue |
+| **AUTH-REVOCATION-01** | **P0** | Un access token robado seguía abriendo la API hasta 30 min después del logout | Mismo Bearer: 200 → logout → **200** |
+
+### LEGACY-BRIDGE-REVOCATION-01
+
+**Causa raíz.** El puente preguntaba `active_memberships(user).exists()`, y eso no
+es «nunca tuvo Membership»: una membresía revocada deja de estar activa, el
+recuento da cero y el puente se abre. **Quitarle el acceso a alguien se lo
+devolvía.** Peor: la relación revocada podía ser con OTRA empresa, y el puente
+concede el piloto — una empresa a la que esa persona nunca perteneció.
+
+| Escenario | Antes | Ahora |
+|---|---|---|
+| Nunca tuvo Membership (legacy genuino) | puente · 200 | puente · 200 |
+| Membership del piloto revocada | puente · 200 | sin puente · 403 |
+| Membership de otra empresa revocada | puente · 200 | sin puente · 403 |
+| Empresa de la Membership desactivada | puente · 200 | sin puente · 403 |
+| Dos relaciones muertas | puente · 200 | sin puente · 403 |
+| Perfil `customer` + revocada | sin puente · 403 | sin puente · 403 |
+
+**La corrección** es una condición que no depende del estado: si la plataforma
+llegó a modelar a alguien con una Membership, ya no es un operador pre-SaaS.
+Alcanza a todo lo que cuelga del puente —catálogo, inventario, pedidos, notas de
+venta, superficie fiscal, KPIs y la regla de despacho—, porque todas preguntan
+por `legacy_catalog_company()` a través de `resolve_catalog_company()`,
+`uses_legacy_bridge()` y `_branch_authority()`.
+
+### ACCESSGUARD-403-LEGACY-01
+
+**Causa raíz.** El panel interpretaba **un rechazo como una credencial**: si el
+dashboard respondía 403, asumía «operador legacy» y volvía a decidir por
+`user.role`. Ese 403 lo reciben exactamente igual el operador pre-SaaS y alguien
+con la membresía revocada, así que el arreglo de H4.1.2A dejaba una puerta
+abierta justo para el caso que H4.1.2B acababa de cerrar en el backend.
+
+**La corrección.** El 403 dice ahora, calculado en el servidor,
+`"legacy_bridge": true | false`. El cliente no deduce: pregunta. Y se falla
+cerrado — sin afirmación explícita no hay puente, y un fallo de red muestra el
+error en vez de caer al rol.
+
+Probado en los nueve casos pedidos: legacy genuino, membresía activa, varias
+empresas sin elegir, membresía revocada, empresa desactivada, rol admin sin
+capability, perfil `customer` con capability, fallo de red y 403 sin cuerpo.
+
+### AUTH-REVOCATION-01
+
+| Paso | Antes | Ahora |
+|---|---|---|
+| Bearer nuevo → superficie interna | 200 | 200 |
+| Logout | 200 | 200 |
+| **El mismo Bearer** | **200** | **401** |
+| Refresh reutilizado | 401 | 401 |
+| Otra sesión del mismo usuario | 200 | 200 (el logout no la toca) |
+| Sesiones previas tras cambiar la contraseña | **200** | **401** |
+| Login posterior | 200 | 200 |
+
+**Causa raíz.** SimpleJWT sólo revoca refresh tokens; el access es válido por sí
+mismo y nadie lo consultaba contra nada. Borrar la cookie deja sin credencial al
+navegador honrado y no le quita nada a quien copió el token.
+
+**La corrección**, detallada en [adr-token-revocation.md](adr-token-revocation.md):
+revocación por `jti` para el logout —cerrar sesión termina ESA sesión, no las del
+resto de dispositivos— y sello por usuario para el cambio o restablecimiento de
+contraseña, que sí es global. Sin cambiar el formato del token, los tiempos de
+vida ni el contrato de la API, y **sin bajar el TTL**, que no es revocar.
+
+**Un defecto propio, encontrado al medir:** la primera versión comparaba
+`iat < sello` y el cambio de contraseña no revocaba nada, porque el login y el
+cambio caían en el mismo segundo. La comparación es ahora inclusiva.
+
+### Matriz RBAC de superficies internas
+
+| Superficie | Autenticación | Tenant | Capability | Sucursal | Puente legacy | Auditoría | Cross-tenant |
+|---|---|---|---|---|---|---|---|
+| Web · pedidos (lista, detalle, despacho, recibo, correo) | cookie + CSRF | `_company_context` | `sales.orders.view` / `.manage` | `visible_orders` | sí, piloto | escritura sí | 404 |
+| Web · notas de venta | cookie + CSRF | ídem | `sales.notes.manage` | `visible_orders` | sí | creación sí | 404 |
+| Web · comprobante fiscal | cookie + CSRF | ídem | `sales.fiscal.view` / `.issue` | hereda del pedido | **no** | emisión y firma | 404 |
+| Web · catálogo | cookie + CSRF | ídem | `products.view` / `.manage` | — | sí | escritura sí | 404 |
+| Web · inventario, transferencias, recuentos | cookie + CSRF | `_branch_context` | `inventory.view` / `.adjust` / `.reports` | sí, por concesión | sí | movimientos sí | 404 |
+| Web · bitácora de auditoría | cookie + CSRF | empresas visibles | `memberships.view` | — | **no** | lectura no | filtrada |
+| Web · personal, roles y áreas | cookie + CSRF | membresía | `memberships.*` / `roles.manage` | — | **no** | sí | 404 |
+| Web · dashboard interno | cookie + CSRF | membresía o master con `?company=` | por bloque | `branch_scope` y KPIs | **no** (403 con señal) | no | 404 |
+| v1 interno · pedidos y servicio | Bearer **o** cookie, nunca ambas | slug de la ruta | por endpoint | `visible_orders` / `visible_branches` | **no** | escrituras sí | 404 |
+| v1 · POS | ídem | ídem | `sales.pos.use` y derivadas | sucursal obligatoria | **no** | venta sí | 404 |
+| Cambio de rol global | cookie + CSRF | plataforma | `is_superuser` | — | no | sí | — |
+| Escaparate público | anónimo o cliente | por dominio/slug | — | — | — | no | contenido público |
+
+**Ninguna ruta interna empresarial decide por el rol global.** Las cinco
+apariciones productivas de `get_user_role()` son: el camino del puente en
+`admin_views` e `inventory_views`, la regla legacy de despacho, la presentación
+del rol en `/api/auth/me/` y la lista de usuarios de plataforma.
+
+### Aislamiento: las negativas, probadas una a una
+
+`H412bIsolationMatrixTest` y la batería H4.1.2: A no lista B · el id real de B
+responde como uno inexistente · A no modifica ni ajusta nada de B · SELECTED no
+alcanza otra sucursal ni los pedidos sin sucursal · una sucursal inactiva no se
+vuelve accesible · una sucursal preferida revocada no amplía el alcance ·
+membresía inactiva y empresa inactiva conceden cero · el master necesita nombrar
+la empresa · ser cliente nunca convierte en personal · un rol propio no hereda
+los privilegios del `UserProfile.role`.
+
+### Paridad de `legacyRoles` entre interfaz y servidor
+
+`AccessGuard` lleva por pantalla la lista de roles que el backend acepta en el
+puente. Es una duplicación deliberada y temporal, y ahora la compara una prueba
+que **lee los `.tsx` de verdad**: 18 guards, 15 pantallas, y cada lista igual al
+conjunto `_LEGACY_*_ROLES` del endpoint que hay detrás. Una pantalla nueva que no
+esté declarada ahí rompe la prueba. Desaparece con el puente.
+
+### Trazabilidad — AUDIT-INTERNAL-01
+
+**Lo que ya deja traza:** unas 90 acciones en 20 módulos — membresías, roles y
+asignaciones, cambio de rol global, invitaciones, stock, transferencias,
+recuentos, comprobantes fiscales, ventas POS, notas de venta, despacho, servicio
+técnico completo, evidencias, comunicados y configuración de empresa.
+
+**Lo que debe dejarla y no la deja:** los **rechazos**. Hoy un intento
+cross-tenant, un 403 por capability o un acceso a una sucursal ajena no dejan
+rastro, así que un intento repetido es invisible. La política queda fijada aquí:
+deben registrarse los rechazos de **escritura** y los de superficie fiscal,
+personal y plataforma, con actor, empresa pedida, ruta y motivo; nunca las
+lecturas corrientes, que sólo producirían ruido. No se implementa en esta fase
+porque exige un punto único —un hook en la resolución de tenant— y medir volumen.
+
+**Ninguna traza contiene credenciales:** ni tokens, ni cookies, ni contraseñas,
+ni secretos CSRF, comprobado en los metadatos y en los logs.
+
+### CART-READ-429-01 — una lectura rechazada no es un carrito vacío
+
+Encontrado al investigar el único rojo de Playwright, que dos informes anteriores
+habían archivado como «inestable conocido de C2.1». No era inestable: era un
+defecto con causa fija, y la descripción que se le había puesto —«el navegador ve
+el carrito vacío»— es justo lo que impidió verlo.
+
+**Reproducido antes de tocar nada.** La lectura nº 60 de `/api/cart/` desde una
+misma IP devuelve `429 · «Se espera que esté disponible en 60 segundos»`: el
+limitador `cart` (60/min) haciendo exactamente su trabajo. El volcado de la
+página del fallo lo confirma — la cabecera mostraba **1** artículo mientras el
+resumen decía no poder leer el carrito.
+
+**La causa.** `fetcher` lanza ante cualquier respuesta no-ok, y el checkout
+guardaba ese fallo como `setItems([])`. Desde ahí la pantalla ya no podía
+distinguir «no has comprado nada» de «no he podido preguntarlo», y el efecto de
+la cotización se apagaba solo: un carrito sin artículos no tiene nada que
+cotizar, así que **el desglose tributario desaparecía sin decir por qué**. La
+suite lo llevaba diciendo dos fases con el mensaje «cotización: no se pidió», que
+era literalmente cierto.
+
+**El arreglo.** `readCart()` devuelve `ok` o `unreadable` —nunca una lista vacía
+por un fallo—, respeta la espera que indica el servidor (`Retry-After`, con el
+texto de DRF como respaldo y un tope de 120 s) y reintenta **una** vez. El
+checkout pinta ahora tres estados distintos: cargando, ilegible (con
+«Reintentar») y vacío de verdad. **El límite no se tocó ni se ensanchó**: el
+arreglo consiste en respetarlo.
+
+**Alcance, comprobado y no supuesto.** `/cart` ya distinguía el fallo con un
+estado `error` propio, y la cabecera conserva el contador anterior cuando la
+lectura falla —por eso el badge decía la verdad mientras el resumen mentía—. La
+confusión era exclusiva del checkout. Ocho pruebas Jest nuevas la fijan, incluido
+que un carrito vacío de verdad sigue siendo `ok`.
+
+### Verificación
+
+| Comprobación | Resultado |
+|---|---|
+| Backend completo (SQLite) | **4059 OK** · 22 omitidas · 20,2 min |
+| Backend · las 14 clases con omitidos (PostgreSQL) | **90 OK** · 3 omitidas · 35,1 s |
+| Backend · aislamiento dirigido (PostgreSQL) | **467 OK** |
+| Seguridad + autenticación H4.1.1 sobre el árbol restaurado | **125 OK** |
+| Jest | **324 OK** · 26 suites |
+| `tsc --noEmit` | limpio |
+| ESLint | **0 errores** · 1 aviso preexistente (checkout, línea 224) |
+| `next build` | compila · **44/44** páginas · exit 0 |
+| Playwright completo | **117 OK** · 0 fallos · 0 flaky · 0 omitidos · 0 «did not run» · 6,3 min |
+| Migraciones | sólo `0084` · `makemigrations --check` limpio |
+
+**Los 22 omitidos, nombrados, porque un omitido callado se parece demasiado a
+uno que pasa.** Diecinueve son pruebas de concurrencia que SQLite no puede
+ejecutar con honestidad —`select_for_update()` es un no-op y las escrituras se
+serializan con un bloqueo de base de datos, así que un verde ahí no probaría nada
+de PostgreSQL—: bajo PostgreSQL **corren y pasan**. Los tres restantes están
+declarados en el propio código: dos porque este catálogo no reserva ninguna
+capacidad, y `M11AntiEscalationTest.test_10e`, cuya regla cubre `test_10d`.
+
+### Sabotaje y mutación
+
+Una protección que nadie vigila es una protección que ya se puede quitar. Cada
+mutación se aplicó sobre el árbol verde y se midió qué se ponía rojo:
+
+| Mutación | Pruebas rojas |
+|---|---|
+| El puente legacy vuelve a preguntar «¿membresías **activas**?» | **3** — reapertura tras revocar, membresía de otro tenant, y la autoridad de despacho volviendo |
+| `legacy_bridge` fijado a `False` en el 403 | **1** — el operador genuino deja de anunciarse |
+| Revocación desactivada en el canal de **cookie** | **1** — el logout web deja de matar su propia cookie |
+| Revocación desactivada en el canal **Bearer** (v1) | **3** — el mismo Bearer tras el logout, el aislamiento entre sesiones y el cierre por contraseña |
+
+Que el sabotaje del canal de cookie tumbe una prueba y el del Bearer tumbe tres
+no es una laguna: son dos comprobaciones en dos archivos, y cada una responde por
+su canal. Los cuatro archivos se restauraron con **hash SHA-256 idéntico** al
+previo, no queda ningún `if False and` en el árbol y la pasada posterior da
+125 OK. No se ha cometido nada del sabotaje.
+
+### Severidad de lo encontrado
+
+| Nivel | Hallazgo | Estado |
+|---|---|---|
+| **P0** | LEGACY-BRIDGE-REVOCATION-01 — revocar devolvía acceso, y a una empresa ajena | **RESUELTO** |
+| **P0** | ACCESSGUARD-403-LEGACY-01 — un rechazo se leía como credencial | **RESUELTO** |
+| **P0** | AUTH-REVOCATION-01 — el logout no cerraba la sesión | **RESUELTO** |
+| **P1** | — | ninguno abierto |
+| **P2** | CART-READ-429-01 — un carrito ilegible se mostraba como vacío y apagaba el desglose | **RESUELTO** |
+| **P2** | AUDIT-INTERNAL-01 — los rechazos sensibles no dejan traza; política ya definida, falta el punto único donde engancharla | Abierto |
+| **P2** | Duplicación de `legacyRoles` en la interfaz; mitigada con prueba de paridad que lee los `.tsx` | Abierto, con guardia |
+| **P2** | CRM-HISTORY-CAP — el historial de compras del cliente se sirve con `service.customers.view`, sin exigir `sales.orders.view` | Abierto (H4.1.2) |
+| **P3** | Purga de `RevokedAccessToken`: hoy oportunista al revocar; con volumen real conviene tarea periódica | Abierto |
+| **P3** | Granularidad de un segundo en el sello de revocación, documentada y elegida a conciencia | Aceptado |
+| **P3** | DASH-SCOPE-LABEL · ORDER-BACKFILL-01 · SVC-MENU-01 · POS-IDEMP-409 | Abiertos de fases previas |
+
+### Riesgo residual
+
+- **Ventana de un segundo** entre un cambio de contraseña y un token emitido en
+  ese mismo segundo: se falla hacia rechazar, así que el riesgo es de usabilidad,
+  no de acceso.
+- **El logout de v1 revoca el access token sólo si el cliente lo envía** en la
+  cabecera. Sin ella muere el refresh, como antes. El cliente oficial lo envía.
+- **Detección:** sin traza de rechazos, un intento repetido de cruce de empresa
+  no deja rastro. Es el P2 principal y la razón de que la política quede escrita.
+- **El puente legacy sigue existiendo** para cuentas que nunca tuvieron
+  Membership. Es deuda conocida y su criterio de eliminación no cambia: cuando
+  toda persona tenga Membership, se borra el puente y con él las listas
+  `legacyRoles` de la interfaz.

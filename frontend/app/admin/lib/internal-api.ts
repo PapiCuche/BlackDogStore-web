@@ -159,9 +159,22 @@ export type InternalDashboard = {
 
 /** Distinguishes "you have no internal access" from a transport failure. */
 export class NoInternalAccessError extends Error {
-  constructor(message = "No tienes acceso al control interno.") {
+  /**
+   * Si el SERVIDOR dice que esta cuenta cruza el puente legacy — H4.1.2B.
+   *
+   * Un 403 no prueba que alguien sea legacy: lo reciben igual el operador
+   * pre-SaaS que todavía cruza el puente y la persona a la que acaban de
+   * revocar su membresía. Quien puede distinguirlos es el backend, así que lo
+   * dice en el cuerpo y aquí no se deduce nada.
+   *
+   * Por defecto `false`: ante la duda, sin puente.
+   */
+  readonly legacyBridge: boolean;
+
+  constructor(message = "No tienes acceso al control interno.", legacyBridge = false) {
     super(message);
     this.name = "NoInternalAccessError";
+    this.legacyBridge = legacyBridge;
   }
 }
 
@@ -181,8 +194,13 @@ export async function fetchInternalDashboard(
   const res = await fetchWithAuth(`${API_BASE}/me/internal-dashboard/${qs}`);
 
   if (res.status === 403) {
+    // El cuerpo se lee entero: además del mensaje trae si el puente legacy
+    // aplica, y esa respuesta es del servidor, no una deducción del 403.
+    const body = await res.json().catch(() => null);
     throw new NoInternalAccessError(
-      await readDetail(res, "No tienes acceso al control interno."),
+      body?.detail ? String(body.detail) : "No tienes acceso al control interno.",
+      // Estrictamente `true`: cualquier otra cosa —ausente, "1", null— es «no».
+      body?.legacy_bridge === true,
     );
   }
   if (res.status === 404) {

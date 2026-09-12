@@ -165,9 +165,14 @@ export function InternalControlGuard({ children }: Props) {
       } catch (err) {
         if (cancelled) return;
         if (err instanceof NoInternalAccessError) {
-          // No company access. A legacy staff role still gets in (see docstring).
+          // No company access. A legacy staff role still gets in (see docstring)
+          // — pero SÓLO si el servidor afirma que esta cuenta cruza el puente.
+          //
+          // H4.1.2B (ACCESSGUARD-403-LEGACY-01): antes bastaba el 403, y ese 403
+          // lo recibe igual alguien con la membresía revocada. Su rol global le
+          // devolvía el panel entero.
           setDashboard(null);
-          setDenied(!isStaffRole(user));
+          setDenied(!(err.legacyBridge && isStaffRole(user)));
           setError(null);
         } else {
           setError(err instanceof Error ? err.message : "Error inesperado.");

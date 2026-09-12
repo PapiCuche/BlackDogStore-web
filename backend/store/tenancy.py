@@ -1103,8 +1103,28 @@ def legacy_catalog_company(user) -> Company | None:
         # pilot would silently pick a tenant for someone whose whole role is to
         # act across tenants — they must name the company explicitly.
         return None
-    if active_memberships(user).exists():
-        return None  # has real company context; the bridge is not for them
+    # NUNCA HABER TENIDO UNA MEMBERSHIP — no «no tener ninguna activa ahora».
+    #
+    # EL DEFECTO QUE CIERRA ESTA LÍNEA (H4.1.2B, LEGACY-BRIDGE-REVOCATION-01).
+    # Antes preguntaba `active_memberships(user).exists()`, y eso no significa lo
+    # que el puente dice significar. Revocar una Membership la deja inactiva, y
+    # con ella fuera del recuento el puente volvía a abrirse: quitarle el acceso
+    # a alguien se lo DEVOLVÍA, ahora como «operador pre-SaaS» del piloto.
+    # Reproducido antes de corregir, con `/api/admin/orders/` respondiendo 200 en
+    # los cuatro casos:
+    #
+    #   · Membership del piloto revocada;
+    #   · Membership de OTRO tenant revocada —acceso a una empresa a la que esa
+    #     persona nunca perteneció—;
+    #   · empresa de la Membership desactivada;
+    #   · una revocada y otra en empresa inactiva.
+    #
+    # La condición correcta es inequívoca y no depende del estado: si esta
+    # plataforma llegó a modelar a alguien con una Membership, ya no es un
+    # operador pre-SaaS. Que esa relación esté revocada significa SIN ACCESO, que
+    # es justo lo que quiso decir quien la revocó.
+    if Membership.objects.filter(user=user).exists():
+        return None
 
     role = get_user_role(user)
     if role not in (

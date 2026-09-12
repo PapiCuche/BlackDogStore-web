@@ -9,6 +9,53 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## H4.1.2B — Puerta de seguridad: revocación, puente legacy y aislamiento
+
+**Estado: IMPLEMENTADO.** Migración `0084`. Tres hallazgos, los tres reproducidos
+antes de corregirlos.
+
+- **LEGACY-BRIDGE-REVOCATION-01 (P0).** El puente legacy preguntaba
+  «¿tiene membresías activas?», y una membresía revocada no está activa: quitarle
+  el acceso a alguien **se lo devolvía** como «operador pre-SaaS» del piloto —
+  incluso si su relación era con otra empresa. Medido: `/api/admin/orders/`
+  respondía 200 en los cuatro escenarios. Ahora la condición es inequívoca:
+  quien alguna vez tuvo una Membership no es un operador pre-SaaS.
+- **ACCESSGUARD-403-LEGACY-01 (P0).** El panel deducía «legacy» de un 403, y ese
+  403 lo recibe igual una cuenta revocada: su rol global le devolvía la interfaz.
+  Ahora el backend afirma explícitamente en el cuerpo si el puente aplica, y el
+  cliente no deduce nada. Un fallo de red falla cerrado.
+- **AUTH-REVOCATION-01 (P0).** Cerrar sesión invalidaba el refresh y dejaba vivo
+  el access token hasta 30 minutos: el mismo Bearer seguía respondiendo 200.
+  Ahora el logout revoca esa credencial por `jti` y el cambio de contraseña
+  cierra todas las sesiones con un sello por usuario. Sin tocar el formato del
+  token ni el contrato. Ver [docs/adr-token-revocation.md](docs/adr-token-revocation.md).
+
+Además: matriz RBAC completa, matriz de aislamiento multiempresa y por sucursal,
+prueba de paridad entre las listas `legacyRoles` de la interfaz y los conjuntos
+del backend, y política explícita de trazabilidad.
+
+- **CART-READ-429-01 (P2).** El checkout guardaba cualquier lectura fallida del
+  carrito como lista vacía. Con eso, el 429 del limitador `cart` (60 lecturas por
+  minuto y por IP) se le mostraba al comprador como «no pudimos leer tu carrito»
+  y, peor, apagaba la cotización —sin artículos no hay nada que cotizar—, así que
+  **el desglose tributario desaparecía de la pantalla**. Era el rojo de Playwright
+  que dos fases habían archivado como «inestable». `readCart()` distingue ahora
+  ilegible de vacío, espera lo que el servidor pide y reintenta una vez. El
+  límite no se tocó.
+
+**Verificación.** Backend **4059 OK** con 22 omitidas, todas declaradas: 19 son
+de concurrencia y sólo PostgreSQL puede correrlas honestamente —allí dan **90 OK**
+con 3 omitidas—, y esas 3 últimas son de capacidades que este catálogo no reserva.
+Aislamiento dirigido en PostgreSQL **467 OK**. Jest **324 OK**. `tsc` limpio.
+ESLint **0 errores**. `next build` **44/44**. Playwright **117 OK**, sin fallos,
+sin flaky y sin omitidos.
+
+**Sabotaje.** Retirar el puente corregido, la señal `legacy_bridge` o cualquiera
+de las dos comprobaciones de revocación vuelve rojas 3, 1, 1 y 3 pruebas
+respectivamente. Los archivos se restauraron con hash idéntico.
+
+---
+
 ## H4.1.2A — Estabilización y contexto de sucursal
 
 **Estado: IMPLEMENTADO.** Sin migraciones. Cierra TEST-H41-TOKEN-FLAKY,

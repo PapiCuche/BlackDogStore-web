@@ -4,7 +4,7 @@ import { useEffect, useReducer, useState } from "react";
 import Link from "next/link";
 import Script from "next/script";
 import { useRouter } from "next/navigation";
-import { getSessionKey } from "../lib/cart";
+import { getSessionKey, readCart } from "../lib/cart";
 
 /**
  * Lo que el cliente está a punto de pagar.
@@ -19,7 +19,7 @@ type CheckoutItem = {
   quantity: number;
   product: { id: number; name: string; price: number | string; slug: string };
 };
-import { API_BASE, fetcher } from "../lib/api";
+import { API_BASE } from "../lib/api";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import {
   deliveryDescriptions,
@@ -134,6 +134,10 @@ export default function CheckoutPage() {
   const [cancelled, setCancelled] = useState(false);
   const [coupon, setCoupon] = useState<Coupon | null>(null);
   const [items, setItems] = useState<CheckoutItem[] | null>(null);
+  // «Todavía no lo sé» y «no he podido saberlo» son estados distintos. El
+  // segundo tiene que poder reintentarse sin recargar la página entera.
+  const [cartUnreadable, setCartUnreadable] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
   // EL DESGLOSE LO CALCULA EL SERVIDOR, no esta pantalla.
   //
   // El total de aquí abajo se suma en JavaScript y eso pasa: el backend vuelve
@@ -149,21 +153,32 @@ export default function CheckoutPage() {
   // El resumen se carga aparte del formulario: si el carrito falla, el
   // formulario sigue siendo usable y el resumen dice qué pasó, en vez de dejar
   // la pantalla en blanco.
+  //
+  // UNA LECTURA RECHAZADA NO ES UN CARRITO VACÍO. Antes cualquier fallo se
+  // guardaba como lista vacía, y eso tenía dos víctimas. Al comprador se le
+  // decía «no pudimos leer tu carrito» aunque simplemente no hubiera comprado
+  // nada; y cuando la lectura sí fallaba —el 429 del limitador llega a las 60
+  // lecturas por minuto desde una misma IP, que una oficina entera comparte— la
+  // pantalla dejaba además de pedir la cotización, porque un carrito sin
+  // artículos no tiene nada que cotizar: el desglose tributario desaparecía sin
+  // que nadie dijera por qué. `readCart` espera lo que el servidor pide y sólo
+  // se rinde después.
   useEffect(() => {
     if (!sessionKey) return;
     let cancelledFetch = false;
     void (async () => {
-      try {
-        const data = await fetcher<CheckoutItem[]>(
-          `${API_BASE}/cart/?session_key=${encodeURIComponent(sessionKey)}`,
-        );
-        if (!cancelledFetch) setItems(Array.isArray(data) ? data : []);
-      } catch {
-        if (!cancelledFetch) setItems([]);
+      const read = await readCart<CheckoutItem>(sessionKey);
+      if (cancelledFetch) return;
+      if (read.status === "ok") {
+        setItems(read.items);
+        setCartUnreadable(false);
+      } else {
+        setItems(null);
+        setCartUnreadable(true);
       }
     })();
     return () => { cancelledFetch = true; };
-  }, [sessionKey]);
+  }, [sessionKey, reloadToken]);
 
   const subtotal = (items ?? []).reduce(
     (sum, item) => sum + Number(item.product.price) * item.quantity, 0,
@@ -699,13 +714,27 @@ export default function CheckoutPage() {
 
           <aside className="order-1 lg:order-2 lg:sticky lg:top-24 lg:col-span-5">
             <h2 className="text-sm font-semibold text-foreground">Tu pedido</h2>
-            {items === null ? (
+            {cartUnreadable ? (
+              <div className="mt-3 rounded-xl border border-bd-border p-5">
+                <p className="text-sm text-muted">
+                  No pudimos leer tu carrito. Tus artículos siguen ahí.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCartUnreadable(false);
+                    setReloadToken((n) => n + 1);
+                  }}
+                  className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold text-foreground underline underline-offset-4"
+                >
+                  Reintentar
+                </button>
+              </div>
+            ) : items === null ? (
               <p className="mt-3 text-sm text-muted">Cargando el pedido…</p>
             ) : items.length === 0 ? (
               <div className="mt-3 rounded-xl border border-bd-border p-5">
-                <p className="text-sm text-muted">
-                  No pudimos leer tu carrito. Revísalo antes de pagar.
-                </p>
+                <p className="text-sm text-muted">Tu carrito está vacío.</p>
                 <Link
                   href="/cart"
                   className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold text-foreground underline underline-offset-4"
