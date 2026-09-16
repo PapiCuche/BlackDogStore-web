@@ -6,9 +6,17 @@ from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# django-environ — DEBUG defaults True for local dev convenience
+# django-environ — DEBUG DEFAULTS TO FALSE, and that default is a security
+# control, not a preference (ERP-1 · DEBT-01). Every production fail-safe below
+# hangs on `if not DEBUG`: the real SECRET_KEY, ALLOWED_HOSTS, HTTPS/HSTS,
+# Secure cookies, CORS. When DEBUG defaulted to True, a deployment that merely
+# FORGOT to set the variable came up as a developer's machine — signing its JWTs
+# with the public 'changeme-dev-only' key, hosts wide open, demo accounts live.
+# Failing closed is the safe direction: local dev and CI set DEBUG explicitly in
+# their .env, so this changes nothing for them and everything for a misconfigured
+# server, which now refuses to start rather than start insecure.
 env = environ.Env(
-    DEBUG=(bool, True),
+    DEBUG=(bool, False),
 )
 environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
