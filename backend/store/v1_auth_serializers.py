@@ -64,10 +64,16 @@ class V1UserSerializer(serializers.ModelSerializer):
         """
         The coarse role from `UserProfile`, defaulting to customer.
 
-        `UserProfile.role` is still the authoritative permission source in this
-        installation (see the transition note on `Membership`). It is reported
-        here only so the app can pick a starting screen — never so the app can
-        decide what the user may do. That decision stays on the server.
+        `UserProfile.role` is NOT the permission authority any more, and this
+        comment used to say the opposite. Inside the SaaS, what somebody may do
+        is decided by their company relation: Membership → CompanyRole →
+        capabilities → BranchAccess. The global role survives only where the
+        legacy bridge is explicitly allowed — a pilot tenant, temporarily — and
+        nowhere else.
+
+        It is reported here only so the app can pick a starting screen, never so
+        the app can decide what the user may do. That decision stays on the
+        server, and the server no longer asks this field.
         """
         profile = getattr(obj, 'profile', None)
         return getattr(profile, 'role', 'customer') or 'customer'

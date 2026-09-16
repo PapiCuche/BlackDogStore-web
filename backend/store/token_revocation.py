@@ -25,6 +25,27 @@ DOS REVOCACIONES, PORQUE SON DOS COSAS DISTINTAS
                                       lo esperado es exactamente lo contrario:
                                       que no sobreviva ninguna sesión anterior.
 
+ACCESS Y REFRESH SON DOS PREGUNTAS DISTINTAS (AUTH-REVOCATION-REFRESH-01)
+-------------------------------------------------------------------------
+La primera versión de este módulo sólo contestaba por los ACCESS tokens, y con
+eso el cierre global era una ilusión: los access morían, y acto seguido
+cualquier REFRESH anterior —criptográficamente intacto, emitido antes del
+evento— fabricaba un access nuevo y limpio. Reproducido con `200 != 401` en los
+dos canales, web y nativo, tras cambiar Y tras restablecer la contraseña.
+
+  `token_is_revoked(user, access)`    ¿Vale esta credencial AHORA? Lista de `jti`
+                                      revocados (logout) más el sello. Se
+                                      pregunta en cada petición autenticada.
+
+  `refresh_is_revoked(user, refresh)` ¿Puede este refresh CREAR credenciales? Se
+                                      pregunta antes de rotarlo, de ennegrecerlo
+                                      como consecuencia normal del refresh y de
+                                      emitir nada nuevo. Un token que ya no vale
+                                      no puede ser la causa de uno que sí valga.
+
+El `jti` no se consulta para el refresh: esa lista es de access tokens, y un
+refresh cerrado por logout ya lo rechaza la lista negra de SimpleJWT.
+
 LO QUE NO SE HIZO, Y POR QUÉ
 ----------------------------
 No se bajó el `ACCESS_TOKEN_LIFETIME`. Acortar la ventana no es revocar: deja el
@@ -86,6 +107,33 @@ def revoke_access_token(user, validated_token) -> None:
     RevokedAccessToken.objects.filter(expires_at__lt=timezone.now()).delete()
 
 
+def _blacklist_outstanding_refreshes(user) -> None:
+    """
+    Mete en la lista negra de SimpleJWT todos los refresh vivos de la cuenta.
+
+    NO SUSTITUYE AL SELLO, y el orden de autoridad importa. El sello es la regla:
+    responde aunque la fila del `OutstandingToken` se haya purgado, aunque el
+    token venga de un camino que no la registrara, y sin depender de que nadie
+    se acuerde de preguntar. Esto añade que la credencial muera también dentro de
+    la PROPIA biblioteca —`RefreshToken(raw)` falla al construirla—, de modo que
+    cualquier camino de refresh, presente o futuro, la rechaza sin haber tenido
+    que enterarse de que este módulo existe.
+
+    Coste acotado: una fila por sesión viva de esa cuenta, y sólo al cambiar o
+    restablecer la contraseña. No se toca en el logout, que es por sesión.
+    """
+    try:
+        from rest_framework_simplejwt.token_blacklist.models import (
+            BlacklistedToken,
+            OutstandingToken,
+        )
+    except ImportError:  # pragma: no cover — la app de lista negra está instalada
+        return
+
+    for outstanding in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=outstanding)
+
+
 def revoke_all_tokens(user) -> None:
     """Cierra TODAS las sesiones de la cuenta: contraseña cambiada o restablecida."""
     from .models import UserProfile
@@ -95,11 +143,32 @@ def revoke_all_tokens(user) -> None:
     UserProfile.objects.update_or_create(
         user=user, defaults={'tokens_valid_after': timezone.now()},
     )
+    _blacklist_outstanding_refreshes(user)
+
+
+def _issued_before_revocation(user, payload) -> bool:
+    """
+    Si esta credencial nació antes —o dentro— del cierre global de la cuenta.
+
+    Una sola definición, usada por el access y por el refresh: dos respuestas
+    distintas a esta pregunta serían dos políticas de seguridad conviviendo.
+    """
+    stamp = getattr(getattr(user, 'profile', None), 'tokens_valid_after', None)
+    if stamp is None:
+        return False
+
+    issued_at = payload.get('iat')
+    if issued_at is None:
+        # Un token sin fecha de emisión no se puede comparar con el sello.
+        # «No sé» sólo tiene una lectura segura: no vale.
+        return True
+    # Inclusiva a propósito: ver «LÍMITE CONOCIDO» arriba.
+    return int(issued_at) <= int(stamp.timestamp())
 
 
 def token_is_revoked(user, validated_token) -> bool:
     """
-    Si esta credencial fue revocada, o si lo fueron todas antes de emitirla.
+    Si este ACCESS fue revocado, o si lo fueron todos antes de emitirlo.
 
     Se consulta en cada petición autenticada: una revocación que sólo se notara
     al renovar el token no sería una revocación, sería un aviso.
@@ -112,14 +181,15 @@ def token_is_revoked(user, validated_token) -> bool:
     if jti and RevokedAccessToken.objects.filter(jti=jti).exists():
         return True
 
-    stamp = getattr(getattr(user, 'profile', None), 'tokens_valid_after', None)
-    if stamp is None:
-        return False
+    return _issued_before_revocation(user, payload)
 
-    issued_at = payload.get('iat')
-    if issued_at is None:
-        # Un token sin fecha de emisión no se puede comparar con el sello.
-        # «No sé» sólo tiene una lectura segura: no vale.
-        return True
-    # Inclusiva a propósito: ver «LÍMITE CONOCIDO» arriba.
-    return int(issued_at) <= int(stamp.timestamp())
+
+def refresh_is_revoked(user, token) -> bool:
+    """
+    Si este REFRESH precede a un cierre global y por tanto no puede emitir nada.
+
+    Se pregunta ANTES de rotar, de ennegrecer y de crear un token nuevo. El orden
+    no es un detalle: rotar primero deja al refresh muerto habiendo engendrado
+    una credencial viva, que es exactamente el agujero que esto cierra.
+    """
+    return _issued_before_revocation(user, _payload_of(token))

@@ -52756,6 +52756,218 @@ class H412bTokenRevocationTest(TestCase):
         self.assertEqual(res.status_code, 401)
 
 
+class H412bRefreshRevocationTest(TestCase):
+    """
+    AUTH-REVOCATION-REFRESH-01 — un refresh anterior no resucita la sesión.
+
+    EL AGUJERO QUE ESTAS PRUEBAS ABREN PRIMERO. H4.1.2B revocó los ACCESS
+    tokens: las dos clases de autenticación preguntan por `token_is_revoked()`
+    en cada petición. Pero los dos caminos de REFRESH no preguntaban nada. Ni
+    `V1RefreshView` —que valida firma, usuario y actividad y pasa directo a
+    `blacklist()` + `RefreshToken.for_user()`— ni el `RefreshView` web, que
+    delega en `TokenRefreshSerializer`, el cual sólo sabe de firma, caducidad y
+    lista negra.
+
+    Consecuencia: cambiar o restablecer la contraseña mataba los access
+    existentes, y acto seguido cualquier refresh anterior —criptográficamente
+    válido, emitido ANTES del evento— fabricaba un access nuevo y limpio. La
+    pantalla prometía «se cerraron todas tus sesiones» mientras quien tuviera un
+    refresh antiguo se fabricaba una nueva. Para alguien que restablece la
+    contraseña PORQUE cree que entraron en su cuenta, es exactamente el caso que
+    importa.
+
+    LO QUE NO DEBE ROMPERSE. El logout sigue siendo por sesión: cerrar en el
+    móvil no cierra el mostrador. Y un login POSTERIOR a la revocación funciona;
+    esto mira al pasado, no bloquea la cuenta.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company(
+            'Revocación de refresh', 'h412b-refresh', tax_id='20790000013',
+        )
+        self.user = User.objects.create_user(
+            username='h412b_ref', email='h412b_ref@example.invalid', password='Pass123!',
+        )
+        Membership.objects.create(user=self.user, company=self.company, role='sales')
+        self.ctx = _m6_ctx_url(self.company.slug)
+
+    # --- utilidades -------------------------------------------------------
+
+    def _login(self, password='Pass123!'):
+        cache.clear()
+        res = APIClient().post(
+            '/api/v1/auth/login/',
+            {'email': 'h412b_ref@example.invalid', 'password': password}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        return res.json()['access'], res.json()['refresh']
+
+    def _ctx(self, access):
+        """Una ruta interna de verdad: que el token exista no basta, tiene que abrir."""
+        cache.clear()
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        return client.get(self.ctx).status_code
+
+    def _v1_refresh(self, refresh):
+        cache.clear()
+        return APIClient().post(
+            '/api/v1/auth/refresh/', {'refresh': refresh}, format='json',
+        )
+
+    def _web_refresh(self, refresh):
+        cache.clear()
+        client = APIClient()
+        client.cookies[settings.JWT_COOKIE_REFRESH_NAME] = refresh
+        return client.post('/api/auth/refresh/')
+
+    def _change_password(self):
+        cache.clear()
+        web = APIClient()
+        web.force_authenticate(user=self.user)
+        res = web.post(
+            '/api/auth/change-password/',
+            {'current_password': 'Pass123!', 'new_password': 'Nueva123!Segura'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def _reset_password(self):
+        """
+        Restablecer SIN sesión web abierta, que es como ocurre de verdad: quien
+        ha perdido la contraseña no tiene una sesión con la que autenticarse.
+        """
+        from .models import AccountToken
+
+        cache.clear()
+        raw, _obj = AccountToken.make(
+            self.user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1,
+        )
+        res = APIClient().post(
+            '/api/auth/password-reset/confirm/',
+            {'token': raw, 'new_password': 'Nueva123!Segura'}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+    # --- cambio de contraseña --------------------------------------------
+
+    def test_changing_the_password_kills_the_native_refresh(self):
+        access, refresh = self._login()
+        self.assertEqual(self._ctx(access), 200)
+
+        self._change_password()
+
+        self.assertEqual(self._ctx(access), 401)
+        self.assertEqual(self._v1_refresh(refresh).status_code, 401)
+
+    def test_a_refresh_from_before_the_change_mints_nothing(self):
+        """El corazón del hallazgo: no basta con que el access muera."""
+        _access, refresh = self._login()
+        self._change_password()
+
+        res = self._v1_refresh(refresh)
+
+        self.assertEqual(res.status_code, 401)
+        # Y si algún día volviera a entregar algo, que no abra nada.
+        self.assertNotIn('access', res.json() if res.status_code == 200 else {})
+
+    def test_changing_the_password_kills_the_web_refresh_cookie(self):
+        _access, refresh = self._login()
+        self._change_password()
+
+        self.assertEqual(self._web_refresh(refresh).status_code, 401)
+
+    def test_two_old_sessions_both_die(self):
+        movil_access, movil_refresh = self._login()
+        mostrador_access, mostrador_refresh = self._login()
+
+        self._change_password()
+
+        self.assertEqual(self._ctx(movil_access), 401)
+        self.assertEqual(self._ctx(mostrador_access), 401)
+        self.assertEqual(self._v1_refresh(movil_refresh).status_code, 401)
+        self.assertEqual(self._v1_refresh(mostrador_refresh).status_code, 401)
+
+    # --- restablecimiento de contraseña ----------------------------------
+
+    def test_resetting_the_password_kills_access_and_both_refreshes(self):
+        access, refresh = self._login()
+        self.assertEqual(self._ctx(access), 200)
+
+        self._reset_password()
+
+        self.assertEqual(self._ctx(access), 401)
+        self.assertEqual(self._v1_refresh(refresh).status_code, 401)
+
+    def test_resetting_kills_the_web_refresh_cookie_too(self):
+        _access, refresh = self._login()
+        self._reset_password()
+
+        self.assertEqual(self._web_refresh(refresh).status_code, 401)
+
+    # --- lo que NO debe romperse -----------------------------------------
+
+    def test_logout_kills_its_own_refresh_and_leaves_the_other_alive(self):
+        """Cerrar en el móvil no cierra el mostrador. Ni su access ni su refresh."""
+        movil_access, movil_refresh = self._login()
+        mostrador_access, mostrador_refresh = self._login()
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {movil_access}')
+        client.post('/api/v1/auth/logout/', {'refresh': movil_refresh}, format='json')
+
+        self.assertEqual(self._ctx(movil_access), 401)
+        self.assertEqual(self._v1_refresh(movil_refresh).status_code, 401)
+
+        self.assertEqual(self._ctx(mostrador_access), 200)
+        self.assertEqual(self._v1_refresh(mostrador_refresh).status_code, 200)
+
+    def test_a_session_opened_after_the_revocation_works(self):
+        """
+        La revocación mira al pasado. Determinista y sin `sleep`: el sello se
+        fija cinco segundos atrás, así que el token que nace ahora es posterior
+        sin depender de cuándo corra la prueba.
+        """
+        from .models import UserProfile
+
+        UserProfile.objects.update_or_create(
+            user=self.user,
+            defaults={'tokens_valid_after': timezone.now() - timedelta(seconds=5)},
+        )
+
+        access, refresh = self._login()
+
+        self.assertEqual(self._ctx(access), 200)
+        self.assertEqual(self._v1_refresh(refresh).status_code, 200)
+
+    def test_a_refresh_born_in_the_same_second_as_the_revocation_is_not_trusted(self):
+        """
+        El borde de `iat`, congelado en vez de dormido.
+
+        `iat` tiene resolución de un segundo, así que se fija el sello EXACTAMENTE
+        en el segundo de emisión del token y se comprueba que la duda se resuelve
+        cerrando. Sin `sleep`: el instante se elige, no se espera.
+        """
+        from datetime import datetime as _dt, timezone as _dttz
+
+        from rest_framework_simplejwt.tokens import RefreshToken as _RefreshToken
+
+        from .models import UserProfile
+
+        access, refresh = self._login()
+        issued_at = int(_RefreshToken(refresh)['iat'])
+
+        UserProfile.objects.update_or_create(
+            user=self.user,
+            defaults={'tokens_valid_after': _dt.fromtimestamp(issued_at, tz=_dttz.utc)},
+        )
+
+        self.assertEqual(self._ctx(access), 401)
+        self.assertEqual(self._v1_refresh(refresh).status_code, 401)
+        self.assertEqual(self._web_refresh(refresh).status_code, 401)
+
+
 class H412bFrontendLegacyRoleParityTest(TestCase):
     """
     La interfaz y el backend dicen lo mismo sobre el puente legacy.

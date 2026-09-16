@@ -21,7 +21,7 @@ from .authentication import enforce_csrf
 from .emails import send_verification_email, send_password_reset_email
 from .models import AccountToken
 from .permissions import get_user_role
-from .token_revocation import revoke_access_token, revoke_all_tokens
+from .token_revocation import refresh_is_revoked, revoke_access_token, revoke_all_tokens
 from .throttles import (
     LoginThrottle, RegisterThrottle,
     ResendVerificationThrottle, PasswordResetRequestThrottle,
@@ -119,6 +119,22 @@ class RefreshView(APIView):
             return Response(
                 {'detail': 'No se encontró el refresh token.'},
                 status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # H4.1.2B — AUTH-REVOCATION-REFRESH-01. `TokenRefreshSerializer` sólo
+        # sabe de firma, caducidad y lista negra, así que la pregunta por la
+        # revocación global hay que hacerla AQUÍ, antes de que rote nada. Un
+        # refresh anterior al cambio de contraseña entregaba un access nuevo y
+        # perfectamente válido: la sesión resucitaba por la puerta de atrás.
+        try:
+            token = RefreshToken(refresh_cookie)
+        except TokenError as exc:
+            raise InvalidToken(exc.args[0])
+
+        user = User.objects.filter(pk=token.get(jwt_settings.USER_ID_CLAIM)).first()
+        if user is None or not user.is_active or refresh_is_revoked(user, token):
+            return Response(
+                {'detail': 'Sesión expirada.'}, status=status.HTTP_401_UNAUTHORIZED,
             )
 
         serializer = TokenRefreshSerializer(data={'refresh': refresh_cookie})
