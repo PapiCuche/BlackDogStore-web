@@ -186,20 +186,32 @@ def link_order_to_customer(order, *, actor=None):
     document_number = normalize_document_number(order.document_number)
 
     try:
-        existing = resolve_customer(
-            company, user=user,
-            document_type=document_type, document_number=document_number,
-        )
+        # THE ACCOUNT IS THE IDENTITY; A DOCUMENT TYPED AT CHECKOUT IS NOT.
+        #
+        # ERP-1 · P0-1. This function used to resolve by account OR document for
+        # everyone and, worse, ADOPT a record's empty account link when the
+        # document matched. That let any signed-in buyer claim a stranger's CRM
+        # file — and with it their repair history, saldos and the right to
+        # approve or reject their quotes — just by typing a DNI that checkout
+        # only validates for SHAPE. `Order.customer.user` is the authorisation
+        # key (`tenancy.customer_owned_orders`, `service_services`.
+        # `customer_owned_repair_orders`), so writing it from an unverified
+        # document was a horizontal account takeover.
+        #
+        # The policy above is now the code: an authenticated sale is matched by
+        # its account ALONE, and the document is consulted only when there is no
+        # account behind the sale. The account link is never adopted from a
+        # document match; unifying a walk-in record with an online account is a
+        # deliberate staff action, not a side effect of typing the right number.
+        if user is not None:
+            existing = match_by_user(company, user)
+        else:
+            existing = match_by_document(company, document_type, document_number)
+
         if existing is not None:
-            # An existing record is NOT overwritten with the checkout data. The
-            # client may have deliberately updated their details in the CRM, and
-            # a new sale is not a reason to revert them. The only thing adopted
-            # is the account link, if this record did not have one yet and the
-            # login is free.
-            if user is not None and existing.user_id is None:
-                if not Customer.objects.filter(company=company, user=user).exists():
-                    existing.user = user
-                    existing.save(update_fields=['user', 'updated_at'])
+            # Never overwritten with the checkout data: the client may have
+            # corrected their details in the CRM, and a new sale is not a reason
+            # to revert them.
             _stamp(order, existing)
             return existing
 
@@ -208,15 +220,20 @@ def link_order_to_customer(order, *, actor=None):
         return customer
 
     except IntegrityError:
-        # Two checkouts for the same person at once: one of them wins the unique
-        # constraint. Re-read rather than fail — the winner's record is exactly
-        # the one this order should point at.
+        # Either a concurrent checkout won the unique constraint, or — for an
+        # authenticated sale — the typed document already belongs to someone
+        # else's record. Re-read by the SAME key we matched on. Never fall back
+        # to the document for an authenticated sale: that would grab the very
+        # record we just refused to touch. If nothing is ours, leave the order
+        # unlinked with its snapshot intact rather than attach the wrong person.
         try:
             with transaction.atomic():
-                existing = resolve_customer(
-                    company, user=user,
-                    document_type=document_type, document_number=document_number,
-                )
+                if user is not None:
+                    existing = match_by_user(company, user)
+                else:
+                    existing = match_by_document(
+                        company, document_type, document_number,
+                    )
             if existing is not None:
                 _stamp(order, existing)
                 return existing

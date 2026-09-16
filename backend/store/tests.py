@@ -16333,21 +16333,76 @@ class Phase4OrderLinkTest(TestCase):
         afterwards; what it does not do is fail, or attach the wrong person.
         """
         order = _p3_order(self.company, document_type='dni', document_number='12345678')
-        with patch('store.customer_services.resolve_customer', side_effect=RuntimeError('boom')):
+        with patch('store.customer_services.match_by_document', side_effect=RuntimeError('boom')):
             result = link_order_to_customer(order)
         order.refresh_from_db()
         self.assertIsNone(result)
         self.assertIsNone(order.customer_id)
         self.assertEqual(order.document_number, '12345678')
 
-    def test_an_unlinked_customer_record_adopts_a_free_account(self):
-        existing = _p4_customer(self.company, document_type='dni', document_number='12345678')
-        user = User.objects.create_user(username='p4_adopt', password='x')
-        order = _p3_order(self.company, user=user,
+    def test_a_document_typed_at_checkout_never_adopts_a_record(self):
+        """
+        ERP-1 · P0-1. The old behaviour let a signed-in buyer ADOPT the empty
+        account link of any record whose document they typed. That is an account
+        takeover: `Order.customer.user` is the authorisation key. The document is
+        validated for shape only, so it is not identity — the account is. A sale
+        under a stranger's document must never touch that stranger's record.
+        """
+        victim_record = _p4_customer(
+            self.company, document_type='dni', document_number='12345678',
+        )
+        attacker = User.objects.create_user(username='p4_attacker', password='x')
+        order = _p3_order(self.company, user=attacker,
                           document_type='dni', document_number='12345678')
+
         link_order_to_customer(order)
-        existing.refresh_from_db()
-        self.assertEqual(existing.user, user)
+
+        victim_record.refresh_from_db()
+        order.refresh_from_db()
+        # The victim's record is untouched: no account was adopted...
+        self.assertIsNone(victim_record.user_id)
+        # ...and the sale did not attach itself to the victim either.
+        self.assertNotEqual(order.customer_id, victim_record.pk)
+
+    def test_the_takeover_grants_no_access_to_the_victims_history(self):
+        """
+        The consequence, proven through the real authorisation helpers rather
+        than the internal field: after the fix the attacker owns nothing of the
+        victim's.
+        """
+        from .tenancy import customer_owned_orders
+
+        victim_record = _p4_customer(
+            self.company, document_type='dni', document_number='40404040',
+            first_name='Ana', last_name='Real',
+        )
+        victim_sale = _p3_order(self.company, document_type='dni',
+                                document_number='40404040')
+        link_order_to_customer(victim_sale)  # anonymous walk-in → attaches to Ana
+
+        attacker = User.objects.create_user(username='p4_attacker2', password='x')
+        attacker_sale = _p3_order(self.company, user=attacker,
+                                  document_type='dni', document_number='40404040')
+        link_order_to_customer(attacker_sale)
+
+        owned = customer_owned_orders(attacker, self.company)
+        self.assertNotIn(victim_sale, owned)
+        victim_record.refresh_from_db()
+        self.assertIsNone(victim_record.user_id)
+
+    def test_an_authenticated_buyer_without_a_record_gets_their_own(self):
+        """
+        The legitimate case the stricter rule must still serve: a signed-in buyer
+        with a free document gets a NEW record linked to their account, not a
+        refusal.
+        """
+        user = User.objects.create_user(username='p4_fresh', password='x')
+        order = _p3_order(self.company, user=user,
+                          document_type='dni', document_number='55556666')
+        customer = link_order_to_customer(order)
+        self.assertIsNotNone(customer)
+        self.assertEqual(customer.user_id, user.pk)
+        self.assertEqual(customer.document_number, '55556666')
 
     def test_an_account_already_used_here_is_not_stolen(self):
         """
