@@ -1119,13 +1119,30 @@ class AdminStockTransferItemsView(APIView):
 
         try:
             with transaction.atomic():
+                # ERP-1 · P0-2. LOCK AND RE-CHECK BEFORE DELETING. The whole-list
+                # replace below removes lines before it ever validates one, and
+                # the only editability guard lived inside set_transfer_item — so
+                # an empty payload (keep == {}) wiped every line WITHOUT entering
+                # the loop, and a payload with all-zero quantities did the same.
+                # On a dispatched transfer that meant the source had already lost
+                # the units (transfer_out) and the destination would never
+                # receive them: stock destroyed, with no way back. Editing is a
+                # draft-only operation; enforce it here, under select_for_update
+                # so a concurrent dispatch cannot slip between the check and the
+                # delete either (that race was INV-10).
+                locked = StockTransfer.objects.select_for_update().get(pk=transfer.pk)
+                if not locked.is_editable:
+                    raise TransferError(
+                        'Solo se pueden editar las líneas de una transferencia '
+                        'en borrador.'
+                    )
                 # The PUT is the whole list: lines not sent are removed, so a
                 # partial payload cannot leave a stale line behind.
                 keep = {line['product'] for line in lines if line['quantity'] > 0}
-                transfer.items.exclude(product_id__in=keep).delete()
+                locked.items.exclude(product_id__in=keep).delete()
                 for line in lines:
                     set_transfer_item(
-                        transfer,
+                        locked,
                         product=products[line['product']],
                         quantity=line['quantity'],
                     )

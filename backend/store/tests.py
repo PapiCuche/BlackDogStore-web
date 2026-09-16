@@ -12137,6 +12137,33 @@ class Phase2dTransferTest(TestCase):
         with self.assertRaises(TransferError):
             set_transfer_item(transfer, product=self.p1, quantity=5)
 
+    def test_the_items_endpoint_cannot_wipe_a_dispatched_transfer(self):
+        """
+        ERP-1 · P0-2. The whole-list PUT deleted its lines BEFORE it validated
+        one, and the only editability guard lived inside set_transfer_item — so
+        an empty body (or all-zero quantities) never entered the loop and erased
+        the lines of a transfer whose units were already on a van: gone from the
+        source, never received at the destination, with no way back. The guard
+        now lives in the view too, under a lock.
+        """
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        url = f'/api/admin/inventory/transfers/{transfer.pk}/items/'
+
+        for body in ([], [{'product': self.p1.pk, 'quantity': 0}]):
+            res = self.client.put(url, body, format='json')
+            self.assertEqual(res.status_code, 400, res.data)
+            self.assertEqual(
+                transfer.items.count(), 1, 'la línea despachada fue borrada',
+            )
+            self.assertEqual(transfer.items.get().quantity, 3)
+
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.status, StockTransfer.STATUS_IN_TRANSIT)
+        # The units are still there to recover: the destination can receive them.
+        receive_transfer(transfer, actor=self.user)
+        self.assertEqual(branch_quantity(self.dst, self.p1), 3)
+
     # --- receipt ---
 
     def test_receive_credits_the_destination(self):
