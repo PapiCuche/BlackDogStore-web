@@ -4760,3 +4760,37 @@ Ahora ese 403 **dice cuál de las dos es**, calculado por quien puede saberlo:
 
 El cliente no deduce; pregunta. Y ante un fallo de red no hay puente: sin
 afirmación del servidor, la pantalla no se abre.
+
+### Cerrar todas las sesiones incluye el refresh
+
+Encontrado en revisión externa **sobre un arreglo ya dado por cerrado**, y por eso
+vale la pena que quede en este documento y no sólo en el ADR: la primera versión
+de la revocación global invalidaba los ACCESS y nadie preguntaba por los REFRESH.
+Cambiar o restablecer la contraseña mataba el access viejo y, acto seguido, el
+refresh viejo —anterior al evento, criptográficamente intacto— entregaba uno
+nuevo. La pantalla prometía «se cerraron todas tus sesiones» mientras quien
+tuviera un refresh antiguo se fabricaba una.
+
+```
+cambiar / restablecer la contraseña
+access viejo  → 401          (ya funcionaba)
+refresh viejo → 200 + access NUEVO   ← el defecto, en los dos canales
+```
+
+La regla queda así: **un refresh anterior a un cierre global no puede ser la causa
+de ninguna credencial posterior a él**. Se pregunta antes de rotar, de ennegrecer
+y de emitir; y el cierre global ennegrece además los `OutstandingToken` vivos,
+para que la credencial muera también dentro de la biblioteca y no dependa de que
+cada camino de refresh se acuerde de preguntar.
+
+Lo que no cambia: el logout sigue siendo **por sesión**. Cerrar en el móvil no
+cierra el mostrador, ni su access ni su refresh.
+
+### El rol global no es la autoridad, y los comentarios ya no dicen lo contrario
+
+`v1_auth_serializers.py` seguía afirmando por escrito que `UserProfile.role` era
+«the authoritative permission source in this installation». Dejó de serlo: dentro
+del SaaS deciden Membership → CompanyRole → capacidades → BranchAccess, y el rol
+global sólo sobrevive donde el puente legacy está explícitamente permitido. El
+campo se sigue reportando para que la aplicación elija pantalla de inicio, nunca
+para decidir qué puede hacer alguien.

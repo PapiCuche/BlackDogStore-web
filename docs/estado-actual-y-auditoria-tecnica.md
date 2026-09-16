@@ -4221,6 +4221,42 @@ lectura falla —por eso el badge decía la verdad mientras el resumen mentía�
 confusión era exclusiva del checkout. Ocho pruebas Jest nuevas la fijan, incluido
 que un carrito vacío de verdad sigue siendo `ok`.
 
+### AUTH-REVOCATION-REFRESH-01 — un refresh anterior resucitaba la sesión
+
+Encontrado en revisión externa, **sobre el arreglo de AUTH-REVOCATION-01 ya dado
+por cerrado**. La lección conviene dejarla escrita tal cual: revocar los ACCESS y
+llamar a eso «se cerraron todas tus sesiones» era falso mientras ningún camino de
+REFRESH preguntara nada. Media revocación se parece demasiado a una revocación.
+
+**Reproducido antes de tocar código**, con nueve pruebas nuevas: **siete en rojo,
+todas `200 != 401`**. Tras cambiar —o restablecer— la contraseña, el access viejo
+moría con 401 y acto seguido el refresh viejo entregaba uno nuevo, válido y
+recién emitido. En los dos canales: `/api/v1/auth/refresh/` (nativo) y
+`/api/auth/refresh/` (cookie web).
+
+**La causa.** `V1RefreshView` validaba firma, usuario y `is_active`, y pasaba
+directo a `blacklist()` + `RefreshToken.for_user()`. El `RefreshView` web
+delegaba en `TokenRefreshSerializer`, que sólo sabe de firma, caducidad y lista
+negra. El sello `tokens_valid_after` no se consultaba en ninguno de los dos.
+
+**El arreglo, en dos candados.** `refresh_is_revoked()` se pregunta **antes** de
+rotar, de ennegrecer y de emitir —rotar primero deja el refresh muerto habiendo
+engendrado una credencial viva, que es exactamente el agujero—, y comparte con el
+access la misma definición del umbral (`_issued_before_revocation`). Además,
+`revoke_all_tokens()` ennegrece todos los `OutstandingToken` vivos de la cuenta,
+de modo que la credencial muera también dentro de la propia biblioteca: cualquier
+camino de refresh, presente o futuro, la rechaza sin tener que acordarse de
+preguntar. El sello sigue siendo la autoridad; la lista negra es defensa en
+profundidad. Ver [adr-token-revocation.md](adr-token-revocation.md) §1.1 y §2.
+
+**Lo que NO se rompió**, y está probado: el logout sigue siendo por sesión —cerrar
+en el móvil conserva vivos el access **y** el refresh del mostrador— y un login
+posterior a la revocación funciona con normalidad.
+
+**El borde de `iat`, sin `sleep`.** La prueba fija el sello exactamente en el
+segundo de emisión del token y comprueba que la duda se resuelve cerrando. El
+instante se elige, no se espera: determinista y sin depender de cuándo corra.
+
 ### Verificación
 
 | Comprobación | Resultado |
@@ -4269,6 +4305,7 @@ previo, no queda ningún `if False and` en el árbol y la pasada posterior da
 | **P0** | LEGACY-BRIDGE-REVOCATION-01 — revocar devolvía acceso, y a una empresa ajena | **RESUELTO** |
 | **P0** | ACCESSGUARD-403-LEGACY-01 — un rechazo se leía como credencial | **RESUELTO** |
 | **P0** | AUTH-REVOCATION-01 — el logout no cerraba la sesión | **RESUELTO** |
+| **P0** | AUTH-REVOCATION-REFRESH-01 — un refresh anterior resucitaba la sesión tras cambiar o restablecer la contraseña | **RESUELTO** |
 | **P1** | — | ninguno abierto |
 | **P2** | CART-READ-429-01 — un carrito ilegible se mostraba como vacío y apagaba el desglose | **RESUELTO** |
 | **P2** | AUDIT-INTERNAL-01 — los rechazos sensibles no dejan traza; política ya definida, falta el punto único donde engancharla | Abierto |

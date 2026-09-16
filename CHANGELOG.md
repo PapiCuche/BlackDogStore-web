@@ -29,6 +29,14 @@ antes de corregirlos.
   Ahora el logout revoca esa credencial por `jti` y el cambio de contraseña
   cierra todas las sesiones con un sello por usuario. Sin tocar el formato del
   token ni el contrato. Ver [docs/adr-token-revocation.md](docs/adr-token-revocation.md).
+- **AUTH-REVOCATION-REFRESH-01 (P0).** Lo anterior revocaba los ACCESS, y con eso
+  el cierre global seguía siendo una ilusión: ningún camino de REFRESH preguntaba
+  nada. Cambiar o restablecer la contraseña mataba el access viejo y, acto
+  seguido, el refresh viejo entregaba uno nuevo y válido —en los dos canales—.
+  Reproducido con nueve pruebas antes de corregir: siete en rojo, `200 != 401`.
+  Ahora `refresh_is_revoked()` se pregunta **antes** de rotar, ennegrecer o
+  emitir, y el cierre global ennegrece además todos los `OutstandingToken` de la
+  cuenta. El logout sigue siendo por sesión.
 
 Además: matriz RBAC completa, matriz de aislamiento multiempresa y por sucursal,
 prueba de paridad entre las listas `legacyRoles` de la interfaz y los conjuntos
