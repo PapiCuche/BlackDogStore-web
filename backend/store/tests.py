@@ -47031,13 +47031,20 @@ class C21DocumentTest(TestCase):
 
         from . import ticket_services
 
-        # 50 chars, no spaces — the column limit (Product.name is varchar(50)),
-        # still far wider than a thermal ticket, so it must still be split. The
-        # old fixture used 64 chars, which only SQLite (no length enforcement)
-        # accepted; PostgreSQL rejects it with StringDataRightTruncation, so the
-        # test never exercised its own intent on the real engine.
+        # 50 chars, no spaces — still far wider than a thermal ticket, so it
+        # must still be split. The old fixture used 64. What overflowed was NOT
+        # Product.name (varchar(255)) but Product.slug: `_p60_product` derives
+        # slug=name.lower().replace(' ','-'), and Product.slug is a bare
+        # SlugField(), i.e. varchar(50). A 64-char no-space name → 64-char slug,
+        # which only SQLite (no length enforcement) accepted; PostgreSQL rejects
+        # it with StringDataRightTruncation. No real request could reach that
+        # column: every write frontier bounds the slug to ≤ 50 (the admin
+        # serializer's SlugField(max_length=50), its slugify(name)[:45] fallback,
+        # and the CSV import's slugify(name)[:40]). The fixture bypassed them all
+        # via Product.objects.create(slug=…). Capping the name to 50 caps the
+        # derived slug to 50 too, which is why it is the right fix.
         largo = 'MacBookProM4Max16Pulgadas1TBNegroEspacialMagSafe14'
-        assert len(largo) == 50
+        assert len(largo) == 50  # == len(slug); slug is the varchar(50), not name
         product = _p60_product(name=largo, inventory=5, price='118.00')
         OrderItem.objects.create(
             order=self.order, product=product, quantity=1, price=product.price,
