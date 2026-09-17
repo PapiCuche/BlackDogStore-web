@@ -51045,6 +51045,48 @@ class H41StaffDeactivationTest(TestCase):
         self.assertTrue(self.membership.is_active)
 
 
+class Erp1LoginThrottleTest(TestCase):
+    """
+    ERP-1 · AUTH-THROTTLE-01. Login is rate-limited per IP even for a caller who
+    already holds a session. As an AnonRateThrottle the limiter skipped
+    authenticated requests, so a signed-in user could brute-force other
+    accounts' passwords with no ceiling. The same LoginThrottle guards the web
+    and the native login, so both are covered.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.victim = User.objects.create_user(
+            username='erp1_victim', email='victim@example.invalid',
+            password='RightPass123!',
+        )
+        self.attacker = User.objects.create_user(
+            username='erp1_attacker', email='attacker@example.invalid',
+            password='AttackerPass123!',
+        )
+
+    def _attempt(self, client):
+        return client.post(
+            '/api/auth/login/',
+            {'username': 'erp1_victim', 'password': 'wrong'}, format='json',
+        )
+
+    def test_an_authenticated_caller_is_still_throttled(self):
+        client = APIClient()
+        client.force_authenticate(user=self.attacker)
+        statuses = [self._attempt(client).status_code for _ in range(7)]
+        self.assertIn(
+            429, statuses,
+            'login sin límite para una sesión activa: se puede probar '
+            f'contraseñas ajenas sin freno ({statuses})')
+
+    def test_the_anonymous_limit_still_holds(self):
+        cache.clear()
+        client = APIClient()
+        statuses = [self._attempt(client).status_code for _ in range(7)]
+        self.assertIn(429, statuses, str(statuses))
+
+
 class H41AreaCreationTest(TestCase):
     """
     Crear un área desde la pantalla, que es escribir un NOMBRE y nada más.

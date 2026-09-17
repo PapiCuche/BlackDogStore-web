@@ -1,8 +1,31 @@
-from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+from rest_framework.throttling import (
+    AnonRateThrottle,
+    SimpleRateThrottle,
+    UserRateThrottle,
+)
 
 
-class LoginThrottle(AnonRateThrottle):
+class LoginThrottle(SimpleRateThrottle):
+    """
+    Rate-limit login per IP whether or not the request already carries a session.
+
+    ERP-1 · AUTH-THROTTLE-01. This was an AnonRateThrottle, and DRF's
+    AnonRateThrottle returns no cache key — i.e. does not throttle — once the
+    request is authenticated. So a user signed into their own account could
+    POST other accounts' passwords to the login endpoint with no limit at all;
+    the brute-force defence only covered anonymous callers. Both the web
+    LoginView and V1LoginView use this class, so keying purely by IP closes the
+    hole on both channels. A login attempt is a login attempt regardless of who
+    is currently signed in.
+    """
+
     scope = 'login'
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {
+            'scope': self.scope,
+            'ident': self.get_ident(request),
+        }
 
 
 class RegisterThrottle(AnonRateThrottle):
