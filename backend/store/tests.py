@@ -2870,6 +2870,39 @@ class Erp1CrossCompanyReadIsolationTest(TestCase):
         self.assertEqual(client.get('/api/admin/audit-logs/').status_code, 403)
 
 
+class Erp1AdminHardeningTest(TestCase):
+    """
+    ERP-1 · DB-01/DB-02. The Django admin must not be a second API around the
+    domain rules: a sale's lifecycle, money and lines are read-only there, and
+    the audit trail can only be viewed, never added to, edited or deleted.
+    """
+
+    def test_order_lifecycle_and_money_are_read_only(self):
+        from django.contrib.admin.sites import site
+        order_admin = site._registry[Order]
+        for field in ('status', 'paid', 'fulfillment_status', 'user',
+                      'total', 'tax_amount'):
+            self.assertIn(field, order_admin.readonly_fields, field)
+
+    def test_order_lines_cannot_be_added_edited_or_deleted(self):
+        from django.contrib.admin.sites import site
+        order_admin = site._registry[Order]
+        inline_cls = order_admin.inlines[0]
+        self.assertFalse(inline_cls.can_delete)
+        for field in ('product', 'quantity', 'price'):
+            self.assertIn(field, inline_cls.readonly_fields, field)
+        self.assertFalse(inline_cls(Order, site).has_add_permission(request=None))
+
+    def test_the_audit_log_is_append_only_in_the_admin(self):
+        from django.contrib.admin.sites import site
+        audit_admin = site._registry[AdminAuditLog]
+        self.assertFalse(audit_admin.has_add_permission(request=None))
+        self.assertFalse(audit_admin.has_change_permission(request=None))
+        self.assertFalse(audit_admin.has_delete_permission(request=None))
+        # Reassigning company changed who could read the row (admin_views:378).
+        self.assertIn('company', audit_admin.readonly_fields)
+
+
 class Audit31PaginationEdgeCasesTest(TestCase):
     """page_size cap at 100, invalid page param defaults gracefully."""
 

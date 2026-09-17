@@ -68,7 +68,14 @@ class ProductAdmin(admin.ModelAdmin):
 class OrderItemInline(admin.TabularInline):
     model = OrderItem
     extra = 0
-    readonly_fields = ('price',)
+    # ERP-1 · DB-01. A sale's lines are not editable from the admin: adding,
+    # removing or re-quantifying one changes what was sold without touching the
+    # Kardex or the frozen tax breakdown. The whole row is read-only here.
+    can_delete = False
+    readonly_fields = ('product', 'quantity', 'price')
+
+    def has_add_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Order)
@@ -94,7 +101,16 @@ class OrderAdmin(admin.ModelAdmin):
     # ya entregado, que es justo lo que el congelado existe para impedir. Una
     # corrección de importe es una operación comercial —nota de crédito—, no una
     # edición de fila.
-    readonly_fields = ('paid_at', 'payment_error',
+    #
+    # ERP-1 · DB-01. El CICLO DE VIDA tampoco se edita aquí. `paid`+`status` son
+    # la única llave que habilita emitir comprobante fiscal a SUNAT
+    # (`fiscal_services`) y la nota de venta (`sales_note_services`); marcarlos a
+    # mano abría una venta jamás cobrada, sin `PaymentTransaction` ni salida de
+    # Kardex y sin traza de negocio. `views._confirm` sigue siendo lo único que
+    # puede marcar una orden pagada. `user` y `fulfillment_status` se muestran,
+    # no se reescriben.
+    readonly_fields = ('user', 'status', 'paid', 'fulfillment_status',
+                       'paid_at', 'payment_error',
                        'accepted_terms', 'accepted_warranty_policy',
                        'total', 'discount_amount',
                        'currency', 'subtotal_amount', 'taxable_amount',
@@ -172,7 +188,22 @@ class AdminAuditLogAdmin(admin.ModelAdmin):
     list_display = ('id', 'actor', 'action', 'target_type', 'target_id', 'ip_address', 'created_at')
     list_filter = ('action', 'target_type', 'created_at')
     search_fields = ('actor__username', 'target_id', 'action')
-    readonly_fields = ('actor', 'action', 'target_type', 'target_id', 'metadata', 'ip_address', 'user_agent', 'created_at')
+    # ERP-1 · DB-02. The audit trail is append-only, and the admin must not be a
+    # back door around that. `company` joins the read-only set (reassigning it
+    # changed who could see the row, admin_views:378-388), and the log can be
+    # neither added, edited nor deleted here — only viewed. Rows are still
+    # written by AdminAuditLog.log in code; that path is unaffected.
+    readonly_fields = ('actor', 'company', 'action', 'target_type', 'target_id',
+                       'metadata', 'ip_address', 'user_agent', 'created_at')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 # ---------------------------------------------------------------------------
