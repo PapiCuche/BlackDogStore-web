@@ -2808,6 +2808,68 @@ class AdminAuditLogFilterTest(TestCase):
 # Audit 3.1 — Pagination edge cases, CSRF enforcement, extra-field protection
 # ---------------------------------------------------------------------------
 
+class Erp1CrossCompanyReadIsolationTest(TestCase):
+    """
+    ERP-1 · ISO-01/02. A capability answers for the company that granted it and
+    for no other. A user who administers company A and is merely a member of
+    company B must not read B's user list or B's audit trail on the strength of
+    A's memberships.view. The old code checked the capability in ANY company and
+    then filtered across ALL of them.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'erp1-iso-a', tax_id='20600000021')
+        self.b = _saas_company('Empresa B', 'erp1-iso-b', tax_id='20600000022')
+
+        self.user = User.objects.create_user(
+            username='erp1_dual', email='erp1_dual@example.invalid', password='Pass123!',
+        )
+        mem_a = Membership.objects.create(user=self.user, company=self.a, role='sales')
+        _assign(mem_a, _role(self.a, 'Admin A',
+                             capabilities=['memberships.view'], slug='admin-a'))
+        mem_b = Membership.objects.create(user=self.user, company=self.b, role='sales')
+        _assign(mem_b, _role(self.b, 'Ventas B',
+                             capabilities=['sales.orders.view'], slug='ventas-b'))
+
+        self.b_only = User.objects.create_user(
+            username='erp1_b_only', email='b_only@example.invalid', password='Pass123!',
+        )
+        Membership.objects.create(user=self.b_only, company=self.b, role='sales')
+
+        AdminAuditLog.log(actor=self.b_only, action='role_change', target_type='user',
+                          target_id='B-ROW', company=self.b)
+        AdminAuditLog.log(actor=self.user, action='role_change', target_type='user',
+                          target_id='A-ROW', company=self.a)
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_the_user_list_shows_only_the_company_you_administer(self):
+        res = self.client.get('/api/admin/users/')
+        self.assertEqual(res.status_code, 200, res.data)
+        usernames = {row['username'] for row in res.json()['results']}
+        self.assertIn('erp1_dual', usernames)
+        self.assertNotIn('erp1_b_only', usernames)
+
+    def test_the_audit_log_shows_only_the_company_you_administer(self):
+        res = self.client.get('/api/admin/audit-logs/')
+        self.assertEqual(res.status_code, 200, res.data)
+        ids = {row['target_id'] for row in res.json()['results']}
+        self.assertIn('A-ROW', ids)
+        self.assertNotIn('B-ROW', ids)
+
+    def test_a_member_without_the_capability_anywhere_is_refused(self):
+        loner = User.objects.create_user(username='erp1_loner', password='Pass123!')
+        mem = Membership.objects.create(user=loner, company=self.b, role='sales')
+        _assign(mem, _role(self.b, 'Solo ventas',
+                           capabilities=['sales.orders.view'], slug='solo-ventas'))
+        client = APIClient()
+        client.force_authenticate(user=loner)
+        self.assertEqual(client.get('/api/admin/users/').status_code, 403)
+        self.assertEqual(client.get('/api/admin/audit-logs/').status_code, 403)
+
+
 class Audit31PaginationEdgeCasesTest(TestCase):
     """page_size cap at 100, invalid page param defaults gracefully."""
 

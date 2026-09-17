@@ -238,16 +238,24 @@ class AdminUserListView(APIView):
             )
             if not companies:
                 return Response({'count': 0, 'page': 1, 'page_size': 0, 'results': []})
-            if not any(
-                has_capability(request.user, company_id, 'memberships.view')
-                for company_id in companies
-            ):
+            # ISO-01: the capability must hold IN the company whose people you
+            # read, not in ANY company you happen to belong to. The old check
+            # was `any(...)` over all your companies, then a filter across all of
+            # them — so an admin of A who was also a plain member of B read B's
+            # user list (emails, roles) with A's capability. Keep only the
+            # companies where you actually hold memberships.view and read across
+            # exactly those.
+            readable = [
+                company_id for company_id in companies
+                if has_capability(request.user, company_id, 'memberships.view')
+            ]
+            if not readable:
                 return Response(
                     {'detail': 'No tienes permisos para esta operación.'},
                     status=status.HTTP_403_FORBIDDEN,
                 )
             users = users.filter(
-                Q(memberships__company_id__in=companies, memberships__is_active=True)
+                Q(memberships__company_id__in=readable, memberships__is_active=True)
                 | Q(pk=request.user.pk)
             ).distinct()
 
@@ -376,16 +384,21 @@ class AdminAuditLogListView(APIView):
         logs = AdminAuditLog.objects.select_related('actor').order_by('-created_at')
 
         if not is_platform_admin(request.user):
-            companies = list(visible_companies(request.user).values_list('pk', flat=True))
-            if not companies or not any(
-                has_capability(request.user, company_id, 'memberships.view')
-                for company_id in companies
-            ):
+            # ISO-02: same flaw as the user list. `any(...)` over every company
+            # followed by a filter across all of them let an admin of A read B's
+            # audit trail — IPs and the PII copied into metadata — with A's
+            # capability. Read only the companies where you hold memberships.view.
+            readable = [
+                company_id
+                for company_id in visible_companies(request.user).values_list('pk', flat=True)
+                if has_capability(request.user, company_id, 'memberships.view')
+            ]
+            if not readable:
                 return Response(
                     {'detail': 'No tienes permisos para esta operación.'},
                     status=status.HTTP_403_FORBIDDEN,
                 )
-            logs = logs.filter(company_id__in=companies)
+            logs = logs.filter(company_id__in=readable)
 
         action_filter = request.query_params.get('action', '').strip()
         if action_filter:
