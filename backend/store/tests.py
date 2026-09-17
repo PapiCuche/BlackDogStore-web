@@ -12545,6 +12545,132 @@ class Phase2dInventoryCountTest(TestCase):
             branch_quantity(self.branch, self.product), 7,
             'la aprobación resucitó unidades ya vendidas')
 
+    def test_case_a_no_movements_the_correction_is_the_discrepancy(self):
+        """
+        ERP-1 · INV-02, caso A. Sistema 10, físico 8, sin movimientos
+        posteriores: la corrección es la discrepancia hallada (−2), el stock
+        final es 8.
+        """
+        count = self._count(physical=8)
+        self.assertEqual(branch_quantity(self.branch, self.product), 10)
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 2)
+        self.assertEqual(branch_quantity(self.branch, self.product), 8)
+        item = count.items.get()
+        self.assertEqual(item.theoretical_at_start, 10)
+        self.assertEqual(item.theoretical_at_approval, 10)
+        self.assertEqual(item.difference, -2)
+
+    def test_case_c_a_receipt_after_the_count_is_preserved(self):
+        """
+        ERP-1 · INV-02, caso C. Sistema 10, físico 8, luego un ingreso de +3
+        (stock 13). Aprobar aplica la discrepancia hallada (−2) sobre el stock
+        vigente: 13 + (8 − 10) = 11. El ingreso legítimo no se pierde.
+        """
+        from .inventory_services import create_stock_movement
+
+        count = self._count(physical=8)
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=3,
+            reason='Ingreso durante el conteo',
+        )
+        self.assertEqual(branch_quantity(self.branch, self.product), 13)
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 2)
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 11,
+            'el ingreso legítimo debe preservarse: 13 + (8 − 10) = 11')
+        item = count.items.get()
+        self.assertEqual(item.theoretical_at_start, 10)
+        self.assertEqual(item.theoretical_at_approval, 13, 'evidencia, no aritmética')
+        self.assertEqual(item.difference, -2)
+
+    def test_case_d_a_movement_before_the_item_is_registered_is_not_double_counted(self):
+        """
+        ERP-1 · INV-02, caso D. `theoretical_at_start` se captura la PRIMERA vez
+        que el producto entra al conteo (set_count_item), no al crear el conteo.
+        Si una venta ocurre ANTES de que el producto entre al conteo, el conteo
+        parte del stock ya rebajado (8), de modo que esa venta no se descuenta
+        una segunda vez en la corrección: 8 + (7 − 8) = 7.
+        """
+        from .inventory_services import create_stock_movement
+
+        count = create_inventory_count(
+            company=self.company, branch=self.branch, actor=self.user,
+        )
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=2, reason='Venta previa',
+        )
+        self.assertEqual(branch_quantity(self.branch, self.product), 8)
+
+        # sólo ahora el producto entra al conteo
+        set_count_item(count, product=self.product, physical_quantity=7)
+        item = count.items.get()
+        self.assertEqual(
+            item.theoretical_at_start, 8,
+            'la foto inicial es el stock al entrar el producto al conteo, no antes')
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 1)
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 7,
+            'la venta previa no debe descontarse otra vez: 8 + (7 − 8) = 7')
+        item.refresh_from_db()
+        self.assertEqual(item.difference, -1)
+
+    def test_case_e_several_window_movements_survive_the_correction(self):
+        """
+        ERP-1 · INV-02, caso E. Físico 8 (theoretical_at_start = 10), luego una
+        venta (−2), un ingreso (+3) y un ajuste manual legítimo (−1): stock 10
+        al aprobar. La corrección aplica sólo la discrepancia hallada (−2) →
+        stock final 8, y NO borra ninguno de los movimientos de la ventana: el
+        conteo añade exactamente una línea al Kardex.
+        """
+        from .inventory_services import create_stock_movement
+
+        count = self._count(physical=8)  # theoretical_at_start = 10
+        for movement_type, quantity, why in [
+            (StockMovement.SALE_EXIT, 2, 'Venta'),
+            (StockMovement.PURCHASE_ENTRY, 3, 'Ingreso'),
+            (StockMovement.MANUAL_EXIT, 1, 'Ajuste legítimo'),
+        ]:
+            create_stock_movement(
+                branch=self.branch, product_id=self.product.pk,
+                movement_type=movement_type, quantity=quantity, reason=why,
+                actor=self.user,
+            )
+        # 10 − 2 + 3 − 1 = 10 al momento de aprobar
+        self.assertEqual(branch_quantity(self.branch, self.product), 10)
+        before = StockMovement.objects.filter(product=self.product).count()
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 2, 'sólo la discrepancia hallada')
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 8,
+            '10 + (8 − 10) = 8, sin resucitar ni borrar movimientos de la ventana')
+        self.assertEqual(
+            StockMovement.objects.filter(product=self.product).count(), before + 1,
+            'el conteo añade exactamente una línea de corrección, no reescribe el Kardex')
+        item = count.items.get()
+        self.assertEqual(item.theoretical_at_start, 10)
+        self.assertEqual(item.difference, -2)
+
     def test_an_uncounted_product_is_skipped_not_written_off(self):
         """"Nobody counted this" is not "there are none of these"."""
         second = _p2d_product(self.company, 'Producto C2', 'producto-c2-2d')
