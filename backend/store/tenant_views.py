@@ -694,6 +694,12 @@ class AdminMembershipDetailView(APIView):
 
         membership.save()
 
+        if data.get('is_active') is False:
+            # ERP-1 · STAFF-01. Same rule as the staff toggle: deactivating a
+            # membership retires its role assignments, so reactivating it later
+            # does not silently restore authority no one re-granted.
+            membership.role_assignments.filter(is_active=True).update(is_active=False)
+
         # Grants are applied AFTER the mode, so a single request can switch
         # somebody to SELECTED and name their branches at the same time.
         granted = None

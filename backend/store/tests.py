@@ -51000,6 +51000,31 @@ class H41StaffDeactivationTest(TestCase):
             self.assignment.is_active,
             'el rol antiguo revivió solo: nadie acaba de revisarlo')
 
+    def test_deactivating_a_member_retires_their_roles(self):
+        """
+        ERP-1 · STAFF-01. The bug the sibling test only dodged by switching the
+        assignment off by hand first: deactivating the MEMBERSHIP must retire the
+        role assignment too, so a later reactivation cannot silently hand back
+        authority — administrator included — that no one re-granted or checked.
+        """
+        from .tenancy import has_capability
+
+        cap = self.role.capabilities[0]
+        self.assertTrue(
+            has_capability(self.membership.user, self.company, cap),
+            'la fixture debería otorgar la capability mientras está activa')
+
+        self._patch(False)
+        self.assignment.refresh_from_db()
+        self.assertFalse(self.assignment.is_active, 'el rol no se retiró al desactivar')
+
+        self._patch(True)
+        self.assignment.refresh_from_db()
+        self.assertFalse(self.assignment.is_active, 'el rol revivió sin revisión')
+        self.assertFalse(
+            has_capability(self.membership.user, self.company, cap),
+            'reactivar devolvió la capability sin que nadie la re-otorgara')
+
     def test_you_cannot_deactivate_yourself(self):
         """Dejaría a la empresa sin nadie que pueda devolver el acceso."""
         propia = Membership.objects.get(company=self.company, user=self.gestor)

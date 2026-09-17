@@ -588,6 +588,14 @@ class AdminStaffMembershipView(APIView):
 
         membership.is_active = activo
         membership.save(update_fields=['is_active', 'updated_at'])
+        if not activo:
+            # ERP-1 · STAFF-01. Deactivating a member must remove their authority,
+            # not merely hide them. Leaving the role assignments active meant a
+            # later reactivation handed back every previous role — administrator
+            # included — with no fresh delegation check. Retire them here; access
+            # is re-granted explicitly through the role endpoint, which does
+            # verify the grantor may delegate it.
+            membership.role_assignments.filter(is_active=True).update(is_active=False)
 
         AdminAuditLog.log(
             actor=request.user,
