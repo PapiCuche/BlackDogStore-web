@@ -46905,7 +46905,13 @@ class C21DocumentTest(TestCase):
 
         from . import ticket_services
 
-        largo = 'MacBookProM4Max16Pulgadas1TBNegroEspacialConCargadorMagSafe140W'
+        # 50 chars, no spaces — the column limit (Product.name is varchar(50)),
+        # still far wider than a thermal ticket, so it must still be split. The
+        # old fixture used 64 chars, which only SQLite (no length enforcement)
+        # accepted; PostgreSQL rejects it with StringDataRightTruncation, so the
+        # test never exercised its own intent on the real engine.
+        largo = 'MacBookProM4Max16Pulgadas1TBNegroEspacialMagSafe14'
+        assert len(largo) == 50
         product = _p60_product(name=largo, inventory=5, price='118.00')
         OrderItem.objects.create(
             order=self.order, product=product, quantity=1, price=product.price,
