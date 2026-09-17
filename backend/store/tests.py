@@ -12479,15 +12479,20 @@ class Phase2dInventoryCountTest(TestCase):
         count.refresh_from_db()
         self.assertEqual(count.status, InventoryCountModel.STATUS_APPROVED)
 
-    def test_approval_re_reads_the_stock_instead_of_trusting_the_photo(self):
+    def test_approval_applies_the_discovered_discrepancy_not_the_photo(self):
         """
-        THE TEST THIS WHOLE MODEL EXISTS FOR.
+        ERP-1 · INV-02. THE TEST THIS WHOLE MODEL EXISTS FOR, corrected.
 
-        Stock is 10 when counting starts and the counter finds 8. Two units then
-        sell legitimately, leaving 8 in the system. Approving must produce NO
-        correction — the shelf and the system already agree — rather than
-        applying the −2 that the starting photograph implies and destroying two
-        real units.
+        The system said 10 when counting began; the counter found 8 — a real
+        discrepancy of −2 (theft, breakage, an earlier miscount). Two units then
+        sell legitimately, recorded in the Kardex, leaving the system at 8. The
+        shelf now truly holds 6: the 8 that were counted, minus the 2 that sold.
+
+        Approval must apply the discrepancy the count DISCOVERED (−2) on top of
+        the current stock → 6, correcting the loss the count found while leaving
+        the recorded sale standing. The earlier code applied
+        `physical − theoretical_at_approval` = 8 − 8 = 0, "agreeing" with the
+        system at 8 and silently keeping two units that are not on the shelf.
         """
         from .inventory_services import create_stock_movement
 
@@ -12500,13 +12505,45 @@ class Phase2dInventoryCountTest(TestCase):
         self.assertEqual(branch_quantity(self.branch, self.product), 8)
 
         movements = approve_inventory_count(count, actor=self.user)
-        self.assertEqual(movements, [], 'no debe haber corrección: ya coinciden')
-        self.assertEqual(branch_quantity(self.branch, self.product), 8)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 2)
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 6,
+            'la corrección debe reflejar la merma hallada, no la foto del conteo')
 
         item = count.items.get()
         self.assertEqual(item.theoretical_at_start, 10)
-        self.assertEqual(item.theoretical_at_approval, 8)
-        self.assertEqual(item.difference, 0)
+        self.assertEqual(item.theoretical_at_approval, 8, 'evidencia, no aritmética')
+        self.assertEqual(item.difference, -2)
+
+    def test_a_sale_during_the_count_is_not_undone_by_approval(self):
+        """
+        ERP-1 · INV-02. The count found exactly what the system believed — no
+        discrepancy. Three units then sell legitimately, recorded in the Kardex.
+        Approval must apply the discrepancy the count DISCOVERED (zero) and leave
+        the recorded sale standing, not overwrite the stock back to the count's
+        photograph — which would invent three units that already left with a
+        customer.
+        """
+        from .inventory_services import create_stock_movement
+
+        count = self._count(physical=10)  # coincide con theoretical_at_start = 10
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=3,
+            reason='Venta durante el conteo',
+        )
+        self.assertEqual(branch_quantity(self.branch, self.product), 7)
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(
+            movements, [], 'el conteo no halló discrepancia: no debe corregir')
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 7,
+            'la aprobación resucitó unidades ya vendidas')
 
     def test_an_uncounted_product_is_skipped_not_written_off(self):
         """"Nobody counted this" is not "there are none of these"."""
@@ -12842,8 +12879,20 @@ class Phase2dConcurrencyTest(TransactionTestCase):
         self.assertEqual(branch_quantity(self.branch, self.product), 0)
         self.assertEqual(branch_quantity(dst, self.product), 0)
 
-    def test_a_count_approval_uses_the_stock_a_later_movement_left(self):
-        """Approval re-reads under lock, so a movement in between is respected."""
+    def test_approval_preserves_movements_made_during_the_count(self):
+        """
+        ERP-1 · INV-02. Approval applies the discrepancy the count DISCOVERED and
+        leaves the sales recorded during the count standing.
+
+        The system said 11 when counting began; the counter found 10 — a real
+        discrepancy of −1. Four units then sell legitimately (recorded), so the
+        system reads 7 at approval. The shelf now truly holds 6: the 10 that
+        were counted, minus the 4 that sold.
+
+        Approval must apply the −1 the count found on top of the current 7 → 6.
+        The earlier code applied `physical − theoretical_at_approval` = 10 − 7 =
+        +3 and left the shelf at 10, resurrecting the four sold units.
+        """
         user, _m = _p2d_member(self.company, 'p2d_conc_count', _INV_ALL)
         from .inventory_services import create_stock_movement
 
@@ -12868,11 +12917,12 @@ class Phase2dConcurrencyTest(TransactionTestCase):
 
         item = count.items.get()
         self.assertEqual(item.theoretical_at_start, 11)
-        self.assertEqual(item.theoretical_at_approval, 7, 're-lee el stock del momento')
-        # 10 counted vs 7 at approval → +3. Using the STARTING figure would have
-        # applied 10 − 11 = −1 and destroyed a real unit.
-        self.assertEqual(item.difference, 3)
-        self.assertEqual(branch_quantity(self.branch, self.product), 10)
+        self.assertEqual(item.theoretical_at_approval, 7, 'evidencia, no aritmética')
+        # 10 found vs 11 believed at start → −1, the discrepancy the count found.
+        self.assertEqual(item.difference, -1)
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 6,
+            'las cuatro ventas de la ventana no deben resucitar')
 
     def test_simultaneous_exits_leave_exactly_one_winner(self):
         import threading

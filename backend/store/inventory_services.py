@@ -948,17 +948,27 @@ def approve_inventory_count(
     count: InventoryCount, *, actor=None, request=None,
 ) -> list[StockMovement]:
     """
-    Apply the counted differences as correction movements, under lock.
+    Apply the discrepancy each count DISCOVERED as a correction movement, under
+    lock.
 
-    THE RE-READ IS THE WHOLE POINT. The correction is
+    THE CORRECTION IS A DELTA, NOT A REPLACEMENT (ERP-1 · INV-02). It is
 
-        physical_quantity − theoretical_at_approval
+        physical_quantity − theoretical_at_start
 
-    where `theoretical_at_approval` is read from BranchStock inside this
-    transaction, with the row already locked. Using `theoretical_at_start`
-    instead would apply a delta computed from an hour-old photograph: every sale
-    made while somebody walked the shelves would be silently un-sold, destroying
-    real stock and real revenue in the same stroke.
+    applied on top of the current, locked stock. `theoretical_at_start` is what
+    the system believed WHEN COUNTING BEGAN, so this difference is exactly the
+    unrecorded discrepancy the counter found — theft, breakage, an earlier
+    miscount. Applying it as a delta corrects that discrepancy while LEAVING
+    every legitimate movement recorded between counting and approving — a sale,
+    a receipt — standing.
+
+    Using `physical_quantity − theoretical_at_approval` instead (the value
+    re-read here under lock) telescopes to `current + (physical − current) =
+    physical`: it overwrites the shelf to the count's photograph. A sale made
+    while somebody walked the aisles would be silently un-sold and its units
+    invented back; a receipt would be destroyed. `theoretical_at_approval` is
+    still recorded as evidence of what the system said at approval, but the
+    arithmetic must not use it.
 
     A product whose physical quantity was never entered is SKIPPED. Treating
     "nobody counted this" as "there are none" would write off inventory nobody
@@ -990,7 +1000,19 @@ def approve_inventory_count(
         movements: list[StockMovement] = []
         for item in items:
             theoretical = stocks[item.product_id].quantity
-            difference = item.physical_quantity - theoretical
+
+            # ERP-1 · INV-02. The correction is the discrepancy the COUNT
+            # discovered — physical minus what the system believed WHEN COUNTING
+            # BEGAN — applied as a delta on the current (locked) stock. It is not
+            # `physical − theoretical_at_approval`: that delta telescopes to
+            #     current + (physical − current) = physical,
+            # overwriting the shelf to the count's photograph and discarding
+            # every legitimate movement recorded between counting and approving.
+            # A sale during an open count would be silently un-sold (stock
+            # invented); a receipt would be destroyed. `theoretical_at_approval`
+            # is still recorded as evidence of what the system said at approval,
+            # but it must not drive the arithmetic.
+            difference = item.physical_quantity - item.theoretical_at_start
 
             item.theoretical_at_approval = theoretical
             item.difference = difference

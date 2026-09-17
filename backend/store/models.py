@@ -2194,22 +2194,23 @@ class InventoryCount(models.Model):
 
     THE CONCURRENCY PROBLEM THIS MODEL IS SHAPED AROUND.
     Counting is not instantaneous. Somebody walks the shelves for an hour while
-    the shop keeps selling. The naive implementation records "system said 10,
-    I found 8, therefore -2" and applies -2 at approval — by which time the
-    system may say 6, and the correction silently destroys two units that were
-    legitimately sold during the count.
-
-    So each item keeps THREE numbers, not two:
+    the shop keeps selling, and every sale is recorded in the Kardex as it
+    happens. So each item keeps THREE numbers, not two:
 
         theoretical_at_start    what the system said when counting began
         physical_quantity       what the person actually found
         theoretical_at_approval what the system says at the moment of approval,
-                                re-read under lock
+                                re-read under lock — evidence only
 
-    and the correction applied is `physical - theoretical_at_approval`, never
-    `physical - theoretical_at_start`. The start value is kept because it is the
-    only evidence of what the counter was looking at — an auditor needs it, the
-    arithmetic does not.
+    The correction applied is the DISCREPANCY THE COUNT DISCOVERED,
+    `physical - theoretical_at_start`, added as a delta to the current stock —
+    never `physical - theoretical_at_approval`. That second form telescopes to
+    `current + (physical - current) = physical`, overwriting the shelf to the
+    count's photograph and discarding the sales and receipts recorded during the
+    count: a sale would be un-sold and its units invented back, a receipt
+    destroyed (ERP-1 · INV-02). theoretical_at_approval is kept because an
+    auditor needs to see what the system claimed at approval; the arithmetic
+    does not use it.
     """
 
     STATUS_DRAFT = 'draft'
