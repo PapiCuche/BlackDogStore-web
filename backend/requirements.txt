@@ -89,3 +89,14 @@ sqlparse==0.6.0
 lxml==6.1.3            # BSD-3-Clause — árbol XML y canonicalización C14N 1.0
 signxml==5.1.0         # Apache-2.0 — XMLDSig sobre lxml + cryptography
 cryptography==50.0.1   # Apache-2.0 / BSD — RSA y X.509
+
+# `store/fiscal/provider.py` importa `requests` DIRECTAMENTE para el envío SOAP
+# a SUNAT; hasta ahora sólo llegaba como transitiva de `stripe`, y un despliegue
+# que retirara stripe rompería la emisión con un ModuleNotFoundError. Se declara
+# como dependencia directa.
+requests==2.34.2       # Apache-2.0 — cliente HTTP del envío SOAP a SUNAT
+# El tope de memoria de la respuesta SOAP se apoya en la semántica de urllib3>=2:
+# `response.raw.read(n, decode_content=True)` acota los bytes DESCOMPRIMIDOS a n
+# (en urllib3<2 acotaría los comprimidos, y una respuesta gzip podría exceder el
+# límite antes de la comprobación). Se fija para preservar esa garantía.
+urllib3==2.7.0         # MIT — motor HTTP de requests; requerido >=2 por lo anterior
