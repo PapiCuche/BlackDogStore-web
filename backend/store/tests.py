@@ -9844,6 +9844,85 @@ class DemoUsersCommandTest(TestCase):
         self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)
 
 
+class DevDemoAccountsEndpointTest(TestCase):
+    """
+    ERP-1 · DEV-ACCESS-01. `/api/dev/demo-accounts/` is the ONLY place the demo
+    password reaches a client, and it is fail-closed on DEBUG. These pin that:
+    in production the surface does not exist (404, not 403), and it never
+    authenticates or creates anything.
+
+    The frontend card gets its password from here, so a 404 in production means
+    the card has nothing to show and no credential is ever shipped.
+    """
+
+    URL = '/api/dev/demo-accounts/'
+    DEMO_COMPANY_SLUG = 'demo-endpoint-co'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Demo Endpoint SA', self.DEMO_COMPANY_SLUG)
+        self.client = APIClient()
+
+    @override_settings(DEBUG=False)
+    def test_production_hides_the_surface_with_404(self):
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        # 404, not 403: its absence must not confirm it exists elsewhere.
+        self.assertNotEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    @override_settings(DEBUG=False)
+    def test_production_response_carries_no_password(self):
+        res = self.client.get(self.URL)
+        self.assertNotIn(DEMO_PASSWORD, res.content.decode('utf-8', 'replace'))
+
+    @override_settings(DEBUG=True)
+    def test_development_without_seeding_offers_nothing_usable(self):
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['ready'])
+        self.assertTrue(all(not a['usable'] and not a['exists'] for a in res.data['accounts']))
+        # The command names a REAL active company slug, never a placeholder.
+        cmd = res.data['seed_command']
+        self.assertIn('seed_demo_users --company-slug ', cmd)
+        self.assertNotIn('<slug', cmd)
+        named_slug = cmd.rsplit('--company-slug ', 1)[1].strip()
+        self.assertTrue(Company.objects.filter(slug=named_slug, is_active=True).exists())
+
+    @override_settings(DEBUG=True)
+    def test_development_after_seeding_is_ready_and_usable(self):
+        out = StringIO()
+        call_command('seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG, stdout=out)
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['ready'])
+        self.assertTrue(all(a['usable'] for a in res.data['accounts']))
+        self.assertEqual(res.data['password'], DEMO_PASSWORD)
+
+    @override_settings(DEBUG=True)
+    def test_a_real_account_sharing_a_demo_name_is_not_described(self):
+        """
+        Only accounts carrying the command's e-mail signature are demo accounts.
+        A real user who happens to be named `dev_admin` is neither offered nor
+        marked usable — the endpoint must not leak a stranger's presence.
+        """
+        User.objects.create_user(
+            username='dev_admin', email='real.person@example.com', password='RealPass123!',
+        )
+        res = self.client.get(self.URL)
+        row = next(a for a in res.data['accounts'] if a['username'] == 'dev_admin')
+        self.assertFalse(row['exists'])
+        self.assertFalse(row['usable'])
+
+    @override_settings(DEBUG=True)
+    def test_the_endpoint_authenticates_no_one(self):
+        """It is a read-only status surface: no session, no token, no Set-Cookie."""
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertNotIn('Set-Cookie', res)
+        self.assertNotIn('access', res.data)
+        self.assertNotIn('token', res.data)
+
+
 # ---------------------------------------------------------------------------
 # Phase 2A.2 — internal control dashboard endpoint
 # ---------------------------------------------------------------------------
