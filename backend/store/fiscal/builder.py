@@ -70,12 +70,37 @@ def _el(parent, tag: str, text=None, **attrs):
 
 def _money(value: Decimal) -> str:
     """
-    Un importe con dos decimales, sin notación científica ni signo redundante.
+    Un IMPORTE con dos decimales, sin notación científica ni signo redundante.
 
     `str(Decimal)` puede producir `1E+2`, que es un número válido y un importe
-    inválido. Se formatea explícitamente.
+    inválido. Se formatea explícitamente. Se usa para todo monto n(12,2):
+    LineExtensionAmount, TaxAmount, TaxableAmount, PricingReference (precio con
+    IGV), totales y porcentaje.
     """
     return f'{value:.2f}'
+
+
+def _unit_value(value: Decimal) -> str:
+    """
+    El VALOR UNITARIO sin impuesto: `cbc:Price/cbc:PriceAmount`, n(12,10).
+
+    SUNAT admite hasta 10 decimales aquí, y hacen falta: el valor unitario se
+    deriva de la base de línea reconciliada (VEN-02A), que a 2 decimales no
+    representaría `cantidad × unitario = valor de venta`. Se emite el número a lo
+    sumo a 10 decimales, sin ceros de relleno innecesarios pero con un mínimo de
+    2 (serialización determinista): 50.765 → «50.765», 100 → «100.00».
+    """
+    quantized = value.quantize(Decimal('0.0000000001'))
+    text = format(quantized, 'f')
+    if '.' in text:
+        integer, fraction = text.split('.')
+        fraction = fraction.rstrip('0')
+        if len(fraction) < 2:
+            fraction = (fraction + '00')[:2]
+        text = f'{integer}.{fraction}'
+    else:
+        text = f'{text}.00'
+    return text
 
 
 def _tax_block(parent, *, taxable: Decimal, tax: Decimal, currency: str,
@@ -157,7 +182,7 @@ def _line(parent, index: int, line: Line, currency: str):
         _el(code, 'cbc:ID', line.item_code)
 
     price = _el(node, 'cac:Price')
-    _el(price, 'cbc:PriceAmount', _money(line.unit_price), currencyID=currency)
+    _el(price, 'cbc:PriceAmount', _unit_value(line.unit_price), currencyID=currency)
 
 
 def build_invoice_xml(data: InvoiceData) -> bytes:

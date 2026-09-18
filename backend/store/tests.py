@@ -48727,11 +48727,11 @@ class C22A1DomainTest(TestCase):
         )
         return order
 
-    def _ven02_order(self):
-        # VEN-02A: precio no divisible por 1.18, cantidad 2. Σ línea (2×50.76 =
-        # 101.52) ≠ base del snapshot (money(119.80/1.18)=101.53). El descuadre
-        # hace fallar InvoiceData.check().
-        prod = _c1_product(self.company, 'Redondeo 59.90', '59.90')
+    def _non_clean_order(self, *, taxable=Decimal('101.53'), tax=Decimal('18.27')):
+        # Precio no divisible por 1.18, cantidad 2. total 119.80; snapshot
+        # taxable 101.53 / tax 18.27. El código viejo daba Σlínea 101.52 ≠ 101.53
+        # (VEN-02A). Con `taxable` alterado se fuerza un descuadre irreconciliable.
+        prod = _c1_product(self.company, f'Redondeo 59.90 {taxable}', '59.90')
         _c1_stock(self.company.default_inventory_branch, prod, 10)
         order = Order.objects.create(
             company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
@@ -48739,7 +48739,7 @@ class C22A1DomainTest(TestCase):
             receipt_type=Order.ReceiptType.FACTURA,
             total=Decimal('119.80'), discount_amount=Decimal('0.00'),
             subtotal_amount=Decimal('119.80'),
-            taxable_amount=Decimal('101.53'), tax_amount=Decimal('18.27'),
+            taxable_amount=taxable, tax_amount=tax,
             tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
             status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
             fulfillment_branch=self.company.default_inventory_branch,
@@ -48749,20 +48749,36 @@ class C22A1DomainTest(TestCase):
         )
         return order
 
-    def test_a_rounding_mismatch_is_a_domain_error_not_a_crash(self):
+    def test_a_non_clean_price_reconciles_and_issues(self):
         """
-        ERP-FISCAL-1E (VEN-02B). El descuadre de redondeo (VEN-02A, aún sin
-        resolver) debe rechazarse como error de DOMINIO (que la vista mapea a
-        400), no escaparse como un ValueError que termina en 500. Y el
-        correlativo reservado se devuelve en el rollback (§33).
+        ERP-FISCAL-2 (VEN-02A). `59.90 × 2` ahora cuadra con el snapshot y se
+        emite; antes la suma de líneas (101.52) no coincidía con la base (101.53).
+        Se reserva UN correlativo y las líneas suman EXACTAMENTE el snapshot.
+        """
+        from .fiscal_services import _order_to_invoice_data
+        order = self._non_clean_order()
+        doc, created = get_or_create_fiscal_document(order)
+        self.assertTrue(created)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+        data = _order_to_invoice_data(order, self.series, doc.number)
+        self.assertEqual(sum(l.line_amount for l in data.lines), Decimal('101.53'))
+        self.assertEqual(sum(l.tax_amount for l in data.lines), Decimal('18.27'))
+
+    def test_a_corrupt_snapshot_fails_closed_as_domain_error(self):
+        """
+        ERP-FISCAL-2 (VEN-02B no regresa + guarda §16). Una base declarada que no
+        puede reconciliar con las líneas (aquí 200.00 para un total de 119.80) se
+        rechaza como error de DOMINIO (que la vista mapea a 400), no como un
+        ValueError que termina en 500, y no gasta correlativo.
         """
         from .fiscal_services import FiscalError
-        order = self._ven02_order()
+        order = self._non_clean_order(taxable=Decimal('200.00'), tax=Decimal('-80.20'))
         with self.assertRaises(FiscalError):
             get_or_create_fiscal_document(order)
         self.series.refresh_from_db()
         self.assertEqual(self.series.next_number, 1,
-                         'un fallo de validación no gasta correlativo')
+                         'un fallo de reconciliación no gasta correlativo')
         self.assertEqual(FiscalDocument.objects.count(), 0)
 
     # -- numeración -----------------------------------------------------------
@@ -50226,26 +50242,41 @@ class C22BFiscalApiTest(TestCase):
                       (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
         self.assertEqual(FiscalDocument.objects.count(), 0)
 
-    def test_a_rounding_mismatch_returns_400_not_500(self):
-        """
-        ERP-FISCAL-1E (VEN-02B). Una factura cuyo redondeo por línea no cuadra
-        con la base del snapshot (VEN-02A, aún sin resolver) devuelve 400 de
-        validación fiscal, NUNCA 500, y no deja documento.
-        """
-        prod = _c1_product(self.company, 'Redondeo API 59.90', '59.90')
+    def _non_clean_api_order(self, *, name, taxable=Decimal('101.53'), tax=Decimal('18.27')):
+        prod = _c1_product(self.company, name, '59.90')
         _c1_stock(self.company.default_inventory_branch, prod, 10)
         order = Order.objects.create(
             company=self.company, customer_name='CLIENTE SAC',
             document_type=Order.DocumentType.RUC, document_number='20000000001',
             receipt_type=Order.ReceiptType.FACTURA,
             total=Decimal('119.80'), discount_amount=Decimal('0.00'),
-            subtotal_amount=Decimal('119.80'), taxable_amount=Decimal('101.53'),
-            tax_amount=Decimal('18.27'), tax_rate=Decimal('0.18'),
+            subtotal_amount=Decimal('119.80'), taxable_amount=taxable,
+            tax_amount=tax, tax_rate=Decimal('0.18'),
             tax_treatment='taxed', currency='PEN',
             status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
             fulfillment_branch=self.company.default_inventory_branch)
         OrderItem.objects.create(order=order, product=prod, quantity=2, price=Decimal('59.90'))
+        return order
 
+    def test_a_non_clean_price_invoice_is_issued(self):
+        """
+        ERP-FISCAL-2 (VEN-02A). Una factura con precio no divisible (59.90 × 2)
+        se emite (201): sus líneas cuadran con el snapshot. Antes devolvía 400.
+        """
+        order = self._non_clean_api_order(name='API 59.90 ok')
+        res = self._emitir(order=order)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['status'], FiscalDocumentStatus.SIGNED)
+        self.assertEqual(res.data['taxable_amount'], '101.53')
+        self.assertEqual(res.data['tax_amount'], '18.27')
+
+    def test_a_corrupt_snapshot_returns_400_not_500(self):
+        """
+        ERP-FISCAL-2 (VEN-02B no regresa). Una base declarada irreconciliable con
+        las líneas devuelve 400 de validación fiscal, NUNCA 500, y no deja documento.
+        """
+        order = self._non_clean_api_order(
+            name='API corrupto', taxable=Decimal('200.00'), tax=Decimal('-80.20'))
         res = self._emitir(order=order)
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(FiscalDocument.objects.count(), 0)
@@ -54809,3 +54840,85 @@ class FiscalCdrZipTest(SimpleTestCase):
         with _xs_patch.object(packaging, 'MAX_CDR_MEMBER_BYTES', 100):
             with self.assertRaises(ValueError):
                 packaging.extract_cdr(big)
+
+
+class FiscalRoundingReconciliationTest(SimpleTestCase):
+    """
+    ERP-FISCAL-2 (VEN-02A). El reparto por línea suma EXACTAMENTE el snapshot y
+    cada línea queda coherente, sobre una matriz amplia de precios/cantidades.
+    Puro (sin BD); usa el validador fiscal real (`rules.validate`), que impone
+    las tolerancias por línea de SUNAT.
+    """
+
+    RATE = Decimal('0.18')
+
+    def _snapshot(self, total):
+        from .fiscal.rounding import money
+        taxable = money(total / (Decimal('1') + self.RATE))
+        return taxable, money(total - taxable)
+
+    def _check_cart(self, cart):
+        from datetime import date, time
+
+        from .fiscal import rules
+        from .fiscal.data import InvoiceData, Line, Party
+        from .fiscal.rounding import allocate_line_bases, money, unit_value
+
+        total = sum(Decimal(p) * q for p, q in cart)
+        taxable, tax = self._snapshot(total)
+        grosses = [money(Decimal(p) * q) for p, q in cart]
+        bases = allocate_line_bases(grosses, taxable=taxable, rate=self.RATE)
+        self.assertEqual(sum(bases), taxable)  # invariante A
+        percent = (self.RATE * 100).quantize(Decimal('0.01'))
+        lines = []
+        for (p, q), gross, base in zip(cart, grosses, bases):
+            line_tax = gross - base
+            self.assertGreaterEqual(base, Decimal('0'))       # F
+            self.assertGreaterEqual(line_tax, Decimal('0'))   # F
+            self.assertEqual(base + line_tax, gross)          # E: base+tax = bruto
+            lines.append(Line(
+                description='X', quantity=Decimal(q), unit_code='NIU',
+                unit_price=unit_value(base, q), unit_price_with_tax=Decimal(p),
+                line_amount=base, tax_amount=line_tax, tax_percent=percent))
+        self.assertEqual(sum(l.tax_amount for l in lines), tax)  # invariante B
+        data = InvoiceData(
+            document_type='01', serie='F001', correlativo=1,
+            issue_date=date.today(), issue_time=time(0, 0), currency='PEN',
+            supplier=Party('6', '20123456789', 'E SAC'),
+            customer=Party('6', '20111111111', 'C SAC'),
+            lines=tuple(lines), taxable_amount=taxable, tax_amount=tax,
+            total=total, amount_in_words='-')
+        rules.validate(data)  # C,D: cantidad×unitario y tax por línea, en tolerancia
+
+    def test_single_line_matrix(self):
+        prices = ['0.01', '0.10', '0.99', '1.00', '9.99', '19.90', '59.90',
+                  '99.90', '100.00', '118.00', '199.99', '999.99']
+        for p in prices:
+            for q in (1, 2, 3, 5, 10):
+                with self.subTest(price=p, qty=q):
+                    self._check_cart([(p, q)])
+
+    def test_multi_line_matrix(self):
+        import itertools
+        prices = ['0.99', '59.90', '19.90', '100.00', '9.99', '199.99']
+        for p1, p2 in itertools.combinations(prices, 2):
+            for q1, q2 in [(1, 1), (2, 1), (2, 3), (5, 2), (3, 3)]:
+                with self.subTest(a=(p1, q1), b=(p2, q2)):
+                    self._check_cart([(p1, q1), (p2, q2)])
+        for combo in [
+            [('59.90', 1), ('0.99', 3), ('19.90', 2)],
+            [('100.00', 1), ('100.00', 1), ('100.00', 1)],
+            [('0.10', 7), ('0.99', 7), ('9.99', 1), ('199.99', 2)],
+        ]:
+            with self.subTest(combo=combo):
+                self._check_cart(combo)
+
+    def test_two_distinct_products_same_price_reconcile(self):
+        # El caso que VEN-02A rompía: dos productos a 100.00 → 84.75 + 84.74.
+        self._check_cart([('100.00', 1), ('100.00', 1)])
+
+    def test_the_derived_bound_fails_closed(self):
+        from .fiscal.rounding import ReconciliationError, allocate_line_bases
+        with self.assertRaises(ReconciliationError):
+            allocate_line_bases([Decimal('119.80')], taxable=Decimal('200.00'),
+                                rate=self.RATE)

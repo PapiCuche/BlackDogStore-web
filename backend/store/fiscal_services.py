@@ -151,37 +151,42 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
     if not identity.tax_id:
         raise FiscalError('La empresa emisora no tiene RUC configurado.')
 
+    # VEN-02A. La AUTORIDAD es el snapshot (order.taxable_amount/tax_amount): las
+    # líneas se reconstruyen para SUMAR ese snapshot, no una segunda cuenta que
+    # redondea por su lado. El bruto de línea G_i = precio_con_igv × cantidad (2dp
+    # exacto para cantidad entera) suma `total`; `allocate_line_bases` reparte la
+    # base declarada entre las líneas de forma determinista, y el impuesto de
+    # línea es G_i − base_i (así Σ impuesto = total − taxable = tax por
+    # construcción). El valor unitario sin impuesto se deriva de la base
+    # reconciliada, a 10 decimales, para que cantidad×unitario devuelva la línea.
+    from .fiscal.rounding import (
+        ReconciliationError, allocate_line_bases, money, unit_value,
+    )
+
+    items = list(order.items.select_related('product').order_by('pk'))
+    grosses = [money(Decimal(str(item.price)) * item.quantity) for item in items]
+    try:
+        bases = allocate_line_bases(
+            grosses, taxable=order.taxable_amount, rate=order.tax_rate,
+        )
+    except ReconciliationError as exc:
+        # Un descuadre que no es redondeo (descuento no declarado, caso no
+        # gravado) falla cerrado como error de dominio, nunca como 500.
+        raise FiscalError(str(exc)) from exc
+
+    percent = (order.tax_rate * 100).quantize(Decimal('0.01'))
     lines = []
-    for item in order.items.select_related('product').all():
-        # El precio del catálogo INCLUYE el impuesto (C2.1). El valor unitario
-        # sin impuesto se obtiene del mismo modo que el desglose de la venta:
-        # dividiendo, no multiplicando.
-        con_impuesto = Decimal(str(item.price))
-        proporcion = (Decimal('1') + order.tax_rate)
-        sin_impuesto = (con_impuesto / proporcion).quantize(Decimal('0.01'))
-        importe = (sin_impuesto * item.quantity).quantize(Decimal('0.01'))
-        impuesto = ((con_impuesto * item.quantity).quantize(Decimal('0.01'))
-                    - importe)
+    for item, gross, base in zip(items, grosses, bases):
         lines.append(Line(
             description=(item.product.name if item.product else 'PRODUCTO')[:250],
             quantity=Decimal(item.quantity),
             unit_code='NIU',
-            unit_price=sin_impuesto,
-            unit_price_with_tax=con_impuesto,
-            line_amount=importe,
-            tax_amount=impuesto,
-            tax_percent=(order.tax_rate * 100).quantize(Decimal('0.01')),
+            unit_price=unit_value(base, item.quantity),
+            unit_price_with_tax=Decimal(str(item.price)),
+            line_amount=base,
+            tax_amount=gross - base,
+            tax_percent=percent,
         ))
-
-    # AQUÍ NO SE CUADRA NADA A LA FUERZA.
-    #
-    # Una versión anterior repartía la diferencia entre la suma de las líneas y
-    # la base de la venta empujándola a la última línea. Eso tapaba el síntoma de
-    # un descuento no declarado y producía una línea cuya aritmética no cerraba.
-    #
-    # Sin descuento —lo único que esta fase emite— la suma de las líneas coincide
-    # con la base por construcción, y si alguna vez no coincidiera es un defecto
-    # que hay que ver, no redondear. `rules.validate` lo comprueba.
 
     issued = timezone.localtime(order.paid_at or timezone.now())
     return InvoiceData(
