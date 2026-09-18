@@ -54335,3 +54335,224 @@ class H412bIsolationMatrixTest(TestCase):
             client.patch(f'/api/admin/products/{self.prod_a.pk}/', {'name': 'X'}, format='json').status_code,
             403,
         )
+
+
+# ---------------------------------------------------------------------------
+# ERP-FISCAL-1A — carga segura del certificado de firma (PKCS#12 / PEM legacy)
+# ---------------------------------------------------------------------------
+
+import datetime as _fc_dt  # noqa: E402
+import os as _fc_os  # noqa: E402
+import tempfile as _fc_tempfile  # noqa: E402
+
+
+def _fc_build_p12(rsa_key, *, password=b'p12pass', not_before=None, not_after=None,
+                  with_key=True):
+    """Ephemeral PKCS#12 for tests — NEVER the real CDT."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.serialization import pkcs12
+    from cryptography.x509.oid import NameOID
+
+    now = _fc_dt.datetime.now(_fc_dt.timezone.utc)
+    nb = not_before or (now - _fc_dt.timedelta(days=1))
+    na = not_after or (now + _fc_dt.timedelta(days=365))
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'CDT DE PRUEBA')])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name)
+        .public_key(rsa_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(nb).not_valid_after(na)
+        .sign(rsa_key, hashes.SHA256())
+    )
+    if with_key and password:
+        enc = serialization.BestAvailableEncryption(password)
+    else:
+        enc = serialization.NoEncryption()
+    return pkcs12.serialize_key_and_certificates(
+        b'cdt', rsa_key if with_key else None, cert, None, enc,
+    )
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class FiscalCertificateLoaderTest(TestCase):
+    """
+    ERP-FISCAL-1A. El material de firma se carga desde PKCS#12 o PEM, en memoria,
+    sin escribir claves a disco y sin filtrar la contraseña. PEM heredado sigue
+    funcionando; P12 + PEM a la vez falla cerrado.
+    """
+
+    P12_PASSWORD = 's3ntinel-p12-pass'  # centinela: NO debe aparecer en errores
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        cls.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        from cryptography.hazmat.primitives import serialization
+        cls.legacy_cert_pem = _fc_build_legacy_pem_cert(cls.key)
+        cls.legacy_key_pem = cls.key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+
+    def setUp(self):
+        self.tmp = _fc_tempfile.mkdtemp()
+
+    def tearDown(self):
+        for f in _fc_os.listdir(self.tmp):
+            _fc_os.remove(_fc_os.path.join(self.tmp, f))
+        _fc_os.rmdir(self.tmp)
+
+    def _write_p12(self, data: bytes, name='cdt.p12') -> str:
+        path = _fc_os.path.join(self.tmp, name)
+        with open(path, 'wb') as fh:
+            fh.write(data)
+        return path
+
+    def _resolve(self, **cert_settings):
+        from .fiscal_config import resolve_credentials
+        with override_settings(**cert_settings):
+            return resolve_credentials(None)
+
+    # -- PKCS#12 happy path ---------------------------------------------------
+
+    def test_pkcs12_valid_resolves_pem_material(self):
+        p12 = _fc_build_p12(self.key, password=self.P12_PASSWORD.encode())
+        path = self._write_p12(p12)
+        creds = self._resolve(
+            FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD=self.P12_PASSWORD,
+            FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+        )
+        self.assertIn(b'BEGIN CERTIFICATE', creds['cert_pem'])
+        self.assertIn(b'BEGIN PRIVATE KEY', creds['key_pem'])
+
+    # -- failure modes (§39) --------------------------------------------------
+
+    def test_wrong_password_is_config_error_without_leaking_it(self):
+        from .fiscal_config import FiscalConfigError
+        p12 = _fc_build_p12(self.key, password=self.P12_PASSWORD.encode())
+        path = self._write_p12(p12)
+        with self.assertRaises(FiscalConfigError) as ctx:
+            self._resolve(
+                FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD='la-incorrecta',
+                FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+        # ni la contraseña correcta ni la intentada aparecen en el error
+        self.assertNotIn(self.P12_PASSWORD, str(ctx.exception))
+        self.assertNotIn('la-incorrecta', str(ctx.exception))
+
+    def test_missing_file_is_config_error(self):
+        from .fiscal_config import FiscalConfigError
+        with self.assertRaises(FiscalConfigError):
+            self._resolve(
+                FISCAL_CERT_P12_PATH=_fc_os.path.join(self.tmp, 'noexiste.p12'),
+                FISCAL_CERT_P12_PASSWORD='x', FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+
+    def test_corrupt_container_is_config_error(self):
+        from .fiscal_config import FiscalConfigError
+        path = self._write_p12(b'esto no es un pkcs12')
+        with self.assertRaises(FiscalConfigError):
+            self._resolve(
+                FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD='x',
+                FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+
+    def test_container_without_key_is_rejected_fail_closed(self):
+        # A cert-only PKCS#12 (no private key) must not yield signing material.
+        # cryptography surfaces such a container with cert=None (the cert lands
+        # in the chain), so the loader rejects it via the "no certificate" guard;
+        # either way it fails closed rather than signing with no key.
+        from .fiscal_config import FiscalConfigError
+        p12 = _fc_build_p12(self.key, password=None, with_key=False)
+        path = self._write_p12(p12)
+        with self.assertRaises(FiscalConfigError) as ctx:
+            self._resolve(
+                FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD='',
+                FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+        self.assertIn('PKCS#12', str(ctx.exception))
+
+    # -- validity detection (inspection utility) ------------------------------
+
+    def test_expired_certificate_is_detected(self):
+        from .fiscal_config import inspect_signing_certificate
+        now = _fc_dt.datetime.now(_fc_dt.timezone.utc)
+        p12 = _fc_build_p12(
+            self.key, password=self.P12_PASSWORD.encode(),
+            not_before=now - _fc_dt.timedelta(days=800),
+            not_after=now - _fc_dt.timedelta(days=1),
+        )
+        path = self._write_p12(p12)
+        with override_settings(FISCAL_CERT_P12_PATH=path,
+                               FISCAL_CERT_P12_PASSWORD=self.P12_PASSWORD):
+            meta, validity = inspect_signing_certificate()
+        self.assertEqual(validity, 'expired')
+        self.assertIn('CDT DE PRUEBA', meta.subject)
+
+    def test_not_yet_valid_certificate_is_detected(self):
+        from .fiscal_config import inspect_signing_certificate
+        now = _fc_dt.datetime.now(_fc_dt.timezone.utc)
+        p12 = _fc_build_p12(
+            self.key, password=self.P12_PASSWORD.encode(),
+            not_before=now + _fc_dt.timedelta(days=10),
+            not_after=now + _fc_dt.timedelta(days=400),
+        )
+        path = self._write_p12(p12)
+        with override_settings(FISCAL_CERT_P12_PATH=path,
+                               FISCAL_CERT_P12_PASSWORD=self.P12_PASSWORD):
+            _meta, validity = inspect_signing_certificate()
+        self.assertEqual(validity, 'not_yet_valid')
+
+    # -- legacy PEM + ambiguity ----------------------------------------------
+
+    def test_legacy_pem_still_resolves(self):
+        creds = self._resolve(
+            FISCAL_CERT_P12_PATH='', FISCAL_CERT_P12_PASSWORD='',
+            FISCAL_CERT_PEM=self.legacy_cert_pem, FISCAL_KEY_PEM=self.legacy_key_pem,
+        )
+        self.assertIn(b'BEGIN CERTIFICATE', creds['cert_pem'])
+        self.assertIn(b'BEGIN PRIVATE KEY', creds['key_pem'])
+
+    def test_p12_and_pem_together_fail_closed(self):
+        from .fiscal_config import FiscalConfigError
+        p12 = _fc_build_p12(self.key, password=self.P12_PASSWORD.encode())
+        path = self._write_p12(p12)
+        with self.assertRaises(FiscalConfigError) as ctx:
+            self._resolve(
+                FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD=self.P12_PASSWORD,
+                FISCAL_CERT_PEM=self.legacy_cert_pem, FISCAL_KEY_PEM=self.legacy_key_pem,
+            )
+        self.assertIn('ambigua', str(ctx.exception).lower())
+
+    def test_no_certificate_configured_is_config_error(self):
+        from .fiscal_config import FiscalConfigError
+        with self.assertRaises(FiscalConfigError):
+            self._resolve(
+                FISCAL_CERT_P12_PATH='', FISCAL_CERT_P12_PASSWORD='',
+                FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+
+
+def _fc_build_legacy_pem_cert(rsa_key) -> str:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.x509.oid import NameOID
+    now = _fc_dt.datetime.now(_fc_dt.timezone.utc)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'PEM LEGACY')])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name)
+        .public_key(rsa_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - _fc_dt.timedelta(days=1))
+        .not_valid_after(now + _fc_dt.timedelta(days=365))
+        .sign(rsa_key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()

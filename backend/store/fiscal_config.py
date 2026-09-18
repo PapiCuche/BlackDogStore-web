@@ -152,19 +152,101 @@ def resolve_credentials(company) -> dict:
             'Faltan credenciales SOL en la configuración del servidor.'
         )
 
-    certificate = getattr(settings, 'FISCAL_CERT_PEM', '') or ''
-    key = getattr(settings, 'FISCAL_KEY_PEM', '') or ''
-    if not (certificate and key):
-        raise FiscalConfigError(
-            'Falta el certificado de firma en la configuración del servidor.'
-        )
+    cert_pem, key_pem = _resolve_signing_material()
 
     return {
         'ruc': ruc, 'sol_user': user, 'sol_password': password,
-        'cert_pem': certificate.encode('utf-8') if isinstance(certificate, str)
-        else certificate,
-        'key_pem': key.encode('utf-8') if isinstance(key, str) else key,
+        'cert_pem': cert_pem,
+        'key_pem': key_pem,
     }
+
+
+def _resolve_signing_material() -> tuple[bytes, bytes]:
+    """
+    El material de firma: PKCS#12 O el par PEM heredado, NUNCA ambos.
+
+    Precedencia documentada y FAIL-CLOSED: si están configurados a la vez el
+    contenedor P12 y el par PEM, se rechaza en vez de adivinar cuál gana —
+    configuración ambigua es un error de servidor, no un desempate silencioso.
+    El P12 se carga y convierte a PEM en memoria; el PEM heredado sigue
+    funcionando igual para tests, BETA, fixtures y CI.
+    """
+    p12_path = (getattr(settings, 'FISCAL_CERT_P12_PATH', '') or '').strip()
+    pem_cert = getattr(settings, 'FISCAL_CERT_PEM', '') or ''
+    pem_key = getattr(settings, 'FISCAL_KEY_PEM', '') or ''
+    has_p12 = bool(p12_path)
+    has_pem = bool(pem_cert and pem_key)
+
+    if has_p12 and has_pem:
+        raise FiscalConfigError(
+            'Configuración de certificado ambigua: hay PKCS#12 y PEM a la vez. '
+            'Configure sólo uno.'
+        )
+
+    if has_p12:
+        from .fiscal.certificate import CertificateError, signing_material_from_pkcs12
+
+        try:
+            with open(p12_path, 'rb') as handle:
+                data = handle.read()
+        except OSError as exc:
+            # El path o el tipo de error se puede decir; el contenido no existe
+            # aún, así que no hay secreto que filtrar.
+            raise FiscalConfigError(
+                f'No se pudo leer el certificado PKCS#12 ({type(exc).__name__}).'
+            ) from None
+
+        p12_password = getattr(settings, 'FISCAL_CERT_P12_PASSWORD', '') or ''
+        try:
+            material = signing_material_from_pkcs12(
+                data, p12_password.encode('utf-8') if p12_password else None,
+            )
+        except CertificateError as exc:
+            raise FiscalConfigError(str(exc)) from None
+        return material.cert_pem, material.key_pem
+
+    if has_pem:
+        return (
+            pem_cert.encode('utf-8') if isinstance(pem_cert, str) else pem_cert,
+            pem_key.encode('utf-8') if isinstance(pem_key, str) else pem_key,
+        )
+
+    raise FiscalConfigError(
+        'Falta el certificado de firma en la configuración del servidor.'
+    )
+
+
+def inspect_signing_certificate():
+    """
+    Metadatos NO secretos del certificado configurado, para diagnóstico local.
+
+    Devuelve (CertificateMetadata, validity) donde validity ∈ {valid,
+    expired, not_yet_valid}. NO expone la clave privada ni la contraseña. Sólo
+    aplica al contenedor PKCS#12 configurado (el PEM heredado se inspecciona con
+    herramientas estándar). Levanta FiscalConfigError si no hay P12 configurado
+    o no se puede abrir.
+    """
+    from .fiscal.certificate import CertificateError, inspect_pkcs12
+
+    p12_path = (getattr(settings, 'FISCAL_CERT_P12_PATH', '') or '').strip()
+    if not p12_path:
+        raise FiscalConfigError('No hay un certificado PKCS#12 configurado.')
+    try:
+        with open(p12_path, 'rb') as handle:
+            data = handle.read()
+    except OSError as exc:
+        raise FiscalConfigError(
+            f'No se pudo leer el certificado PKCS#12 ({type(exc).__name__}).'
+        ) from None
+
+    p12_password = getattr(settings, 'FISCAL_CERT_P12_PASSWORD', '') or ''
+    try:
+        meta = inspect_pkcs12(
+            data, p12_password.encode('utf-8') if p12_password else None,
+        )
+    except CertificateError as exc:
+        raise FiscalConfigError(str(exc)) from None
+    return meta, meta.validity()
 
 
 def resolve_provider(company):

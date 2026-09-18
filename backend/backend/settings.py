@@ -209,6 +209,13 @@ FISCAL_SOL_PASSWORD = env('FISCAL_SOL_PASSWORD', default='')
 FISCAL_CERT_PEM = env('FISCAL_CERT_PEM', default='')
 FISCAL_KEY_PEM = env('FISCAL_KEY_PEM', default='')
 
+# CDT en contenedor PKCS#12 (.p12). Alternativa al par PEM de arriba: NO se
+# configuran ambos a la vez (fiscal_config falla cerrado ante configuración
+# ambigua). La ruta la da el entorno; el código NO la busca en el disco ni la
+# hardcodea. El contenedor se carga y convierte a PEM EN MEMORIA — nunca a /tmp.
+FISCAL_CERT_P12_PATH = env('FISCAL_CERT_P12_PATH', default='')
+FISCAL_CERT_P12_PASSWORD = env('FISCAL_CERT_P12_PASSWORD', default='')
+
 # ---------------------------------------------------------------------------
 # M12D — evidencias fotográficas
 # ---------------------------------------------------------------------------
