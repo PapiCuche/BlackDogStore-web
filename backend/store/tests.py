@@ -49166,6 +49166,43 @@ class C22A1ConcurrencyTest(TransactionTestCase):
         self.assertEqual(len(set(numeros)), 8, f'correlativos repetidos: {numeros}')
         self.assertEqual(sorted(numeros), list(range(1, 9)))
 
+    def test_parallel_issuance_of_the_same_order_yields_one_document(self):
+        """
+        ERP-FISCAL-08. Dos «Emitir» simultáneos sobre LA MISMA venta: uno crea el
+        documento; el otro NO debe estrellarse con IntegrityError→500, sino
+        obtener el mismo documento (get_or_create es idempotente). Exactamente un
+        documento, un correlativo.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        order = self._order()
+        docs, errores = [], []
+        barrera = threading.Barrier(2)
+
+        def emitir():
+            try:
+                barrera.wait(timeout=10)
+                doc, _ = get_or_create_fiscal_document(order)
+                docs.append(doc.pk)
+            except Exception as exc:  # noqa: BLE001
+                errores.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=emitir) for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=30)
+
+        self.assertEqual(
+            errores, [], f'la emisión concurrente de la misma venta falló: {errores}')
+        self.assertEqual(FiscalDocument.objects.filter(order=order).count(), 1)
+        self.assertEqual(len(set(docs)), 1, 'ambos hilos ven el mismo documento')
+
     def test_two_tenants_issue_in_parallel_without_touching_each_other(self):
         """
         §5.E — contadores aislados bajo concurrencia real.

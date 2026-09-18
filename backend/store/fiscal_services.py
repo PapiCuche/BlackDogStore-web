@@ -31,7 +31,7 @@ from __future__ import annotations
 import hashlib
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from lxml import etree
 
@@ -342,6 +342,22 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             )
     except rules.FiscalRuleError as exc:
         raise FiscalError(str(exc)) from None
+    except IntegrityError:
+        # ERP-FISCAL-08. Dos emisiones simultáneas de la MISMA venta corren la
+        # carrera: una crea el documento y la otra viola la única
+        # `fiscal_document_one_live_per_order`. Como get_or_create es
+        # idempotente, la perdedora devuelve el documento que ya existe en vez de
+        # estrellarse con 500. Se DISCRIMINA el conflicto conocido: si tras la
+        # violación hay un documento vivo para esta venta, es esa carrera; si no,
+        # la IntegrityError es otra cosa y se re-lanza (sigue siendo 500).
+        existing = (
+            FiscalDocument.objects.filter(order=order)
+            .exclude(status=FiscalDocumentStatus.REJECTED)
+            .order_by('-pk').first()
+        )
+        if existing is not None:
+            return existing, False
+        raise
     return document, True
 
 
