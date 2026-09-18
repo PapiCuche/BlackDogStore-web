@@ -38,6 +38,7 @@ from enum import Enum
 from lxml import etree
 
 from .packaging import extract_cdr
+from .xmlsafe import MAX_UNTRUSTED_XML_BYTES, UntrustedXmlError, parse_untrusted
 
 #: `http://service.sunat.gob.pe` es el espacio de nombres del servicio.
 SERVICE_NS = 'http://service.sunat.gob.pe'
@@ -174,7 +175,15 @@ class SunatSoapProvider(FiscalProvider):
                 headers={'Content-Type': 'text/xml; charset=utf-8',
                          'SOAPAction': 'urn:sendBill'},
                 timeout=self._timeout,
+                stream=True,
             )
+            # Lectura ACOTADA: la respuesta de SUNAT pesa kilobytes; no se carga
+            # a memoria un cuerpo ilimitado. Se lee un byte de más para saber si
+            # excede el tope, decodificando gzip si lo hubiera.
+            with response:
+                body = response.raw.read(
+                    MAX_UNTRUSTED_XML_BYTES + 1, decode_content=True,
+                )
         except Exception as exc:  # noqa: BLE001 — cualquier fallo de red es incierto
             return ProviderResult(
                 outcome=ProviderOutcome.TRANSPORT_ERROR,
@@ -182,7 +191,14 @@ class SunatSoapProvider(FiscalProvider):
                 request_sha256=request_hash,
             )
 
-        return self._interpret(response.content, response.status_code, request_hash)
+        if len(body) > MAX_UNTRUSTED_XML_BYTES:
+            return ProviderResult(
+                outcome=ProviderOutcome.TRANSPORT_ERROR,
+                safe_message='Respuesta del servicio demasiado grande',
+                request_sha256=request_hash,
+            )
+
+        return self._interpret(body, response.status_code, request_hash)
 
     def _interpret(self, body: bytes, status: int, request_hash: str) -> ProviderResult:
         """
@@ -202,11 +218,11 @@ class SunatSoapProvider(FiscalProvider):
             )
 
         try:
-            doc = etree.fromstring(body)
-        except etree.XMLSyntaxError:
+            doc = parse_untrusted(body)
+        except UntrustedXmlError:
             return ProviderResult(
                 outcome=ProviderOutcome.UNKNOWN_RESPONSE,
-                safe_message='La respuesta no es XML', **base,
+                safe_message='La respuesta no es XML válido o fue rechazada', **base,
             )
 
         cdr_b64 = next(
@@ -273,13 +289,12 @@ class SunatSoapProvider(FiscalProvider):
         """
         try:
             name, xml = extract_cdr(cdr_zip)
-        except (ValueError, Exception) as exc:  # noqa: BLE001
+            doc = parse_untrusted(xml)
+        except Exception as exc:  # noqa: BLE001 — CDR/ZIP externo no confiable
             return ProviderResult(
                 outcome=ProviderOutcome.UNKNOWN_RESPONSE,
                 safe_message=f'CDR ilegible: {type(exc).__name__}', **base,
             )
-
-        doc = etree.fromstring(xml)
         code = next((e.text for e in doc.iter() if e.tag.endswith('ResponseCode')), '')
         description = next(
             (e.text for e in doc.iter() if e.tag.endswith('Description')), '',

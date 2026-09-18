@@ -29,6 +29,11 @@ import zipfile
 #: `R-<nombre del archivo enviado sin extensión>.xml`.
 CDR_PREFIX = 'R-'
 
+#: Tope del tamaño DESCOMPRIMIDO de la entrada del CDR. Un CDR real es XML de
+#: kilobytes; un ZIP externo (input no confiable) no debe poder inflar memoria
+#: sin límite (zip bomb). Se valida `ZipInfo.file_size` ANTES de leer.
+MAX_CDR_MEMBER_BYTES = 5 * 1024 * 1024
+
 _NAME_RE = re.compile(r'^\d{11}-\d{2}-[A-Z0-9]{4}-\d{1,8}$')
 
 
@@ -83,4 +88,17 @@ def extract_cdr(zip_bytes: bytes) -> tuple[str, bytes]:
         name = names[0]
         if '/' in name or '\\' in name or '..' in name:
             raise ValueError(f'Entrada de ZIP con ruta, se rechaza: {name!r}')
-        return name, archive.read(name)
+        # Tope de tamaño descomprimido ANTES de leer: un ZIP externo no debe
+        # poder inflar memoria sin límite (zip bomb). El file_size del encabezado
+        # se contrasta con lo realmente leído por si el encabezado mintiera.
+        info = archive.getinfo(name)
+        if info.file_size > MAX_CDR_MEMBER_BYTES:
+            raise ValueError(
+                f'Entrada de CDR demasiado grande: {info.file_size} bytes '
+                f'(máximo {MAX_CDR_MEMBER_BYTES}).'
+            )
+        with archive.open(name) as member:
+            data = member.read(MAX_CDR_MEMBER_BYTES + 1)
+        if len(data) > MAX_CDR_MEMBER_BYTES:
+            raise ValueError('Entrada de CDR excede el tope al descomprimir.')
+        return name, data

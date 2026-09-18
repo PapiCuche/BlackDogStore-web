@@ -31,7 +31,7 @@ from django.core import mail
 from django.conf import settings
 from django.core.cache import cache
 from django.db import models
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import timedelta
@@ -54597,3 +54597,106 @@ def _fc_build_legacy_pem_cert(rsa_key) -> str:
         .sign(rsa_key, hashes.SHA256())
     )
     return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+# ---------------------------------------------------------------------------
+# ERP-FISCAL-1D — parseo endurecido de XML externo (SOAP/CDR) + límites ZIP
+# ---------------------------------------------------------------------------
+
+import io as _xs_io  # noqa: E402
+import zipfile as _xs_zipfile  # noqa: E402
+from unittest.mock import patch as _xs_patch  # noqa: E402
+
+
+class FiscalUntrustedXmlTest(SimpleTestCase):
+    """
+    ERP-FISCAL-1D. Todo XML externo (respuesta SOAP, CDR) pasa por un único
+    parser endurecido: sin entidades, sin DTD, sin red, sin DOCTYPE, con tope de
+    tamaño. El XML legítimo de SUNAT sigue funcionando.
+    """
+
+    VALID = b'<?xml version="1.0"?><ar xmlns="urn:x"><Note>ok</Note></ar>'
+
+    def test_valid_external_xml_parses(self):
+        from .fiscal.xmlsafe import parse_untrusted
+        root = parse_untrusted(self.VALID)
+        self.assertTrue(root.tag.endswith('ar'))
+
+    def test_external_entity_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        payload = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+            b'<r>&xxe;</r>'
+        )
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(payload)
+
+    def test_network_entity_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        payload = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE r [<!ENTITY x SYSTEM "http://127.0.0.1:1/">]><r>&x;</r>'
+        )
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(payload)
+
+    def test_internal_entity_expansion_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        payload = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE lol [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;">]>'
+            b'<lol>&b;</lol>'
+        )
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(payload)
+
+    def test_bare_doctype_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(b'<?xml version="1.0"?><!DOCTYPE r><r/>')
+
+    def test_oversize_xml_is_rejected(self):
+        from .fiscal import xmlsafe
+        with _xs_patch.object(xmlsafe, 'MAX_UNTRUSTED_XML_BYTES', 64):
+            with self.assertRaises(xmlsafe.UntrustedXmlError):
+                xmlsafe.parse_untrusted(b'<r>' + b'x' * 200 + b'</r>')
+
+    def test_malformed_xml_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(b'<r><unclosed>')
+
+
+class FiscalCdrZipTest(SimpleTestCase):
+    """ERP-FISCAL-1D/§27. extract_cdr: una sola entrada, sin ruta, con tope."""
+
+    def _zip(self, entries):
+        buf = _xs_io.BytesIO()
+        with _xs_zipfile.ZipFile(buf, 'w', _xs_zipfile.ZIP_DEFLATED) as zf:
+            for name, data in entries:
+                zf.writestr(name, data)
+        return buf.getvalue()
+
+    def test_single_entry_extracts(self):
+        from .fiscal.packaging import extract_cdr
+        name, data = extract_cdr(self._zip([('R-x.xml', b'<ar/>')]))
+        self.assertEqual(name, 'R-x.xml')
+        self.assertEqual(data, b'<ar/>')
+
+    def test_multiple_entries_rejected(self):
+        from .fiscal.packaging import extract_cdr
+        with self.assertRaises(ValueError):
+            extract_cdr(self._zip([('R-x.xml', b'<a/>'), ('R-y.xml', b'<b/>')]))
+
+    def test_path_entry_rejected(self):
+        from .fiscal.packaging import extract_cdr
+        with self.assertRaises(ValueError):
+            extract_cdr(self._zip([('../evil.xml', b'<a/>')]))
+
+    def test_oversize_member_rejected(self):
+        from .fiscal import packaging
+        big = self._zip([('R-x.xml', b'A' * 5000)])
+        with _xs_patch.object(packaging, 'MAX_CDR_MEMBER_BYTES', 100):
+            with self.assertRaises(ValueError):
+                packaging.extract_cdr(big)
