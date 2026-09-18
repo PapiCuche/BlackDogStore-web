@@ -18,6 +18,7 @@ type Filters = {
   status: string;
   fulfillment_status: string;
   paid: string;
+  shortfall: string;
   date_from: string;
   date_to: string;
 };
@@ -29,6 +30,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
     status: "",
     fulfillment_status: "",
     paid: "",
+    shortfall: "",
     date_from: "",
     date_to: "",
   });
@@ -45,6 +47,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         status: filters.status || undefined,
         fulfillment_status: filters.fulfillment_status || undefined,
         paid: (filters.paid || undefined) as "true" | "false" | undefined,
+        shortfall: (filters.shortfall || undefined) as "true" | undefined,
         date_from: filters.date_from || undefined,
         date_to: filters.date_to || undefined,
         page,
@@ -128,6 +131,15 @@ function OrdersContent({ user }: { user: AuthUser }) {
             onChange={(e) => setFilter("date_to", e.target.value)}
             className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
           />
+          <label className="inline-flex items-center gap-2 px-3 py-2 text-sm text-foreground/85 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={filters.shortfall === "true"}
+              onChange={(e) => setFilter("shortfall", e.target.checked ? "true" : "")}
+              className="accent-warning"
+            />
+            Solo con faltante de stock
+          </label>
         </div>
 
         <div className="rounded-xl border border-bd-border bg-surface p-6">

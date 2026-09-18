@@ -43,6 +43,14 @@ export function OrdersTable({ orders }: Props) {
               <td className="py-3 pr-4">
                 <p className="text-foreground font-medium leading-tight">{o.customer_name || "—"}</p>
                 <p className="text-muted text-xs mt-0.5">{o.customer_email}</p>
+                {o.has_stock_shortfall && (
+                  <span
+                    data-testid="order-shortfall-badge"
+                    className="mt-1 inline-flex items-center rounded border border-warning-border bg-warning-surface px-2 py-0.5 text-[11px] font-medium text-warning"
+                  >
+                    Faltante de stock
+                  </span>
+                )}
               </td>
               <td className="py-3 pr-4 text-right text-foreground hidden md:table-cell">
                 S/ {parseFloat(o.total).toFixed(2)}

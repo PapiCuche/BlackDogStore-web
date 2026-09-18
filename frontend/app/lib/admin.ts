@@ -283,6 +283,20 @@ export type AdminOrder = {
   created_at: string;
   paid_at: string | null;
   item_count: number;
+  /**
+   * INV-04: the order is paid but stock could not cover at least one line, so
+   * units it sold never left a shelf. Derived server-side from the Kardex.
+   */
+  has_stock_shortfall: boolean;
+};
+
+/** INV-04: one product an order sold but could not fully dispatch. */
+export type StockShortfallLine = {
+  product_id: number;
+  product_name: string;
+  ordered: number;
+  fulfilled: number;
+  shortfall: number;
 };
 
 export type AdminOrderDetail = AdminOrder & {
@@ -311,6 +325,16 @@ export type AdminOrderDetail = AdminOrder & {
    * for this company (H4.1.2). Empty = read-only. Never derive it from the role.
    */
   available_fulfillment_transitions: string[];
+  /** INV-04: per-product shortfall for this order (empty when fully covered). */
+  stock_shortfall: StockShortfallLine[];
+  /**
+   * Whether THIS caller may reprocess the pending stock exit: a shortfall to
+   * resolve plus the inventory-move authority. Decided by the server for this
+   * company. Never derive it from the role.
+   */
+  can_reprocess_stock_exit: boolean;
+  /** Only on a reprocess response: movements this call created. */
+  created_movements?: number;
 };
 
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {
@@ -341,6 +365,7 @@ export async function fetchAdminOrders(params?: {
   status?: string;
   fulfillment_status?: string;
   paid?: 'true' | 'false';
+  shortfall?: 'true';
   date_from?: string;
   date_to?: string;
   page?: number;
@@ -351,6 +376,7 @@ export async function fetchAdminOrders(params?: {
     status: params?.status,
     fulfillment_status: params?.fulfillment_status,
     paid: params?.paid,
+    shortfall: params?.shortfall,
     date_from: params?.date_from,
     date_to: params?.date_to,
     page: params?.page,
@@ -420,6 +446,28 @@ export async function resendOrderConfirmationEmail(orderId: number): Promise<{
   return res.json();
 }
 
+export async function reprocessOrderStockExit(
+  orderId: number,
+): Promise<AdminOrderDetail> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/orders/${orderId}/reprocess-stock-exit/`,
+    { method: 'POST' },
+  );
+  if (res.status === 403) {
+    throw new Error('No tienes permisos para reprocesar la salida de stock.');
+  }
+  if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (res.status === 409) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? 'Solo un pedido pagado puede reprocesar su salida de stock.');
+  }
+  if (res.status === 429) {
+    throw new Error('Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.');
+  }
+  if (!res.ok) throw new Error('No se pudo reprocesar la salida de stock.');
+  return res.json();
+}
+
 export async function downloadOrderReceiptPdf(
   orderId: number,
 ): Promise<{ blob: Blob; filename: string }> {
@@ -450,6 +498,7 @@ export const ACTION_LABELS: Record<string, string> = {
   order_fulfillment_status_changed: 'Estado de despacho actualizado',
   order_receipt_pdf_downloaded: 'PDF de recibo descargado',
   order_confirmation_email_resent: 'Email de confirmación reenviado',
+  order_stock_exit_reprocessed: 'Salida de stock reprocesada',
 };
 
 export function actionLabel(action: string): string {

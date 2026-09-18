@@ -18,6 +18,7 @@ import {
   downloadOrderReceiptPdf,
   resendOrderConfirmationEmail,
 } from "../../../lib/admin";
+import { StockShortfallPanel } from "../../components/StockShortfallPanel";
 import {
   DOCUMENT_TYPE_LABELS,
   DELIVERY_METHOD_LABELS,
@@ -293,6 +294,16 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
             </div>
           </dl>
         </section>
+
+        {/* INV-04: stock shortfall (paid order, stock could not cover a line)
+            plus the retry that resolves it. Owns its own state; hidden when the
+            order is fully covered. Never reads payment_error. */}
+        <StockShortfallPanel
+          orderId={order.id}
+          shortfall={order.stock_shortfall}
+          canReprocess={order.can_reprocess_stock_exit}
+          onResolved={setOrder}
+        />
 
         {/* Items */}
         <section className="rounded-xl border border-bd-border bg-surface p-6">
