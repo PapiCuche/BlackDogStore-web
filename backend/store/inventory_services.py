@@ -658,6 +658,55 @@ def order_ids_with_stock_shortfall(order_ids) -> set[int]:
     return short_ids
 
 
+def reprocess_order_stock_exit(order: Order, *, actor=None, request=None) -> dict:
+    """
+    Re-run ONLY the still-missing SALE_EXITs of an already-paid order.
+
+    The operator's half of INV-04: once the branch is replenished, this creates
+    the exits that could not be made at payment time and clears the shortfall.
+
+    It does NOT touch payment — no re-capture, no gateway call, no change to the
+    amount, to `paid`, or to `status`; no new order; no manual movement; no
+    stock from another branch; no edit to the order lines. It REUSES
+    record_sale_stock_movements (idempotent per (order, product), taking stock
+    only from the order's own fulfillment branch), so a product already
+    dispatched is left untouched and nothing is ever double-subtracted.
+
+    Concurrency-safe by the same lock the payment webhook uses: the order row is
+    held for the whole operation, so two simultaneous retries serialise and the
+    second sees the first's exits and creates none. If stock is still short the
+    missing lines stay unfulfilled — flagged, not raised, exactly as at payment
+    — and the caller reads what remains from order_stock_shortfall().
+
+    Returns {'created_movements': [...], 'shortfall': [...]}.
+    """
+    if order.status != Order.Status.PAID:
+        raise InventoryError(
+            'Solo un pedido pagado puede reprocesar su salida de stock.'
+        )
+
+    with transaction.atomic():
+        locked = Order.objects.select_for_update().get(pk=order.pk)
+        created = record_sale_stock_movements(locked, actor=actor)
+
+    shortfall = order_stock_shortfall(locked)
+    AdminAuditLog.log(
+        actor=actor,
+        action='order_stock_exit_reprocessed',
+        target_type='order',
+        target_id=locked.pk,
+        company=locked.company,
+        request=request,
+        metadata={
+            'order_id': locked.pk,
+            'branch_id': locked.fulfillment_branch_id,
+            'created_movements': len(created),
+            'remaining_shortfall_products': len(shortfall),
+        },
+    )
+    return {'created_movements': created, 'shortfall': shortfall}
+
+
 def apply_initial_stock(
     *, branch, product, quantity: int, actor=None, reason: str = '', request=None,
 ) -> StockMovement | None:

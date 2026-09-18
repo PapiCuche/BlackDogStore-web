@@ -15,6 +15,7 @@ from .inventory_services import (
     InsufficientStockError, InventoryError,
     apply_initial_stock, apply_manual_stock_movement,
     order_ids_with_stock_shortfall, order_stock_shortfall,
+    reprocess_order_stock_exit,
 )
 from .models import (
     AdminAuditLog, Category, Order, OrderItem, Product, StockMovement, UserProfile,
@@ -816,12 +817,18 @@ def _order_detail_payload(request, order, company):
     may set — computed by the server, exactly as the native surface already
     does, so the panel no longer keeps its own role-keyed copy of the rule.
     """
+    shortfall = order_stock_shortfall(order)
     return {
         **AdminOrderDetailSerializer(order).data,
         'available_fulfillment_transitions':
             list(fulfillment.allowed_fulfillment_statuses(request.user, company)),
         # INV-04: the oversell/shortfall, derived — see order_stock_shortfall.
-        'stock_shortfall': order_stock_shortfall(order),
+        'stock_shortfall': shortfall,
+        # Whether THIS caller may reprocess the pending exit: a shortfall to
+        # resolve plus the inventory-move authority. Server-decided, like the
+        # fulfillment transitions above — the panel never reads a role.
+        'can_reprocess_stock_exit': bool(shortfall) and has_capability(
+            request.user, company, CAP_INVENTORY_ADJUST),
     }
 
 
@@ -929,6 +936,51 @@ class AdminOrderDetailView(APIView):
         if order is None:
             return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         return Response(_order_detail_payload(request, order, company))
+
+
+class AdminOrderReprocessStockExitView(APIView):
+    """
+    POST /api/admin/orders/{pk}/reprocess-stock-exit/ — INV-04 resolution.
+
+    Re-runs only the still-missing SALE_EXITs of a PAID order, once the branch
+    has been replenished, so the shortfall left at payment time can be cleared.
+    Authority is `inventory.adjust`: the operation registers stock exits, which
+    is exactly what that capability grants. It does not touch payment and never
+    pulls stock from another branch — see reprocess_order_stock_exit.
+
+    Answers with the order detail payload (its `stock_shortfall` now recomputed)
+    plus the number of movements this call created.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrdersThrottle]
+
+    def post(self, request, pk):
+        company, error = _company_context(
+            request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES)
+        if error:
+            return error
+
+        # Out of scope is 404, like every other order view.
+        order = (
+            visible_orders(request.user, company)
+            .prefetch_related('items__product').filter(pk=pk).first()
+        )
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+
+        # A pending/failed/refunded order has no pending SALE_EXIT to resolve;
+        # that is a state conflict, not a bad request.
+        if order.status != Order.Status.PAID:
+            return Response(
+                {'detail': 'Solo un pedido pagado puede reprocesar su salida de stock.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        result = reprocess_order_stock_exit(order, actor=request.user, request=request)
+        order.refresh_from_db()
+        payload = _order_detail_payload(request, order, company)
+        payload['created_movements'] = len(result['created_movements'])
+        return Response(payload)
 
 
 class AdminOrderResendEmailView(APIView):

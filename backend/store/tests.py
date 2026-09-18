@@ -13649,6 +13649,324 @@ class Erp1InventoryShortfallTest(TestCase):
         self.assertNotIn(forder.pk, ids)
 
 
+class Erp1ShortfallReprocessTest(TestCase):
+    """
+    ERP-1 · P1A.1. The operator's half of INV-04: reprocess a paid order's
+    still-missing SALE_EXITs once the branch is replenished, resolving the
+    shortfall without touching payment or pulling stock from another branch.
+    """
+
+    # The real shortfall operator both SEES the order (sales.orders.view) and
+    # MOVES stock (inventory.adjust). The reprocess POST is gated on the write
+    # authority; the detail is gated on orders.view — a coherent operator holds
+    # both, so that is what this fixture grants.
+    ADJUST = _INV_ALL + ['sales.orders.view']
+    VIEW_ONLY = ['company.view', 'sales.orders.view']
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('erp1-retry')
+        self.main = _p2d_branch(self.company, 'Principal')
+        self.warehouse = _p2d_branch(self.company, 'Almacén')
+        self.p1 = _p2d_product(self.company, 'Producto Uno', 'p-uno-retry')
+        self.p2 = _p2d_product(self.company, 'Producto Dos', 'p-dos-retry')
+        _p2d_stock(self.main, self.p1, 2)
+        _p2d_stock(self.main, self.p2, 10)
+
+    def _paid_short_order(self):
+        from .inventory_services import record_sale_stock_movements
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_name='Cliente', customer_email='c@example.com',
+            total=Decimal('100.00'), status=Order.Status.PAID, paid=True,
+            paid_at=timezone.now())
+        OrderItem.objects.create(order=order, product=self.p1, quantity=5, price=self.p1.price)
+        record_sale_stock_movements(order)  # short: only 2 on the shelf → 0 exits
+        return order
+
+    def _replenish(self, product, quantity):
+        from .inventory_services import create_stock_movement
+        create_stock_movement(
+            branch=self.main, product_id=product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=quantity,
+            reason='Reposición')
+
+    # -- service --------------------------------------------------------------
+
+    def test_reprocess_after_replenish_creates_only_the_missing_exit(self):
+        from .inventory_services import (
+            order_stock_shortfall, reprocess_order_stock_exit)
+        order = self._paid_short_order()
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+        self._replenish(self.p1, 5)
+        result = reprocess_order_stock_exit(order, actor=None)
+        self.assertEqual(len(result['created_movements']), 1)
+        self.assertEqual(result['shortfall'], [])
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=order, product=self.p1,
+                movement_type=StockMovement.SALE_EXIT).count(), 1)
+        self.assertEqual(branch_quantity(self.main, self.p1), 2)  # 7 − 5
+
+    def test_reprocess_without_replenish_leaves_the_shortfall_and_creates_nothing(self):
+        from .inventory_services import (
+            order_stock_shortfall, reprocess_order_stock_exit)
+        order = self._paid_short_order()
+        result = reprocess_order_stock_exit(order, actor=None)
+        self.assertEqual(result['created_movements'], [])
+        self.assertEqual(result['shortfall'][0]['shortfall'], 5)
+        self.assertEqual(branch_quantity(self.main, self.p1), 2, 'stock intacto')
+
+    def test_reprocess_is_idempotent_no_double_exit(self):
+        from .inventory_services import reprocess_order_stock_exit
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        reprocess_order_stock_exit(order, actor=None)
+        second = reprocess_order_stock_exit(order, actor=None)
+        self.assertEqual(second['created_movements'], [])
+        self.assertEqual(second['shortfall'], [])
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT).count(), 1)
+
+    def test_reprocess_resolves_one_product_and_leaves_another_short(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements,
+            reprocess_order_stock_exit)
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        OrderItem.objects.create(order=order, product=self.p1, quantity=5, price=self.p1.price)
+        OrderItem.objects.create(order=order, product=self.p2, quantity=20, price=self.p2.price)
+        record_sale_stock_movements(order)  # p1 short (2 vs 5), p2 short (10 vs 20)
+        self._replenish(self.p1, 5)  # only p1 replenished
+        reprocess_order_stock_exit(order, actor=None)
+        rows = order_stock_shortfall(order)
+        self.assertEqual([r['product_id'] for r in rows], [self.p2.pk])
+        # p2 never exited (all-or-nothing per line), so its shortfall is the full 20
+        self.assertEqual(rows[0]['shortfall'], 20)
+
+    def test_reprocess_never_pulls_stock_from_another_branch(self):
+        """The warehouse is full; the order still cannot be fulfilled from it."""
+        from .inventory_services import (
+            order_stock_shortfall, reprocess_order_stock_exit)
+        order = self._paid_short_order()
+        _p2d_stock(self.warehouse, self.p1, 50)  # plenty, but not the order's branch
+        reprocess_order_stock_exit(order, actor=None)
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+        self.assertEqual(branch_quantity(self.warehouse, self.p1), 50, 'intacto')
+
+    def test_reprocess_rejects_a_non_paid_order(self):
+        from .inventory_services import reprocess_order_stock_exit
+        from .inventory_services import InventoryError
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PENDING_PAYMENT, paid=False)
+        OrderItem.objects.create(order=order, product=self.p1, quantity=5, price=self.p1.price)
+        with self.assertRaises(InventoryError):
+            reprocess_order_stock_exit(order, actor=None)
+
+    # -- API ------------------------------------------------------------------
+
+    def _client(self, capabilities, username):
+        user, _m = _p2d_member(self.company, username, capabilities)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_the_endpoint_resolves_the_shortfall_end_to_end(self):
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        client = self._client(self.ADJUST, 'retry_adjust')
+        res = client.post(
+            f'/api/admin/orders/{order.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['created_movements'], 1)
+        self.assertEqual(res.data['stock_shortfall'], [])
+        self.assertFalse(res.data['can_reprocess_stock_exit'])
+
+    def test_the_detail_flag_tracks_capability_and_shortfall(self):
+        order = self._paid_short_order()
+        # inventory.adjust caller sees the action offered
+        adj = self._client(self.ADJUST, 'flag_adjust')
+        res = adj.get(f'/api/admin/orders/{order.pk}/?company={self.company.pk}')
+        self.assertTrue(res.data['can_reprocess_stock_exit'])
+        # a view-only caller sees the shortfall but not the action
+        vw = self._client(self.VIEW_ONLY, 'flag_view')
+        res = vw.get(f'/api/admin/orders/{order.pk}/?company={self.company.pk}')
+        self.assertEqual(len(res.data['stock_shortfall']), 1)
+        self.assertFalse(res.data['can_reprocess_stock_exit'])
+
+    def test_a_view_only_caller_cannot_reprocess(self):
+        from .inventory_services import order_stock_shortfall
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        client = self._client(self.VIEW_ONLY, 'retry_denied')
+        res = client.post(
+            f'/api/admin/orders/{order.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(len(order_stock_shortfall(order)), 1, 'no se resolvió nada')
+
+    def test_a_non_paid_order_is_a_conflict(self):
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PENDING_PAYMENT, paid=False)
+        OrderItem.objects.create(order=order, product=self.p1, quantity=5, price=self.p1.price)
+        client = self._client(self.ADJUST, 'retry_conflict')
+        res = client.post(
+            f'/api/admin/orders/{order.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 409)
+
+    def test_a_missing_order_is_not_found(self):
+        client = self._client(self.ADJUST, 'retry_missing')
+        res = client.post(
+            f'/api/admin/orders/999999/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_tenants_order_is_not_found(self):
+        other = _p2d_company('erp1-retry-other')
+        ob = _p2d_branch(other, 'Suc')
+        op = _p2d_product(other, 'Prod', 'prod-retry-other')
+        _p2d_stock(ob, op, 1)
+        forder = Order.objects.create(
+            company=other, fulfillment_branch=ob, customer_email='o@example.com',
+            total=Decimal('10.00'), status=Order.Status.PAID, paid=True,
+            paid_at=timezone.now())
+        OrderItem.objects.create(order=forder, product=op, quantity=5, price=op.price)
+        client = self._client(self.ADJUST, 'retry_cross')
+        res = client.post(
+            f'/api/admin/orders/{forder.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 404)
+
+    def test_reprocess_is_audited(self):
+        from .inventory_services import reprocess_order_stock_exit
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        user, _m = _p2d_member(self.company, 'retry_audit', self.ADJUST)
+        reprocess_order_stock_exit(order, actor=user)
+        log = AdminAuditLog.objects.filter(
+            action='order_stock_exit_reprocessed', target_id=str(order.pk)).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.company.pk)
+        self.assertEqual(log.metadata['created_movements'], 1)
+        self.assertEqual(log.metadata['remaining_shortfall_products'], 0)
+
+
+class Erp1ShortfallFulfillmentGuardTest(TestCase):
+    """
+    ERP-1 · P1A.1 §11 — a FINDING, reproduced, not fixed here.
+
+    change_fulfillment_status gates only on the role-allowed transition; it does
+    NOT consult the stock shortfall. So a PAID order still short of stock can be
+    marked SHIPPED and DELIVERED with units that never left a shelf. Guarding
+    this means touching the fulfillment state machine, which is DB-03 — out of
+    scope for INV-04. This test pins the current behaviour so the dependency is
+    documented and the day it is guarded, this test is the one to flip.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('erp1-fulfil')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.product = _p2d_product(self.company, 'Prod', 'prod-fulfil')
+        _p2d_stock(self.branch, self.product, 2)
+
+    def test_a_shortfall_order_can_still_be_marked_delivered(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        from .order_fulfillment_services import change_fulfillment_status
+
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.branch,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        OrderItem.objects.create(order=order, product=self.product, quantity=5, price=self.product.price)
+        record_sale_stock_movements(order)
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+
+        user, _m = _p2d_member(
+            self.company, 'fulfil_admin',
+            ['company.view', 'sales.orders.view', 'sales.orders.manage'])
+        for target in (
+            Order.FulfillmentStatus.CONFIRMED,
+            Order.FulfillmentStatus.PREPARING,
+            Order.FulfillmentStatus.SHIPPED,
+            Order.FulfillmentStatus.DELIVERED,
+        ):
+            change_fulfillment_status(
+                order=order, new_status=target, actor=user, company=self.company)
+        order.refresh_from_db()
+        # FINDING (§11): delivered while still short by 5. No stock guard today.
+        self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.DELIVERED)
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+
+
+class Erp1ShortfallReprocessConcurrencyTest(TransactionTestCase):
+    """
+    ERP-1 · P1A.1 §7. Two simultaneous reprocesses of the same order, with
+    enough stock on the shelf for BOTH to exit, must still create exactly one
+    SALE_EXIT — the order row lock serialises them and the second sees the
+    first's exit. Real row locking only: skipped, loudly, on SQLite.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('erp1-retry-conc')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.product = _p2d_product(self.company, 'Prod', 'prod-retry-conc')
+        _p2d_stock(self.branch, self.product, 2)
+        from .inventory_services import record_sale_stock_movements
+        self.order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.branch,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=5, price=self.product.price)
+        record_sale_stock_movements(self.order)  # short: 2 < 5 → 0 exits
+        # Replenish to 10: enough for TWO exits of 5 — the dangerous case.
+        from .inventory_services import create_stock_movement
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=8, reason='Reposición')
+
+    def test_two_concurrent_reprocesses_create_exactly_one_exit(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op. '
+                'Run against PostgreSQL to exercise the order lock.')
+
+        from .inventory_services import reprocess_order_stock_exit
+
+        barrier = threading.Barrier(2)
+
+        def worker():
+            try:
+                barrier.wait()
+                reprocess_order_stock_exit(self.order, actor=None)
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=self.order, product=self.product,
+                movement_type=StockMovement.SALE_EXIT).count(), 1,
+            'exactamente una salida, sin doble descuento')
+        self.assertEqual(branch_quantity(self.branch, self.product), 5, '10 − 5')
+
+
 class Phase2dBranchAccessApiTest(TestCase):
     """
     Administering branch access: grants are company-scoped, and audited.
