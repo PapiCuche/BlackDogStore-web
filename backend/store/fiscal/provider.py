@@ -229,7 +229,10 @@ class SunatSoapProvider(FiscalProvider):
             (e.text for e in doc.iter() if e.tag.endswith('applicationResponse')), None,
         )
         if cdr_b64:
-            return self._read_cdr(base64.b64decode(cdr_b64), **base)
+            # El base64 se decodifica DENTRO de _read_cdr (bajo su guarda): un
+            # applicationResponse con base64 malformado es «ante la duda,
+            # UNKNOWN_RESPONSE», no un binascii.Error que se convierta en 500.
+            return self._read_cdr(cdr_b64, **base)
 
         fault = next((e.text for e in doc.iter() if e.tag.endswith('faultstring')), None)
         if fault is not None:
@@ -282,12 +285,18 @@ class SunatSoapProvider(FiscalProvider):
         return ProviderOutcome.UNKNOWN_RESPONSE
 
     @staticmethod
-    def _read_cdr(cdr_zip: bytes, **base) -> ProviderResult:
+    def _read_cdr(cdr_b64: str, **base) -> ProviderResult:
         """
         Interpreta el CDR: `ResponseCode` `0` es aceptado; con `cbc:Note`, con
         observaciones.
+
+        Recibe el base64 crudo del `applicationResponse` y lo decodifica aquí,
+        bajo la misma guarda que el ZIP y el XML: cualquier fallo (base64
+        malformado, ZIP ilegible, XML rechazado) es UNKNOWN_RESPONSE, nunca una
+        excepción que suba como 500.
         """
         try:
+            cdr_zip = base64.b64decode(cdr_b64)
             name, xml = extract_cdr(cdr_zip)
             doc = parse_untrusted(xml)
         except Exception as exc:  # noqa: BLE001 — CDR/ZIP externo no confiable

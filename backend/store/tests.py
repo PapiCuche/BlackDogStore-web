@@ -54766,6 +54766,16 @@ class FiscalUntrustedXmlTest(SimpleTestCase):
         with self.assertRaises(UntrustedXmlError):
             parse_untrusted(b'<r><unclosed>')
 
+    def test_malformed_cdr_base64_is_unknown_not_a_crash(self):
+        """
+        REVIEW A / §24. Un applicationResponse con base64 malformado es
+        UNKNOWN_RESPONSE (ante la duda), no un binascii.Error que suba como 500.
+        """
+        from .fiscal.provider import ProviderOutcome, SunatSoapProvider
+        res = SunatSoapProvider._read_cdr(
+            '%%%no-es-base64%%%', request_sha256='a', response_sha256='b')
+        self.assertEqual(res.outcome, ProviderOutcome.UNKNOWN_RESPONSE)
+
 
 class FiscalCdrZipTest(SimpleTestCase):
     """ERP-FISCAL-1D/§27. extract_cdr: una sola entrada, sin ruta, con tope."""
