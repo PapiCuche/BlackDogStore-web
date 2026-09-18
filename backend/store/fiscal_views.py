@@ -228,6 +228,12 @@ class AdminOrderFiscalDocumentView(APIView):
                     {'detail': str(exc)},
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
+            except FiscalError as exc:
+                # ERP-FISCAL-1E. Regla fiscal incumplida al firmar (p. ej. un
+                # descuadre de redondeo, VEN-02A): 400 de dominio, no 500.
+                return Response(
+                    {'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST,
+                )
             except Exception:
                 logger.exception('Fiscal signing failed for %s', document.pk)
                 return Response(

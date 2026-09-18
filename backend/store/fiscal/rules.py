@@ -128,7 +128,17 @@ def validate(data: InvoiceData) -> None:
     # Las dos identidades que C2.1 garantiza en origen. Repetirlas no es
     # desconfianza: este generador puede recibir datos de otra parte mañana, y
     # un comprobante que no cuadra no debe poder llegar a existir.
-    data.check()
+    #
+    # ERP-FISCAL-1E (VEN-02B). `InvoiceData.check()` levanta `ValueError` plano
+    # —InvoiceData es una estructura pura y no debe importar este módulo para
+    # lanzar `FiscalRuleError`—. Aquí, en la frontera de validación, ese fallo
+    # esperado se traduce al error de dominio que la vista sabe mapear a 400. Sin
+    # esta traducción, un descuadre de redondeo (VEN-02A) escapaba como
+    # `ValueError` y terminaba en HTTP 500.
+    try:
+        data.check()
+    except ValueError as exc:
+        _fail(str(exc))
 
     for i, line in enumerate(data.lines, 1):
         esperado = (line.line_amount * line.tax_percent / Decimal('100')).quantize(

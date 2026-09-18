@@ -48727,6 +48727,44 @@ class C22A1DomainTest(TestCase):
         )
         return order
 
+    def _ven02_order(self):
+        # VEN-02A: precio no divisible por 1.18, cantidad 2. Σ línea (2×50.76 =
+        # 101.52) ≠ base del snapshot (money(119.80/1.18)=101.53). El descuadre
+        # hace fallar InvoiceData.check().
+        prod = _c1_product(self.company, 'Redondeo 59.90', '59.90')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('119.80'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('119.80'),
+            taxable_amount=Decimal('101.53'), tax_amount=Decimal('18.27'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch,
+        )
+        OrderItem.objects.create(
+            order=order, product=prod, quantity=2, price=Decimal('59.90'),
+        )
+        return order
+
+    def test_a_rounding_mismatch_is_a_domain_error_not_a_crash(self):
+        """
+        ERP-FISCAL-1E (VEN-02B). El descuadre de redondeo (VEN-02A, aún sin
+        resolver) debe rechazarse como error de DOMINIO (que la vista mapea a
+        400), no escaparse como un ValueError que termina en 500. Y el
+        correlativo reservado se devuelve en el rollback (§33).
+        """
+        from .fiscal_services import FiscalError
+        order = self._ven02_order()
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 1,
+                         'un fallo de validación no gasta correlativo')
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
     # -- numeración -----------------------------------------------------------
 
     def test_the_first_document_takes_the_first_number(self):
@@ -50149,6 +50187,30 @@ class C22BFiscalApiTest(TestCase):
         res = self._emitir(user=self.observador)
         self.assertIn(res.status_code,
                       (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_rounding_mismatch_returns_400_not_500(self):
+        """
+        ERP-FISCAL-1E (VEN-02B). Una factura cuyo redondeo por línea no cuadra
+        con la base del snapshot (VEN-02A, aún sin resolver) devuelve 400 de
+        validación fiscal, NUNCA 500, y no deja documento.
+        """
+        prod = _c1_product(self.company, 'Redondeo API 59.90', '59.90')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('119.80'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('119.80'), taxable_amount=Decimal('101.53'),
+            tax_amount=Decimal('18.27'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=prod, quantity=2, price=Decimal('59.90'))
+
+        res = self._emitir(order=order)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(FiscalDocument.objects.count(), 0)
 
     def test_a_member_without_fiscal_capabilities_sees_nothing(self):

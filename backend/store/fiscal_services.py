@@ -358,7 +358,13 @@ def sign_fiscal_document(document: FiscalDocument, *, key_pem: bytes,
 
     data = _order_to_invoice_data(document.order, document.series_ref,
                                   document.number)
-    rules.validate(data)
+    # ERP-FISCAL-1E. Un incumplimiento de regla fiscal aquí es un error de
+    # DOMINIO (400), no un fallo inesperado (500). Sólo se traduce ESA excepción
+    # conocida; cualquier otra sube y sigue siendo 500 (§31).
+    try:
+        rules.validate(data)
+    except rules.FiscalRuleError as exc:
+        raise FiscalError(str(exc)) from exc
     root = etree.fromstring(builder.build_invoice_xml(data))
     signed = signing.sign_invoice(root, key_pem=key_pem, cert_pem=cert_pem)
     xml = etree.tostring(signed, xml_declaration=True, encoding='UTF-8')
