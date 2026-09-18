@@ -48781,6 +48781,31 @@ class C22A1DomainTest(TestCase):
                          'un fallo de reconciliación no gasta correlativo')
         self.assertEqual(FiscalDocument.objects.count(), 0)
 
+    def test_a_non_taxed_sale_fails_closed(self):
+        """
+        ERP-FISCAL-2 (§18). Esta fase sólo emite operaciones gravadas. Una venta
+        exonerada/inafecta se rechaza como error de dominio en vez de emitirse con
+        la afectación gravada («10») que no le corresponde.
+        """
+        from .fiscal_services import FiscalError
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('100.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('100.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('0.00'),
+            tax_rate=Decimal('0.00'), tax_treatment='exempt', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('100.00'))
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 1)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
     # -- numeración -----------------------------------------------------------
 
     def test_the_first_document_takes_the_first_number(self):

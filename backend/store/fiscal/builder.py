@@ -28,7 +28,7 @@ Está escrito aquí para que a nadie le vuelva a costar: la fuente es la hoja
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from lxml import etree
 
@@ -90,7 +90,7 @@ def _unit_value(value: Decimal) -> str:
     sumo a 10 decimales, sin ceros de relleno innecesarios pero con un mínimo de
     2 (serialización determinista): 50.765 → «50.765», 100 → «100.00».
     """
-    quantized = value.quantize(Decimal('0.0000000001'))
+    quantized = value.quantize(Decimal('0.0000000001'), rounding=ROUND_HALF_UP)
     text = format(quantized, 'f')
     if '.' in text:
         integer, fraction = text.split('.')

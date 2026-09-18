@@ -140,6 +140,7 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
     es más útil que un `TypeError` a mitad de la generación.
     """
     from .company_settings import order_identity
+    from .tax_services import TaxTreatment
 
     if order.taxable_amount is None or order.tax_amount is None:
         raise FiscalError(
@@ -150,6 +151,18 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
     identity = order_identity(order)
     if not identity.tax_id:
         raise FiscalError('La empresa emisora no tiene RUC configurado.')
+
+    # SÓLO GRAVADO, explícitamente (§18). Esta fase modela únicamente la
+    # operación gravada; el generador escribe la afectación `10` en cada línea.
+    # Emitir una venta exonerada/inafecta reutilizando ese código declararía ante
+    # SUNAT una operación que no es. Se falla cerrado en vez de apoyarse en que
+    # «hoy el catálogo es todo gravado» — exonerado/inafecto son fases futuras.
+    if (order.tax_treatment or TaxTreatment.TAXED) != TaxTreatment.TAXED:
+        raise FiscalError(
+            'La factura electrónica todavía sólo sabe declarar operaciones '
+            f'gravadas; esta venta es «{order.tax_treatment}». Emitirla '
+            'declararía ante SUNAT una afectación que no corresponde.'
+        )
 
     # VEN-02A. La AUTORIDAD es el snapshot (order.taxable_amount/tax_amount): las
     # líneas se reconstruyen para SUMAR ese snapshot, no una segunda cuenta que
