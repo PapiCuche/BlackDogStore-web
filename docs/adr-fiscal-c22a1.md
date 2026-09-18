@@ -286,3 +286,29 @@ semántica en la guía de SUNAT: inventarla sería la misma clase de error, sól
 más difícil de ver.
 
 **FACTURA CON DESCUENTO queda PENDIENTE**, declarado.
+
+---
+
+# ADR — ERP-FISCAL-1
+
+## ADR-16 · El material de firma se carga en memoria; PKCS#12 XOR PEM
+
+**Decisión.** El certificado de firma se resuelve en `fiscal_config` desde UNA
+de dos fuentes, nunca ambas: un contenedor PKCS#12 (`FISCAL_CERT_P12_PATH` +
+`FISCAL_CERT_P12_PASSWORD`) o el par PEM heredado (`FISCAL_CERT_PEM` +
+`FISCAL_KEY_PEM`). Si están configuradas las dos a la vez, se **falla cerrado**
+en vez de elegir una. El `.p12` se abre y se convierte a PEM **en memoria**
+(`store/fiscal/certificate.py`, API `cryptography`): nunca se escribe la clave a
+disco ni se invoca `openssl -passin`. La contraseña del contenedor y la Clave
+SOL nunca aparecen en un error, log, repr ni respuesta.
+
+**Por qué.** El CDT del contribuyente llega como `.p12`; la firma trabaja con
+PEM. Convertir escribiendo `key.pem` en `/tmp` o pasando `-passin pass:...` deja
+material sensible donde otro proceso lo lee. Mantener dos fuentes simultáneas
+ambiguas invita a que producción firme con el certificado equivocado; una config
+ambigua es un error de servidor, no un desempate silencioso.
+
+**Alcance.** La ruta la da el entorno; el código no la busca por el disco. El
+par PEM heredado sigue siendo válido para tests, BETA y CI. Producción sigue
+deshabilitada por ADR-10; esto sólo prepara la carga del certificado, no habilita
+emisión real.

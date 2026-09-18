@@ -4,6 +4,15 @@
 **Estado del proyecto:** MVP en desarrollo; no apto todavía para producción ni pagos reales  
 **Objetivo del documento:** proporcionar contexto verificable a desarrolladores y asistentes de IA sobre la arquitectura, funcionalidades, problemas, riesgos y prioridades actuales del repositorio.
 
+> **Actualización ERP-FISCAL-1 (18-09-2026, rama `erp/fiscal-sunat`).** Base
+> fiscal endurecida sin habilitar emisión real: carga del certificado desde
+> PKCS#12 en memoria (ADR-16), throttles fiscales efectivos, parseo de XML/CDR
+> externo endurecido (XXE/DTD/tamaño/zip-bomb), errores de validación fiscal →
+> 400 (no 500), y la carrera de emisión concurrente resuelta de forma
+> idempotente. **Producción sigue deshabilitada (ADR-10).** VEN-02A (redondeo),
+> FISCAL-03/04 (fecha legal y PDF desde el XML firmado) y `getStatus` quedan
+> para ERP-FISCAL-2+. Detalle en el CHANGELOG.
+
 ---
 
 ## 1. Resumen ejecutivo

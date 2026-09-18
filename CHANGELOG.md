@@ -9,6 +9,55 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## ERP-FISCAL-1 — Configuración, certificado y endurecimiento fiscal
+
+**Estado: IMPLEMENTADO.** Rama `erp/fiscal-sunat`. Sin migraciones, sin cambios
+de frontend. No habilita producción ni transmite a BETA. Seis commits, cada
+corrección reproducida en rojo antes de aplicarla donde correspondía.
+
+- **FISCAL-1A/1B — Certificado PKCS#12 (`9b1455e`).** El CDT (`.p12`) se carga y
+  convierte a PEM **en memoria** (nunca `key.pem` en disco, nunca `openssl
+  -passin`), vía `store/fiscal/certificate.py`. `fiscal_config` elige PKCS#12 **o**
+  el par PEM heredado y **falla cerrado** si ambos están configurados. Nuevas
+  variables `FISCAL_CERT_P12_PATH`/`FISCAL_CERT_P12_PASSWORD` (ruta por entorno,
+  nunca hardcodeada). `.gitignore`: `*.p12`, `*.pfx`, `sunat.env`,
+  `.blackdog-secrets/` (no `*.pem` global). Ver ADR-16.
+- **FISCAL-1C — Throttles (`fad6776`).** `FiscalIssueThrottle`/`FiscalReadThrottle`
+  eran `AnonRateThrottle`, que no limita a peticiones autenticadas; como todo
+  endpoint fiscal exige sesión, el límite nunca aplicaba (mismo defecto que
+  AUTH-THROTTLE-01). Ahora `UserRateThrottle`, cubo por usuario, `fiscal_issue`
+  y `fiscal_read` separados. El throttle corre antes del cuerpo de la vista: una
+  petición limitada no reserva correlativo ni firma ni sale a la red.
+- **FISCAL-1D — XML/CDR/ZIP externos endurecidos (`5e4719e`, `a6bda1d`).** Un
+  único parser (`store/fiscal/xmlsafe.py`) para input no confiable:
+  `resolve_entities=False`, `no_network=True`, `load_dtd=False`, `recover=False`,
+  `huge_tree=False`, tope de 5 MiB y rechazo de todo DOCTYPE. Lectura de la
+  respuesta SOAP acotada (stream) y `extract_cdr` valida el tamaño descomprimido
+  (zip bomb). El base64 del CDR se decodifica dentro de la guarda (nunca 500).
+- **FISCAL-1E — Taxonomía de error VEN-02B (`98cae93`).** Un fallo de validación
+  fiscal (p. ej. un descuadre de redondeo) era `ValueError` que escapaba a HTTP
+  500; ahora se traduce a error de dominio → **400**. La aritmética de VEN-02A
+  **no se tocó**: el caso `59.90 × 2` sigue rechazado, ahora como 400 y sin
+  gastar correlativo.
+- **FISCAL-08 — Carrera de emisión (`53b7d18`).** Dos «Emitir» simultáneos sobre
+  la misma venta chocaban con `IntegrityError` → 500; reproducido en PostgreSQL.
+  Ahora ese conflicto conocido devuelve el documento existente (idempotente); un
+  `IntegrityError` no relacionado se re-lanza (sigue 500). Sin doble emisión.
+- **FISCAL-09 — Estados fiscales: AUDITADOS, no eliminados.** `PENDING` y
+  `SUBMITTED` no se asignan hoy (candidatos a OBSOLETO); `SUBMITTED` se reserva
+  para resultados asíncronos (`getStatus`, FISCAL-5). No se tocó ningún enum.
+
+Pendiente declarado: VEN-02A (aritmética de redondeo, FISCAL-2), FISCAL-03/04
+(fecha legal QR/PDF; PDF desde el XML firmado, FISCAL-2), `getStatus`/
+reconciliación (FISCAL-5), normalización de observaciones del CDR, y declarar/
+fijar `requests`/`urllib3>=2` en `requirements.txt` (el tope de memoria de la
+respuesta SOAP depende de urllib3 ≥ 2).
+
+Suite PostgreSQL completa verde; dos revisiones independientes sin hallazgos
+CRITICAL/HIGH.
+
+---
+
 ## H4.1.2B — Puerta de seguridad: revocación, puente legacy y aislamiento
 
 **Estado: IMPLEMENTADO.** Migración `0084`. Tres hallazgos, los tres reproducidos
