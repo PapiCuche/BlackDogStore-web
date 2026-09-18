@@ -13377,6 +13377,278 @@ class Phase2dStorefrontTest(TestCase):
         self.assertIn(str(self.main.pk), order.payment_error)
 
 
+class Erp1InventoryShortfallTest(TestCase):
+    """
+    ERP-1 · INV-04. The oversell/shortfall a PAID order carries when stock could
+    not cover it.
+
+    DERIVED, never stored:
+
+        ordered   = Σ OrderItem.quantity for the product in the order
+        fulfilled = Σ SALE_EXIT quantity linked to the order for the product
+        shortfall = max(ordered − fulfilled, 0)
+
+    Today this lives only as free text on order.payment_error — no quantity, not
+    queryable — so the operation cannot find it or size it. That is the bug.
+
+    Exists(SALE_EXIT) is NOT enough (§8): a line can be partly covered, and an
+    order can have one product covered and another short, so coverage is a
+    QUANTITY comparison, not a boolean.
+    """
+
+    ORDERS_VIEW = ['company.view', 'sales.orders.view']
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('erp1-short')
+        self.main = _p2d_branch(self.company, 'Principal')
+        self.warehouse = _p2d_branch(self.company, 'Almacén')
+        self.p1 = _p2d_product(self.company, 'Producto Uno', 'p-uno-short')
+        self.p2 = _p2d_product(self.company, 'Producto Dos', 'p-dos-short')
+        _p2d_stock(self.main, self.p1, 2)
+        _p2d_stock(self.main, self.p2, 10)
+
+    def _order(self, *, order_status=None, branch=None):
+        order_status = order_status or Order.Status.PAID
+        return Order.objects.create(
+            company=self.company, fulfillment_branch=branch or self.main,
+            customer_name='Cliente', customer_email='c@example.com',
+            total=Decimal('100.00'), status=order_status,
+            paid=order_status == Order.Status.PAID, paid_at=timezone.now(),
+        )
+
+    def _line(self, order, product, quantity):
+        return OrderItem.objects.create(
+            order=order, product=product, quantity=quantity, price=product.price,
+        )
+
+    # -- domain calculation ---------------------------------------------------
+
+    def test_sufficient_stock_leaves_no_shortfall(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 2)  # exactly the shelf on the main branch
+        record_sale_stock_movements(order)
+        self.assertEqual(branch_quantity(self.main, self.p1), 0)
+        self.assertEqual(order_stock_shortfall(order), [])
+
+    def test_no_exit_is_a_full_shortfall(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)  # only 2 on the shelf → nothing exits
+        record_sale_stock_movements(order)
+        self.assertEqual(branch_quantity(self.main, self.p1), 2, 'todo o nada por línea')
+        rows = order_stock_shortfall(order)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['product_id'], self.p1.pk)
+        self.assertEqual(rows[0]['ordered'], 5)
+        self.assertEqual(rows[0]['fulfilled'], 0)
+        self.assertEqual(rows[0]['shortfall'], 5)
+
+    def test_order_level_exists_of_a_sale_exit_is_insufficient(self):
+        """
+        §8, the real domain case. One product covered, another short: the order
+        HAS a SALE_EXIT (for the covered product), so a boolean "does this order
+        have a sale exit?" answers True while a whole product is still short.
+        Coverage has to be judged per product, by quantity.
+        """
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)   # short: only 2 available
+        self._line(order, self.p2, 4)   # covered: 10 available
+        record_sale_stock_movements(order)
+        self.assertTrue(
+            StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT).exists(),
+            'la orden SÍ tiene una salida (la del producto cubierto)')
+        rows = order_stock_shortfall(order)
+        self.assertEqual([r['product_id'] for r in rows], [self.p1.pk])
+        self.assertEqual(rows[0]['ordered'], 5)
+        self.assertEqual(rows[0]['fulfilled'], 0)
+        self.assertEqual(rows[0]['shortfall'], 5)
+
+    def test_a_partial_exit_is_measured_by_quantity_not_presence(self):
+        """
+        §8, robustness. The sale path is all-or-nothing per line (OrderItem is
+        unique per (order, product), and create_stock_movement never exits part
+        of a line), so a single product is normally 0 or fully covered. But the
+        report must still state HOW MANY units are short (§11), and stay correct
+        if a partial exit ever arises. Here a partial SALE_EXIT of 2 against an
+        order of 5 is constructed directly: Exists() is True, yet 3 are short.
+        """
+        from .inventory_services import (
+            create_stock_movement, order_stock_shortfall)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        create_stock_movement(
+            branch=self.main, product_id=self.p1.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=2,
+            reason='Salida parcial', order=order,
+        )
+        self.assertTrue(
+            StockMovement.objects.filter(
+                order=order, product=self.p1,
+                movement_type=StockMovement.SALE_EXIT).exists())
+        rows = order_stock_shortfall(order)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['ordered'], 5)
+        self.assertEqual(rows[0]['fulfilled'], 2)
+        self.assertEqual(rows[0]['shortfall'], 3)
+
+    def test_repeated_payment_does_not_change_the_shortfall(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        record_sale_stock_movements(order)  # the webhook fires twice
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT).count(), 0,
+            'un segundo webhook no duplica ni inventa salidas')
+
+    def test_an_unpaid_order_is_not_a_shortfall(self):
+        """Stock has simply not been decremented yet — that is not a shortfall."""
+        from .inventory_services import order_stock_shortfall
+        order = self._order(order_status=Order.Status.PENDING_PAYMENT)
+        self._line(order, self.p1, 5)
+        self.assertEqual(order_stock_shortfall(order), [])
+
+    def test_a_refunded_order_is_not_an_operational_shortfall(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        self.assertEqual(len(order_stock_shortfall(order)), 1)
+        order.status = Order.Status.REFUNDED
+        order.save(update_fields=['status'])
+        self.assertEqual(
+            order_stock_shortfall(order), [],
+            'una orden reembolsada ya no es una obligación pendiente')
+
+    def test_replenishing_and_reconfirming_heals_the_shortfall(self):
+        from .inventory_services import (
+            create_stock_movement, order_stock_shortfall,
+            record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+        create_stock_movement(
+            branch=self.main, product_id=self.p1.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=5,
+            reason='Reposición')
+        record_sale_stock_movements(order)  # the exit re-runs now stock is there
+        self.assertEqual(
+            order_stock_shortfall(order), [],
+            'derivado del Kardex, el faltante se cura al reponer y reintentar')
+
+    def test_a_foreign_companys_movement_never_covers_the_order(self):
+        from .inventory_services import (
+            create_stock_movement, order_stock_shortfall,
+            record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        other = _p2d_company('erp1-short-other')
+        ob = _p2d_branch(other, 'Ajena')
+        op = _p2d_product(other, 'Ajeno', 'ajeno-short')
+        _p2d_stock(ob, op, 50)
+        create_stock_movement(
+            branch=ob, product_id=op.pk, movement_type=StockMovement.SALE_EXIT,
+            quantity=50, reason='Venta ajena')
+        self.assertEqual(
+            order_stock_shortfall(order)[0]['shortfall'], 5,
+            'un movimiento de otra empresa no puede cubrir este pedido')
+
+    def test_a_movement_for_another_order_does_not_cover_this_one(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        short = self._order()
+        self._line(short, self.p1, 5)
+        record_sale_stock_movements(short)
+        _p2d_stock(self.main, self.p1, 5)  # replenish for a second, covered sale
+        covered = self._order()
+        self._line(covered, self.p1, 3)
+        record_sale_stock_movements(covered)
+        self.assertEqual(
+            order_stock_shortfall(short)[0]['shortfall'], 5,
+            'la salida de otro pedido no cubre este')
+        self.assertEqual(order_stock_shortfall(covered), [])
+
+    # -- API surface (reused admin orders endpoints) --------------------------
+
+    def test_the_detail_endpoint_shows_the_shortfall(self):
+        from .inventory_services import record_sale_stock_movements
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        user, _m = _p2d_member(self.company, 'short_view', self.ORDERS_VIEW)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get(f'/api/admin/orders/{order.pk}/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('stock_shortfall', res.data)
+        self.assertEqual(len(res.data['stock_shortfall']), 1)
+        self.assertEqual(res.data['stock_shortfall'][0]['shortfall'], 5)
+        self.assertEqual(res.data['stock_shortfall'][0]['ordered'], 5)
+        self.assertEqual(res.data['stock_shortfall'][0]['fulfilled'], 0)
+
+    def test_the_list_can_filter_and_flag_shortfalls(self):
+        from .inventory_services import record_sale_stock_movements
+        short = self._order()
+        self._line(short, self.p1, 5)
+        record_sale_stock_movements(short)
+        ok = self._order()
+        self._line(ok, self.p2, 4)  # fully covered
+        record_sale_stock_movements(ok)
+        user, _m = _p2d_member(self.company, 'short_list', self.ORDERS_VIEW)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        allrows = client.get(f'/api/admin/orders/?company={self.company.pk}')
+        flags = {r['id']: r['has_stock_shortfall'] for r in allrows.data['results']}
+        self.assertTrue(flags[short.pk])
+        self.assertFalse(flags[ok.pk])
+
+        only = client.get(
+            f'/api/admin/orders/?company={self.company.pk}&shortfall=true')
+        ids = [r['id'] for r in only.data['results']]
+        self.assertIn(short.pk, ids)
+        self.assertNotIn(ok.pk, ids)
+
+    def test_shortfall_is_scoped_to_the_callers_company(self):
+        """A shortfall in another tenant never appears in this caller's list."""
+        from .inventory_services import record_sale_stock_movements
+        mine = self._order()
+        self._line(mine, self.p1, 5)
+        record_sale_stock_movements(mine)
+        other = _p2d_company('erp1-short-tenant')
+        ob = _p2d_branch(other, 'Suc')
+        op = _p2d_product(other, 'Prod', 'prod-tenant-short')
+        _p2d_stock(ob, op, 1)
+        forder = Order.objects.create(
+            company=other, fulfillment_branch=ob, customer_email='o@example.com',
+            total=Decimal('10.00'), status=Order.Status.PAID, paid=True,
+            paid_at=timezone.now())
+        OrderItem.objects.create(order=forder, product=op, quantity=5, price=op.price)
+        record_sale_stock_movements(forder)
+
+        user, _m = _p2d_member(self.company, 'short_scope', self.ORDERS_VIEW)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get(
+            f'/api/admin/orders/?company={self.company.pk}&shortfall=true')
+        ids = [r['id'] for r in res.data['results']]
+        self.assertIn(mine.pk, ids)
+        self.assertNotIn(forder.pk, ids)
+
+
 class Phase2dBranchAccessApiTest(TestCase):
     """
     Administering branch access: grants are company-scoped, and audited.

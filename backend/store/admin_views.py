@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 from .inventory_services import (
     InsufficientStockError, InventoryError,
     apply_initial_stock, apply_manual_stock_movement,
+    order_ids_with_stock_shortfall, order_stock_shortfall,
 )
 from .models import (
     AdminAuditLog, Category, Order, OrderItem, Product, StockMovement, UserProfile,
@@ -819,6 +820,8 @@ def _order_detail_payload(request, order, company):
         **AdminOrderDetailSerializer(order).data,
         'available_fulfillment_transitions':
             list(fulfillment.allowed_fulfillment_statuses(request.user, company)),
+        # INV-04: the oversell/shortfall, derived — see order_stock_shortfall.
+        'stock_shortfall': order_stock_shortfall(order),
     }
 
 
@@ -884,8 +887,23 @@ class AdminOrderListView(APIView):
             except ValueError:
                 pass
 
+        # INV-04: a shortfall is only meaningful once the sale's exit was
+        # attempted (at payment), so it is computed over PAID orders. `?shortfall
+        # =true` narrows to orders still short of stock; every row carries the
+        # flag either way so the panel can mark them without a second request.
+        shortfall_only = request.query_params.get('shortfall', '').strip().lower() == 'true'
+        if shortfall_only:
+            paid_ids = orders.filter(status=Order.Status.PAID).values_list('pk', flat=True)
+            orders = orders.filter(pk__in=order_ids_with_stock_shortfall(paid_ids))
+
         page_qs, meta = _paginate(orders, request)
-        return Response({**meta, 'results': AdminOrderListSerializer(page_qs, many=True).data})
+        rows = AdminOrderListSerializer(page_qs, many=True).data
+        page_short_ids = order_ids_with_stock_shortfall(
+            [o.pk for o in page_qs if o.status == Order.Status.PAID]
+        )
+        for row in rows:
+            row['has_stock_shortfall'] = row['id'] in page_short_ids
+        return Response({**meta, 'results': rows})
 
 
 class AdminOrderDetailView(APIView):

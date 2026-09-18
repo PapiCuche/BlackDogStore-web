@@ -63,6 +63,7 @@ from .models import (
     InventoryCount,
     InventoryCountItem,
     Order,
+    OrderItem,
     Product,
     StockMovement,
     StockTransfer,
@@ -547,6 +548,114 @@ def _flag_stock_shortfall(order: Order, item, message: str) -> None:
     existing = order.payment_error or ''
     order.payment_error = (existing + '\n' if existing else '') + note
     # Caller persists payment_error together with the payment fields.
+
+
+# ---------------------------------------------------------------------------
+# INV-04 — the oversell/shortfall a paid order leaves, DERIVED not stored
+# ---------------------------------------------------------------------------
+#
+# When a payment is captured and the shelf cannot cover a line, the sale exit
+# is not written (create_stock_movement refuses to go below zero) and the only
+# trace is a free-text note on order.payment_error — no quantity, not queryable.
+# The shortfall is fully derivable from facts the system already keeps:
+#
+#     ordered   = Σ OrderItem.quantity for the product in the order
+#     fulfilled = Σ SALE_EXIT quantity LINKED TO THE ORDER for the product
+#     shortfall = max(ordered − fulfilled, 0)
+#
+# It is NOT persisted: recomputing it from the Kardex means it HEALS on its own
+# once stock is replenished and the exit re-runs, and it can never drift from
+# the movements it is derived from. No new field, no migration.
+#
+# Exists(SALE_EXIT) is deliberately NOT used: a line can be partly covered (some
+# units out, some not — e.g. two order lines of one product, where the second
+# hits the idempotency guard), and an order can have one product covered and
+# another short. Coverage is a QUANTITY comparison, never a boolean.
+#
+# Only meaningful once the exit was ATTEMPTED, which is at payment: for any
+# status other than PAID this is empty (an unpaid order has simply not
+# decremented stock yet; a refunded/cancelled one is no longer owed).
+
+
+def order_stock_shortfall(order: Order) -> list[dict]:
+    """
+    Per-product shortfall for one order, derived. Empty unless the order is PAID.
+
+    Each row is {product_id, product_name, ordered, fulfilled, shortfall} for a
+    product whose ordered quantity exceeds what actually left the shelf for this
+    order; rows are ordered by product_id. See the module note above for why
+    this is a quantity comparison and why nothing is stored.
+    """
+    if order.status != Order.Status.PAID:
+        return []
+
+    ordered: dict[int, int] = {}
+    names: dict[int, str] = {}
+    for item in order.items.select_related('product'):
+        ordered[item.product_id] = ordered.get(item.product_id, 0) + item.quantity
+        names[item.product_id] = item.product.name
+
+    fulfilled = {
+        row['product_id']: row['q']
+        for row in (
+            StockMovement.objects
+            .filter(order=order, movement_type=StockMovement.SALE_EXIT)
+            .values('product_id')
+            .annotate(q=Sum('quantity'))
+        )
+    }
+
+    rows = []
+    for product_id, needed in ordered.items():
+        got = fulfilled.get(product_id, 0)
+        short = needed - got
+        if short > 0:
+            rows.append({
+                'product_id': product_id,
+                'product_name': names[product_id],
+                'ordered': needed,
+                'fulfilled': got,
+                'shortfall': short,
+            })
+    rows.sort(key=lambda r: r['product_id'])
+    return rows
+
+
+def order_ids_with_stock_shortfall(order_ids) -> set[int]:
+    """
+    The subset of `order_ids` with a positive derived shortfall on at least one
+    product — two aggregate queries, independent of page size.
+
+    The caller is responsible for scoping `order_ids` to what the user may see
+    AND to status=PAID (shortfall is meaningless before payment). This function
+    does not re-check status, so pass only paid orders.
+    """
+    order_ids = list(order_ids)
+    if not order_ids:
+        return set()
+
+    ordered: dict[tuple[int, int], int] = {}
+    for row in (
+        OrderItem.objects.filter(order_id__in=order_ids)
+        .values('order_id', 'product_id')
+        .annotate(q=Sum('quantity'))
+    ):
+        ordered[(row['order_id'], row['product_id'])] = row['q']
+
+    fulfilled: dict[tuple[int, int], int] = {}
+    for row in (
+        StockMovement.objects
+        .filter(order_id__in=order_ids, movement_type=StockMovement.SALE_EXIT)
+        .values('order_id', 'product_id')
+        .annotate(q=Sum('quantity'))
+    ):
+        fulfilled[(row['order_id'], row['product_id'])] = row['q']
+
+    short_ids: set[int] = set()
+    for (order_id, product_id), needed in ordered.items():
+        if needed - fulfilled.get((order_id, product_id), 0) > 0:
+            short_ids.add(order_id)
+    return short_ids
 
 
 def apply_initial_stock(
