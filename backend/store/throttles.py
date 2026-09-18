@@ -171,9 +171,15 @@ class AdminSalesAnalyticsThrottle(UserRateThrottle):
     scope = 'admin_sales_analytics'
 
 
-class FiscalIssueThrottle(AnonRateThrottle):
+class FiscalIssueThrottle(UserRateThrottle):
     """
     Emitir y enviar tocan un servicio externo. Cubo propio, no el del checkout.
+
+    ERP-FISCAL-1C. Era `AnonRateThrottle`, que NO limita a peticiones
+    autenticadas (devuelve cache key None en cuanto hay usuario) — el mismo
+    defecto que corrigió AUTH-THROTTLE-01 en login. Como TODO endpoint fiscal
+    es `IsAuthenticated`, el ritmo `fiscal_issue` nunca se aplicaba. Con
+    `UserRateThrottle` el cubo es por usuario y el límite sí rige.
 
     NO ES LA DEFENSA CONTRA EL DOBLE ENVÍO. Eso vive en el dominio: la reserva
     de intento y las restricciones de base de datos. Un limitador sólo espacia
@@ -183,8 +189,14 @@ class FiscalIssueThrottle(AnonRateThrottle):
     scope = 'fiscal_issue'
 
 
-class FiscalReadThrottle(AnonRateThrottle):
-    """Consultar estado y descargar artefactos. Más holgado: no sale a la red."""
+class FiscalReadThrottle(UserRateThrottle):
+    """
+    Consultar estado y descargar artefactos. Más holgado: no sale a la red.
+
+    ERP-FISCAL-1C. Igual que arriba: `UserRateThrottle`, no `AnonRateThrottle`,
+    para que el límite aplique a los usuarios autenticados que son los únicos
+    que llegan aquí.
+    """
 
     scope = 'fiscal_read'
 

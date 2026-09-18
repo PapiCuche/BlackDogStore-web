@@ -54540,6 +54540,47 @@ class FiscalCertificateLoaderTest(TestCase):
             )
 
 
+class FiscalThrottleReproTest(TestCase):
+    """
+    ERP-FISCAL-1C. The fiscal endpoints are IsAuthenticated, so a throttle that
+    only limits ANONYMOUS callers never engages. This pins that the fiscal
+    throttles DO produce a per-user cache key for an authenticated request
+    (i.e. the limit actually applies), that two users get independent buckets,
+    and that read and issue are separate scopes.
+    """
+
+    def _authed_request(self, pk):
+        from rest_framework.test import APIRequestFactory
+        from types import SimpleNamespace
+        req = APIRequestFactory().post('/api/admin/orders/1/fiscal-document/')
+        req.user = SimpleNamespace(pk=pk, is_authenticated=True)
+        return req
+
+    def test_issue_throttle_engages_for_authenticated_user(self):
+        from .throttles import FiscalIssueThrottle
+        key = FiscalIssueThrottle().get_cache_key(self._authed_request(7), view=None)
+        self.assertIsNotNone(key, 'un usuario autenticado DEBE contar contra el límite')
+        self.assertIn('fiscal_issue', key)
+
+    def test_read_throttle_engages_for_authenticated_user(self):
+        from .throttles import FiscalReadThrottle
+        key = FiscalReadThrottle().get_cache_key(self._authed_request(7), view=None)
+        self.assertIsNotNone(key)
+        self.assertIn('fiscal_read', key)
+
+    def test_two_users_get_independent_buckets(self):
+        from .throttles import FiscalIssueThrottle
+        a = FiscalIssueThrottle().get_cache_key(self._authed_request(1), view=None)
+        b = FiscalIssueThrottle().get_cache_key(self._authed_request(2), view=None)
+        self.assertNotEqual(a, b, 'B no debe heredar el cubo de A')
+
+    def test_read_and_issue_are_separate_scopes(self):
+        from .throttles import FiscalIssueThrottle, FiscalReadThrottle
+        issue = FiscalIssueThrottle().get_cache_key(self._authed_request(1), view=None)
+        read = FiscalReadThrottle().get_cache_key(self._authed_request(1), view=None)
+        self.assertNotEqual(issue, read, 'read e issue son cubos distintos')
+
+
 def _fc_build_legacy_pem_cert(rsa_key) -> str:
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
