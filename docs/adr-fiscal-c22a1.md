@@ -312,3 +312,83 @@ ambigua es un error de servidor, no un desempate silencioso.
 par PEM heredado sigue siendo válido para tests, BETA y CI. Producción sigue
 deshabilitada por ADR-10; esto sólo prepara la carga del certificado, no habilita
 emisión real.
+
+---
+
+# ADR — ERP-FISCAL-2
+
+## ADR-17 · El snapshot tributario es la única autoridad; la reconciliación es determinista
+
+**Decisión.** Los importes del XML se cuadran contra el snapshot de la Order
+(`taxable_amount`, `tax_amount`, `total`), fijado al pagar. **Nunca** se modifican
+Order ni OrderItem para que el XML reconcilie. Cuando la suma de los brutos de
+línea no reparte limpiamente sobre la base imponible del snapshot, el déficit se
+asigna por **resto mayor**: se toma el piso (`ROUND_DOWN`) de cada base ideal
+`bruto / (1 + tasa)` y se reparte un céntimo, uno a uno, a las líneas con mayor
+parte fraccionaria, con desempate estable por índice. El déficit está **acotado en
+`[0, n]` céntimos** (n = número de líneas); la cota se **demuestra**, no se supone,
+y fuera de ese rango se **falla cerrado** (`ReconciliationError` → `FiscalError` →
+400 de dominio, sin gastar correlativo).
+
+**Por qué.** El snapshot es lo que el cliente pagó y lo que la contabilidad ya
+registró; es la verdad monetaria. Reescribir OrderItem para que el XML «cuadre»
+falsificaría esa verdad. El reparto por resto mayor es el único que garantiza a la
+vez que Σ bases = base imponible **al céntimo exacto** y que cada línea queda tan
+cerca de su base ideal como permite el céntimo. Como el déficit es un múltiplo
+entero del céntimo, la igualdad no depende de la precisión de la división Decimal.
+El IGV de línea se deriva como `bruto − base`, de modo que Σ IGV cuadra por
+construcción y no hay una segunda reconciliación que pudiera contradecir a la
+primera. La cota `[0, n]` es la que separa «un redondeo normal» de «un snapshot
+corrupto»: sin ella, un descuadre grande se disimularía repartiendo céntimos que
+no existen.
+
+**Alcance.** Sólo FACTURA gravada, al contado, sin descuento. EXEMPT/UNAFFECTED y
+`discount_amount > 0` siguen **PENDIENTE** y fallan cerrado (ADR-15). El caso
+`59.90 × 2` (base 101,53 / IGV 18,27) lo acepta SUNAT BETA.
+
+---
+
+## ADR-18 · Precisión por campo y modo de redondeo explícito
+
+**Decisión.** Cada campo se cuantiza a la precisión que exige SUNAT, con
+formateadores separados en el generador: valor unitario ex-IGV (`cbc:PriceAmount`)
+a **n(12,10)**; importes, IGV y totales a **n(12,2)**; tasas (`cbc:Percent`) a
+**n(3,5)**. Todo redondeo monetario usa **`ROUND_HALF_UP` explícito**, nunca el
+`ROUND_HALF_EVEN` que `Decimal` aplica por defecto. El valor unitario se calcula
+desde la base de línea ya reconciliada, a 10 decimales, de modo que
+`round(cantidad × unitario, 2) == importe_línea`.
+
+**Por qué.** SUNAT valida la aritmética línea a línea: un `PriceAmount` redondeado
+a 2 decimales rompe `cantidad × unitario = importe` cuando la base no es divisible
+(59,90 → base 50,76/50,77 → unitario con más de 2 decimales). Los 10 decimales lo
+absorben. El `ROUND_HALF_EVEN` por defecto de Decimal redondea 0,005 a 0,00 o a
+0,01 según la paridad del dígito anterior: para dinero eso es un céntimo que
+aparece y desaparece sin regla visible. Hacer el modo explícito en un solo sitio
+(`money()`) evita que un `quantize` olvidado herede el default. El formateador
+recorta los ceros finales del unitario a un mínimo de dos decimales y prohíbe la
+notación científica, para que dos ejecuciones den byte a byte el mismo XML
+(la firma no perdona un espacio de diferencia).
+
+---
+
+## ADR-19 · El XML firmado es la autoridad de representación (FISCAL-03/04)
+
+**Decisión.** El PDF y el QR se construyen **exclusivamente** desde el XML firmado,
+no desde la fila de la venta ni desde OrderItem/Product. Un módulo puro de
+sólo-lectura (`store/fiscal/representation.py`,
+`parse_signed_invoice_for_representation()`) lee el XML firmado con el parser
+endurecido (`xmlsafe`, ADR de FISCAL-1) y devuelve la fecha legal (`cbc:IssueDate`
++ `cbc:IssueTime`), las líneas, los totales y el `DigestValue`. La fecha del QR y
+del impreso es la del XML firmado (**FISCAL-03**), no el `paid_at` ni el timestamp
+de la fila. Los importes y las líneas del impreso salen del XML (**FISCAL-04**), no
+de un OrderItem que pudo cambiar después de firmar.
+
+**Por qué.** Una vez firmado, el comprobante es inmutable: el `DigestValue` del QR
+tiene que ser el del XML que SUNAT recibió, y la fecha legal es la que va dentro de
+la firma, no la del reloj de la aplicación. Si el PDF leyera OrderItem, editar la
+venta tras firmar produciría un impreso que miente respecto del XML sellado —y del
+CDR—. Leer siempre del XML firmado hace que el impreso no pueda contradecir al
+comprobante. El parser es el endurecido y de sólo-lectura porque un XML firmado,
+aunque lo generamos nosotros, se trata como entrada no confiable: generar el PDF
+**no** debe poder mutar el documento (SHA del `signed_xml` estable), y así se
+prueba de forma adversaria (mutar OrderItem tras firmar → impreso sin cambios).

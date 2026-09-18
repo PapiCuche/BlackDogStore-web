@@ -4,6 +4,19 @@
 **Estado del proyecto:** MVP en desarrollo; no apto todavía para producción ni pagos reales  
 **Objetivo del documento:** proporcionar contexto verificable a desarrolladores y asistentes de IA sobre la arquitectura, funcionalidades, problemas, riesgos y prioridades actuales del repositorio.
 
+> **Actualización ERP-FISCAL-2 (18-09-2026, rama `erp/fiscal-sunat`).** La FACTURA
+> gravada, al contado y sin descuento pasa de PARCIAL a **IMPLEMENTADO para BETA**:
+> se emite, firma, valida contra el XSD, empaqueta y **SUNAT BETA la acepta**
+> (ResponseCode 0 en el caso limpio `118.00 × 1` y en el caso de redondeo
+> `59.90 × 2`). VEN-02A resuelto: reconciliación de líneas por resto mayor con
+> `ROUND_HALF_UP` explícito y déficit acotado/demostrado (ADR-17/18). FISCAL-03/04
+> resueltos: el PDF y el QR se construyen desde el XML firmado, no desde OrderItem
+> (ADR-19). El snapshot tributario de la Order sigue siendo la única autoridad
+> monetaria; descuento y no-gravado siguen fallando cerrado (PENDIENTE, ADR-15).
+> Sin migraciones, sin cambios de frontend. **Producción sigue deshabilitada
+> (ADR-10).** Boleta, NC/ND, Resumen, Baja, GRE y `getStatus`/reconciliación quedan
+> para fases posteriores. Detalle en el CHANGELOG.
+>
 > **Actualización ERP-FISCAL-1 (18-09-2026, rama `erp/fiscal-sunat`).** Base
 > fiscal endurecida sin habilitar emisión real: carga del certificado desde
 > PKCS#12 en memoria (ADR-16), throttles fiscales efectivos, parseo de XML/CDR

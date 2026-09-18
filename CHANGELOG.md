@@ -9,6 +9,62 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## ERP-FISCAL-2 — FACTURA completa (gravada · contado · sin descuento)
+
+**Estado: IMPLEMENTADO para BETA.** Rama `erp/fiscal-sunat`. Sin migraciones, sin
+cambios de frontend. La FACTURA gravada al contado y sin descuento pasa de
+PARCIAL a IMPLEMENTADO: se emite, se firma, pasa el XSD, se empaqueta y **SUNAT
+BETA la acepta** (ResponseCode 0, con CDR). Cuatro commits, cada corrección
+reproducida en rojo antes de aplicarla. Producción sigue deshabilitada (ADR-10);
+Boleta, NC/ND, Resumen, Baja y GRE siguen fuera de alcance.
+
+- **VEN-02A — Reconciliación de líneas con redondeo explícito (`822cae5`).** El
+  descuadre `59.90 × 2` (dos líneas de 59,90 que deben cuadrar contra una base
+  imponible de 101,53 y no 101,52) ya no se rechaza: se reconcilia. Módulo puro
+  `store/fiscal/rounding.py`: `money()` cuantiza a 2 decimales con **ROUND_HALF_UP
+  explícito** (nunca el HALF_EVEN por defecto de `Decimal`); `allocate_line_bases()`
+  reparte el déficit de céntimos por **resto mayor** (floors ROUND_DOWN + un céntimo
+  a los restos fraccionarios mayores, desempate estable por índice). El déficit
+  está acotado en `[0, n]` céntimos —demostrado en el docstring, no supuesto— y
+  fuera de ese rango **falla cerrado** (`ReconciliationError` → `FiscalError` → 400).
+  La suma de bases iguala la base imponible del snapshot al céntimo exacto; el IGV
+  de línea se deriva como `bruto − base`, así que Σ IGV cuadra por construcción.
+- **Precisión SUNAT por campo (`822cae5`, `12e59fe`).** Formateadores separados en
+  el generador: `cbc:PriceAmount` a n(12,10) (valor unitario ex-IGV, ceros finales
+  recortados a ≥2 decimales, sin notación científica), importes/IGV/totales a
+  n(12,2), tasas a n(3,5). El valor unitario se calcula desde la base de línea a 10
+  decimales de modo que `round(cantidad × unitario) == importe_línea`.
+- **El snapshot tributario es la única autoridad monetaria (`12e59fe`).** El XML
+  se cuadra contra `taxable_amount`/`tax_amount`/`total` de la Order; **no** se
+  tocan Order ni OrderItem para que el XML reconcilie. Una venta con snapshot
+  corrupto (base + IGV ≠ total) **falla cerrado** como error de dominio → 400, sin
+  gastar correlativo. Guarda explícita de «sólo gravado»: EXEMPT/UNAFFECTED y
+  `discount_amount > 0` siguen PENDIENTE, declarados (ADR-15).
+- **FISCAL-03/04 — El XML firmado es la autoridad de representación (`81e9f0a`).**
+  Nuevo módulo puro de sólo-lectura `store/fiscal/representation.py`:
+  `parse_signed_invoice_for_representation()` lee el XML firmado con el parser
+  endurecido (`xmlsafe`) y de ahí salen la fecha legal (`cbc:IssueDate`, FISCAL-03),
+  las líneas, los totales y el `DigestValue` del QR. El PDF y el QR ya **no** leen
+  `OrderItem`/`Product`/fila mutable (FISCAL-04): mutar la venta después de firmar
+  no cambia el impreso, y generar el PDF no toca el XML firmado (SHA estable).
+  Probado de forma adversaria.
+
+Dependencias declaradas explícitamente (`4ca9421`): `requests==2.34.2` y
+`urllib3==2.7.0` (antes sólo transitivas vía stripe; el tope de memoria de la
+respuesta SOAP exige urllib3 ≥ 2).
+
+Smoke controlado contra SUNAT BETA (credenciales **públicas** 20100066603/MODDATOS
+/moddatos + certificado autofirmado efímero, todo en transacción que se deshace):
+caso limpio `118.00 × 1` **aceptado** (ResponseCode 0) y caso VEN-02 `59.90 × 2`
+**aceptado** (ResponseCode 0, base 101,53 / IGV 18,27). El validador de SUNAT
+acepta la reconciliación de líneas.
+
+Suite PostgreSQL completa verde (4159 pruebas, `OK`); dos revisiones independientes
+—una de la aritmética, otra del diff— sin hallazgos CRITICAL/HIGH/MEDIUM. Ver
+ADR-17/18/19.
+
+---
+
 ## ERP-FISCAL-1 — Configuración, certificado y endurecimiento fiscal
 
 **Estado: IMPLEMENTADO.** Rama `erp/fiscal-sunat`. Sin migraciones, sin cambios
