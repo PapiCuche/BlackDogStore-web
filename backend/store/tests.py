@@ -13888,6 +13888,32 @@ class Erp1ShortfallReprocessTest(TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(len(order_stock_shortfall(order)), 1, 'no se resolvió nada')
 
+    def test_an_inventory_only_caller_cannot_reprocess_or_read_pii(self):
+        """
+        ERP-1 · P1A.1 · H1. inventory.adjust WITHOUT sales.orders.view — the real
+        "Inventario" preset — must not reach the order detail payload through the
+        reprocess POST. The endpoint returns customer PII, so it requires
+        orders.view exactly like the GET detail does; otherwise a caller denied
+        GET could harvest customer emails/document numbers/addresses via POST
+        (0 movements when there is no shortfall — a side-channel read).
+        """
+        from .inventory_services import order_stock_shortfall
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        client = self._client(_INV_ALL, 'retry_inv_only')  # no sales.orders.view
+
+        # baseline: the GET detail is already denied to this caller
+        got = client.get(f'/api/admin/orders/{order.pk}/?company={self.company.pk}')
+        self.assertEqual(got.status_code, 403)
+
+        # and the POST must not be a PII side channel: same 403, no payload
+        res = client.post(
+            f'/api/admin/orders/{order.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 403)
+        self.assertNotIn('customer_email', res.data or {})
+        self.assertNotIn('stock_shortfall', res.data or {})
+        self.assertEqual(len(order_stock_shortfall(order)), 1, 'no se resolvió nada')
+
     def test_a_non_paid_order_is_a_conflict(self):
         order = Order.objects.create(
             company=self.company, fulfillment_branch=self.main,

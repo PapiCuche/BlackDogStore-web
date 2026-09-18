@@ -687,6 +687,14 @@ def reprocess_order_stock_exit(order: Order, *, actor=None, request=None) -> dic
 
     with transaction.atomic():
         locked = Order.objects.select_for_update().get(pk=order.pk)
+        # Re-check on the LOCKED row: the status is the authority for whether a
+        # sale is still owed, and reading it before the lock is a TOCTOU. If a
+        # (future) refund/cancel flow flipped it while we waited for the lock, we
+        # must not create exits for an order no longer owed.
+        if locked.status != Order.Status.PAID:
+            raise InventoryError(
+                'Solo un pedido pagado puede reprocesar su salida de stock.'
+            )
         created = record_sale_stock_movements(locked, actor=actor)
 
     shortfall = order_stock_shortfall(locked)

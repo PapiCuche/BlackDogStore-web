@@ -944,21 +944,41 @@ class AdminOrderReprocessStockExitView(APIView):
 
     Re-runs only the still-missing SALE_EXITs of a PAID order, once the branch
     has been replenished, so the shortfall left at payment time can be cleared.
-    Authority is `inventory.adjust`: the operation registers stock exits, which
-    is exactly what that capability grants. It does not touch payment and never
-    pulls stock from another branch — see reprocess_order_stock_exit.
 
-    Answers with the order detail payload (its `stock_shortfall` now recomputed)
-    plus the number of movements this call created.
+    TWO authorities, because this endpoint both READS and WRITES:
+
+      - it answers with the order DETAIL payload (customer data included), so it
+        requires `sales.orders.view` exactly like AdminOrderDetailView — an
+        `inventory.adjust`-only caller who is denied GET on this order must not
+        harvest the same payload through the POST;
+      - it WRITES stock exits, so it also requires the `inventory.adjust`
+        capability — the same authority the `can_reprocess_stock_exit` flag is
+        computed from. `sales.orders.view` without it can see the shortfall but
+        not resolve it.
+
+    It touches no payment field and never pulls stock from another branch — see
+    reprocess_order_stock_exit. Answers with the order detail payload (its
+    `stock_shortfall` recomputed) plus the movements this call created.
     """
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrdersThrottle]
 
     def post(self, request, pk):
+        # Entry authority = the same one that guards the detail payload it
+        # returns. This is what closes the PII side-channel: no orders.view, no
+        # payload, whatever inventory authority the caller holds.
         company, error = _company_context(
-            request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES)
+            request, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES)
         if error:
             return error
+
+        # Write authority: registering the stock exit needs inventory.adjust,
+        # decided exactly as can_reprocess_stock_exit is (capability, not role).
+        if not has_capability(request.user, company, CAP_INVENTORY_ADJUST):
+            return Response(
+                {'detail': 'No tienes permiso para mover inventario en esta empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Out of scope is 404, like every other order view.
         order = (
@@ -969,14 +989,19 @@ class AdminOrderReprocessStockExitView(APIView):
             return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         # A pending/failed/refunded order has no pending SALE_EXIT to resolve;
-        # that is a state conflict, not a bad request.
+        # that is a state conflict, not a bad request. The service re-checks this
+        # on the LOCKED row, so a status flip racing the lock also lands here.
         if order.status != Order.Status.PAID:
             return Response(
                 {'detail': 'Solo un pedido pagado puede reprocesar su salida de stock.'},
                 status=status.HTTP_409_CONFLICT,
             )
 
-        result = reprocess_order_stock_exit(order, actor=request.user, request=request)
+        try:
+            result = reprocess_order_stock_exit(order, actor=request.user, request=request)
+        except InventoryError as exc:
+            # The order stopped being PAID between this check and the lock.
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
         order.refresh_from_db()
         payload = _order_detail_payload(request, order, company)
         payload['created_movements'] = len(result['created_movements'])
