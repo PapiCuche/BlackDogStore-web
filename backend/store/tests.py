@@ -50521,13 +50521,86 @@ class C22BFiscalPdfTest(TestCase):
         self.doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
 
     def test_an_unsigned_document_has_no_printed_representation(self):
-        """Sin `DigestValue` no hay QR, y sin QR no hay representación impresa."""
+        """Sin XML firmado no hay representación: es su fuente (FISCAL-04)."""
         from .fiscal_pdf_services import FiscalPdfError, generate_fiscal_pdf
 
-        self.doc.digest_value = ''
-        self.doc.save(update_fields=['digest_value'])
+        self.doc.signed_xml = ''
+        self.doc.save(update_fields=['signed_xml'])
         with self.assertRaises(FiscalPdfError):
             generate_fiscal_pdf(self.doc)
+
+    def test_the_pdf_reflects_the_signed_xml_not_a_later_mutation(self):
+        """
+        FISCAL-04. Tras firmar, mutar OrderItem/Product no cambia el PDF: la
+        representación sale del XML firmado, no de tablas vivas.
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        item = self.doc.order.items.first()
+        item.product.name = 'PRODUCTO MUTADO'
+        item.product.save(update_fields=['name'])
+        item.price = Decimal('999.99')
+        item.quantity = 77
+        item.save(update_fields=['price', 'quantity'])
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc)).upper()
+        self.assertIn('ARTICULO PDF', texto)   # lo que dice el XML firmado
+        self.assertNotIn('MUTADO', texto)
+        self.assertNotIn('999.99', texto)
+        self.assertIn('100.00', texto)         # base congelada
+
+    def test_generating_the_pdf_does_not_touch_the_signed_document(self):
+        """§28/§29. El parser de representación es de sólo lectura."""
+        from .fiscal_pdf_services import generate_fiscal_pdf, generate_fiscal_ticket_pdf
+
+        before_xml = self.doc.signed_xml
+        before_digest = self.doc.digest_value
+        before_sha = self.doc.signed_xml_sha256
+        before_status = self.doc.status
+
+        generate_fiscal_pdf(self.doc)
+        generate_fiscal_ticket_pdf(self.doc)
+        self.doc.refresh_from_db()
+
+        self.assertEqual(self.doc.signed_xml, before_xml)
+        self.assertEqual(self.doc.digest_value, before_digest)
+        self.assertEqual(self.doc.signed_xml_sha256, before_sha)
+        self.assertEqual(self.doc.status, before_status)
+
+    def test_the_legal_date_comes_from_the_signed_xml(self):
+        """
+        FISCAL-03/§30. La fecha del QR/PDF es la cbc:IssueDate del XML firmado
+        (fecha de la venta), no el timestamp técnico de creación de la fila.
+        """
+        import datetime as _dt
+
+        from django.utils import timezone as _tz
+
+        from .fiscal_pdf_services import build_fiscal_context
+
+        legal = _tz.make_aware(_dt.datetime(2026, 1, 15, 23, 59, 59))
+        prod = _c1_product(self.company, 'Art dia', '118.00')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=legal,
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=prod, quantity=1, price=Decimal('118.00'))
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+        # la fila se creó HOY; la fecha legal de la venta es 2026-01-15
+        self.assertNotEqual(doc.issued_at.date(), _dt.date(2026, 1, 15))
+        ctx = build_fiscal_context(doc)
+        self.assertEqual(ctx['issued_at'].date(), _dt.date(2026, 1, 15))
+        self.assertIn('2026-01-15', ctx['qr_payload'])
 
     def test_the_a4_says_what_it_is_and_carries_the_numbers(self):
         from .fiscal_pdf_services import generate_fiscal_pdf

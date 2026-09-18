@@ -56,72 +56,80 @@ class FiscalPdfError(Exception):
     """No se puede representar este documento todavía."""
 
 
-def _document_lines(document: FiscalDocument):
+def _document_lines(rep):
     """
-    Las líneas del comprobante, reconstruidas desde la venta.
+    Las líneas del comprobante, leídas del XML FIRMADO (FISCAL-04).
 
-    Se leen de `OrderItem` porque el documento fiscal no las duplica: duplicar
-    filas que ya existen crea dos verdades sobre lo mismo. Lo que sí está
-    congelado —y es lo que SUNAT recibió— son los totales.
+    NO se reconstruyen desde `OrderItem`/`Product`: tras la firma el comprobante
+    es inmutable y su representación debe decir lo que dice el XML que SUNAT
+    recibió, no lo que digan hoy tablas que pueden haber cambiado.
     """
-    tasa = Decimal('1') + document.tax_rate
-    for item in document.order.items.select_related('product').all():
-        con_impuesto = Decimal(str(item.price))
-        sin_impuesto = (con_impuesto / tasa).quantize(Decimal('0.01'))
+    for line in rep.lines:
         yield {
-            'description': item.product.name if item.product else 'PRODUCTO',
-            'quantity': item.quantity,
-            'unit_price': sin_impuesto,
-            'unit_price_with_tax': con_impuesto,
-            'amount': (sin_impuesto * item.quantity).quantize(Decimal('0.01')),
+            'description': line.description,
+            'quantity': line.quantity,
+            'unit_price': line.unit_price,
+            'unit_price_with_tax': line.unit_price_with_tax,
+            'amount': line.line_amount,
         }
 
 
 def build_fiscal_context(document: FiscalDocument) -> dict:
-    """Los datos de impresión. Del documento congelado, no de tablas vivas."""
-    if not document.digest_value:
+    """Los datos de impresión, DERIVADOS DEL XML FIRMADO (autoridad de
+    representación), no de tablas vivas ni del timestamp técnico de la fila."""
+    if not document.signed_xml:
         raise FiscalPdfError(
-            'El comprobante todavía no está firmado: sin DigestValue no hay QR '
-            'posible, y un comprobante sin QR no es una representación impresa.'
+            'El comprobante todavía no está firmado: sin XML firmado no hay QR '
+            'ni representación impresa posible.'
         )
 
+    from datetime import datetime
+    from datetime import time as _time
+
+    from .fiscal.representation import parse_signed_invoice_for_representation
+
+    rep = parse_signed_invoice_for_representation(document.signed_xml)
+
+    # FISCAL-03: la fecha LEGAL es la del XML firmado (cbc:IssueDate/IssueTime),
+    # no `document.issued_at` (creación de fila). El QR también la toma de ahí.
     qr_payload = build_qr_payload(
-        issuer_tax_id=document.issuer_tax_id,
+        issuer_tax_id=rep.issuer_tax_id or document.issuer_tax_id,
         document_type=document.document_type,
         series=document.series,
         number=document.number,
-        tax_amount=document.tax_amount,
-        total=document.total,
-        issue_date=document.issued_at.date(),
+        tax_amount=rep.tax_amount,
+        total=rep.payable_amount,
+        issue_date=rep.issue_date,
         customer_doc_type=document.customer_doc_type,
-        customer_doc_number=document.customer_doc_number,
-        digest_value=document.digest_value,
+        customer_doc_number=rep.customer_doc_number or document.customer_doc_number,
+        digest_value=rep.digest_value or document.digest_value,
     )
+    legal_datetime = datetime.combine(rep.issue_date, rep.issue_time or _time(0, 0, 0))
     return {
         'title': _TITLE.get(document.document_type, 'COMPROBANTE ELECTRÓNICO'),
-        'identifier': document.document_id,
-        'issued_at': document.issued_at,
-        'currency': document.currency,
+        'identifier': rep.document_id or document.document_id,
+        'issued_at': legal_datetime,
+        'currency': rep.currency or document.currency,
         'issuer': {
-            'tax_id': document.issuer_tax_id,
-            'legal_name': document.issuer_legal_name,
+            'tax_id': rep.issuer_tax_id or document.issuer_tax_id,
+            'legal_name': rep.issuer_legal_name or document.issuer_legal_name,
             'trade_name': document.issuer_trade_name,
             'address': document.issuer_address,
         },
         'customer': {
-            'doc_number': document.customer_doc_number,
-            'legal_name': document.customer_legal_name,
+            'doc_number': rep.customer_doc_number or document.customer_doc_number,
+            'legal_name': rep.customer_legal_name or document.customer_legal_name,
         },
-        'lines': list(_document_lines(document)),
-        'taxable_amount': document.taxable_amount,
-        'tax_amount': document.tax_amount,
-        'total': document.total,
+        'lines': list(_document_lines(rep)),
+        'taxable_amount': rep.taxable_amount,
+        'tax_amount': rep.tax_amount,
+        'total': rep.payable_amount,
         'status_text': _STATUS_TEXT.get(document.status, document.get_status_display()),
         'is_accepted': document.is_accepted,
         'is_test': document.environment != FiscalEnvironment.PRODUCTION,
         'qr_payload': qr_payload,
         'qr_png': render_qr_png(qr_payload),
-        'digest_value': document.digest_value,
+        'digest_value': rep.digest_value or document.digest_value,
     }
 
 
