@@ -273,3 +273,51 @@ def resolve_provider(company):
         sol_user=credentials['sol_user'],
         sol_password=credentials['sol_password'],
     )
+
+
+def fiscal_consult_enabled() -> bool:
+    """
+    ¿Está habilitada la CONSULTA/RECONCILIACIÓN real contra SUNAT?
+
+    CAPACIDAD SEPARADA de la emisión (ERP-FISCAL-3 §16). `billConsultService`
+    —donde vive `getStatusCdr`— sólo existe en producción según el Manual del
+    programador: consultarlo de verdad es tocar producción, y ésa es una decisión
+    distinta de la de emitir. Apagada por defecto: en esta versión la
+    reconciliación se implementa y se prueba con un proveedor inyectado (mock),
+    pero NO sale a la red.
+
+    Encenderla NO habilita `sendBill` producción: son banderas y resolutores
+    distintos. `resolve_environment()`/`resolve_provider()` siguen fijados en BETA
+    pase lo que pase con ésta. Emitir en producción y consultar en producción son
+    capacidades separadas, y ninguna se enciende de rebote por la otra.
+    """
+    return bool(getattr(settings, 'FISCAL_CONSULT_ENABLED', False))
+
+
+def resolve_consult_provider(company):
+    """
+    El proveedor de CONSULTA (`getStatusCdr`). Endpoint fijo del código, jamás de
+    una petición: un inquilino que eligiera la URL tendría un SSRF servido.
+
+    FALLA CERRADO si la consulta real no está habilitada (§16/§53). En
+    ERP-FISCAL-3 lo está por defecto: la reconciliación se prueba con un proveedor
+    inyectado, no con éste. Enciende esta capacidad una fase de producción, con su
+    revisión propia — no un descuido de configuración.
+    """
+    from .fiscal.provider import PRODUCTION_CONSULT_ENDPOINT, SunatConsultProvider
+
+    if not fiscal_consult_enabled():
+        raise FiscalConfigError(
+            'La consulta/reconciliación en línea con SUNAT no está habilitada en '
+            'esta versión. Requiere revisión de producción.'
+        )
+    # El endpoint por defecto es el de producción documentado; se permite
+    # sustituirlo por configuración de servidor (nunca por petición) para pruebas
+    # de integración controladas.
+    endpoint = getattr(settings, 'FISCAL_CONSULT_ENDPOINT', PRODUCTION_CONSULT_ENDPOINT)
+    credentials = resolve_credentials(company)
+    return SunatConsultProvider(
+        endpoint=endpoint, ruc=credentials['ruc'],
+        sol_user=credentials['sol_user'],
+        sol_password=credentials['sol_password'],
+    )

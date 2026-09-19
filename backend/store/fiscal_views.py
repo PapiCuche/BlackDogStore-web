@@ -28,10 +28,12 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .fiscal_config import FiscalConfigError, resolve_provider
+from .fiscal_config import (
+    FiscalConfigError, resolve_consult_provider, resolve_provider,
+)
 from .fiscal_services import (
     FiscalError, FiscalSubmissionInProgress, get_or_create_fiscal_document,
-    sign_fiscal_document, submit_fiscal_document,
+    reconcile_fiscal_document, sign_fiscal_document, submit_fiscal_document,
 )
 from .inventory_views import _company_context
 from .models import AdminAuditLog, FiscalDocument, FiscalDocumentStatus
@@ -105,6 +107,23 @@ def _fiscal_document(request, pk, capability):
     return document, None
 
 
+def _document_observations(document: FiscalDocument) -> list[dict]:
+    """
+    Las observaciones del CDR, cada una con su código (§36/§37). Derivadas del
+    XML almacenado; sin columna nueva. Un CDR ilegible no rompe la respuesta:
+    devuelve una lista vacía, porque esto es una pista, no la evidencia.
+    """
+    if not document.cdr_xml:
+        return []
+    from .fiscal.cdr import CdrParseError, parse_cdr
+
+    try:
+        rep = parse_cdr(document.cdr_xml)
+    except CdrParseError:
+        return []
+    return [{'code': o.code, 'text': o.text} for o in rep.observations]
+
+
 def document_payload(document: FiscalDocument) -> dict:
     """
     Los metadatos del comprobante. Sin XML, sin CDR, sin secretos.
@@ -143,9 +162,17 @@ def document_payload(document: FiscalDocument) -> dict:
         'has_xml': bool(document.signed_xml),
         'has_cdr': bool(document.cdr_xml),
         'attempts': document.attempts.count(),
+        # Observaciones del CDR con SU CÓDIGO conservado (§37): derivadas del XML,
+        # no de una columna. Una observación aceptada trae datos reparables; el
+        # código dice QUÉ reparar y no debe perderse tras «aceptado con
+        # observaciones».
+        'observations': _document_observations(document),
         # Pistas para la interfaz. El backend las vuelve a comprobar.
         'can_submit': puede_enviar,
         'can_retry': puede_reintentar,
+        # Reconciliar cierra un envío incierto (SUBMISSION_ERROR). El backend
+        # vuelve a comprobar estado y permiso: ocultarlo es cortesía, no seguridad.
+        'can_reconcile': document.status == FiscalDocumentStatus.SUBMISSION_ERROR,
         # Se puede imprimir desde que está firmado: antes no hay valor resumen
         # y por tanto no hay QR. El papel dice el estado real, así que
         # «pendiente de envío» no se confunde con «aceptada».
@@ -308,6 +335,70 @@ class AdminFiscalDocumentSubmitView(APIView):
             request=request, company=document.company,
         )
         return Response(document_payload(document))
+
+
+class AdminFiscalDocumentReconcileView(APIView):
+    """
+    POST /api/admin/fiscal-documents/{pk}/reconcile/ — cerrar un envío incierto.
+
+    Cuando un envío quedó en `SUBMISSION_ERROR` (un timeout, un corte: no sabemos
+    si SUNAT lo recibió), esto consulta el CDR del comprobante YA EMITIDO
+    (`getStatusCdr`) y, si SUNAT ya tiene un veredicto, lo aplica. NO reenvía, NO
+    reserva otro correlativo, NO crea otro documento.
+
+    POR QUÉ EXIGE `sales.fiscal.issue` Y NO `.view` (§40)
+    ----------------------------------------------------
+    Reconciliar no es leer: puede llevar un comprobante a ACEPTADO o RECHAZADO
+    —su estado tributario— y sale a un servicio externo. Es del mismo tenor que
+    emitir y reintentar, no de consultar. Ver es mirar; reconciliar es declarar
+    que el asunto quedó zanjado con SUNAT.
+
+    EL IDENTIFICADOR LO PONE EL BACKEND (§42/§44)
+    ---------------------------------------------
+    El RUC, el tipo, la serie y el número se derivan del `FiscalDocument` local
+    autorizado, NUNCA del cuerpo de la petición: aceptar esos datos del cliente
+    sería consultar un comprobante ajeno (IDOR) o inyectar una consulta arbitraria.
+    El cuerpo de la petición se ignora.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    #: Sale a la red igual que el envío: mismo cubo, no uno nuevo (§45).
+    throttle_classes = [FiscalIssueThrottle]
+
+    def post(self, request, pk):
+        document, error = _fiscal_document(request, pk, CAP_FISCAL_ISSUE)
+        if error:
+            return error
+
+        try:
+            provider = resolve_consult_provider(document.company)
+        except FiscalConfigError as exc:
+            return Response(
+                {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        old_status = document.status
+        try:
+            outcome = reconcile_fiscal_document(document, provider)
+        except FiscalError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        AdminAuditLog.log(
+            actor=request.user, action='fiscal_document_reconciled',
+            target_type='fiscal_document', target_id=document.pk,
+            metadata={
+                'identifier': document.document_id,
+                'environment': document.environment,
+                # La evidencia cruda, sin normalizar (§20/§39): qué pidió el
+                # operador, qué dijo SUNAT y a qué llevó.
+                'reconcile_action': outcome.action,
+                'old_status': old_status,
+                'new_status': outcome.document.status,
+                'response_code': outcome.sunat_code,
+            },
+            request=request, company=document.company,
+        )
+        return Response(document_payload(outcome.document))
 
 
 def _artifact_response(content: str, filename: str) -> HttpResponse:

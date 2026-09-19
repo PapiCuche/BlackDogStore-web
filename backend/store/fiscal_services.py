@@ -29,6 +29,7 @@ dividir entre 1,18.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
@@ -525,3 +526,147 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         campos += ['cdr_xml', 'cdr_sha256']
     document.save(update_fields=campos)
     return document
+
+
+# ---------------------------------------------------------------------------
+# ERP-FISCAL-3 — reconciliación: cerrar un envío cuyo desenlace no conocemos
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    """
+    El desenlace de una reconciliación, para la vista y la bitácora.
+
+    `document` es el comprobante ya releído; `action` dice qué pasó, con un
+    vocabulario cerrado para que la auditoría y la respuesta HTTP no lo
+    interpreten cada una por su cuenta.
+    """
+
+    document: FiscalDocument
+    action: str
+    #: El estado terminal que el CDR determinó, si se aplicó alguno.
+    new_status: str = ''
+    #: El código CRUDO de SUNAT que trajo la consulta (§20). Nunca se pierde.
+    sunat_code: str = ''
+    safe_message: str = ''
+
+
+#: Desde estos estados reconciliar TIENE sentido: se intentó enviar y el desenlace
+#: quedó incierto o pendiente. Los terminales no se reconcilian: se informan.
+_RECONCILABLE_STATES = (
+    FiscalDocumentStatus.SUBMISSION_ERROR,
+    FiscalDocumentStatus.SUBMITTED,
+)
+
+#: Acciones NO terminales: el comprobante se queda como estaba y no se reenvía
+#: nada. «No encontrado ahora» no es «nunca recibido» (§24); un fallo de red no
+#: es un rechazo (§25).
+_NON_TERMINAL_ACTIONS = frozenset({
+    'not_available', 'transport_error', 'unknown_response',
+    'cdr_unreadable', 'cdr_mismatch',
+})
+
+
+def reconcile_fiscal_document(document: FiscalDocument, consult_provider
+                              ) -> ReconciliationResult:
+    """
+    Reconcilia un comprobante cuyo envío quedó incierto, consultando su CDR por
+    IDENTIFICADOR (`getStatusCdr`). El identificador es el YA EMITIDO: la consulta
+    no inventa nada nuevo.
+
+    LO QUE NUNCA HACE: reenviar, reservar otro correlativo, crear otro documento,
+    ni resucitar un rechazo con una consulta accidental. La red va FUERA de
+    transacción; el estado terminal se fija bajo un bloqueo breve que NO envuelve
+    ninguna llamada externa (§46/§47), releyendo el estado para que dos
+    reconciliaciones simultáneas no se pisen (§26).
+    """
+    if not document.signed_xml:
+        raise FiscalError(
+            'El documento no está firmado: no hay envío que reconciliar.')
+
+    # Terminal de entrada: no se consulta para no arriesgar sobrescribirlo.
+    # Aceptado es idempotente (§27); un rechazo no se «resucita» (§28).
+    if document.is_accepted:
+        return ReconciliationResult(document, 'already_accepted',
+                                    sunat_code=document.sunat_response_code)
+    if document.status == FiscalDocumentStatus.REJECTED:
+        return ReconciliationResult(document, 'already_rejected',
+                                    sunat_code=document.sunat_response_code)
+    if document.status not in _RECONCILABLE_STATES:
+        raise FiscalError(
+            f'Un comprobante en estado «{document.get_status_display()}» no se '
+            f'reconcilia: todavía no se ha intentado enviarlo.')
+
+    # Lectura remota. Idempotente en SUNAT: no cambia nada allá.
+    result = consult_provider.get_document_cdr(
+        issuer_ruc=document.issuer_tax_id,
+        document_type=document.document_type,
+        series=document.series,
+        number=document.number,
+    )
+    return _apply_reconciliation(document, result)
+
+
+def _apply_reconciliation(document: FiscalDocument, result) -> ReconciliationResult:
+    from .fiscal.cdr import CdrParseError, cdr_matches_document, parse_cdr
+    from .fiscal.provider import ReconcileOutcome
+
+    if result.outcome != ReconcileOutcome.RESOLVED:
+        # No llegó un CDR terminal. El comprobante se queda como estaba y no se
+        # reenvía; el código crudo se conserva para que un humano lo mire.
+        return ReconciliationResult(
+            document, result.outcome.value,
+            sunat_code=result.status_code, safe_message=result.safe_message)
+
+    cdr_result = result.cdr
+    if cdr_result is None or not cdr_result.cdr_xml:
+        return ReconciliationResult(
+            document, 'cdr_unreadable', sunat_code=result.status_code)
+
+    # BINDING (§64/§65): el CDR debe corresponder a ESTE comprobante. Uno de otro
+    # comprobante no se aplica jamás — llevaría el estado de una venta a lo que
+    # resolvió otra.
+    try:
+        rep = parse_cdr(cdr_result.cdr_xml)
+    except CdrParseError:
+        return ReconciliationResult(document, 'cdr_unreadable',
+                                    sunat_code=result.status_code)
+    if not cdr_matches_document(
+            rep, document_id=document.document_id,
+            issuer_tax_id=document.issuer_tax_id,
+            document_type=document.document_type):
+        return ReconciliationResult(document, 'cdr_mismatch',
+                                    sunat_code=cdr_result.response_code)
+
+    new_status = OUTCOME_TO_STATUS[cdr_result.outcome]
+    cdr_bytes = cdr_result.cdr_xml
+
+    # FINALIZAR bajo bloqueo, releyendo el estado. La red YA ocurrió; el bloqueo
+    # es breve y no envuelve ninguna llamada externa.
+    with transaction.atomic():
+        fresh = FiscalDocument.objects.select_for_update().get(pk=document.pk)
+        if fresh.status not in _RECONCILABLE_STATES:
+            # Otra reconciliación (o el envío) llegó antes y ya lo dejó terminal.
+            if fresh.status == new_status:
+                return ReconciliationResult(fresh, 'already_terminal',
+                                            new_status=fresh.status,
+                                            sunat_code=cdr_result.response_code)
+            # SUNAT dice algo distinto de lo ya guardado: NO se sobrescribe la
+            # historia; se marca conflicto para auditarlo (§28).
+            return ReconciliationResult(
+                fresh, 'reconciliation_conflict', new_status=new_status,
+                sunat_code=cdr_result.response_code,
+                safe_message=cdr_result.safe_message)
+
+        fresh.status = new_status
+        fresh.sunat_response_code = cdr_result.response_code
+        fresh.sunat_response_message = cdr_result.safe_message
+        fresh.cdr_xml = cdr_bytes.decode('utf-8', 'replace')
+        fresh.cdr_sha256 = hashlib.sha256(cdr_bytes).hexdigest()
+        fresh.save(update_fields=[
+            'status', 'sunat_response_code', 'sunat_response_message',
+            'cdr_xml', 'cdr_sha256', 'updated_at'])
+
+    return ReconciliationResult(
+        fresh, 'reconciled', new_status=new_status,
+        sunat_code=cdr_result.response_code, safe_message=cdr_result.safe_message)
