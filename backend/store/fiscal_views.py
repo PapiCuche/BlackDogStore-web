@@ -394,6 +394,10 @@ class AdminFiscalDocumentReconcileView(APIView):
                 'reconcile_action': outcome.action,
                 'old_status': old_status,
                 'new_status': outcome.document.status,
+                # El veredicto que trajo la consulta. En un conflicto (§28) NO es
+                # el estado que queda guardado: se registra para poder auditar la
+                # discrepancia por nombre, no sólo por el código crudo.
+                'sunat_verdict': outcome.new_status,
                 'response_code': outcome.sunat_code,
             },
             request=request, company=document.company,

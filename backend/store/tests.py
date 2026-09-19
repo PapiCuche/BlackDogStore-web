@@ -55505,6 +55505,52 @@ class C22CReconcileServiceTest(TestCase):
         self.assertEqual(out2.action, 'already_accepted')
         self.assertEqual(FiscalDocument.objects.count(), 1)
 
+    def test_a_submit_does_not_overwrite_a_terminal_set_concurrently(self):
+        """
+        REVIEW A / §26. Entre el claim y el guardado del envío, una reconciliación
+        dejó el comprobante ACEPTADO. El reintento de envío —que ahora recibe un
+        fault de duplicado— NO lo revierte: el veredicto terminal manda.
+        """
+        doc = self._errored_doc()
+        FiscalDocument.objects.filter(pk=doc.pk).update(
+            status=FiscalDocumentStatus.ACCEPTED)
+        result = submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='duplicado')))
+        self.assertEqual(result.status, FiscalDocumentStatus.ACCEPTED)
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+
+    def test_a_cdr_whose_code_does_not_settle_is_inconclusive(self):
+        """
+        REVIEW A. Llegó un CDR, pero su ResponseCode no resuelve a terminal
+        (código de rango reintentable): no es «reconciliado», queda no terminal.
+        """
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(_resolved_cdr(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, response_code='0150'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'cdr_inconclusive')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_a_cdr_with_mismatched_codes_is_inconclusive(self):
+        """
+        REVIEW B. El veredicto aplicado (intérprete laxo) y el ResponseCode del
+        nodo que ancla el binding (ruta estricta) deben coincidir; si no, el CDR
+        está malformado o manipulado y no se aplica.
+        """
+        doc = self._errored_doc()
+        # CDR con ResponseCode 0 (estricto), pero el intérprete dice REJECTED/2335.
+        cdr_xml = _build_cdr_xml(reference_id='F001-1', response_code='0', sign=False)
+        provider = _FakeConsultProvider(DocumentCdrResult(
+            outcome=ReconcileOutcome.RESOLVED, status_code='0004',
+            cdr=ProviderResult(outcome=ProviderOutcome.REJECTED,
+                               response_code='2335', cdr_xml=cdr_xml)))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'cdr_inconclusive')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
     def test_a_race_that_already_settled_differently_is_a_conflict(self):
         """
         §28. Entre la consulta y el cierre, OTRO proceso dejó el comprobante en un

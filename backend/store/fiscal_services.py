@@ -516,15 +516,30 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         'request_sha256', 'response_sha256',
     ])
 
-    document.status = OUTCOME_TO_STATUS[result.outcome]
-    document.sunat_response_code = result.response_code
-    document.sunat_response_message = result.safe_message
-    campos = ['status', 'sunat_response_code', 'sunat_response_message', 'updated_at']
-    if result.cdr_xml:
-        document.cdr_xml = result.cdr_xml.decode('utf-8', 'replace')
-        document.cdr_sha256 = hashlib.sha256(result.cdr_xml).hexdigest()
-        campos += ['cdr_xml', 'cdr_sha256']
-    document.save(update_fields=campos)
+    # FINALIZAR bajo bloqueo, releyendo el estado. Entre el claim y aquí (el envío
+    # a SUNAT puede tardar decenas de segundos), una RECONCILIACIÓN concurrente
+    # pudo dejar el comprobante en un estado TERMINAL a partir del CDR de una
+    # transmisión anterior que sí llegó. No se pisa: el veredicto terminal manda y
+    # el intento ya quedó registrado. Sin esto, el `save` a ciegas sobre el objeto
+    # en memoria revertía un ACEPTADO correcto (hallazgo REVIEW A, ERP-FISCAL-3).
+    with transaction.atomic():
+        locked = FiscalDocument.objects.select_for_update().get(pk=document.pk)
+        if locked.is_accepted or locked.status == FiscalDocumentStatus.REJECTED:
+            for campo in ('status', 'sunat_response_code', 'sunat_response_message',
+                          'cdr_xml', 'cdr_sha256'):
+                setattr(document, campo, getattr(locked, campo))
+            return document
+
+        document.status = OUTCOME_TO_STATUS[result.outcome]
+        document.sunat_response_code = result.response_code
+        document.sunat_response_message = result.safe_message
+        campos = ['status', 'sunat_response_code', 'sunat_response_message',
+                  'updated_at']
+        if result.cdr_xml:
+            document.cdr_xml = result.cdr_xml.decode('utf-8', 'replace')
+            document.cdr_sha256 = hashlib.sha256(result.cdr_xml).hexdigest()
+            campos += ['cdr_xml', 'cdr_sha256']
+        document.save(update_fields=campos)
     return document
 
 
@@ -558,12 +573,13 @@ _RECONCILABLE_STATES = (
     FiscalDocumentStatus.SUBMITTED,
 )
 
-#: Acciones NO terminales: el comprobante se queda como estaba y no se reenvía
-#: nada. «No encontrado ahora» no es «nunca recibido» (§24); un fallo de red no
-#: es un rechazo (§25).
-_NON_TERMINAL_ACTIONS = frozenset({
-    'not_available', 'transport_error', 'unknown_response',
-    'cdr_unreadable', 'cdr_mismatch',
+#: Los ÚNICOS veredictos de CDR que resuelven a un estado terminal. Un CDR con
+#: cualquier otro código (desconocido, o de un rango reintentable) llegó pero no
+#: zanja nada: el comprobante se queda no terminal, sin reenviar (§24/§25).
+_TERMINAL_CDR_OUTCOMES = frozenset({
+    ProviderOutcome.ACCEPTED,
+    ProviderOutcome.ACCEPTED_WITH_OBSERVATION,
+    ProviderOutcome.REJECTED,
 })
 
 
@@ -636,6 +652,22 @@ def _apply_reconciliation(document: FiscalDocument, result) -> ReconciliationRes
             issuer_tax_id=document.issuer_tax_id,
             document_type=document.document_type):
         return ReconciliationResult(document, 'cdr_mismatch',
+                                    sunat_code=cdr_result.response_code)
+
+    # Defensa en profundidad: el veredicto que se APLICA lo lee el intérprete
+    # común (`_read_cdr`, laxo), mientras que el binding lo ancló la ruta ESTRICTA
+    # de `parse_cdr`. Si el `ResponseCode` difiere entre ambas lecturas, el CDR
+    # está malformado o manipulado (un código plantado fuera del nodo que ancló el
+    # binding): no se aplica nada.
+    if rep.response_code != cdr_result.response_code:
+        return ReconciliationResult(document, 'cdr_inconclusive',
+                                    sunat_code=cdr_result.response_code)
+
+    # Llegó un CDR, pero su código no resuelve a un estado terminal (código
+    # desconocido, o de un rango reintentable dentro de una constancia legible):
+    # NO es «reconciliado». Queda no terminal, sin tocar el estado.
+    if cdr_result.outcome not in _TERMINAL_CDR_OUTCOMES:
+        return ReconciliationResult(document, 'cdr_inconclusive',
                                     sunat_code=cdr_result.response_code)
 
     new_status = OUTCOME_TO_STATUS[cdr_result.outcome]
