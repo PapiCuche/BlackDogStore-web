@@ -55020,3 +55020,633 @@ class FiscalRoundingReconciliationTest(SimpleTestCase):
         with self.assertRaises(ReconciliationError):
             allocate_line_bases([Decimal('119.80')], taxable=Decimal('200.00'),
                                 rate=self.RATE)
+
+
+# ===========================================================================
+# ERP-FISCAL-3 — reconciliación SUNAT, confianza del CDR y fundación asíncrona
+# ===========================================================================
+
+from .fiscal.cdr import (  # noqa: E402
+    CdrParseError, cdr_matches_document, parse_cdr,
+)
+from .fiscal.cdr_signature import inspect_cdr_signature  # noqa: E402
+from .fiscal.provider import (  # noqa: E402
+    DocumentCdrResult, ReconcileOutcome, SunatConsultProvider, SunatSoapProvider,
+    TicketStatus, _TransportError,
+)
+from .fiscal_services import (  # noqa: E402
+    OUTCOME_TO_STATUS, ReconciliationResult, reconcile_fiscal_document,
+)
+
+_AR_NS = 'urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2'
+_CAC_NS = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+_CBC_NS = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+_SOAP_NS = 'http://schemas.xmlsoap.org/soap/envelope/'
+_SER_NS = 'http://service.sunat.gob.pe'
+
+
+def _build_cdr_xml(*, reference_id='F001-1', response_code='0',
+                   receiver_ruc='20100066603', sender_ruc='20131312955',
+                   doc_type='01', notes=(), sign=True, signer_ruc='20131312955'):
+    """Un `ApplicationResponse` (CDR) de prueba, firmado como lo firma SUNAT."""
+    from lxml import etree
+    from signxml import XMLSigner, methods
+
+    root = etree.Element(f'{{{_AR_NS}}}ApplicationResponse',
+                         nsmap={'ar': _AR_NS, 'cac': _CAC_NS, 'cbc': _CBC_NS})
+    etree.SubElement(root, f'{{{_CBC_NS}}}ID').text = 'R-1'
+    sp = etree.SubElement(root, f'{{{_CAC_NS}}}SenderParty')
+    spi = etree.SubElement(sp, f'{{{_CAC_NS}}}PartyIdentification')
+    etree.SubElement(spi, f'{{{_CBC_NS}}}ID').text = sender_ruc
+    rp = etree.SubElement(root, f'{{{_CAC_NS}}}ReceiverParty')
+    rpi = etree.SubElement(rp, f'{{{_CAC_NS}}}PartyIdentification')
+    etree.SubElement(rpi, f'{{{_CBC_NS}}}ID').text = receiver_ruc
+    dr = etree.SubElement(root, f'{{{_CAC_NS}}}DocumentResponse')
+    resp = etree.SubElement(dr, f'{{{_CAC_NS}}}Response')
+    etree.SubElement(resp, f'{{{_CBC_NS}}}ResponseCode').text = response_code
+    etree.SubElement(resp, f'{{{_CBC_NS}}}Description').text = (
+        f'La Factura numero {reference_id}, ha sido aceptada')
+    dref = etree.SubElement(dr, f'{{{_CAC_NS}}}DocumentReference')
+    etree.SubElement(dref, f'{{{_CBC_NS}}}ID').text = reference_id
+    if doc_type:
+        etree.SubElement(dref, f'{{{_CBC_NS}}}DocumentTypeCode').text = doc_type
+    for note in notes:
+        etree.SubElement(dr, f'{{{_CBC_NS}}}Note').text = note
+    if sign:
+        key, cert = self_signed_pem(signer_ruc)
+        root = XMLSigner(method=methods.enveloped).sign(root, key=key, cert=cert)
+    return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
+
+
+def _zip_b64(xml, name='R-20100066603-01-F001-1.xml'):
+    import base64
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, xml)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _soap_getstatuscdr(status_code, content=None, message='ok'):
+    from lxml import etree
+    env = etree.Element(f'{{{_SOAP_NS}}}Envelope', nsmap={'soapenv': _SOAP_NS})
+    body = etree.SubElement(env, f'{{{_SOAP_NS}}}Body')
+    resp = etree.SubElement(body, f'{{{_SER_NS}}}getStatusCdrResponse')
+    sc = etree.SubElement(resp, 'statusCdr')
+    etree.SubElement(sc, 'statusCode').text = status_code
+    if content is not None:
+        etree.SubElement(sc, 'content').text = content
+    etree.SubElement(sc, 'statusMessage').text = message
+    return etree.tostring(env, xml_declaration=True, encoding='UTF-8')
+
+
+def _soap_getstatus_ticket(status_code, content=None):
+    from lxml import etree
+    env = etree.Element(f'{{{_SOAP_NS}}}Envelope', nsmap={'soapenv': _SOAP_NS})
+    body = etree.SubElement(env, f'{{{_SOAP_NS}}}Body')
+    resp = etree.SubElement(body, f'{{{_SER_NS}}}getStatusResponse')
+    st = etree.SubElement(resp, 'status')
+    etree.SubElement(st, 'statusCode').text = status_code
+    if content is not None:
+        etree.SubElement(st, 'content').text = content
+    return etree.tostring(env, xml_declaration=True, encoding='UTF-8')
+
+
+def _soap_fault(faultcode='soap-env:Client.0100', faultstring='algo falló'):
+    from lxml import etree
+    env = etree.Element(f'{{{_SOAP_NS}}}Envelope', nsmap={'soapenv': _SOAP_NS})
+    body = etree.SubElement(env, f'{{{_SOAP_NS}}}Body')
+    fault = etree.SubElement(body, f'{{{_SOAP_NS}}}Fault')
+    etree.SubElement(fault, 'faultcode').text = faultcode
+    etree.SubElement(fault, 'faultstring').text = faultstring
+    return etree.tostring(env, xml_declaration=True, encoding='UTF-8')
+
+
+class _FakeConsultProvider:
+    """Un proveedor de consulta de mentira: devuelve lo que se le dé, sin red."""
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def get_document_cdr(self, *, issuer_ruc, document_type, series, number):
+        self.calls.append((issuer_ruc, document_type, series, number))
+        return self.result
+
+
+def _resolved_cdr(*, reference_id='F001-1', outcome=ProviderOutcome.ACCEPTED,
+                  response_code='0', receiver_ruc='20100066603', notes=()):
+    """Un `DocumentCdrResult` RESUELTO con un CDR real dentro (para binding)."""
+    cdr_xml = _build_cdr_xml(reference_id=reference_id, response_code=response_code,
+                             receiver_ruc=receiver_ruc, notes=notes, sign=False)
+    return DocumentCdrResult(
+        outcome=ReconcileOutcome.RESOLVED, status_code='0004',
+        cdr=ProviderResult(outcome=outcome, response_code=response_code,
+                           safe_message='ok', cdr_xml=cdr_xml,
+                           notes=tuple(notes)),
+        request_sha256='a' * 64, response_sha256='b' * 64)
+
+
+class FiscalCdrParseTest(SimpleTestCase):
+    """Lectura del CDR: identificación, binding y observaciones con su código."""
+
+    def test_it_reads_the_reference_and_the_parties(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False))
+        self.assertEqual(rep.reference_id, 'F001-1')
+        self.assertEqual(rep.receiver_ruc, '20100066603')
+        self.assertEqual(rep.sender_ruc, '20131312955')
+        self.assertEqual(rep.response_code, '0')
+        self.assertEqual(rep.document_type_code, '01')
+
+    def test_an_observation_keeps_its_code_and_text(self):
+        rep = parse_cdr(_build_cdr_xml(
+            sign=False, notes=('4267 - El dato del cliente no cumple el formato',)))
+        self.assertEqual(len(rep.observations), 1)
+        self.assertEqual(rep.observations[0].code, '4267')
+        self.assertEqual(rep.observations[0].text,
+                         'El dato del cliente no cumple el formato')
+
+    def test_a_note_without_a_code_keeps_the_text(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False, notes=('Sin código aquí',)))
+        self.assertEqual(rep.observations[0].code, '')
+        self.assertEqual(rep.observations[0].text, 'Sin código aquí')
+
+    def test_the_binding_accepts_the_matching_document(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False))
+        self.assertTrue(cdr_matches_document(
+            rep, document_id='F001-1', issuer_tax_id='20100066603',
+            document_type='01'))
+
+    def test_the_binding_rejects_a_different_number(self):
+        """§65: local F001-25, CDR F001-24 → no corresponde."""
+        rep = parse_cdr(_build_cdr_xml(sign=False, reference_id='F001-24'))
+        self.assertFalse(cdr_matches_document(
+            rep, document_id='F001-25', issuer_tax_id='20100066603',
+            document_type='01'))
+
+    def test_the_binding_rejects_a_different_ruc(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False, receiver_ruc='20999999999'))
+        self.assertFalse(cdr_matches_document(
+            rep, document_id='F001-1', issuer_tax_id='20100066603'))
+
+    def test_the_binding_rejects_a_different_type(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False, doc_type='03'))
+        self.assertFalse(cdr_matches_document(
+            rep, document_id='F001-1', issuer_tax_id='20100066603',
+            document_type='01'))
+
+    def test_an_unreadable_cdr_raises_a_parse_error_not_a_crash(self):
+        with self.assertRaises(CdrParseError):
+            parse_cdr(b'<no-cierra>')
+
+    def test_a_cdr_with_a_doctype_is_rejected(self):
+        """El parser endurecido rechaza DOCTYPE también en el CDR (XXE)."""
+        with self.assertRaises(CdrParseError):
+            parse_cdr(b'<?xml version="1.0"?><!DOCTYPE x><x/>')
+
+
+class FiscalCdrSignatureTest(SimpleTestCase):
+    """
+    Auditoría de la firma del CDR (§31-§35, §61).
+
+    LA LÍNEA QUE NO SE CRUZA: integridad matemática NO es autenticidad. Un CDR
+    autofirmado por un atacante puede validar su integridad; jamás por eso se
+    marca como de SUNAT.
+    """
+
+    def test_a_valid_signature_verifies_integrity_but_not_authenticity(self):
+        rep = inspect_cdr_signature(_build_cdr_xml(sign=True))
+        self.assertTrue(rep.has_signature)
+        self.assertTrue(rep.integrity_valid)
+        self.assertEqual(rep.authenticity, 'unverified')
+
+    def test_a_self_signed_attacker_gets_no_authenticity(self):
+        """
+        §33. Un atacante firma su propio CDR con su propio certificado: la
+        integridad «valida» contra ESE certificado, pero la autenticidad sigue
+        sin verificar. Nunca se concluye que sea SUNAT.
+        """
+        rep = inspect_cdr_signature(_build_cdr_xml(sign=True, signer_ruc='20999999999'))
+        self.assertTrue(rep.integrity_valid)
+        self.assertNotEqual(rep.authenticity, 'trusted')
+        self.assertEqual(rep.authenticity, 'unverified')
+
+    def test_tampering_after_signing_breaks_integrity(self):
+        signed = _build_cdr_xml(sign=True)
+        tampered = signed.replace(b'ha sido aceptada', b'ha sido rechazada')
+        rep = inspect_cdr_signature(tampered)
+        self.assertTrue(rep.has_signature)
+        self.assertFalse(rep.integrity_valid)
+
+    def test_a_cdr_without_a_signature_is_flagged(self):
+        rep = inspect_cdr_signature(_build_cdr_xml(sign=False))
+        self.assertFalse(rep.has_signature)
+        self.assertFalse(rep.integrity_valid)
+        self.assertEqual(rep.authenticity, 'unverified')
+
+
+class FiscalConsultProviderTest(SimpleTestCase):
+    """`getStatusCdr` interpretado (§58). Con respuestas de mentira, sin red."""
+
+    def setUp(self):
+        self.p = SunatConsultProvider(
+            endpoint='https://x/billConsultService', ruc='20100066603',
+            sol_user='MODDATOS', sol_password='moddatos')
+
+    def _cdr(self, **kw):
+        return _zip_b64(_build_cdr_xml(sign=False, **kw))
+
+    def test_an_accepted_cdr_resolves_to_accepted(self):
+        r = self.p._interpret_cdr(_soap_getstatuscdr('0004', self._cdr()), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.RESOLVED)
+        self.assertEqual(r.cdr.outcome, ProviderOutcome.ACCEPTED)
+
+    def test_an_observed_cdr_resolves_to_accepted_with_observation(self):
+        r = self.p._interpret_cdr(
+            _soap_getstatuscdr('0004', self._cdr(notes=('4267 - dato',))), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.RESOLVED)
+        self.assertEqual(r.cdr.outcome, ProviderOutcome.ACCEPTED_WITH_OBSERVATION)
+
+    def test_a_rejected_cdr_resolves_to_rejected(self):
+        r = self.p._interpret_cdr(
+            _soap_getstatuscdr('0004', self._cdr(response_code='2335')), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.RESOLVED)
+        self.assertEqual(r.cdr.outcome, ProviderOutcome.REJECTED)
+
+    def test_no_content_is_not_available_and_keeps_the_raw_code(self):
+        """§24: sin CDR NO se concluye «no existe»; queda no terminal, código crudo."""
+        r = self.p._interpret_cdr(_soap_getstatuscdr('0011'), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.NOT_AVAILABLE)
+        self.assertEqual(r.status_code, '0011')
+
+    def test_a_soap_fault_is_unknown_not_a_rejection(self):
+        r = self.p._interpret_cdr(_soap_fault('soap-env:Client.0011'), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.UNKNOWN_RESPONSE)
+        self.assertEqual(r.status_code, '0011')
+
+    def test_a_500_is_a_transport_error(self):
+        r = self.p._interpret_cdr(b'<x/>', 500, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.TRANSPORT_ERROR)
+
+    def test_malformed_xml_is_unknown(self):
+        r = self.p._interpret_cdr(b'<no-cierra>', 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.UNKNOWN_RESPONSE)
+
+    def test_invalid_base64_content_yields_an_unreadable_cdr(self):
+        r = self.p._interpret_cdr(_soap_getstatuscdr('0004', '%%%no-b64%%%'), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.RESOLVED)
+        self.assertEqual(r.cdr.outcome, ProviderOutcome.UNKNOWN_RESPONSE)
+        self.assertIsNone(r.cdr.cdr_xml)
+
+    def test_a_network_failure_is_a_transport_error(self):
+        from unittest.mock import patch as _patch
+        with _patch.object(SunatConsultProvider, '_post',
+                           side_effect=_TransportError('ReadTimeout al contactar')):
+            r = self.p.get_document_cdr(issuer_ruc='20100066603',
+                                        document_type='01', series='F001', number=1)
+        self.assertEqual(r.outcome, ReconcileOutcome.TRANSPORT_ERROR)
+
+    def test_the_query_carries_the_document_identifier(self):
+        from unittest.mock import patch as _patch
+        with _patch.object(SunatConsultProvider, '_post',
+                           return_value=(_soap_getstatuscdr('0011'), 200)) as post:
+            self.p.get_document_cdr(issuer_ruc='20100066603', document_type='01',
+                                    series='F001', number=7)
+        envelope = post.call_args.args[0]
+        self.assertIn(b'getStatusCdr', envelope)
+        self.assertIn(b'<numeroComprobante>7</numeroComprobante>', envelope)
+        self.assertIn(b'<serieComprobante>F001</serieComprobante>', envelope)
+        # NUNCA la contraseña en la huella, pero sí en el sobre (va a SUNAT).
+        self.assertIn(b'moddatos', envelope)
+
+
+class FiscalTicketStatusTest(SimpleTestCase):
+    """`getStatus(ticket)` sobre billService (§59). Fundación para FISCAL-4."""
+
+    def setUp(self):
+        self.p = SunatSoapProvider(
+            endpoint='https://x/billService', ruc='20100066603',
+            sol_user='MODDATOS', sol_password='moddatos')
+
+    def test_code_0_is_completed_with_a_cdr(self):
+        content = _zip_b64(_build_cdr_xml(sign=False))
+        r = self.p._interpret_ticket(_soap_getstatus_ticket('0', content), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.COMPLETED)
+        self.assertIsNotNone(r.cdr)
+
+    def test_code_98_is_processing(self):
+        r = self.p._interpret_ticket(_soap_getstatus_ticket('98'), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.PROCESSING)
+        self.assertIsNone(r.cdr)
+
+    def test_code_99_is_error(self):
+        r = self.p._interpret_ticket(_soap_getstatus_ticket('99'), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.ERROR)
+
+    def test_an_unknown_code_is_unknown(self):
+        r = self.p._interpret_ticket(_soap_getstatus_ticket('7'), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.UNKNOWN_RESPONSE)
+
+    def test_a_soap_fault_is_a_transport_error(self):
+        r = self.p._interpret_ticket(_soap_fault(), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.TRANSPORT_ERROR)
+
+    def test_a_500_is_a_transport_error(self):
+        r = self.p._interpret_ticket(b'<x/>', 500, 'h')
+        self.assertEqual(r.status, TicketStatus.TRANSPORT_ERROR)
+
+    def test_malformed_is_unknown(self):
+        r = self.p._interpret_ticket(b'<no-cierra>', 200, 'h')
+        self.assertEqual(r.status, TicketStatus.UNKNOWN_RESPONSE)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22CReconcileServiceTest(TestCase):
+    """
+    Reconciliación (§60): cerrar un envío incierto sin reenviar ni duplicar.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22c-recon', 'Empresa Recon', tax_id='20100066603',
+            legal_name='EMPRESA RECON SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Recon', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _errored_doc(self):
+        """Un comprobante firmado cuyo envío quedó en SUBMISSION_ERROR."""
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            doc, _ = get_or_create_fiscal_document(self._order())
+            doc = sign_fiscal_document(doc, key_pem=self.key_pem.encode(),
+                                       cert_pem=self.cert_pem.encode())
+        doc = submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        return doc
+
+    def test_a_found_accepted_cdr_settles_the_document(self):
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(_resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'reconciled')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+        self.assertTrue(doc.cdr_xml)
+        self.assertTrue(doc.cdr_sha256)
+        # No se reservó otro correlativo ni se creó otro documento.
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+        # Reconciliar no crea intentos de ENVÍO (§48): el único intento es el fallido.
+        self.assertEqual(doc.attempts.count(), 1)
+
+    def test_a_found_rejected_cdr_settles_as_rejected(self):
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(
+            _resolved_cdr(outcome=ProviderOutcome.REJECTED, response_code='2335'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'reconciled')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.REJECTED)
+
+    def test_not_available_leaves_it_non_terminal_and_does_not_resend(self):
+        """§24/§25: sin CDR el comprobante se queda como estaba, no se reenvía."""
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(DocumentCdrResult(
+            outcome=ReconcileOutcome.NOT_AVAILABLE, status_code='0011'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'not_available')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+
+    def test_a_transport_error_leaves_it_non_terminal(self):
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(DocumentCdrResult(
+            outcome=ReconcileOutcome.TRANSPORT_ERROR, safe_message='timeout'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'transport_error')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_a_cdr_for_another_document_is_never_applied(self):
+        """§65: un CDR que no corresponde no toca el estado."""
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(_resolved_cdr(reference_id='F001-99'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'cdr_mismatch')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_reconciling_an_accepted_document_is_a_noop_without_a_query(self):
+        """§27: aceptado no se reenvía ni se re-consulta."""
+        doc = self._errored_doc()
+        doc.status = FiscalDocumentStatus.ACCEPTED
+        doc.save(update_fields=['status'])
+        provider = _FakeConsultProvider(_resolved_cdr())
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'already_accepted')
+        self.assertEqual(provider.calls, [])  # no salió a la red
+
+    def test_reconciling_a_rejected_document_does_not_resurrect_it(self):
+        """§28: un rechazo no se convierte en aceptado por una consulta."""
+        doc = self._errored_doc()
+        doc.status = FiscalDocumentStatus.REJECTED
+        doc.save(update_fields=['status'])
+        provider = _FakeConsultProvider(_resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'already_rejected')
+        self.assertEqual(provider.calls, [])
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.REJECTED)
+
+    def test_an_unsent_document_cannot_be_reconciled(self):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            doc, _ = get_or_create_fiscal_document(self._order())
+            doc = sign_fiscal_document(doc, key_pem=self.key_pem.encode(),
+                                       cert_pem=self.cert_pem.encode())
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+        with self.assertRaises(FiscalError):
+            reconcile_fiscal_document(doc, _FakeConsultProvider(_resolved_cdr()))
+
+    def test_reconciling_twice_is_idempotent(self):
+        """§26: dos veces → la segunda no cambia nada; un solo CDR."""
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(_resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+        reconcile_fiscal_document(doc, provider)
+        doc.refresh_from_db()
+        out2 = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out2.action, 'already_accepted')
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+
+    def test_a_race_that_already_settled_differently_is_a_conflict(self):
+        """
+        §28. Entre la consulta y el cierre, OTRO proceso dejó el comprobante en un
+        estado terminal DISTINTO del que trae el CDR. No se sobrescribe la
+        historia: se marca conflicto para auditarlo.
+        """
+        from .fiscal_services import _apply_reconciliation
+        doc = self._errored_doc()
+        # Simula la carrera: la fila ya quedó ACEPTADA por otra reconciliación.
+        FiscalDocument.objects.filter(pk=doc.pk).update(
+            status=FiscalDocumentStatus.ACCEPTED)
+        # El CDR que trajo ESTA consulta dice RECHAZADO.
+        result = _resolved_cdr(outcome=ProviderOutcome.REJECTED, response_code='2335')
+        out = _apply_reconciliation(doc, result)
+        self.assertEqual(out.action, 'reconciliation_conflict')
+        doc.refresh_from_db()
+        # NO se sobrescribió: sigue aceptado.
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+
+
+class C22CReconcileApiTest(TestCase):
+    """El endpoint de reconciliación: permiso, aislamiento y frontera de red."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22c-api', 'Empresa Recon API', tax_id='20100066603',
+            legal_name='EMPRESA RECON API SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Recon API', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+        self.emisor, _ = _p2d_member(
+            self.company, 'c22c_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'c22c_observador', ['company.view', 'sales.fiscal.view'])
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.doc = self._errored_doc()
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _errored_doc(self):
+        with override_settings(FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+                               FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+                               FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            doc, _ = get_or_create_fiscal_document(self._order())
+            doc = sign_fiscal_document(doc, key_pem=self.key_pem.encode(),
+                                       cert_pem=self.cert_pem.encode())
+        return submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_reconcile_requires_issue_not_only_view(self):
+        """§40. Reconciliar declara estado; consultar no basta."""
+        res = self._as(self.observador).post(
+            f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/')
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_reconcile_is_503_when_the_online_query_is_disabled(self):
+        """§16/§53: la consulta real está apagada; el endpoint lo dice, no revienta."""
+        res = self._as(self.emisor).post(
+            f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/')
+        self.assertEqual(res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    def test_reconcile_applies_the_cdr_when_a_provider_is_available(self):
+        from unittest.mock import patch as _patch
+        with _patch('store.fiscal_views.resolve_consult_provider') as fake:
+            fake.return_value = _FakeConsultProvider(
+                _resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+            res = self._as(self.emisor).post(
+                f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], FiscalDocumentStatus.ACCEPTED)
+        self.assertTrue(res.data['is_accepted'])
+
+    def test_the_query_identifier_comes_from_the_document_not_the_body(self):
+        """§42/§44: el identificador lo pone el backend; el cuerpo se ignora."""
+        from unittest.mock import patch as _patch
+        provider = _FakeConsultProvider(_resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+        with _patch('store.fiscal_views.resolve_consult_provider', return_value=provider):
+            self._as(self.emisor).post(
+                f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/',
+                {'serieComprobante': 'F999', 'numeroComprobante': '424242'},
+                format='json')
+        self.assertEqual(provider.calls,
+                         [('20100066603', '01', self.doc.series, self.doc.number)])
+
+    def test_a_document_of_another_company_is_not_found(self):
+        """§41: aislamiento por empresa aunque se conozca el id."""
+        other = _p3_company('c22c-other', 'Otra', tax_id='20555555555',
+                            legal_name='OTRA SAC')
+        stranger, _ = _p2d_member(
+            other, 'c22c_stranger',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        res = self._as(stranger).post(
+            f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class FiscalBetaSmokeCommandTest(TestCase):
+    """
+    TEST-HARNESS-01 (§8/§9/§55/§56). El arnés de humo BETA, corregido.
+
+    ESTO QUEDA EXPLÍCITO: una prueba que llama a un servicio EXTERNO no puede usar
+    un rollback de base de datos como «limpieza» de identidad fiscal. El envío a
+    SUNAT ya ocurrió y no se deshace; reutilizar el mismo correlativo (F001-1 en
+    ERP-FISCAL-2) fue precisamente ese error. Por eso el humo vive en un comando
+    opt-in que PERSISTE lo que envía, y NO se ejecuta en CI.
+    """
+
+    def test_it_refuses_without_the_explicit_flag(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('fiscal_beta_smoke', '--company-tax-id', '20100066603')
+
+    def test_it_refuses_when_fiscal_is_disabled_even_with_the_flag(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with override_settings(FISCAL_BETA_SMOKE_ENABLED=True, FISCAL_ENABLED=False):
+            with self.assertRaises(CommandError):
+                call_command('fiscal_beta_smoke', '--company-tax-id', '20100066603')
