@@ -55245,6 +55245,30 @@ class FiscalCdrSignatureTest(SimpleTestCase):
         self.assertFalse(rep.integrity_valid)
         self.assertEqual(rep.authenticity, 'unverified')
 
+    def test_a_tampered_signature_value_fails_integrity(self):
+        import re
+        signed = _build_cdr_xml(sign=True)
+        m = re.search(
+            rb'(<[^>]*SignatureValue[^>]*>)([^<]+)(</[^>]*SignatureValue>)', signed)
+        self.assertIsNotNone(m)
+        val = m.group(2)
+        flipped = (b'B' if val[:1] == b'A' else b'A') + val[1:]
+        tampered = signed[:m.start(2)] + flipped + signed[m.end(2):]
+        rep = inspect_cdr_signature(tampered)
+        self.assertTrue(rep.has_signature)
+        self.assertFalse(rep.integrity_valid)
+
+    def test_a_signature_without_an_embedded_certificate_is_not_verifiable(self):
+        from lxml import etree
+        root = etree.fromstring(_build_cdr_xml(sign=True))
+        for cert in root.findall(
+                './/{http://www.w3.org/2000/09/xmldsig#}X509Certificate'):
+            cert.getparent().remove(cert)
+        rep = inspect_cdr_signature(etree.tostring(root))
+        self.assertTrue(rep.has_signature)
+        self.assertFalse(rep.integrity_valid)
+        self.assertEqual(rep.authenticity, 'unverified')
+
 
 class FiscalConsultProviderTest(SimpleTestCase):
     """`getStatusCdr` interpretado (§58). Con respuestas de mentira, sin red."""
