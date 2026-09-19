@@ -4,6 +4,24 @@
 **Estado del proyecto:** MVP en desarrollo; no apto todavía para producción ni pagos reales  
 **Objetivo del documento:** proporcionar contexto verificable a desarrolladores y asistentes de IA sobre la arquitectura, funcionalidades, problemas, riesgos y prioridades actuales del repositorio.
 
+> **Actualización ERP-FISCAL-3 (19-09-2026, rama `erp/fiscal-sunat`).** Cierra el
+> transporte incierto sin añadir tipos de comprobante ni habilitar producción.
+> **Reconciliación** (`getStatusCdr`): un envío que quedó `SUBMISSION_ERROR` se
+> resuelve CONSULTANDO el CDR del comprobante ya emitido; nunca reenvía, reserva
+> correlativo ni crea otro documento; la red va fuera de transacción y el estado
+> terminal se fija releyendo bajo bloqueo (idempotente, sin sobrescribir un
+> terminal). Endpoint `POST /reconcile/`, exige `sales.fiscal.issue`, deriva el
+> identificador del documento (anti-IDOR). Distinción clave: `getStatusCdr`
+> (`billConsultService`) ≠ `getStatus(ticket)` (`billService`); no existe
+> `getStatusCpe`. **Confianza del CDR**: se audita su firma —integridad sí (con
+> `signxml`), autenticidad `unverified` (SUNAT no publica ancla), CDR-TRUST-01
+> PENDIENTE, sin enchufar a la aceptación—. **Observaciones** del CDR con su
+> código conservado. **TEST-HARNESS-01**: el humo BETA pasa a comando opt-in que
+> persiste (no más rollback de un efecto externo). Consulta en producción y
+> emisión en producción son capacidades separadas (banderas distintas); ambas
+> siguen apagadas/BETA. Sin migraciones, sin frontend, sin red en esta fase.
+> Detalle en el CHANGELOG y ADR-20/21/22/23.
+>
 > **Actualización ERP-FISCAL-2 (18-09-2026, rama `erp/fiscal-sunat`).** La FACTURA
 > gravada, al contado y sin descuento pasa de PARCIAL a **IMPLEMENTADO para BETA**:
 > se emite, firma, valida contra el XSD, empaqueta y **SUNAT BETA la acepta**

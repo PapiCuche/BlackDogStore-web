@@ -392,3 +392,92 @@ comprobante. El parser es el endurecido y de sólo-lectura porque un XML firmado
 aunque lo generamos nosotros, se trata como entrada no confiable: generar el PDF
 **no** debe poder mutar el documento (SHA del `signed_xml` estable), y así se
 prueba de forma adversaria (mutar OrderItem tras firmar → impreso sin cambios).
+
+---
+
+# ADR — ERP-FISCAL-3
+
+## ADR-20 · Reconciliar consulta el CDR ya emitido; nunca reenvía a ciegas
+
+**Decisión.** Cuando un envío queda incierto (`SUBMISSION_ERROR`: un timeout, un
+corte —no sabemos si SUNAT lo recibió—), se reconcilia CONSULTANDO el CDR del
+comprobante **ya emitido** (`getStatusCdr`, por RUC/tipo/serie/número que se
+derivan del documento local). Si SUNAT ya tiene un veredicto, se aplica; si no,
+el comprobante queda NO TERMINAL y **no se reenvía nada**. Reconciliar **nunca**
+reenvía, reserva otro correlativo ni crea otro documento. La red va FUERA de
+transacción; el estado terminal se fija bajo un bloqueo breve (`select_for_update`)
+que **relee** el estado y no envuelve ninguna llamada externa. Un aceptado no se
+re-consulta (idempotente); un rechazo no se convierte en aceptado por una consulta;
+un CDR que contradice un estado terminal ya guardado es un CONFLICTO que se audita,
+no una sobrescritura.
+
+**Por qué.** Un timeout deja la venta en un estado que sólo SUNAT conoce. Reenviar
+«por si acaso» produciría un segundo documento por una venta que quizá ya está
+registrada, y un correlativo gastado no se recicla. La única acción segura es
+PREGUNTAR por el identificador que ya se emitió, no emitir otro. «No consta ahora»
+no es «nunca se recibió»: por eso no dispara un reenvío automático. La red fuera de
+la transacción evita bloquear la fila del contador durante segundos de espera
+(misma disciplina que el envío, ADR-9/ADR-14); releer bajo bloqueo antes de aplicar
+es lo que hace que dos reconciliaciones —o una reconciliación y un envío—
+simultáneas no se pisen.
+
+**Autoridad y modelo.** Reconciliar NO crea `FiscalSubmissionAttempt` (ese modelo
+es historial de ENVÍO); su rastro va a `AdminAuditLog` (actor, empresa, documento,
+acción, estado anterior/posterior, código SUNAT crudo). Exige `sales.fiscal.issue`
+y no `.view`: llevar un comprobante a ACEPTADO/RECHAZADO es declarar que el asunto
+quedó zanjado con SUNAT, del mismo tenor que emitir, no de consultar. Sin migración.
+
+## ADR-21 · `getStatusCdr` ≠ `getStatus(ticket)`: dos servicios, dos contratos
+
+**Decisión.** Se modelan como operaciones y tipos SEPARADOS, aunque compartan
+infraestructura (WS-Security, POST acotado, parser endurecido y **un único
+intérprete de CDR**). `getStatusCdr` vive en `billConsultService` y recupera el CDR
+de un comprobante emitido por su identificador; `getStatus(ticket)` vive en
+`billService` y da el estado de un proceso asíncrono (Resumen/Baja) por ticket, con
+los códigos oficiales `0`/`98`/`99`. No se implementó ningún `getStatusCpe`: no es
+una operación real del SEE-Del Contribuyente.
+
+**Por qué.** El Manual del programador los publica como servicios distintos con
+entradas y estados distintos; mezclarlos en un `sunat_request` genérico haría que
+un cambio en uno arrastrase al otro. El Manual **no publica** la tabla de códigos de
+`getStatusCdr`, así que la reconciliación se apoya en lo verificable —hay CDR o no
+lo hay— y en el `ResponseCode` del propio CDR, no en códigos inventados; el código
+crudo de `statusCode` se conserva siempre como evidencia. `getStatus(ticket)` se
+implementa hoy sólo como contrato con mocks, como fundación de FISCAL-4: no se emite
+ningún resumen todavía.
+
+## ADR-22 · Consultar en producción y emitir en producción son capacidades separadas
+
+**Decisión.** La consulta/reconciliación en línea (`getStatusCdr`) tiene su **propia
+bandera** (`FISCAL_CONSULT_ENABLED`, apagada por defecto) y su propio resolutor
+(`resolve_consult_provider`), independientes de la emisión (`resolve_environment` /
+`resolve_provider`, fijados en BETA). `billConsultService` sólo existe en producción
+según el Manual, así que su URL se declara como constante en la capa de proveedor,
+pero **no se invoca en esta fase**: el resolutor **falla cerrado** salvo que la
+bandera esté encendida —lo que ocurre en una fase de producción, con su revisión—.
+
+**Por qué.** Necesitábamos conocer la frontera sin abrir un agujero: encender la
+consulta **no** debe habilitar `sendBill` producción, ni al revés. Reutilizar una
+sola bandera de «producción» para ambas cosas dejaría la emisión real a un
+descuido de configuración de distancia. Dos capacidades, dos banderas, dos
+resolutores: `resolve_environment()` sigue levantando ante cualquier ambiente que
+no sea BETA pase lo que pase con la consulta. Toda la reconciliación se prueba con
+un proveedor inyectado; nunca toca la red en ERP-FISCAL-3.
+
+## ADR-23 · La firma del CDR: integridad comprobable, autenticidad PENDIENTE
+
+**Decisión.** Se audita la firma del CDR con `signxml` (biblioteca madura, la misma
+que firma; nunca XMLDSig a mano): se comprueba la **integridad** matemática contra
+el certificado EMBEBIDO, pero la **autenticidad** queda `unverified`. `inspect_cdr_
+signature` **nunca** devuelve `TRUSTED`, y la comprobación **no** se enchufa a la
+aceptación fiscal. **CDR-TRUST-01 (autenticidad) = PROPUESTA/PENDIENTE.**
+
+**Por qué.** El Manual afirma que las constancias van firmadas por SUNAT, pero SUNAT
+**no publica** un ancla de confianza (su certificado raíz) que permita validar la
+cadena de forma programática. Sin ancla, la firma «valida» contra el certificado que
+el propio CDR trae —que un atacante puede autofirmar—: eso es integridad, no
+autenticidad, y confundirlas sería marcar como «de SUNAT» un XML que cualquiera pudo
+producir. Se implementa lo que SÍ se puede hacer con honestidad (integridad, con la
+librería madura que además mitiga el *signature wrapping* al verificar QUÉ se
+firmó) y se clasifica con honestidad lo que no. El CDR crudo se conserva siempre,
+válida o no la firma: la evidencia no se destruye.

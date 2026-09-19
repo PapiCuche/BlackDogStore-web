@@ -9,6 +9,80 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## ERP-FISCAL-3 — Reconciliación SUNAT, confianza del CDR y fundación asíncrona
+
+**Estado: IMPLEMENTADO (backend).** Rama `erp/fiscal-sunat`. Sin migraciones, sin
+cambios de frontend. No añade tipos de comprobante ni habilita producción. Cierra
+la parte más peligrosa del transporte: qué hacer cuando enviamos un documento y
+**no sabemos con certeza qué pasó en SUNAT**. Toda la implementación se prueba con
+proveedor inyectado / mocks; **no sale a la red en esta fase**.
+
+- **La corrección conceptual: `getStatusCdr` ≠ `getStatus(ticket)`.** Son DOS
+  servicios SOAP distintos del Manual del programador: `billService` (envío:
+  `sendBill`, y estado asíncrono por ticket `getStatus(ticket)`) y
+  `billConsultService` (consulta: `getStatusCdr(ruc, tipo, serie, número)`, que
+  recupera el CDR de un comprobante ya emitido). No existe `getStatusCpe`; no se
+  inventó. Se modelan como contratos separados que comparten infraestructura
+  (WS-Security, POST acotado, parser endurecido, **un único intérprete de CDR**).
+- **RECON-01 — `getStatusCdr` (`cf649c4`).** `SunatConsultProvider` sobre
+  `billConsultService`. Devuelve un `DocumentCdrResult` tipado. La verdad está en
+  el CDR (`content`), no en el `statusCode`: el Manual no publica la tabla de
+  códigos de `getStatusCdr`, así que **no se inventan** — si viene CDR se lee con
+  el mismo intérprete que `sendBill`; si no, queda NO TERMINAL con el código crudo.
+- **RECON-02 — Reconciliación manual (`dbcb63a`).** `reconcile_fiscal_document`
+  consulta el CDR por el identificador **YA EMITIDO** y aplica el veredicto de
+  SUNAT si existe. **Nunca reenvía, ni reserva otro correlativo, ni crea otro
+  documento.** La red va FUERA de transacción; el estado terminal se fija bajo un
+  bloqueo breve que relee el estado (sin red dentro), así dos reconciliaciones
+  simultáneas no se pisan (idempotente). Un aceptado no se re-consulta; un rechazo
+  no se «resucita» con una consulta; un CDR que contradice un estado terminal ya
+  guardado es un **conflicto que se audita**, no una sobrescritura. Un fallo de
+  red o un «no consta todavía» dejan el comprobante NO TERMINAL y **no reenvían**.
+  Endpoint `POST /api/admin/fiscal-documents/{id}/reconcile/`: exige
+  `sales.fiscal.issue` (reconciliar declara estado, no es sólo leer), va
+  *throttled* como el envío, respeta el aislamiento por empresa y sucursal, y
+  **deriva el identificador del documento local, nunca del cuerpo** (anti-IDOR).
+- **RECON-03 — `getStatus(ticket)` (`cf649c4`).** Contrato de estado asíncrono
+  (`billService`), con los códigos oficiales `0`/`98`/`99`. Fundación reusable
+  para FISCAL-4 (Resumen Diario / Comunicación de Baja); hoy sólo contrato + mocks.
+- **CDR-BINDING (`9d1350b`).** Antes de aplicar un CDR se comprueba que
+  **corresponde a ESTE comprobante** (identificador + RUC del emisor + tipo). Un
+  CDR de otro comprobante no se aplica jamás.
+- **CDR-OBS-01 — Observaciones con su código (`9d1350b`).** Parser puro de las
+  `cbc:Note` del CDR que conserva el **código SUNAT** junto al texto (§37), sin
+  columna nueva. Se exponen en el detalle del comprobante.
+- **CDR-TRUST-01 — Firma del CDR: integridad SÍ, autenticidad PENDIENTE
+  (`9d1350b`).** Auditado: hoy no verificábamos la firma del CDR. Se añade un
+  módulo de sólo-lectura que comprueba la INTEGRIDAD matemática con `signxml`
+  (biblioteca madura, sin XMLDSig a mano) contra el certificado embebido, pero la
+  **AUTENTICIDAD queda `unverified`**: SUNAT no publica un ancla de confianza que
+  permita validar la cadena, y un atacante puede autofirmar su propio CDR. **No se
+  marca `TRUSTED` jamás** y **no se enchufa a la aceptación**: la autenticidad del
+  CDR queda **PROPUESTA/PENDIENTE**, con el mecanismo y la evidencia listos.
+- **TEST-HARNESS-01 — El humo BETA, corregido (`1b56b58`).** La prueba de humo de
+  FISCAL-2 usó un rollback de BD alrededor de un envío externo y reutilizó
+  `F001-1`: **una transacción local no deshace un efecto en SUNAT.** Ahora el humo
+  es un comando `manage.py fiscal_beta_smoke` **opt-in** (`FISCAL_BETA_SMOKE_ENABLED`,
+  apagado), sólo BETA, que **persiste** lo que envía (correlativo único por
+  ejecución) y **no corre en CI**. No se ejecutó en esta fase.
+- **FISCAL-09 — Estados, decididos y documentados.** `SUBMITTED` = hay evidencia de
+  procesamiento asíncrono (ticket), **no** un timeout indeterminado de `sendBill`
+  (que sigue siendo `SUBMISSION_ERROR`); es reconciliable. `PENDING` sigue
+  **CANDIDATO A OBSOLETO**. Ningún enum se tocó (sin migración).
+
+Frontera de producción (§16): consultar en producción y emitir en producción son
+capacidades **separadas**, con banderas y resolutores distintos
+(`fiscal_consult_enabled` / `resolve_consult_provider` frente a
+`resolve_environment` / `resolve_provider`). Encender una **no** enciende la otra;
+la emisión sigue fijada en BETA. La consulta real está **apagada por defecto** y
+falla cerrada.
+
+Suite PostgreSQL completa verde; dos revisiones independientes (una de la máquina
+de estados y la idempotencia, otra de la confianza del CDR y la seguridad) sin
+hallazgos CRITICAL/HIGH. Ver ADR-20/21/22.
+
+---
+
 ## ERP-FISCAL-2 — FACTURA completa (gravada · contado · sin descuento)
 
 **Estado: IMPLEMENTADO para BETA.** Rama `erp/fiscal-sunat`. Sin migraciones, sin
