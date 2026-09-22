@@ -7460,6 +7460,189 @@ class FiscalSubmissionAttempt(models.Model):
         return f'{self.document.document_id} · intento {self.attempt_number}'
 
 
+class FiscalSummaryStatus(models.TextChoices):
+    """
+    El recorrido de un Resumen Diario de Boletas (RC).
+
+    ES DISTINTO DEL DE UNA BOLETA (ERP-FISCAL-4 §41). Una boleta se otorga y firma
+    localmente y queda válida al entregarse; el resumen es el proceso ASÍNCRONO
+    que la informa a SUNAT. Que un resumen esté «en proceso» no cambia el estado
+    de la boleta que ya se entregó.
+
+    `SUBMITTED` aquí SÍ tiene un significado concreto: SUNAT devolvió un TICKET y
+    el resumen está en su cola de procesamiento. No es «aceptado»: el ticket sólo
+    prueba recepción para procesar. Se resuelve con `getStatus(ticket)`.
+
+    Un rechazo de resumen es de TODO el resumen, no de una boleta suelta: SUNAT no
+    hace procesamiento parcial de un RC.
+    """
+
+    GENERATED = 'generated', 'Generado'
+    SIGNED = 'signed', 'Firmado'
+    #: SUNAT devolvió un ticket; el proceso asíncrono está en marcha.
+    SUBMITTED = 'submitted', 'Enviado (ticket recibido)'
+    ACCEPTED = 'accepted', 'Aceptado por SUNAT'
+    ACCEPTED_WITH_OBSERVATION = 'accepted_observed', 'Aceptado con observaciones'
+    REJECTED = 'rejected', 'Rechazado por SUNAT'
+    #: Se intentó enviar (o consultar) y no se sabe qué pasó. Reintentable.
+    SUBMISSION_ERROR = 'submission_error', 'Error de envío'
+
+
+class FiscalDailySummary(models.Model):
+    """
+    Un Resumen Diario de Boletas (RC). La UNIDAD que se envía a SUNAT.
+
+    POR QUÉ ES UN MODELO PROPIO Y NO UN JSON EN OTRO SITIO
+    -----------------------------------------------------
+    Su identidad (`RC-yyyyMMdd-NNN`), su ticket, su estado y —sobre todo— QUÉ
+    boletas informó tienen que poder restringirse, consultarse, bloquearse y ser
+    idempotentes. Un `metadata={}` no da restricción única de correlativo, ni
+    impide incluir una boleta dos veces, ni bloquea una fila para reservar un
+    número bajo concurrencia. Todo eso es esquema, no un diccionario.
+
+    ALCANCE: EMPRESA + AMBIENTE + FECHA DE REFERENCIA
+    ------------------------------------------------
+    Un RC es un reporte del RUC: SUNAT admite varias series/establecimientos en un
+    mismo resumen. Por eso se agrupa por empresa (no por sucursal); el aislamiento
+    operativo por sucursal se hace en la capa de permisos, no fragmentando el RC.
+    Decisión registrada en el ADR.
+
+    INMUTABLE UNA VEZ FIRMADO. El `signed_xml` es la evidencia: al reconciliar o
+    consultar NO se recalculan sus líneas buscando las boletas de hoy.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='fiscal_daily_summaries',
+    )
+
+    #: `RC-yyyyMMdd-NNN`, tal cual va en `cbc:ID` y en el nombre del archivo.
+    identifier = models.CharField(max_length=32)
+    #: El correlativo `NNN`. Único por RUC y día; monótono, no se recicla.
+    correlativo = models.PositiveBigIntegerField()
+    #: `cbc:ReferenceDate`: la fecha de emisión de las boletas informadas.
+    reference_date = models.DateField(db_index=True)
+    #: `cbc:IssueDate`: la fecha de GENERACIÓN del resumen. No es la anterior.
+    issue_date = models.DateField()
+    environment = models.CharField(
+        max_length=16, choices=FiscalEnvironment.choices,
+    )
+    status = models.CharField(
+        max_length=24, choices=FiscalSummaryStatus.choices,
+        default=FiscalSummaryStatus.GENERATED, db_index=True,
+    )
+
+    signed_xml = models.TextField(blank=True)
+    signed_xml_sha256 = models.CharField(max_length=64, blank=True)
+    #: El ticket que devuelve `sendSummary`. Se PERSISTE antes de consultar: es la
+    #: única referencia al proceso remoto y perderlo lo deja irrastreable.
+    ticket = models.CharField(max_length=100, blank=True)
+    #: Marca de «hay un envío en curso», puesta bajo bloqueo ANTES de la red y
+    #: retirada al terminar. Impide que dos envíos simultáneos del mismo resumen
+    #: creen dos tickets (§48). Nula cuando no hay envío en curso.
+    submitting_since = models.DateTimeField(null=True, blank=True)
+
+    cdr_xml = models.TextField(blank=True)
+    cdr_sha256 = models.CharField(max_length=64, blank=True)
+    sunat_response_code = models.CharField(max_length=8, blank=True)
+    sunat_response_message = models.CharField(max_length=500, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Resumen diario de boletas'
+        verbose_name_plural = 'Resúmenes diarios de boletas'
+        constraints = [
+            # El correlativo es único por RUC, ambiente y día. Es la red de
+            # seguridad de la reserva concurrente: dos procesos que calculen el
+            # mismo número chocan aquí en vez de crear dos RC con el mismo id.
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'reference_date', 'correlativo'],
+                name='fiscal_summary_unique_correlativo',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'identifier'],
+                name='fiscal_summary_unique_identifier',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'reference_date']),
+        ]
+
+    def __str__(self) -> str:
+        return self.identifier
+
+    @property
+    def document_id(self) -> str:
+        return self.identifier
+
+    @property
+    def is_accepted(self) -> bool:
+        return self.status in (
+            FiscalSummaryStatus.ACCEPTED,
+            FiscalSummaryStatus.ACCEPTED_WITH_OBSERVATION,
+        )
+
+
+class FiscalDailySummaryDocument(models.Model):
+    """
+    Una boleta DENTRO de un resumen. Congela la pertenencia (ERP-FISCAL-4 §12).
+
+    POR QUÉ CONGELAR Y NO RECONSTRUIR
+    ---------------------------------
+    «Qué boletas fueron en qué resumen» no puede deducirse meses después por
+    `issue_date = X`: puede haber más de un resumen del mismo día, bloques de 500,
+    documentos anulados. La pertenencia se guarda cuando se arma el resumen y no
+    se recalcula.
+
+    UNA BOLETA NO ENTRA VIVA EN DOS RESÚMENES (§13). La restricción única parcial
+    sobre `document` (mientras no esté `superseded`) lo impide en la base. Cuando
+    un resumen se rechaza, sus filas se marcan `superseded` y sus boletas pueden
+    volver a incluirse en un resumen nuevo.
+    """
+
+    summary = models.ForeignKey(
+        FiscalDailySummary, on_delete=models.CASCADE, related_name='lines',
+    )
+    document = models.ForeignKey(
+        FiscalDocument, on_delete=models.PROTECT, related_name='summary_inclusions',
+    )
+    #: El `cbc:LineID` de esta boleta dentro del resumen.
+    line_id = models.PositiveIntegerField()
+    #: Catálogo N.º 19. `1` = Adicionar (una boleta que se informa por primera
+    #: vez). `2` Modificar y `3` Anular son flujos propios, fuera de esta fase.
+    condition_code = models.CharField(max_length=1, default='1')
+    #: Verdadero cuando su resumen quedó rechazado: libera a la boleta para poder
+    #: incluirse en otro resumen sin violar la unicidad activa.
+    superseded = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Boleta en resumen diario'
+        verbose_name_plural = 'Boletas en resumen diario'
+        ordering = ['summary', 'line_id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['summary', 'document'],
+                name='fiscal_summary_line_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['summary', 'line_id'],
+                name='fiscal_summary_line_id_unique',
+            ),
+            # Una boleta en, como mucho, un resumen NO superado. Es la garantía de
+            # base contra la doble inclusión activa.
+            models.UniqueConstraint(
+                fields=['document'],
+                condition=models.Q(superseded=False),
+                name='fiscal_summary_one_active_per_document',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.summary.identifier} · L{self.line_id}'
+
+
 # ---------------------------------------------------------------------------
 # H4.1 — alta de personal por invitación
 # ---------------------------------------------------------------------------
