@@ -9,6 +9,73 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## ERP-FISCAL-4 — Boleta electrónica y Resumen Diario de Boletas
+
+**Estado: IMPLEMENTADO (backend).** Rama `erp/fiscal-sunat`. **Una migración**
+(`0085`, aditiva) autorizada por la puerta de diseño de base de datos; sin cambios
+de frontend. Cierra la boleta (tipo 03) y su canal de reporte —el Resumen Diario—
+desde el ERP hasta SUNAT BETA.
+
+- **BOLETA-01/02/03 — Boleta tipo 03 (`3c969b3`).** Una venta pagada que pide
+  boleta emite un comprobante tipo 03 en serie **B**, reutilizando el generador de
+  la factura, la firma, el XSD (una boleta es UBL Invoice 2.1), la aritmética
+  VEN-02 y el PDF/QR. El tipo se **resuelve** por `receipt_type`
+  (FACTURA→01, BOLETA→03; lo demás falla cerrado), no se abre a «cualquier tipo».
+  Identidad del adquirente: DNI/CE/RUC se trasladan; sin documento se emite al
+  **consumidor final** (Catálogo 06 código `0`, número `0`); una boleta cuyo total
+  **supera S/ 700** sin adquirente identificado **falla cerrado** (RCP Art. 8) sin
+  gastar correlativo. Descuento y no-gravado siguen fallando cerrado. Una boleta se
+  informa **sólo por el Resumen Diario**: el envío individual (`sendBill`) se niega
+  en el backend, y su `issued_at` es la fecha LEGAL de emisión (la del XML) para que
+  el resumen la agrupe por la fecha correcta.
+- **RC-01/02 — Modelo y persistencia del Resumen (`de8fc83`, migración `0085`).**
+  `FiscalDailySummary` (identidad `RC-yyyyMMdd-NNN`, correlativo, fechas de
+  referencia y de generación, ticket, estado, XML/CDR/hash) y
+  `FiscalDailySummaryDocument` (congela **qué** boletas informó cada resumen). Un
+  índice único parcial impide que una boleta esté en dos resúmenes activos; un
+  resumen rechazado marca sus filas `superseded` para liberar sus boletas. Alcance
+  por empresa + ambiente + fecha de referencia (ADR-24).
+- **RC builder + firma (`7b1e5bc`).** `store/fiscal/summary.py` arma el UBL 2.0
+  `SummaryDocuments` (documento propio, no el de la factura): `ReferenceDate` antes
+  de `IssueDate`, una `sac:SummaryDocumentsLine` por boleta con sus tres
+  `sac:BillingPayment` y el `TaxTotal` del IGV, tope de 500 líneas. Reutiliza el
+  firmador (la firma entra en el último `ext:ExtensionContent`) y el empaquetado
+  (nombre `RC-yyyyMMdd-NNN`).
+- **RC-03/04/05 — sendSummary, ticket y getStatus (`7b1e5bc`, `2db67a8`).** El
+  proveedor de `billService` gana `send_summary` → **ticket** (un ticket es
+  recepción para procesar, no aceptación); `getStatus(ticket)` se reutiliza de
+  FISCAL-3. El servicio genera bloques deterministas de 500 (re-selección ante
+  carrera de correlativo, respaldada por la restricción única), firma, envía y
+  consulta. La red va SIEMPRE fuera de transacción; el envío se **reclama** bajo
+  bloqueo (`submitting_since`) para que dos envíos simultáneos no creen dos tickets
+  (§48), y el ticket se **persiste antes de consultar** (§8) para sobrevivir a una
+  caída. Un fallo de transporte conserva el ticket y queda reintentable; `98` en
+  proceso deja el resumen enviado.
+- **RC-06 — CDR del Resumen (`2db67a8`).** El CDR se aplica al RESUMEN entero (§52):
+  su `ReferenceID` debe ser el del RC (no una boleta); un rechazo **libera** sus
+  boletas para un resumen nuevo, sin anularlas; una aceptación no cambia el estado
+  individual de la boleta (su condición de «informada en resumen aceptado» la lleva
+  la fila de inclusión, §43).
+- **API interna (`2db67a8`).** Listar/ver (VIEW) y generar/enviar/consultar (ISSUE,
+  §56). Generar **selecciona** las boletas elegibles por fecha en el servidor e
+  **ignora** cualquier lista de ids en el cuerpo (anti-IDOR, §59).
+- **RC-07/08 — Lotes de 500 e idempotencia.** >500 boletas → varios RC con
+  correlativos distintos, envíos complementarios (§61). Reenviar/consultar es
+  idempotente.
+- **RC-09 — Arnés BETA (`74fd95c`).** `manage.py fiscal_beta_smoke --mode
+  boleta-summary`: emite la boleta, genera y firma el resumen, lo envía y consulta
+  el ticket con backoff acotado; persiste todo (sin rollback de un efecto remoto).
+  Opt-in y sólo BETA. La factura sigue igual.
+
+`ConditionCode` fijo en `1` (Adicionar); `2`/`3` (modificar/anular) son flujos
+propios, fuera de esta fase. Sin `getStatusCpe`, sin NC/ND/Baja/GRE/Consulta
+Integrada, sin producción.
+
+Suite PostgreSQL completa verde; dos revisiones independientes sin hallazgos
+CRITICAL/HIGH. Ver ADR-24/25/26.
+
+---
+
 ## ERP-FISCAL-3 — Reconciliación SUNAT, confianza del CDR y fundación asíncrona
 
 **Estado: IMPLEMENTADO (backend).** Rama `erp/fiscal-sunat`. Sin migraciones, sin

@@ -4,6 +4,25 @@
 **Estado del proyecto:** MVP en desarrollo; no apto todavía para producción ni pagos reales  
 **Objetivo del documento:** proporcionar contexto verificable a desarrolladores y asistentes de IA sobre la arquitectura, funcionalidades, problemas, riesgos y prioridades actuales del repositorio.
 
+> **Actualización ERP-FISCAL-4 (22-09-2026, rama `erp/fiscal-sunat`).** Añade la
+> **boleta electrónica (tipo 03)** y el **Resumen Diario de Boletas (RC)**. La
+> boleta reutiliza el generador, la firma, el XSD (es UBL Invoice 2.1), VEN-02 y el
+> PDF/QR; el tipo se resuelve por `receipt_type` y la identidad del adquirente sigue
+> las reglas de la boleta (consumidor final sin documento con Catálogo 06 código 0;
+> falla cerrado si el total supera S/ 700 sin identificación). El Resumen Diario es
+> nuevo: modelos `FiscalDailySummary`/`FiscalDailySummaryDocument` (**migración 0085**,
+> aditiva, tras la puerta de diseño de BD), builder UBL 2.0 `SummaryDocuments`
+> propio, `sendSummary` → ticket (persistido antes de consultar), `getStatus(ticket)`,
+> y aplicación del CDR al resumen entero (un rechazo libera sus boletas, no las
+> anula). Bloques de 500, correlativo único bajo concurrencia, red fuera de
+> transacción, envío reclamado para no duplicar ticket. API interna
+> (`/api/admin/fiscal-summaries/…`, generar/enviar/consultar = ISSUE; selección de
+> boletas en el servidor, no por ids del cliente). Sin cambios de frontend.
+> `getStatusCpe` no existe; NC/ND/Baja/GRE/Consulta Integrada y producción quedan
+> fuera. **El XSD del Resumen (UBL 2.0) no está incluido** (no se pudo descargar en
+> este entorno): estructura verificada contra la guía y ejemplos, y contra BETA.
+> Detalle en el CHANGELOG y ADR-24/25/26.
+>
 > **Actualización ERP-FISCAL-3 (19-09-2026, rama `erp/fiscal-sunat`).** Cierra el
 > transporte incierto sin añadir tipos de comprobante ni habilitar producción.
 > **Reconciliación** (`getStatusCdr`): un envío que quedó `SUBMISSION_ERROR` se

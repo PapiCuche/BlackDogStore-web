@@ -481,3 +481,72 @@ producir. Se implementa lo que SÍ se puede hacer con honestidad (integridad, co
 librería madura que además mitiga el *signature wrapping* al verificar QUÉ se
 firmó) y se clasifica con honestidad lo que no. El CDR crudo se conserva siempre,
 válida o no la firma: la evidencia no se destruye.
+
+---
+
+# ADR — ERP-FISCAL-4
+
+## ADR-24 · El Resumen Diario es una entidad propia, con alcance por empresa y día
+
+**Decisión.** El Resumen Diario de Boletas (RC) se persiste en dos modelos nuevos
+(`FiscalDailySummary` y su `FiscalDailySummaryDocument`), no en un JSON dentro de
+otra fila. Se agrupa por **empresa + ambiente + fecha de referencia** (la fecha de
+emisión de las boletas), no por sucursal. La pertenencia «qué boletas fueron en
+qué resumen» se **congela** en la tabla puente al armar el resumen. Una boleta
+está, como mucho, en un resumen NO superado (índice único parcial); un resumen
+rechazado marca sus filas `superseded` y así libera sus boletas para un resumen
+nuevo. Migración `0085`, puramente aditiva.
+
+**Por qué.** Identidad (`RC-yyyyMMdd-NNN`), correlativo único, ticket, estado y la
+membresía de boletas tienen que poder restringirse, consultarse, bloquearse y ser
+idempotentes: eso es esquema, no un diccionario (§11). El alcance por empresa
+—y no por sucursal— es fiel a SUNAT: el RC es un reporte del RUC y admite varias
+series/establecimientos; el aislamiento operativo por sucursal se hace en permisos,
+no fragmentando el reporte. Congelar la pertenencia evita reconstruirla meses
+después por `issue_date = X`, que falla cuando hay varios resúmenes por día,
+bloques de 500 o anulaciones.
+
+## ADR-25 · Un ticket no es una aceptación; la red va fuera de la transacción
+
+**Decisión.** `sendSummary` devuelve un TICKET que se **persiste antes de
+cualquier consulta** (§8); el veredicto llega después con `getStatus(ticket)`. El
+envío se **reclama** bajo un bloqueo breve (`submitting_since`) antes de salir a la
+red, y la red NO se hace con ningún bloqueo de fila sostenido (§48/§50): claim →
+red → finalize. Dos envíos simultáneos no crean dos tickets; un fallo de transporte
+deja el resumen reintentable **sin ticket inventado** (§49); `98 en proceso` deja el
+resumen ENVIADO para volver a consultar. El correlativo del RC se reserva bajo
+bloqueo con la restricción única de respaldo, y ante una carrera se re-selecciona
+(las boletas que otro proceso ya tomó quedan excluidas).
+
+**Por qué.** El resumen es asíncrono: confundir «recibido para procesar» con
+«aceptado» pondría por buena una venta que SUNAT aún no registró. Perder el ticket
+dejaría el proceso remoto irrastreable, así que se guarda antes de nada. Mantener
+una transacción abierta durante la espera de SUNAT bloquearía filas durante
+segundos; reclamar antes de la red es lo que impide el doble envío sin sostener el
+bloqueo. Es la misma disciplina que el envío de la factura (ADR-9/ADR-14/ADR-20).
+
+## ADR-26 · El Resumen se acepta o se rechaza entero; el CDR no toca las boletas
+
+**Decisión.** El CDR del resumen se valida contra el RESUMEN (su `ReferenceID` es
+el del RC, no una boleta) y su veredicto es del resumen completo (§52): SUNAT no
+hace procesamiento parcial de un RC. Un rechazo NO anula las boletas —marca sus
+filas `superseded` para poder informarlas en un resumen nuevo—; una aceptación NO
+cambia el estado individual de la boleta. La condición de «informada en un resumen
+aceptado» la lleva la existencia de una fila de inclusión no superada en un resumen
+aceptado, distinta de un «CDR individual aceptado» (que sería el estado propio de
+la boleta vía `sendBill`, un camino que esta fase no usa). El `ConditionCode` es
+`1` (Adicionar); `2`/`3` no se usan como parche.
+
+**Por qué.** Tratar el rechazo de un resumen como anulación de sus boletas
+destruiría comprobantes que se entregaron y son válidos; el rechazo pertenece al
+proceso de reporte, que se corrige reenviando un resumen. Y marcar la boleta como
+«aceptada» por la aceptación del resumen colapsaría dos hechos distintos —el
+comprobante y su reporte— en una sola columna (§41/§43): se mantienen separados
+para poder representar «boleta entregada, resumen aún en proceso».
+
+**XSD del Resumen (nota).** El esquema `SummaryDocuments-1` (árbol UBL 2.0 del
+paquete de SUNAT) no está incluido en el repositorio y no pudo obtenerse en este
+entorno (la descarga del ZIP no fue posible). La estructura del generador se apoya
+en la Guía del Resumen Diario y en ejemplos oficiales, se comprueba con pruebas de
+estructura y se confirma contra BETA. La boleta sí valida contra el
+`UBL-Invoice-2.1.xsd` incluido. Bundlear el XSD 2.0 queda como deuda declarada.
