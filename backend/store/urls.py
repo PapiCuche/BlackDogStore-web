@@ -9,6 +9,10 @@ from .fiscal_views import (
     AdminFiscalDocumentReconcileView, AdminFiscalDocumentSubmitView,
     AdminFiscalDocumentXmlView, AdminOrderFiscalDocumentView,
 )
+from .fiscal_summary_views import (
+    AdminFiscalSummaryDetailView, AdminFiscalSummaryListView,
+    AdminFiscalSummaryStatusView, AdminFiscalSummarySubmitView,
+)
 from .views import (
     CategoryViewSet,
     ProductViewSet,
@@ -175,6 +179,10 @@ urlpatterns = [
     path('admin/orders/<int:pk>/fiscal-document/', AdminOrderFiscalDocumentView.as_view(), name='admin-order-fiscal-document'),
     path('admin/fiscal-documents/<int:pk>/submit/', AdminFiscalDocumentSubmitView.as_view(), name='admin-fiscal-document-submit'),
     path('admin/fiscal-documents/<int:pk>/reconcile/', AdminFiscalDocumentReconcileView.as_view(), name='admin-fiscal-document-reconcile'),
+    path('admin/fiscal-summaries/', AdminFiscalSummaryListView.as_view(), name='admin-fiscal-summaries'),
+    path('admin/fiscal-summaries/<int:pk>/', AdminFiscalSummaryDetailView.as_view(), name='admin-fiscal-summary-detail'),
+    path('admin/fiscal-summaries/<int:pk>/submit/', AdminFiscalSummarySubmitView.as_view(), name='admin-fiscal-summary-submit'),
+    path('admin/fiscal-summaries/<int:pk>/status/', AdminFiscalSummaryStatusView.as_view(), name='admin-fiscal-summary-status'),
     path('admin/fiscal-documents/<int:pk>/xml/', AdminFiscalDocumentXmlView.as_view(), name='admin-fiscal-document-xml'),
     path('admin/fiscal-documents/<int:pk>/cdr/', AdminFiscalDocumentCdrView.as_view(), name='admin-fiscal-document-cdr'),
     path('admin/fiscal-documents/<int:pk>/pdf/', AdminFiscalDocumentPdfView.as_view(), name='admin-fiscal-document-pdf'),
