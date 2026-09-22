@@ -36,6 +36,12 @@ MAX_CDR_MEMBER_BYTES = 5 * 1024 * 1024
 
 _NAME_RE = re.compile(r'^\d{11}-\d{2}-[A-Z0-9]{4}-\d{1,8}$')
 
+#: Nombre del Resumen Diario (RC): `<RUC>-RC-<YYYYMMDD>-<correlativo>`. El Anexo
+#: N.º 6 (6.1.3) admite correlativo de 1 a 5 dígitos, SIN relleno a un ancho fijo
+#: (los ejemplos oficiales muestran `-1` y `-900`). La fecha es la de GENERACIÓN
+#: del resumen.
+_SUMMARY_NAME_RE = re.compile(r'^\d{11}-RC-\d{8}-\d{1,5}$')
+
 
 def document_name(ruc: str, document_type: str, serie: str, correlativo: int) -> str:
     """
@@ -49,6 +55,35 @@ def document_name(ruc: str, document_type: str, serie: str, correlativo: int) ->
     if not _NAME_RE.fullmatch(name):
         raise ValueError(
             f'Nombre de archivo fuera de la nomenclatura del Anexo N.º 6: {name!r}'
+        )
+    return name
+
+
+def summary_identifier(document_date, correlativo: int) -> str:
+    """
+    El `cbc:ID` del resumen: `RC-<YYYYMMDD>-<correlativo>`.
+
+    `document_date` es la fecha de referencia (emisión de las boletas). El id y el
+    nombre del archivo comparten esa fecha, y el correlativo es único por RUC y
+    esa fecha. (SUNAT admite variantes que usan la fecha de generación; se elige
+    la de referencia para que id, nombre y la restricción única concuerden, y se
+    confirma contra BETA.)
+    """
+    return f'RC-{document_date.strftime("%Y%m%d")}-{correlativo}'
+
+
+def summary_name(ruc: str, document_date, correlativo: int) -> str:
+    """
+    El nombre del archivo del Resumen Diario, sin extensión.
+
+    Se valida el resultado en vez de confiar en quien llama: este nombre viaja en
+    la petición SOAP y un carácter de más lo convierte en un rechazo que llega por
+    la red en vez de aquí.
+    """
+    name = f'{ruc}-RC-{document_date.strftime("%Y%m%d")}-{correlativo}'
+    if not _SUMMARY_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f'Nombre de resumen fuera de la nomenclatura del Anexo N.º 6: {name!r}'
         )
     return name
 

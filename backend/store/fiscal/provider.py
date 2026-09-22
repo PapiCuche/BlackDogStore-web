@@ -155,6 +155,33 @@ class DocumentCdrResult:
     response_sha256: str = ''
 
 
+class SummaryOutcome(str, Enum):
+    """
+    Lo que dijo `sendSummary`. Un TICKET no es una aceptación.
+
+    `TICKET` sólo prueba que SUNAT recibió el resumen PARA PROCESARLO de forma
+    asíncrona; el veredicto llega después con `getStatus(ticket)`. Un fallo de
+    transporte deja el envío incierto: puede que SUNAT lo haya recibido, así que
+    NO se reenvía a ciegas (§49).
+    """
+
+    TICKET = 'ticket'
+    TRANSPORT_ERROR = 'transport_error'
+    UNKNOWN_RESPONSE = 'unknown_response'
+
+
+@dataclass(frozen=True)
+class SummarySubmissionResult:
+    """El resultado de enviar un resumen: un ticket, o por qué no lo hubo."""
+
+    outcome: SummaryOutcome
+    ticket: str = ''
+    status_code: str = ''
+    safe_message: str = ''
+    request_sha256: str = ''
+    response_sha256: str = ''
+
+
 class TicketStatus(str, Enum):
     """
     Estado de un proceso asíncrono (`getStatus(ticket)` sobre `billService`).
@@ -526,6 +553,63 @@ class SunatSoapProvider(_SunatSoapClient, FiscalProvider):
                 (e.text for e in doc.iter()
                  if e.tag.endswith('statusMessage')), '') or ''),
             **base)
+
+    # -- sendSummary: envío asíncrono de un Resumen Diario --------------------
+
+    def send_summary(self, *, filename: str, zip_bytes: bytes) -> SummarySubmissionResult:
+        """
+        Envía un Resumen Diario. Devuelve un TICKET (no una aceptación).
+
+        El ticket se consulta luego con `get_ticket_status`. Un fallo de red deja
+        el envío INCIERTO: puede existir un ticket que no recibimos, así que el
+        dominio no reenvía automáticamente (§49).
+        """
+        env, body = self._envelope_skeleton()
+        call = etree.SubElement(body, f'{{{SERVICE_NS}}}sendSummary')
+        etree.SubElement(call, 'fileName').text = filename
+        etree.SubElement(call, 'contentFile').text = base64.b64encode(zip_bytes).decode()
+        envelope = etree.tostring(env, xml_declaration=True, encoding='UTF-8')
+        request_hash = _sha(zip_bytes)
+        try:
+            resp, status = self._post(envelope, 'urn:sendSummary')
+        except _TransportError as exc:
+            return SummarySubmissionResult(
+                outcome=SummaryOutcome.TRANSPORT_ERROR,
+                safe_message=str(exc), request_sha256=request_hash)
+        return self._interpret_summary(resp, status, request_hash)
+
+    def _interpret_summary(self, body: bytes, status: int,
+                           request_hash: str) -> SummarySubmissionResult:
+        response_hash = _sha(body)
+        base = {'request_sha256': request_hash, 'response_sha256': response_hash}
+        if status >= 500:
+            return SummarySubmissionResult(
+                outcome=SummaryOutcome.TRANSPORT_ERROR,
+                safe_message=f'HTTP {status} del servicio', **base)
+        try:
+            doc = parse_untrusted(body)
+        except UntrustedXmlError:
+            return SummarySubmissionResult(
+                outcome=SummaryOutcome.UNKNOWN_RESPONSE,
+                safe_message='La respuesta no es XML válido', **base)
+
+        fault = next((e.text for e in doc.iter() if e.tag.endswith('faultstring')), None)
+        if fault is not None:
+            # Un fault en el envío del resumen NO da ticket. No se reenvía a
+            # ciegas: se conserva el código y el operador decide.
+            code = next((e.text for e in doc.iter() if e.tag.endswith('faultcode')), '')
+            return SummarySubmissionResult(
+                outcome=SummaryOutcome.UNKNOWN_RESPONSE,
+                status_code=(code or '').rsplit('.', 1)[-1],
+                safe_message=_sanitize(fault), **base)
+
+        ticket = next((e.text for e in doc.iter() if e.tag.endswith('ticket')), None)
+        if ticket:
+            return SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket=ticket.strip(), **base)
+        return SummarySubmissionResult(
+            outcome=SummaryOutcome.UNKNOWN_RESPONSE,
+            safe_message='Respuesta sin ticket reconocible', **base)
 
 
 class SunatConsultProvider(_SunatSoapClient, FiscalConsultProvider):
