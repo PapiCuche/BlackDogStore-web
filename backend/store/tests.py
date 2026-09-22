@@ -50621,11 +50621,16 @@ class C22BFiscalPdfTest(TestCase):
         key, cert = self_signed_pem('20100066603')
         doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
 
-        # la fila se creó HOY; la fecha legal de la venta es 2026-01-15
-        self.assertNotEqual(doc.issued_at.date(), _dt.date(2026, 1, 15))
+        # La fecha legal de la venta es 2026-01-15 y sale del XML firmado.
         ctx = build_fiscal_context(doc)
         self.assertEqual(ctx['issued_at'].date(), _dt.date(2026, 1, 15))
         self.assertIn('2026-01-15', ctx['qr_payload'])
+        # Y para probar que sale del XML y NO de la fila: se altera `issued_at`
+        # de la fila a otra fecha y el impreso NO cambia (FISCAL-03).
+        FiscalDocument.objects.filter(pk=doc.pk).update(
+            issued_at=_tz.make_aware(_dt.datetime(2020, 6, 6, 12, 0, 0)))
+        ctx2 = build_fiscal_context(FiscalDocument.objects.get(pk=doc.pk))
+        self.assertEqual(ctx2['issued_at'].date(), _dt.date(2026, 1, 15))
 
     def test_the_a4_says_what_it_is_and_carries_the_numbers(self):
         from .fiscal_pdf_services import generate_fiscal_pdf
@@ -55878,6 +55883,26 @@ class C22DBoletaTest(TestCase):
         self.assertEqual(parts[7], '1')        # tipo doc adquirente (DNI)
         self.assertEqual(parts[8], '46237547')  # nº doc adquirente
 
+    def test_a_boleta_cannot_be_sent_individually_via_sendbill(self):
+        """REVIEW A (H1): una boleta se informa por Resumen, no por sendBill."""
+        doc = self._issue(self._boleta())
+        with self.assertRaises(FiscalError):
+            submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)  # sin cambio
+
+    def test_the_issued_date_is_the_legal_emission_date_not_row_creation(self):
+        """
+        REVIEW A (H2): `issued_at` sale de `paid_at` (fecha legal del XML), para
+        que el Resumen agrupe por la fecha del comprobante y no por el reloj.
+        """
+        paid = timezone.make_aware(timezone.datetime(2026, 1, 15, 23, 59, 0))
+        order = self._boleta(name='CLIENTE')
+        order.paid_at = paid
+        order.save(update_fields=['paid_at'])
+        doc, _ = get_or_create_fiscal_document(order)
+        self.assertEqual(timezone.localtime(doc.issued_at).date(), paid.date())
+
 
 # ===========================================================================
 # ERP-FISCAL-4 — Resumen Diario de Boletas (RC)
@@ -56009,6 +56034,20 @@ class C22ESummaryTest(TestCase):
     def test_generate_without_eligible_boletas_fails(self):
         with self.assertRaises(FiscalError):
             self._generate()
+
+    def test_an_unsigned_boleta_is_not_eligible(self):
+        """REVIEW A/B: una boleta sin firmar (sin evidencia) no se informa."""
+        self._boleta_doc(status=FiscalDocumentStatus.GENERATED)
+        with self.assertRaises(FiscalError):  # nada elegible
+            self._generate()
+
+    def test_the_generation_date_is_today_not_the_reference_date(self):
+        """REVIEW A/B (M1): cbc:IssueDate = generación (hoy); ReferenceDate = boletas."""
+        self._boleta_doc(issued=self.today - _timedelta(days=2))
+        s = generate_daily_summaries(
+            self.company, self.today - _timedelta(days=2), FiscalEnvironment.BETA)[0]
+        self.assertEqual(s.reference_date, self.today - _timedelta(days=2))
+        self.assertEqual(s.issue_date, self.today)  # generación
 
     def test_batches_split_at_the_limit(self):
         """§61: el reparto en bloques + resto, con el límite reducido para probarlo."""

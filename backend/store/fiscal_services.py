@@ -176,8 +176,10 @@ def _customer_party(order: Order, document_type: str) -> Party:
         return Party(doc_type=doc_type, doc_number=number, legal_name=name)
 
     identified = bool(doc_type and number)
-    if not identified and order.total is not None \
-            and order.total > BOLETA_ID_THRESHOLD:
+    # Sin identificar: sólo se permite si consta que el total NO supera el umbral.
+    # Un total desconocido no puede darse por «≤ 700»: se falla cerrado (L2).
+    if not identified and (order.total is None
+                           or order.total > BOLETA_ID_THRESHOLD):
         raise FiscalError(
             f'Una boleta cuyo total ({order.total}) supera S/ {BOLETA_ID_THRESHOLD} '
             f'debe identificar al adquirente con su tipo y número de documento '
@@ -403,7 +405,12 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             document = FiscalDocument.objects.create(
                 order=order, company=order.company, series_ref=series,
                 document_type=series.document_type, series=series.series,
-                number=number, issued_at=timezone.now(),
+                # REVIEW A (H2). `issued_at` es la fecha LEGAL de emisión —la que
+                # va en `cbc:IssueDate` del XML, derivada de `paid_at`—, no la del
+                # reloj al crear la fila. Así la agrupación del Resumen Diario por
+                # fecha coincide con la fecha del comprobante y su `ReferenceDate`
+                # no contradice a las boletas que informa.
+                number=number, issued_at=(order.paid_at or timezone.now()),
                 environment=series.environment,
                 issuer_tax_id=data.supplier.doc_number,
                 issuer_legal_name=data.supplier.legal_name,
@@ -539,6 +546,14 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
     """
     if not document.signed_xml:
         raise FiscalError('El documento no está firmado.')
+    # REVIEW A (H1). Una BOLETA no se envía por `sendBill`: SUNAT no la acepta por
+    # ese canal y la dejaría RECHAZADA, y una boleta rechazada queda excluida de
+    # todo resumen futuro —una venta entregada que nunca se informa—. La boleta se
+    # informa por el Resumen Diario. Se falla cerrado aquí, en el backend.
+    if document.document_type == FiscalDocumentType.RECEIPT:
+        raise FiscalError(
+            'Una boleta se informa a SUNAT mediante el Resumen Diario, no por '
+            'envío individual. Inclúyala en un resumen.')
     if document.is_accepted:
         return document
 

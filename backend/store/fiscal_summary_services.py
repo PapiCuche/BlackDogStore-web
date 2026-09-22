@@ -53,10 +53,10 @@ _CDR_OUTCOME_TO_STATUS = {
     ProviderOutcome.REJECTED: FiscalSummaryStatus.REJECTED,
 }
 
-#: Boletas que pueden entrar en un resumen: firmadas y otorgadas.
+#: Boletas que pueden entrar en un resumen: FIRMADAS. Una boleta que no llegó a
+#: firmarse no tiene evidencia (XML/QR) y no debe informarse (REVIEW A/B).
 _ELIGIBLE_BOLETA_STATES = (
     FiscalDocumentStatus.SIGNED,
-    FiscalDocumentStatus.GENERATED,
 )
 
 
@@ -104,13 +104,16 @@ def generate_daily_summaries(company, reference_date: date, environment: str, *,
     concurrencia (§16); al re-seleccionar tras un conflicto, las boletas que otro
     proceso ya tomó quedan excluidas.
     """
-    issue_date = issue_date or reference_date
+    # `issue_date` es la fecha de GENERACIÓN del resumen (hoy), no la de las
+    # boletas. `cbc:IssueDate` = generación; `cbc:ReferenceDate` = emisión de las
+    # boletas. Se exige `issue_date >= reference_date` en `SummaryData.check`.
+    issue_date = issue_date or timezone.localdate()
     summaries: list[FiscalDailySummary] = []
-    guard = 0
-    while True:
-        guard += 1
-        if guard > 100:  # nunca debería; corta un bucle patológico
-            break
+    # Se corta por FALTA DE PROGRESO, no por número total de iteraciones: un
+    # volumen grande y legítimo (muchos bloques de 500) NO debe truncarse. Sólo
+    # una racha de conflictos sin crear nada indica un problema real.
+    sin_progreso = 0
+    while sin_progreso < 20:
         eligible = select_eligible_boletas(company, reference_date, environment)
         if not eligible:
             break
@@ -118,9 +121,11 @@ def generate_daily_summaries(company, reference_date: date, environment: str, *,
         try:
             summaries.append(_create_summary(
                 company, environment, reference_date, issue_date, chunk))
+            sin_progreso = 0
         except IntegrityError:
             # Carrera: otro proceso tomó el correlativo o alguna boleta. Se
             # re-selecciona (excluye lo tomado) y se reintenta el bloque.
+            sin_progreso += 1
             continue
 
     if not summaries:
@@ -155,6 +160,11 @@ def _build_summary_data(summary: FiscalDailySummary) -> SummaryData:
     if not rows:
         raise FiscalError('El resumen no tiene boletas.')
     issuer = rows[0].document  # todas comparten emisor: es de UNA empresa
+    # Defensa en profundidad: el invariante «un resumen, un emisor» se afirma, no
+    # se supone. La creación ya lo garantiza (scope por empresa); si alguna vez no,
+    # se falla cerrado en vez de emitir un resumen con emisores mezclados.
+    if any(row.document.issuer_tax_id != issuer.issuer_tax_id for row in rows):
+        raise FiscalError('Un resumen no puede mezclar emisores distintos.')
     lines = tuple(
         SummaryLine(
             line_id=row.line_id, document_type=row.document.document_type,
