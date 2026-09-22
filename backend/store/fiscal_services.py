@@ -130,6 +130,67 @@ DOC_TYPE_TO_SUNAT = {
     'ce': '4',   # carné de extranjería
 }
 
+#: Catálogo N.º 06, código `0`: «DOC.TRIB.NO.DOM.SIN.RUC». Es lo que lleva una
+#: boleta a consumidor final sin identificación.
+DOC_SIN_DOCUMENTO = '0'
+
+#: Qué tipo de comprobante del Catálogo N.º 01 pide cada venta. Se RESUELVE por
+#: tipo (ERP-FISCAL-4 §21): no se abre a «todo receipt_type», ni se copia el flujo
+#: de factura a ciegas. Lo que no esté aquí falla cerrado.
+RECEIPT_TYPE_TO_DOCUMENT_TYPE = {
+    Order.ReceiptType.FACTURA: FiscalDocumentType.INVOICE,
+    Order.ReceiptType.BOLETA: FiscalDocumentType.RECEIPT,
+}
+
+#: Reglamento de Comprobantes de Pago, Art. 8 num. 3.10: una boleta cuyo importe
+#: total SUPERE S/ 700 debe identificar al adquirente (tipo y número de
+#: documento). «Supere» es estrictamente mayor: 700,00 exacto no lo exige.
+BOLETA_ID_THRESHOLD = Decimal('700.00')
+
+
+def _customer_party(order: Order, document_type: str) -> Party:
+    """
+    El adquirente, según el tipo de comprobante (ERP-FISCAL-4 §24).
+
+    La regla del receptor NO es la misma para factura y boleta:
+
+    - FACTURA: exige RUC. `rules.validate` lo comprueba; aquí se traslada la
+      identidad tal cual, sin cambiar el comportamiento previo.
+    - BOLETA: admite DNI/CE/RUC, y admite consumidor final SIN documento
+      (Catálogo N.º 06 código `0`, número `0`) cuando el total no supera el
+      umbral. Si el total SUPERA S/ 700 y no hay documento, se FALLA CERRADO: la
+      norma exige identificar al adquirente y emitir sin hacerlo sería declarar
+      una venta que no cumple el Reglamento (§26). La guarda vive en el backend,
+      no en una pantalla.
+
+    El nombre de un consumidor final sin documento es una convención, no un
+    literal que fije la norma: se usa el nombre de la venta si lo hay, y «VARIOS»
+    sólo como relleno del campo obligatorio.
+    """
+    doc_type = DOC_TYPE_TO_SUNAT.get(order.document_type or '', '')
+    number = (order.document_number or '').strip()
+    name = (order.customer_name or '').strip()
+
+    if document_type != FiscalDocumentType.RECEIPT:
+        # Factura (y cualquier otro tipo): identidad tal cual, como antes.
+        return Party(doc_type=doc_type, doc_number=number, legal_name=name)
+
+    identified = bool(doc_type and number)
+    if not identified and order.total is not None \
+            and order.total > BOLETA_ID_THRESHOLD:
+        raise FiscalError(
+            f'Una boleta cuyo total ({order.total}) supera S/ {BOLETA_ID_THRESHOLD} '
+            f'debe identificar al adquirente con su tipo y número de documento '
+            f'(Reglamento de Comprobantes de Pago, Art. 8). Emitirla sin '
+            f'identificación declararía una venta que no cumple la norma.'
+        )
+    if identified:
+        return Party(doc_type=doc_type, doc_number=number,
+                     legal_name=name or 'CLIENTE')
+    # Consumidor final sin documento (total ≤ umbral).
+    return Party(doc_type=DOC_SIN_DOCUMENTO, doc_number='0',
+                 legal_name=name or 'VARIOS')
+
 
 def _order_to_invoice_data(order: Order, series: FiscalSeries,
                            number: int) -> InvoiceData:
@@ -216,11 +277,7 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
             trade_name=identity.name or '',
             address_line=identity.legal_address or '',
         ),
-        customer=Party(
-            doc_type=DOC_TYPE_TO_SUNAT.get(order.document_type, ''),
-            doc_number=order.document_number or '',
-            legal_name=order.customer_name or '',
-        ),
+        customer=_customer_party(order, series.document_type),
         lines=tuple(lines),
         taxable_amount=order.taxable_amount,
         tax_amount=order.tax_amount,
@@ -265,10 +322,13 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             'Sólo se emite comprobante de una venta pagada. '
             'Un comprobante no es autoridad del pago.'
         )
-    if order.receipt_type != Order.ReceiptType.FACTURA:
+    # SE RESUELVE EL TIPO POR EL receipt_type de la venta (§21). No se abre a
+    # «cualquier tipo»: lo que no esté en el mapa falla cerrado.
+    document_type = RECEIPT_TYPE_TO_DOCUMENT_TYPE.get(order.receipt_type)
+    if document_type is None:
         raise FiscalError(
-            'Esta venta no solicitó factura. Emitir una boleta corresponde a '
-            'otra fase.'
+            f'Esta venta pide «{order.receipt_type}», que no es un comprobante '
+            f'electrónico que esta versión sepa emitir.'
         )
 
     # SE FALLA CERRADO ANTE UN DESCUENTO, y es deliberado.
@@ -321,7 +381,7 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
     try:
         series = resolve_series(
             order.company, branch=order.fulfillment_branch,
-            document_type=FiscalDocumentType.INVOICE,
+            document_type=document_type,
         )
     except FiscalConfigError as exc:
         raise FiscalError(str(exc)) from None

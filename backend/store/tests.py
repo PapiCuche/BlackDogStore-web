@@ -55720,3 +55720,160 @@ class FiscalBetaSmokeCommandTest(TestCase):
         with override_settings(FISCAL_BETA_SMOKE_ENABLED=True, FISCAL_ENABLED=False):
             with self.assertRaises(CommandError):
                 call_command('fiscal_beta_smoke', '--company-tax-id', '20100066603')
+
+
+# ===========================================================================
+# ERP-FISCAL-4 — Boleta electrónica (tipo 03)
+# ===========================================================================
+
+from .fiscal_services import (  # noqa: E402
+    BOLETA_ID_THRESHOLD, DOC_SIN_DOCUMENTO, _customer_party,
+)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22DBoletaTest(TestCase):
+    """
+    La boleta de venta (tipo 03): serie B, receptor con reglas propias.
+
+    Reutiliza la disciplina monetaria de la factura (VEN-02) y su generador; lo
+    que cambia es el tipo, la serie y —sobre todo— la identidad del adquirente.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22d-boleta', 'Empresa Boleta', tax_id='20100066603',
+            legal_name='EMPRESA BOLETA SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT,
+            series='B001')
+        self.product = _c1_product(self.company, 'Articulo Boleta', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 50)
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+
+    def _boleta(self, *, price='118.00', qty=1, total='118.00', taxable='100.00',
+                tax='18.00', doc_type='', doc_number='', name='',
+                treatment='taxed', discount='0.00', product=None):
+        product = product or self.product
+        order = Order.objects.create(
+            company=self.company, customer_name=name,
+            document_type=doc_type, document_number=doc_number,
+            receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal(total), discount_amount=Decimal(discount),
+            subtotal_amount=Decimal(total), taxable_amount=Decimal(taxable),
+            tax_amount=Decimal(tax), tax_rate=Decimal('0.18'),
+            tax_treatment=treatment, currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=product,
+                                 quantity=qty, price=Decimal(price))
+        return order
+
+    def _issue(self, order):
+        doc, _ = get_or_create_fiscal_document(order)
+        return sign_fiscal_document(doc, key_pem=self.key_pem.encode(),
+                                    cert_pem=self.cert_pem.encode())
+
+    def test_a_boleta_is_issued_as_type_03_on_a_b_series(self):
+        doc = self._issue(self._boleta())
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+        self.assertEqual(doc.document_type, FiscalDocumentType.RECEIPT)
+        self.assertEqual(doc.series, 'B001')
+        self.assertEqual(doc.document_id, 'B001-1')
+
+    def test_a_consumer_without_a_document_is_the_anonymous_buyer(self):
+        doc = self._issue(self._boleta())
+        self.assertEqual(doc.customer_doc_type, DOC_SIN_DOCUMENTO)
+        self.assertEqual(doc.customer_doc_number, '0')
+        self.assertIn('03', doc.signed_xml)  # InvoiceTypeCode
+
+    def test_a_boleta_with_a_dni_buyer_carries_the_dni(self):
+        doc = self._issue(self._boleta(
+            doc_type='dni', doc_number='46237547', name='PAZOS ATOCHE LUANA'))
+        self.assertEqual(doc.customer_doc_type, '1')
+        self.assertEqual(doc.customer_doc_number, '46237547')
+
+    def test_a_boleta_over_700_without_a_document_fails_closed(self):
+        """§26: >S/700 sin identificación no se emite; no gasta correlativo."""
+        order = self._boleta(price='800.00', total='800.00',
+                             taxable='677.97', tax='122.03')
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 1)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_boleta_over_700_with_a_dni_is_issued(self):
+        doc = self._issue(self._boleta(
+            price='800.00', total='800.00', taxable='677.97', tax='122.03',
+            doc_type='dni', doc_number='46237547', name='CLIENTE IDENTIFICADO'))
+        self.assertEqual(doc.customer_doc_type, '1')
+        self.assertEqual(doc.total, Decimal('800.00'))
+
+    def test_exactly_700_without_a_document_is_allowed(self):
+        """«Supere» es estrictamente mayor: 700,00 exacto no exige documento."""
+        doc = self._issue(self._boleta(
+            price='700.00', total='700.00', taxable='593.22', tax='106.78'))
+        self.assertEqual(doc.customer_doc_type, DOC_SIN_DOCUMENTO)
+
+    def test_a_non_clean_boleta_reconciles_like_a_factura(self):
+        """VEN-02 se reutiliza: 59.90 × 2 en boleta cuadra igual (§22)."""
+        prod = _c1_product(self.company, 'Boleta 59.90', '59.90')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        doc = self._issue(self._boleta(
+            price='59.90', qty=2, total='119.80', taxable='101.53', tax='18.27',
+            product=prod))
+        self.assertEqual(doc.taxable_amount, Decimal('101.53'))
+        self.assertEqual(doc.tax_amount, Decimal('18.27'))
+
+    def test_a_boleta_with_a_discount_fails_closed(self):
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(self._boleta(discount='10.00'))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_non_taxed_boleta_fails_closed(self):
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(
+                self._boleta(treatment='exempt', tax='0.00', taxable='118.00'))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_the_boleta_resolver_does_not_borrow_the_factura_series(self):
+        """§20: una boleta necesita serie B; una F no la resuelve."""
+        only_factura = _p3_company(
+            'c22d-onlyf', 'Solo Factura', tax_id='20555555555',
+            legal_name='SOLO FACTURA SAC')
+        FiscalSeries.objects.create(
+            company=only_factura, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        prod = _c1_product(only_factura, 'Art', '118.00')
+        _c1_stock(only_factura.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=only_factura, customer_name='', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=only_factura.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=prod, quantity=1,
+                                 price=Decimal('118.00'))
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+    def test_the_qr_of_a_boleta_uses_type_03_and_the_buyer_doc(self):
+        from .fiscal_pdf_services import build_fiscal_context
+        doc = self._issue(self._boleta(
+            doc_type='dni', doc_number='46237547', name='CLIENTE'))
+        ctx = build_fiscal_context(doc)
+        payload = ctx['qr_payload']
+        parts = payload.split('|')
+        self.assertEqual(parts[1], '03')       # tipo de documento
+        self.assertEqual(parts[2], 'B001')     # serie
+        self.assertEqual(parts[7], '1')        # tipo doc adquirente (DNI)
+        self.assertEqual(parts[8], '46237547')  # nº doc adquirente
