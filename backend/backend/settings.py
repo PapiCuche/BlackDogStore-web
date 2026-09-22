@@ -216,6 +216,19 @@ FISCAL_KEY_PEM = env('FISCAL_KEY_PEM', default='')
 FISCAL_CERT_P12_PATH = env('FISCAL_CERT_P12_PATH', default='')
 FISCAL_CERT_P12_PASSWORD = env('FISCAL_CERT_P12_PASSWORD', default='')
 
+# CONSULTA/RECONCILIACIÓN en línea (getStatusCdr, billConsultService). Capacidad
+# SEPARADA de la emisión: `billConsultService` sólo existe en producción, así que
+# consultarlo de verdad es una decisión propia. Apagada por defecto; encenderla NO
+# habilita `sendBill` producción (resolutores y banderas distintos). El endpoint,
+# si se configura, lo fija el servidor — nunca una petición.
+FISCAL_CONSULT_ENABLED = env.bool('FISCAL_CONSULT_ENABLED', default=False)
+FISCAL_CONSULT_ENDPOINT = env('FISCAL_CONSULT_ENDPOINT', default='')
+
+# Prueba de humo BETA (comando fiscal_beta_smoke). Apagada por defecto: el comando
+# habla con SUNAT de verdad y PERSISTE lo que envía. Se enciende a propósito, nunca
+# en CI ni en producción.
+FISCAL_BETA_SMOKE_ENABLED = env.bool('FISCAL_BETA_SMOKE_ENABLED', default=False)
+
 # ---------------------------------------------------------------------------
 # M12D — evidencias fotográficas
 # ---------------------------------------------------------------------------

@@ -39,6 +39,9 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from ...fiscal_config import fiscal_enabled, resolve_credentials, resolve_provider
+from ...fiscal_services import (
+    get_or_create_fiscal_document, sign_fiscal_document, submit_fiscal_document,
+)
 from ...models import (
     Company, FiscalDocumentType, FiscalEnvironment, FiscalSeries, Order,
     OrderItem, Product,
