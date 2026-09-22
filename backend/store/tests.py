@@ -55877,3 +55877,495 @@ class C22DBoletaTest(TestCase):
         self.assertEqual(parts[2], 'B001')     # serie
         self.assertEqual(parts[7], '1')        # tipo doc adquirente (DNI)
         self.assertEqual(parts[8], '46237547')  # nº doc adquirente
+
+
+# ===========================================================================
+# ERP-FISCAL-4 — Resumen Diario de Boletas (RC)
+# ===========================================================================
+
+from datetime import date as _date, timedelta as _timedelta  # noqa: E402
+
+from .fiscal.provider import (  # noqa: E402
+    SummaryOutcome, SummarySubmissionResult, TicketStatus, TicketStatusResult,
+)
+from .fiscal.summary import SummaryData, SummaryLine, build_summary_xml  # noqa: E402
+from .fiscal_summary_services import (  # noqa: E402
+    MAX_SUMMARY_LINES, FiscalSummaryInProgress, generate_daily_summaries,
+    poll_daily_summary, select_eligible_boletas, sign_daily_summary,
+    submit_daily_summary,
+)
+from .models import (  # noqa: E402
+    FiscalDailySummary, FiscalDailySummaryDocument, FiscalSummaryStatus,
+)
+
+
+class _FakeSummaryProvider:
+    """billService de mentira: sendSummary y getStatus(ticket) sin red."""
+
+    def __init__(self, *, submit=None, ticket=None):
+        self._submit = submit
+        self._ticket = ticket
+        self.submit_calls = 0
+        self.poll_calls = 0
+
+    def send_summary(self, *, filename, zip_bytes):
+        self.submit_calls += 1
+        return self._submit
+
+    def get_ticket_status(self, *, ticket):
+        self.poll_calls += 1
+        return self._ticket
+
+
+def _ticket_result(*, ref_id, outcome=ProviderOutcome.ACCEPTED, response_code='0',
+                   receiver='20100066603', ticket_status=TicketStatus.COMPLETED,
+                   with_cdr=True):
+    cdr = None
+    if with_cdr:
+        cdr_xml = _build_cdr_xml(reference_id=ref_id, response_code=response_code,
+                                 receiver_ruc=receiver, doc_type='', sign=False)
+        cdr = ProviderResult(outcome=outcome, response_code=response_code,
+                             safe_message='ok', cdr_xml=cdr_xml)
+    return TicketStatusResult(status=ticket_status, status_code=response_code, cdr=cdr)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22ESummaryTest(TestCase):
+    """El Resumen Diario: selección, armado, envío por ticket y CDR."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22e-rc', 'Empresa RC', tax_id='20100066603',
+            legal_name='EMPRESA RC SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT,
+            series='B001')
+        self.product = _c1_product(self.company, 'Art RC', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 5)
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.today = timezone.localdate()
+        self._n = 0
+
+    def _boleta_doc(self, *, issued=None, total='118.00', taxable='100.00',
+                    tax='18.00', doc_type='0', doc_number='0',
+                    status=FiscalDocumentStatus.SIGNED, environment=None):
+        self._n += 1
+        issued = issued or self.today
+        order = Order.objects.create(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal(total), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal(total), taxable_amount=Decimal(taxable),
+            tax_amount=Decimal(tax), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        issued_dt = timezone.make_aware(
+            timezone.datetime(issued.year, issued.month, issued.day, 12, 0, 0))
+        return FiscalDocument.objects.create(
+            order=order, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=self._n,
+            issued_at=issued_dt,
+            environment=environment or FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC SAC',
+            customer_doc_type=doc_type, customer_doc_number=doc_number,
+            customer_legal_name='VARIOS', currency='PEN',
+            taxable_amount=Decimal(taxable), tax_amount=Decimal(tax),
+            total=Decimal(total), tax_rate=Decimal('0.18'),
+            status=status, signed_xml='<Invoice/>')
+
+    def _generate(self, reference_date=None):
+        return generate_daily_summaries(
+            self.company, reference_date or self.today, FiscalEnvironment.BETA)
+
+    # -- selección y armado ---------------------------------------------------
+
+    def test_a_summary_holds_the_eligible_boletas_of_the_day(self):
+        self._boleta_doc(); self._boleta_doc(); self._boleta_doc()
+        summaries = self._generate()
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0].lines.count(), 3)
+        self.assertTrue(summaries[0].identifier.startswith('RC-'))
+        self.assertEqual(summaries[0].reference_date, self.today)
+
+    def test_only_the_requested_date_is_included(self):
+        self._boleta_doc(issued=self.today)
+        self._boleta_doc(issued=self.today - _timedelta(days=1))
+        summaries = self._generate(self.today)
+        self.assertEqual(summaries[0].lines.count(), 1)
+
+    def test_a_boleta_is_not_included_twice(self):
+        """§13: una boleta ya informada no entra en otro resumen activo."""
+        self._boleta_doc(); self._boleta_doc()
+        self._generate()
+        with self.assertRaises(FiscalError):  # nada elegible queda
+            self._generate()
+
+    def test_generate_without_eligible_boletas_fails(self):
+        with self.assertRaises(FiscalError):
+            self._generate()
+
+    def test_batches_split_at_the_limit(self):
+        """§61: el reparto en bloques + resto, con el límite reducido para probarlo."""
+        from unittest.mock import patch as _patch
+        for _ in range(5):
+            self._boleta_doc()
+        with _patch('store.fiscal_summary_services.MAX_SUMMARY_LINES', 2):
+            summaries = generate_daily_summaries(
+                self.company, self.today, FiscalEnvironment.BETA)
+        self.assertEqual([s.lines.count() for s in summaries], [2, 2, 1])
+        # correlativos distintos
+        self.assertEqual(sorted(s.correlativo for s in summaries), [1, 2, 3])
+
+    def test_correlativo_is_unique_per_day(self):
+        self._boleta_doc()
+        s1 = self._generate()[0]
+        self._boleta_doc()
+        s2 = self._generate()[0]
+        self.assertNotEqual(s1.correlativo, s2.correlativo)
+        self.assertNotEqual(s1.identifier, s2.identifier)
+
+    # -- firma ----------------------------------------------------------------
+
+    def _generate_and_sign(self):
+        self._boleta_doc(); self._boleta_doc()
+        summary = self._generate()[0]
+        return sign_daily_summary(summary, key_pem=self.key_pem.encode(),
+                                  cert_pem=self.cert_pem.encode())
+
+    def test_signing_produces_a_verifiable_summary(self):
+        s = self._generate_and_sign()
+        self.assertEqual(s.status, FiscalSummaryStatus.SIGNED)
+        self.assertTrue(s.signed_xml)
+        self.assertTrue(s.signed_xml_sha256)
+        self.assertIn('SummaryDocuments', s.signed_xml)
+        self.assertIn(s.identifier, s.signed_xml)
+
+    # -- envío (sendSummary → ticket) -----------------------------------------
+
+    def test_submitting_persists_the_ticket(self):
+        s = self._generate_and_sign()
+        provider = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='1234567890'))
+        s = submit_daily_summary(s, provider)
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+        self.assertEqual(s.ticket, '1234567890')
+        s.refresh_from_db()
+        self.assertEqual(s.ticket, '1234567890')  # persistido (§8)
+
+    def test_a_transport_error_on_submit_is_reintentable_without_a_ticket(self):
+        s = self._generate_and_sign()
+        provider = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_ERROR, safe_message='timeout'))
+        s = submit_daily_summary(s, provider)
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMISSION_ERROR)
+        self.assertEqual(s.ticket, '')
+
+    def test_a_second_submit_does_not_create_a_second_ticket(self):
+        """§48: reenviar un resumen con ticket no llama otra vez a SUNAT."""
+        s = self._generate_and_sign()
+        provider = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='T1'))
+        submit_daily_summary(s, provider)
+        s.refresh_from_db()
+        submit_daily_summary(s, provider)
+        self.assertEqual(provider.submit_calls, 1)
+
+    # -- consulta (getStatus) y CDR -------------------------------------------
+
+    def _submitted(self):
+        s = self._generate_and_sign()
+        return submit_daily_summary(s, _FakeSummaryProvider(
+            submit=SummarySubmissionResult(outcome=SummaryOutcome.TICKET, ticket='T')))
+
+    def test_processing_leaves_it_submitted(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(ticket=TicketStatusResult(
+            status=TicketStatus.PROCESSING, status_code='98'))
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'processing')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+
+    def test_an_accepted_cdr_settles_the_summary(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=s.identifier, outcome=ProviderOutcome.ACCEPTED))
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'reconciled')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.ACCEPTED)
+        self.assertTrue(s.cdr_xml)
+
+    def test_a_rejected_cdr_supersedes_its_boletas(self):
+        """§52: el rechazo es del resumen; libera sus boletas para otro RC."""
+        s = self._submitted()
+        boleta_ids = list(s.lines.values_list('document_id', flat=True))
+        provider = _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=s.identifier, outcome=ProviderOutcome.REJECTED,
+                                  response_code='3301', ticket_status=TicketStatus.ERROR))
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'reconciled')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.REJECTED)
+        # las boletas quedan re-informables
+        self.assertTrue(all(
+            FiscalDailySummaryDocument.objects.get(summary=s, document_id=b).superseded
+            for b in boleta_ids))
+        again = generate_daily_summaries(self.company, self.today, FiscalEnvironment.BETA)
+        self.assertEqual(again[0].lines.count(), len(boleta_ids))
+
+    def test_a_transport_error_on_poll_keeps_the_ticket(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(ticket=TicketStatusResult(
+            status=TicketStatus.TRANSPORT_ERROR, safe_message='timeout'))
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'transport_error')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+        self.assertEqual(s.ticket, 'T')
+
+    def test_a_cdr_for_another_summary_is_not_applied(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id='RC-20000101-999'))  # otro RC
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'cdr_mismatch')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+
+    def test_polling_survives_a_crash_with_only_the_persisted_ticket(self):
+        """§47: consultar funciona con sólo el ticket en BD, sin estado en memoria."""
+        s = self._submitted()
+        reloaded = FiscalDailySummary.objects.get(pk=s.pk)  # fresco de BD
+        provider = _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=reloaded.identifier))
+        out = poll_daily_summary(reloaded, provider)
+        self.assertEqual(out.action, 'reconciled')
+
+    def test_polling_an_accepted_summary_is_idempotent(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(ticket=_ticket_result(ref_id=s.identifier))
+        poll_daily_summary(s, provider)
+        s.refresh_from_db()
+        out2 = poll_daily_summary(s, provider)
+        self.assertEqual(out2.action, 'already_terminal')
+
+    def test_the_500_boundary_splits_into_two_summaries(self):
+        """§61: 501 boletas → dos resúmenes (500 y 1). Con bulk_create para ir rápido."""
+        base = timezone.make_aware(
+            timezone.datetime(self.today.year, self.today.month, self.today.day, 12, 0))
+        orders = [Order(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+            for _ in range(501)]
+        Order.objects.bulk_create(orders)
+        docs = [FiscalDocument(
+            order=o, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=1000 + i,
+            issued_at=base, environment=FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC SAC',
+            customer_doc_type='0', customer_doc_number='0', customer_legal_name='VARIOS',
+            currency='PEN', taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+            for i, o in enumerate(orders)]
+        FiscalDocument.objects.bulk_create(docs)
+        summaries = self._generate()
+        self.assertEqual(sorted(s.lines.count() for s in summaries), [1, 500])
+
+
+class C22ESummaryConcurrencyTest(TransactionTestCase):
+    """§16/§74: dos generaciones simultáneas no chocan el correlativo ni duplican."""
+
+    def test_concurrent_generation_keeps_correlativos_distinct(self):
+        from django.db import connection
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite serializa con un bloqueo de base de datos: la carrera real '
+                'del correlativo sólo se prueba en PostgreSQL.')
+        import threading
+        cache.clear()
+        company = _p3_company('c22e-conc', 'Empresa Conc', tax_id='20100066603',
+                             legal_name='EMPRESA CONC SAC')
+        series = FiscalSeries.objects.create(
+            company=company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        today = timezone.localdate()
+        base = timezone.make_aware(
+            timezone.datetime(today.year, today.month, today.day, 12, 0))
+        for i in range(6):
+            o = Order.objects.create(
+                company=company, customer_name='VARIOS', document_type='',
+                document_number='', receipt_type=Order.ReceiptType.BOLETA,
+                total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+                subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+                tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+                tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+                paid=True, paid_at=timezone.now(),
+                fulfillment_branch=company.default_inventory_branch)
+            FiscalDocument.objects.create(
+                order=o, company=company, series_ref=series,
+                document_type=FiscalDocumentType.RECEIPT, series='B001', number=i + 1,
+                issued_at=base, environment=FiscalEnvironment.BETA,
+                issuer_tax_id='20100066603', issuer_legal_name='EMPRESA CONC SAC',
+                customer_doc_type='0', customer_doc_number='0',
+                customer_legal_name='VARIOS', currency='PEN',
+                taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+                total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+                status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+
+        errors = []
+        barrier = threading.Barrier(2)
+
+        def worker():
+            barrier.wait()
+            try:
+                generate_daily_summaries(company, today, FiscalEnvironment.BETA)
+            except FiscalError:
+                pass  # «nada elegible» si el otro hilo ganó las boletas: aceptable
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                from django.db import connections
+                connections.close_all()
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], f'una carrera reventó: {errors}')
+        summaries = list(FiscalDailySummary.objects.filter(company=company))
+        correlativos = [s.correlativo for s in summaries]
+        self.assertEqual(len(correlativos), len(set(correlativos)),
+                         'correlativos duplicados bajo concurrencia')
+        # Ninguna boleta quedó en dos resúmenes activos; ninguna se perdió.
+        total = FiscalDailySummaryDocument.objects.filter(
+            summary__company=company, superseded=False).count()
+        self.assertEqual(total, 6)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22ESummaryApiTest(TestCase):
+    """La superficie interna del resumen: permiso, selección y aislamiento."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c22e-api', 'Empresa RC API', tax_id='20100066603',
+                                  legal_name='EMPRESA RC API SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        self.emisor, _ = _p2d_member(
+            self.company, 'c22e_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'c22e_observador', ['company.view', 'sales.fiscal.view'])
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.today = timezone.localdate()
+        self._make_boleta()
+
+    def _make_boleta(self):
+        base = timezone.make_aware(
+            timezone.datetime(self.today.year, self.today.month, self.today.day, 12, 0))
+        o = Order.objects.create(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        n = FiscalDocument.objects.filter(company=self.company).count() + 1
+        return FiscalDocument.objects.create(
+            order=o, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=n,
+            issued_at=base, environment=FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC API SAC',
+            customer_doc_type='0', customer_doc_number='0', customer_legal_name='VARIOS',
+            currency='PEN', taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _generate(self, user=None, body=None):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            return self._as(user or self.emisor).post(
+                '/api/admin/fiscal-summaries/',
+                body if body is not None else {'reference_date': self.today.isoformat()},
+                format='json')
+
+    def test_generating_requires_issue_not_only_view(self):
+        res = self._generate(user=self.observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(FiscalDailySummary.objects.count(), 0)
+
+    def test_generating_without_a_date_is_400(self):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            res = self._as(self.emisor).post(
+                '/api/admin/fiscal-summaries/', {}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_generating_creates_and_signs_the_summary(self):
+        res = self._generate()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(res.data), 1)
+        self.assertTrue(res.data[0]['has_xml'])
+        self.assertEqual(res.data[0]['status'], FiscalSummaryStatus.SIGNED)
+        self.assertEqual(res.data[0]['lines'], 1)
+
+    def test_the_backend_selects_boletas_the_body_cannot_inject_ids(self):
+        """§59: un document_ids arbitrario en el cuerpo se ignora; manda la fecha."""
+        res = self._generate(body={'reference_date': self.today.isoformat(),
+                                   'document_ids': [999999]})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data[0]['lines'], 1)  # la boleta real, no el id inyectado
+
+    def test_a_view_only_member_can_list(self):
+        self._generate()
+        res = self._as(self.observador).get('/api/admin/fiscal-summaries/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+
+    def test_a_summary_of_another_company_is_not_found(self):
+        sid = self._generate().data[0]['id']
+        other = _p3_company('c22e-other', 'Otra RC', tax_id='20555555555',
+                            legal_name='OTRA RC SAC')
+        stranger, _ = _p2d_member(
+            other, 'c22e_stranger',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        res = self._as(stranger).get(f'/api/admin/fiscal-summaries/{sid}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_submitting_via_the_api_persists_the_ticket(self):
+        from unittest.mock import patch as _patch
+        sid = self._generate().data[0]['id']
+        with _patch('store.fiscal_summary_views.resolve_provider') as fake:
+            fake.return_value = _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='API-TICKET-1'))
+            res = self._as(self.emisor).post(
+                f'/api/admin/fiscal-summaries/{sid}/submit/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], FiscalSummaryStatus.SUBMITTED)
+        self.assertEqual(res.data['ticket'], 'API-TICKET-1')
