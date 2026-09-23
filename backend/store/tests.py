@@ -56568,3 +56568,181 @@ class C22FSummaryTimeoutTest(TestCase):
         s = self._submit_with(SummarySubmissionResult(
             outcome=SummaryOutcome.UNKNOWN_RESPONSE, safe_message='sin ticket'))
         self.assertEqual(s.status, FiscalSummaryStatus.SUBMISSION_UNKNOWN)
+
+
+# ===========================================================================
+# ERP-FISCAL-4.1 — RC-ID-01, RC-ANON-01, RC-XSD-01
+# ===========================================================================
+
+from .fiscal.summary import (  # noqa: E402
+    SummaryStructureError, validate_summary_structure,
+)
+
+_SAC = 'urn:sunat:names:specification:ubl:peru:schema:xsd:SunatAggregateComponents-1'
+_CBC_S = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+_CAC_S = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+
+
+def _summary_line(**kw):
+    base = dict(line_id=1, document_type='03', document_id='B001-1',
+                customer_doc_type='1', customer_doc_number='46237547',
+                condition_code='1', total=Decimal('118.00'),
+                taxable_amount=Decimal('100.00'), exempt_amount=Decimal('0.00'),
+                unaffected_amount=Decimal('0.00'), tax_amount=Decimal('18.00'))
+    base.update(kw)
+    return SummaryLine(**base)
+
+
+def _summary_data(lines=None, identifier='RC-20260922-1'):
+    return SummaryData(
+        identifier=identifier, issue_date=_date(2026, 9, 22),
+        reference_date=_date(2026, 9, 22), supplier_ruc='20100066603',
+        supplier_name='EMPRESA SAC', lines=lines or (_summary_line(),))
+
+
+class FiscalSummaryStructureTest(SimpleTestCase):
+    """Validación estructural del Resumen (RC-XSD-01 §29). No es el XSD oficial."""
+
+    def test_a_valid_summary_passes(self):
+        validate_summary_structure(build_summary_xml(_summary_data()))
+
+    def test_a_bad_id_is_rejected(self):
+        xml = build_summary_xml(_summary_data(identifier='RC-BADID'))
+        with self.assertRaises(SummaryStructureError):
+            validate_summary_structure(xml)
+
+    def test_wrong_header_order_is_rejected(self):
+        from lxml import etree
+        root = etree.fromstring(build_summary_xml(_summary_data()))
+        # Intercambia ReferenceDate e IssueDate.
+        ref = root.find(f'{{{_CBC_S}}}ReferenceDate')
+        iss = root.find(f'{{{_CBC_S}}}IssueDate')
+        idx = list(root).index(ref)
+        root.remove(ref); root.remove(iss)
+        root.insert(idx, ref); root.insert(idx, iss)  # iss antes que ref
+        with self.assertRaises(SummaryStructureError):
+            validate_summary_structure(etree.tostring(root))
+
+    def test_a_line_missing_total_is_rejected(self):
+        from lxml import etree
+        root = etree.fromstring(build_summary_xml(_summary_data()))
+        line = root.find(f'{{{_SAC}}}SummaryDocumentsLine')
+        line.remove(line.find(f'{{{_SAC}}}TotalAmount'))
+        with self.assertRaises(SummaryStructureError):
+            validate_summary_structure(etree.tostring(root))
+
+    def test_a_line_missing_a_billing_payment_is_rejected(self):
+        from lxml import etree
+        root = etree.fromstring(build_summary_xml(_summary_data()))
+        line = root.find(f'{{{_SAC}}}SummaryDocumentsLine')
+        line.remove(line.findall(f'{{{_SAC}}}BillingPayment')[0])
+        with self.assertRaises(SummaryStructureError):
+            validate_summary_structure(etree.tostring(root))
+
+    def test_the_anonymous_summary_line_uses_a_hyphen(self):
+        """RC-ANON-01: en el RESUMEN el consumidor sin documento va con «-»."""
+        from .fiscal_summary_services import _summary_customer
+        self.assertEqual(_summary_customer('0', '0'),
+                         {'customer_doc_type': '-', 'customer_doc_number': '-'})
+        self.assertEqual(_summary_customer('', ''),
+                         {'customer_doc_type': '-', 'customer_doc_number': '-'})
+        # identificado: se traslada
+        self.assertEqual(_summary_customer('1', '46237547'),
+                         {'customer_doc_type': '1', 'customer_doc_number': '46237547'})
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22GSummaryIdentityTest(TestCase):
+    """RC-ID-01: identidad del resumen (id por fecha de generación, multibloque)."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c22g-rc', 'Empresa RC ID', tax_id='20100066603',
+                                  legal_name='EMPRESA RC ID SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.today = timezone.localdate()
+        self._n = 0
+
+    def _boleta(self, *, issued, doc_type='0', doc_number='0'):
+        self._n += 1
+        base = timezone.make_aware(
+            timezone.datetime(issued.year, issued.month, issued.day, 12, 0))
+        o = Order.objects.create(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        return FiscalDocument.objects.create(
+            order=o, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=self._n,
+            issued_at=base, environment=FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC ID SAC',
+            customer_doc_type=doc_type, customer_doc_number=doc_number,
+            customer_legal_name='VARIOS', currency='PEN',
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+
+    def test_the_id_carries_the_correlativo_and_generation_date(self):
+        """El cbc:ID es RC-<fecha de generación>-<correlativo> (reglas 2210/2346)."""
+        self._boleta(issued=self.today - _timedelta(days=2))
+        s = generate_daily_summaries(
+            self.company, self.today - _timedelta(days=2), FiscalEnvironment.BETA)[0]
+        self.assertEqual(s.identifier, f'RC-{self.today.strftime("%Y%m%d")}-1')
+        self.assertEqual(s.reference_date, self.today - _timedelta(days=2))
+        self.assertEqual(s.issue_date, self.today)
+
+    def test_multi_block_summaries_get_distinct_ids(self):
+        from unittest.mock import patch as _patch
+        self._boleta(issued=self.today); self._boleta(issued=self.today)
+        with _patch('store.fiscal_summary_services.MAX_SUMMARY_LINES', 1):
+            summaries = generate_daily_summaries(
+                self.company, self.today, FiscalEnvironment.BETA)
+        ids = sorted(s.identifier for s in summaries)
+        self.assertEqual(ids, [f'RC-{self.today.strftime("%Y%m%d")}-1',
+                               f'RC-{self.today.strftime("%Y%m%d")}-2'])
+
+    def test_a_cdr_binds_only_to_its_own_block(self):
+        from unittest.mock import patch as _patch
+        self._boleta(issued=self.today); self._boleta(issued=self.today)
+        with _patch('store.fiscal_summary_services.MAX_SUMMARY_LINES', 1):
+            summaries = generate_daily_summaries(
+                self.company, self.today, FiscalEnvironment.BETA)
+        block1, block2 = summaries[0], summaries[1]
+        for s in (block1, block2):
+            sign_daily_summary(s, key_pem=self.key_pem.encode(),
+                               cert_pem=self.cert_pem.encode())
+            submit_daily_summary(s, _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket=f'T{s.correlativo}')))
+        block2.refresh_from_db()  # el ticket se persistió en otra instancia
+        # Un CDR con el id del bloque 1 NO debe cerrar el bloque 2.
+        provider = _FakeSummaryProvider(ticket=_ticket_result(ref_id=block1.identifier))
+        out = poll_daily_summary(block2, provider)
+        self.assertEqual(out.action, 'cdr_mismatch')
+        block2.refresh_from_db()
+        self.assertEqual(block2.status, FiscalSummaryStatus.SUBMITTED)
+
+    def test_the_anonymous_boleta_becomes_a_hyphen_line_in_the_summary(self):
+        """RC-ANON-01 extremo a extremo: boleta con doc 0 → línea de resumen con «-»."""
+        self._boleta(issued=self.today, doc_type='0', doc_number='0')
+        s = generate_daily_summaries(self.company, self.today, FiscalEnvironment.BETA)[0]
+        s = sign_daily_summary(s, key_pem=self.key_pem.encode(),
+                               cert_pem=self.cert_pem.encode())
+        from lxml import etree
+        root = etree.fromstring(s.signed_xml.encode())
+        party = root.find(
+            f'{{{_SAC}}}SummaryDocumentsLine/{{{_CAC_S}}}AccountingCustomerParty')
+        cust = party.find(f'{{{_CBC_S}}}CustomerAssignedAccountID')
+        typ = party.find(f'{{{_CBC_S}}}AdditionalAccountID')
+        self.assertEqual(cust.text, '-')
+        self.assertEqual(typ.text, '-')
