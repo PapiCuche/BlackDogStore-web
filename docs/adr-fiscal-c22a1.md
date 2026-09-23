@@ -602,3 +602,106 @@ poder demostrar exactamente qué ZIP pudo haberse enviado, sin secretos.
 incorporarse (el sitio de SUNAT devuelve 403 a descargas automatizadas y la fase
 prohíbe *mirrors*). Una validación ESTRUCTURAL local —no el XSD oficial, y así se
 declara— corre antes de firmar; la estructura se confirma además contra BETA.
+
+---
+
+## ADR-29 · Una nota es un `FiscalDocument`, no una entidad nueva
+
+**Decisión.** La Nota de Crédito (07) y la de Débito (08) son filas de
+`FiscalDocument`, con un tipo propio y una FK `original_document` que apunta al
+comprobante que corrigen. No hay tabla de notas.
+
+**Por qué.** Una nota necesita EXACTAMENTE la misma tubería que un comprobante:
+serie y correlativo fiscales, firma XML-DSig, validación XSD, envío, CDR,
+reconciliación, PDF y QR. Una entidad separada habría duplicado esas siete cosas
+o —peor— habría inventado una segunda forma de numerar y firmar que se
+desincroniza con la primera en cuanto una cambie. Compartir el modelo hace que
+enviar, reconciliar e imprimir una nota sean el MISMO código ya probado.
+
+**Descartado.** Un modelo `FiscalNote` con su ciclo de vida. Habría obligado a
+mantener dos numeradores, dos firmadores y dos superficies de envío en paralelo.
+
+**Consecuencia.** Un comprobante y sus notas se distinguen por `document_type` y
+por la presencia de `original_document`. Los endpoints de envío, XML, CDR y PDF
+ya existentes sirven a una nota sin cambios: una nota ES un comprobante.
+
+---
+
+## ADR-30 · El original es inmutable; la anulación total lo REFLEJA, no lo recalcula
+
+**Decisión.** Emitir una nota no toca el `signed_xml`, el CDR ni los totales del
+original. Para una anulación total (Catálogo 09, motivos 01 y 06) la nota copia
+los importes y las líneas del original, y esas líneas se leen de su XML FIRMADO,
+no de la `Order` (que pudo cambiar tras la venta).
+
+**Por qué.** El comprobante firmado es lo que SUNAT recibió; es la autoridad. Si
+la nota releyera `OrderItem`/`Product`, una edición posterior del catálogo
+produciría una nota que no cuadra con el documento que dice anular. Leer del XML
+firmado garantiza que la nota de anulación refleja el original tal como existió.
+
+**Descartado.** Recalcular la nota desde la venta. Reintroduciría el descuadre de
+un céntimo que C2.1 ya cerró, y encima sobre un documento que debe ser espejo
+exacto de otro.
+
+**Consecuencia.** La nota de importe explícito (una ND que cobra una mora, p. ej.)
+sí toma su base e IGV de quien la pide —no del original—, porque no es un espejo;
+es un cargo nuevo que referencia al original.
+
+---
+
+## ADR-31 · Varias notas por original son legales; la idempotencia es por CLAVE, no por original
+
+**Decisión.** No hay `get_or_create(original)`. Un original admite tantas notas
+como haga falta. La repetición se controla con `note_request_key`: una restricción
+única `(original_document, note_request_key)` —con `note_request_key` no vacío—
+hace que reintentar la MISMA petición devuelva la misma nota, mientras que dos
+correcciones distintas producen dos notas distintas.
+
+**Por qué.** Sobre una factura caben una nota que corrige el RUC y, más tarde,
+otra que descuenta un producto devuelto: son dos hechos económicos reales. Atar la
+idempotencia al original prohibiría el segundo. Atarla a una clave de intención
+—que el cliente genera por operación— evita el duplicado por doble clic sin
+prohibir la segunda nota legítima.
+
+**Consecuencia.** El cliente que quiere idempotencia manda `request_key`; el que
+manda uno vacío obtiene siempre una nota nueva. El correlativo sólo se gasta
+cuando de verdad se crea una nota.
+
+---
+
+## ADR-32 · La identidad de la nota sale del ORIGINAL, nunca del cuerpo de la petición
+
+**Decisión.** El endpoint recibe el `pk` del comprobante original (resuelto dentro
+del tenant y la sucursal de quien llama). La empresa, la sucursal, la serie de la
+nota, el adquirente y —en una anulación total— los importes se DERIVAN de ese
+original. Del cuerpo sólo se aceptan el motivo, su descripción, una clave de
+idempotencia y, para una ND, el importe del cargo.
+
+**Por qué.** Aceptar la empresa, el adquirente o la serie del cuerpo sería dejar
+que el cliente emita una nota a nombre de otro, contra un comprobante ajeno, o con
+una serie que no le corresponde: un IDOR de emisión. La identidad de una nota no
+es una opinión del cliente; es un hecho del comprobante que corrige.
+
+**Consecuencia.** Un cuerpo que trae otro RUC, otra empresa u otra serie no cambia
+nada: la nota sigue derivándose del original. Se prueba con un test que inyecta
+esos campos y verifica que la nota los ignora (§40/§47).
+
+---
+
+## ADR-33 · La nota comparte el canal de envío del comprobante que corrige
+
+**Decisión.** Una nota de FACTURA se envía por `sendBill`, igual que la factura.
+Una nota de BOLETA se informaría por el Resumen Diario, igual que la boleta —y
+como el Resumen todavía no transmite líneas de nota, esta fase NO emite notas de
+boleta: se falla cerrado en la emisión y, por defensa en profundidad, también en
+el envío individual (una serie B en un 07/08 es, sin ambigüedad, nota de boleta).
+
+**Por qué.** El canal lo fija el tipo del original, no el de la nota. Mandar una
+nota de boleta por `sendBill` la dejaría rechazada, y un correlativo fiscal
+gastado no vuelve. Antes que emitir algo que no se puede transmitir, no se emite:
+NC-FAC y ND-FAC quedan IMPLEMENTADAS y correctas; NC-BOL y ND-BOL, PENDIENTES y
+declaradas, para la fase que extienda el Resumen.
+
+**Consecuencia.** El prefijo de la serie de la nota (F/B) lo resuelve
+`resolve_note_series` a partir del original, con la misma regla determinista que
+`resolve_series`: ambigüedad = fallo, nunca un desempate improvisado.

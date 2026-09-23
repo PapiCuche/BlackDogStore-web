@@ -9,6 +9,85 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## ERP-FISCAL-5A — Nota de Crédito (07) y Nota de Débito (08)
+
+**Estado: IMPLEMENTADO (backend) para NC-FAC y ND-FAC · NC-BOL y ND-BOL
+PENDIENTES y declaradas.** Rama `erp/fiscal-sunat`. Una migración aditiva (`0088`),
+sin cambios de frontend. No habilita producción, ni Comunicación de Baja, ni
+devolución de stock, ni reembolso: una nota es un hecho FISCAL, y sólo eso.
+
+- **Modelo.** `FiscalDocument` gana los tipos `07`/`08`, una FK
+  `original_document` (PROTECT) al comprobante que corrige, el motivo
+  (`note_reason_code`/`note_reason_description`) y una clave de idempotencia
+  (`note_request_key`). Restricción única `(original_document, note_request_key)`
+  para no duplicar por reintento sin prohibir varias notas legítimas por original
+  (ADR-31). El «un vivo por pedido» se acota a `01`/`03`, de modo que las notas no
+  compiten con el comprobante (ADR-29).
+- **UBL 2.1.** XSD oficiales `UBL-CreditNote-2.1` y `UBL-DebitNote-2.1` tomados de
+  OASIS (procedencia y SHA-256 en `schemas/PROCEDENCIA.md`), compilados contra el
+  árbol común ya versionado. El generador comparte las primitivas de la factura
+  (`_party`, `_tax_block`, `_line`, firma, extensiones) y añade el bloque de
+  relación: `cac:DiscrepancyResponse` (referencia + código de motivo) y
+  `cac:BillingReference/InvoiceDocumentReference` (id y tipo del original). La NC
+  lleva `LegalMonetaryTotal`; la ND, `RequestedMonetaryTotal` —lo exige el XSD—.
+- **Anulación total leída del XML firmado.** Una NC de anulación (Catálogo 09,
+  motivos 01/06) refleja los importes y las líneas del ORIGINAL, leídos de su
+  `signed_xml` inmutable, no de la `Order` (ADR-30). Una ND toma su base e IGV de
+  quien la pide: es un cargo nuevo, no un espejo.
+- **Serie 07/08 determinista y por prefijo.** `resolve_note_series` resuelve por
+  empresa/sucursal/ambiente/tipo Y por el prefijo que hereda del original (F para
+  nota de factura, B para nota de boleta), porque un mismo `07` admite dos series
+  legítimas; ambigüedad = fallo (ADR-33).
+- **Canal por el original.** NC/ND de factura salen por `sendBill`, reutilizando
+  `submit_fiscal_document` y la reconciliación de FISCAL-3 (un timeout es INCIERTO,
+  nunca un reintento a ciegas). NC/ND de BOLETA se informarían por el Resumen
+  Diario; como el Resumen aún no transmite líneas de nota, esta fase **no emite
+  notas de boleta**: se falla cerrado en la emisión y, por defensa en profundidad,
+  en el envío individual (ADR-33).
+- **Superficie interna.** `POST /api/admin/fiscal-documents/{id}/credit-notes/` y
+  `/debit-notes/`, donde `{id}` es el comprobante ORIGINAL. La identidad de la nota
+  se deriva del original, nunca del cuerpo (ADR-32): un cuerpo que inyecta otro
+  RUC, otra empresa u otra serie se ignora. Requiere `sales.fiscal.issue` para
+  emitir; el mismo aislamiento por tenant y sucursal que el resto de la superficie
+  fiscal. Cada emisión y firma queda en la bitácora sin secretos.
+- **Representación.** El PDF (A4 y ticket 80 mm) y el QR de una nota se leen de su
+  XML firmado —el parser de representación ahora reconoce las tres formas
+  (`Invoice`/`CreditNote`/`DebitNote`)— y el papel muestra el documento que
+  modifica y el motivo.
+- **Pruebas.** 36 tests dirigidos (servicio, API, PDF, el fallo cerrado de
+  NC-BOL/ND-BOL, y el endurecimiento de la revisión) sobre la suite completa en
+  PostgreSQL (4311, OK, 3 saltados). Sin diff de frontend.
+- **Revisión adversarial (§4).** Ocho dimensiones independientes, cada hallazgo
+  verificado por tres escépticos. Once hallazgos confirmados y corregidos: la
+  anulación refleja la tasa del original (18.00, no 18.06 recomputado); la
+  restricción de idempotencia libera su hueco al rechazarse (evita un 500 al
+  reintentar); la NC ignora importes del cuerpo (sólo la ND los toma); el motivo se
+  valida antes de reservar el correlativo; y el espejo se decide por tipo, no por
+  igualdad de importes. Detalle en `docs/entrega-fiscal-5a-notas.md` §12.1.
+
+**Clasificación de casos.**
+
+| Caso | Estado | Motivo |
+|---|---|---|
+| **NC-FAC** (nota de crédito de factura) | IMPLEMENTADO | Anulación total espejo del original; emite, firma, valida XSD, envía por `sendBill`, reconcilia, imprime. |
+| **ND-FAC** (nota de débito de factura) | IMPLEMENTADO | Cargo de importe explícito; `RequestedMonetaryTotal`; mismo canal y superficie. |
+| **NC-BOL** (nota de crédito de boleta) | PENDIENTE | Su canal es el Resumen Diario, que aún no lleva líneas de nota. Se falla cerrado. |
+| **ND-BOL** (nota de débito de boleta) | PENDIENTE | Igual que NC-BOL. |
+
+**Motivos.** Se emiten sólo los representables correctamente en esta fase: la
+anulación total (Catálogo 09, 01/06) para la NC y el aumento de valor / interés /
+penalidad (Catálogo 10) para la ND. La devolución PARCIAL, el descuento por ítem y
+los ajustes que exigen `AllowanceCharge` quedan PENDIENTES: emitir uno con la
+aritmética escondida en el importe sería un documento que el XSD acepta y SUNAT
+rechaza. El motivo se valida contra su catálogo (09 para NC, 10 para ND) antes de
+la red.
+
+**Lo que esta fase NO hace, y a propósito:** Comunicación de Baja / RA,
+`ConditionCode=3`, motor de anulación universal, devolución de stock, reembolso,
+cancelación de la `Order`/`Payment`, notas de boleta, producción y frontend.
+
+---
+
 ## ERP-FISCAL-4.1 — Cierre normativo y hardening de Boleta / Resumen Diario
 
 **Estado: IMPLEMENTADO (backend).** Rama `erp/fiscal-sunat`. Dos migraciones
