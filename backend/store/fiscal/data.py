@@ -141,3 +141,63 @@ class InvoiceData:
             )
         if not self.lines:
             raise ValueError('Un comprobante sin líneas no es un comprobante.')
+
+
+@dataclass(frozen=True)
+class NoteData:
+    """
+    Una Nota de Crédito (07) o de Débito (08), lista para convertirse en XML.
+
+    Es un documento RELACIONADO: apunta al comprobante ORIGINAL que modifica, con
+    su motivo (Catálogo 09 para la NC, 10 para la ND). El original es inmutable;
+    la nota no lo toca, lo referencia. Los importes vienen dados por la operación
+    correctiva (no se recalculan aquí); para una anulación total, son los del
+    original.
+    """
+
+    #: Catálogo N.º 01: `07` nota de crédito, `08` nota de débito.
+    document_type: str
+    serie: str
+    correlativo: int
+    issue_date: date
+    issue_time: time
+    currency: str
+
+    supplier: Party
+    customer: Party
+    lines: tuple[Line, ...]
+
+    taxable_amount: Decimal
+    tax_amount: Decimal
+    total: Decimal
+    amount_in_words: str
+
+    #: El comprobante que se modifica: su identificador (`F001-123`) y su tipo
+    #: (Catálogo N.º 01: `01` factura, `03` boleta).
+    original_id: str
+    original_type: str
+    #: El motivo: código (Catálogo 09 NC / 10 ND) y su descripción textual.
+    reason_code: str
+    reason_description: str
+
+    notes: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def document_id(self) -> str:
+        return f'{self.serie}-{self.correlativo}'
+
+    def check(self) -> None:
+        if self.taxable_amount + self.tax_amount != self.total:
+            raise ValueError(
+                f'La nota no cuadra: {self.taxable_amount} + {self.tax_amount} '
+                f'!= {self.total}')
+        suma = sum((ln.line_amount for ln in self.lines), Decimal('0.00'))
+        if suma != self.taxable_amount:
+            raise ValueError(
+                f'Las líneas suman {suma} y la base declarada es {self.taxable_amount}')
+        if not self.lines:
+            raise ValueError('Una nota sin líneas no es una nota.')
+        if not self.reason_code:
+            raise ValueError('Una nota necesita un motivo (Catálogo 09/10).')
+        if not self.original_id or not self.original_type:
+            raise ValueError('Una nota debe referenciar el comprobante original.')

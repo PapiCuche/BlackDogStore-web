@@ -7167,6 +7167,16 @@ class FiscalDocumentType(models.TextChoices):
 
     INVOICE = '01', 'Factura electrónica'
     RECEIPT = '03', 'Boleta de venta electrónica'
+    CREDIT_NOTE = '07', 'Nota de crédito electrónica'
+    DEBIT_NOTE = '08', 'Nota de débito electrónica'
+
+
+#: Los tipos ORIGINALES (comprobantes de venta). Una nota (07/08) NO es original:
+#: modifica a uno de éstos y no ocupa su lugar en la venta.
+FISCAL_ORIGINAL_TYPES = (FiscalDocumentType.INVOICE, FiscalDocumentType.RECEIPT)
+
+#: Las notas del Catálogo N.º 01.
+FISCAL_NOTE_TYPES = (FiscalDocumentType.CREDIT_NOTE, FiscalDocumentType.DEBIT_NOTE)
 
 
 class FiscalSeries(models.Model):
@@ -7317,6 +7327,24 @@ class FiscalDocument(models.Model):
     issued_at = models.DateTimeField()
     environment = models.CharField(max_length=16, choices=FiscalEnvironment.choices)
 
+    # --- NOTA (07/08): su relación con el comprobante que modifica (ERP-FISCAL-5A) ---
+    #
+    # Una nota apunta al comprobante ORIGINAL. El original es INMUTABLE: emitir una
+    # nota no lo toca; la nota es un documento nuevo que expresa la modificación.
+    # `PROTECT` para que no se pueda borrar un original que una nota referencia.
+    original_document = models.ForeignKey(
+        'self', null=True, blank=True, on_delete=models.PROTECT,
+        related_name='notes',
+    )
+    #: Catálogo N.º 09 (NC) o N.º 10 (ND). El motivo de la nota.
+    note_reason_code = models.CharField(max_length=2, blank=True)
+    note_reason_description = models.CharField(max_length=250, blank=True)
+    #: Clave de idempotencia del INTENTO de corrección. Una venta admite VARIAS
+    #: notas legítimas, así que la idempotencia es por (original, clave), no por
+    #: original: dos peticiones con la misma clave dan UNA nota; sin clave, cada
+    #: petición crea una. Vacía en los comprobantes originales.
+    note_request_key = models.CharField(max_length=64, blank=True)
+
     # --- emisor, congelado ---
     issuer_tax_id = models.CharField(max_length=15)
     issuer_legal_name = models.CharField(max_length=255)
@@ -7374,11 +7402,31 @@ class FiscalDocument(models.Model):
             ),
             # Un solo comprobante ORIGINAL por venta que no esté rechazado. Un
             # rechazo sí permite volver a emitir: el documento rechazado no tiene
-            # validez tributaria, así que no ocupa el sitio.
+            # validez tributaria, así que no ocupa el sitio. Las NOTAS (07/08)
+            # quedan FUERA de esta restricción: una venta admite varias notas
+            # además de su comprobante original (ERP-FISCAL-5A).
             models.UniqueConstraint(
                 fields=['order'],
-                condition=~models.Q(status=FiscalDocumentStatus.REJECTED),
+                condition=(~models.Q(status=FiscalDocumentStatus.REJECTED)
+                           & models.Q(document_type__in=['01', '03'])),
                 name='fiscal_document_one_live_per_order',
+            ),
+            # Idempotencia de la nota: dos peticiones con la MISMA clave sobre el
+            # MISMO original dan una sola nota. No impide varias notas legítimas
+            # (distinta clave, o sin clave) sobre el mismo original.
+            #
+            # Una nota RECHAZADA libera su hueco de idempotencia, igual que un
+            # comprobante rechazado libera el «único vivo por pedido»: reintentar
+            # una corrección que SUNAT rechazó, con la misma clave, debe poder
+            # emitir una nota nueva. Sin `~REJECTED` aquí, la restricción y el
+            # servicio (que ya excluye las rechazadas al buscar la idempotente)
+            # discrepaban, y ese reintento chocaba con un IntegrityError sin
+            # recuperación (500). (REVIEW ERP-FISCAL-5A.)
+            models.UniqueConstraint(
+                fields=['original_document', 'note_request_key'],
+                condition=(~models.Q(note_request_key='')
+                           & ~models.Q(status=FiscalDocumentStatus.REJECTED)),
+                name='fiscal_note_idempotent_per_original',
             ),
         ]
         indexes = [
