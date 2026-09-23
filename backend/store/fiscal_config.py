@@ -123,6 +123,62 @@ def resolve_series(company, *, branch=None,
     )
 
 
+#: La letra con la que empieza la serie de una nota, según el comprobante que
+#: modifica: una nota de factura lleva serie F; una de boleta, B. SUNAT no cambia
+#: el prefijo por ser nota —lo hereda del original— (Anexo N.º 1/N.º 2).
+_NOTE_SERIE_PREFIX = {FiscalDocumentType.INVOICE: 'F', FiscalDocumentType.RECEIPT: 'B'}
+
+
+def resolve_note_series(company, *, branch=None, note_type: str,
+                        original_type: str) -> FiscalSeries:
+    """
+    La serie de una nota (07/08) que corresponde al comprobante original.
+
+    Igual de DETERMINISTA que `resolve_series`, y por las mismas razones, con una
+    llave más: el PREFIJO. Un mismo `document_type` de nota (07) admite dos series
+    legítimas —una F para notas de factura, una B para notas de boleta— y elegir
+    entre ellas por «la primera» convertiría un accidente de orden en la política
+    de la empresa. Se filtra por el prefijo que hereda del original y, si tras eso
+    quedan dos, se levanta en vez de desempatar.
+    """
+    prefix = _NOTE_SERIE_PREFIX.get(original_type)
+    if prefix is None:
+        raise FiscalConfigError(
+            f'El comprobante original tiene un tipo que no admite notas en esta '
+            f'fase: {original_type!r}.'
+        )
+    environment = resolve_environment()
+    candidates = FiscalSeries.objects.filter(
+        company=company, document_type=note_type, environment=environment,
+        is_active=True, series__startswith=prefix,
+    )
+
+    if branch is not None:
+        de_sucursal = list(candidates.filter(branch=branch))
+        if len(de_sucursal) == 1:
+            return de_sucursal[0]
+        if len(de_sucursal) > 1:
+            raise FiscalConfigError(
+                f'La sucursal «{branch}» tiene {len(de_sucursal)} series de nota '
+                f'{note_type} con prefijo {prefix} activas y no hay regla para '
+                f'elegir. Desactive las que no correspondan.'
+            )
+
+    de_empresa = list(candidates.filter(branch__isnull=True))
+    if len(de_empresa) == 1:
+        return de_empresa[0]
+    if len(de_empresa) > 1:
+        raise FiscalConfigError(
+            f'La empresa tiene {len(de_empresa)} series de nota {note_type} con '
+            f'prefijo {prefix} activas sin sucursal y no hay regla para elegir.'
+        )
+
+    raise FiscalConfigError(
+        f'No hay una serie de nota {note_type} con prefijo {prefix} activa para '
+        f'esta empresa en el ambiente «{environment}».'
+    )
+
+
 def resolve_credentials(company) -> dict:
     """
     Las credenciales de esta empresa. VIENEN DEL ENTORNO, no de la base de datos.

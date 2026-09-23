@@ -40,8 +40,8 @@ from .fiscal import builder, packaging, rules, schema, signing
 from .fiscal.data import InvoiceData, Line, Party
 from .fiscal.provider import ProviderOutcome
 from .models import (
-    FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalSeries,
-    FiscalSubmissionAttempt, Order,
+    FISCAL_NOTE_TYPES, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType,
+    FiscalSeries, FiscalSubmissionAttempt, Order,
 )
 
 #: Los estados de `ProviderOutcome` traducidos al dominio. Se escribe el mapa en
@@ -554,6 +554,16 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         raise FiscalError(
             'Una boleta se informa a SUNAT mediante el Resumen Diario, no por '
             'envío individual. Inclúyala en un resumen.')
+    # ERP-FISCAL-5A. Una nota de BOLETA (07/08 con serie B) tampoco se envía por
+    # `sendBill`: comparte canal con la boleta que corrige —el Resumen Diario—. El
+    # prefijo lo fija `resolve_note_series` según el original, así que una serie B
+    # en un 07/08 es, sin ambigüedad, una nota de boleta. Se falla cerrado aquí
+    # como defensa en profundidad: la emisión ya lo impide antes (NC/ND de boleta
+    # es PENDIENTE), y este canal no debe ser una segunda puerta a ese error.
+    if document.document_type in FISCAL_NOTE_TYPES and document.series.startswith('B'):
+        raise FiscalError(
+            'Una nota de boleta se informa por el Resumen Diario, no por envío '
+            'individual.')
     if document.is_accepted:
         return document
 
