@@ -31,6 +31,8 @@ from lxml import etree
 
 SCHEMA_DIR = Path(__file__).parent / 'schemas' / '2.1'
 INVOICE_XSD = SCHEMA_DIR / 'maindoc' / 'UBL-Invoice-2.1.xsd'
+CREDIT_NOTE_XSD = SCHEMA_DIR / 'maindoc' / 'UBL-CreditNote-2.1.xsd'
+DEBIT_NOTE_XSD = SCHEMA_DIR / 'maindoc' / 'UBL-DebitNote-2.1.xsd'
 
 
 class SchemaError(Exception):
@@ -67,3 +69,26 @@ def validate_invoice(xml: bytes) -> None:
             f'línea {e.line}: {e.message}' for e in schema.error_log
         )
         raise SchemaError(f'No valida contra UBL-Invoice-2.1.xsd — {problemas}')
+
+
+def _validate_against(xml: bytes, xsd_path: Path, label: str) -> None:
+    try:
+        doc = etree.fromstring(xml)
+    except etree.XMLSyntaxError as exc:
+        raise SchemaError(f'El XML no está bien formado: {exc}') from None
+    schema = _schema(str(xsd_path))
+    if not schema.validate(doc):
+        problemas = '; '.join(
+            f'línea {e.line}: {e.message}' for e in schema.error_log
+        )
+        raise SchemaError(f'No valida contra {label} — {problemas}')
+
+
+def validate_credit_note(xml: bytes) -> None:
+    """Valida una Nota de Crédito contra `UBL-CreditNote-2.1.xsd`."""
+    _validate_against(xml, CREDIT_NOTE_XSD, 'UBL-CreditNote-2.1.xsd')
+
+
+def validate_debit_note(xml: bytes) -> None:
+    """Valida una Nota de Débito contra `UBL-DebitNote-2.1.xsd`."""
+    _validate_against(xml, DEBIT_NOTE_XSD, 'UBL-DebitNote-2.1.xsd')

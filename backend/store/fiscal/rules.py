@@ -24,9 +24,17 @@ from decimal import Decimal
 
 from .data import InvoiceData
 
-#: Catálogo N.º 01. Sólo estos dos entran en el alcance de C2.2A.
+#: Catálogo N.º 01.
 INVOICE = '01'
 BOLETA = '03'
+CREDIT_NOTE = '07'
+DEBIT_NOTE = '08'
+
+#: Catálogo N.º 09 — motivos de Nota de Crédito (01..13).
+CATALOG_09 = {f'{n:02d}' for n in range(1, 14)}
+#: Catálogo N.º 10 — motivos de Nota de Débito (01 interés por mora, 02 aumento
+#: en el valor, 03 penalidades/otros).
+CATALOG_10 = {'01', '02', '03'}
 
 #: Anexo N.º 1, campo 8: «La serie debe ser alfanumérica de cuatro (4)
 #: caracteres, siendo el primer caracter de la izquierda la letra F». Para la
@@ -173,3 +181,62 @@ def validate(data: InvoiceData) -> None:
                 f'no puede esconderse en el importe de la línea: se declara con '
                 f'AllowanceCharge, y eso todavía no está implementado.'
             )
+
+
+def validate_note(data) -> None:
+    """
+    Reglas de una Nota de Crédito (07) o de Débito (08), antes de la red.
+
+    Una nota lleva serie según el ORIGINAL que modifica: la de una nota de factura
+    empieza por F; la de una nota de boleta, por B. El motivo debe existir en el
+    catálogo de su tipo (09 para NC, 10 para ND). El resto —RUC del emisor,
+    afectación gravada, aritmética— se comprueba como en un comprobante.
+    """
+    if data.document_type not in (CREDIT_NOTE, DEBIT_NOTE):
+        _fail(f'Tipo de documento no es una nota: {data.document_type!r}.')
+
+    prefix = SERIE_PREFIX.get(data.original_type)
+    if prefix is None:
+        _fail(f'El comprobante original tiene un tipo no soportado para notas: '
+              f'{data.original_type!r} (sólo {INVOICE} factura, {BOLETA} boleta).')
+    if not SERIE_RE.fullmatch(data.serie or ''):
+        _fail(f'La serie debe ser alfanumérica de 4 caracteres; llegó {data.serie!r}.')
+    if not data.serie.startswith(prefix):
+        _fail(f'Una nota de un comprobante tipo {data.original_type} lleva serie '
+              f'que empieza por {prefix!r}; llegó {data.serie!r}.')
+    if not 1 <= data.correlativo <= CORRELATIVO_MAX:
+        _fail(f'El correlativo se inicia en 1 y admite hasta 8 dígitos; '
+              f'llegó {data.correlativo}.')
+
+    if data.supplier.doc_type != DOC_RUC or not check_ruc(data.supplier.doc_number):
+        _fail('El emisor de una nota se identifica con RUC de 11 dígitos.')
+    if not data.supplier.legal_name.strip():
+        _fail('Falta la razón social del emisor.')
+
+    catalog = CATALOG_09 if data.document_type == CREDIT_NOTE else CATALOG_10
+    which = '09' if data.document_type == CREDIT_NOTE else '10'
+    if data.reason_code not in catalog:
+        _fail(f'Motivo {data.reason_code!r} no está en el Catálogo N.º {which}.')
+
+    if not re.fullmatch(r'[A-Z]{3}', data.currency or ''):
+        _fail(f'La moneda debe ser un código ISO 4217 de 3 letras; '
+              f'llegó {data.currency!r}.')
+
+    for i, line in enumerate(data.lines, 1):
+        if line.tax_affectation != AFFECTATION_TAXED:
+            _fail(f'Línea {i}: esta fase sólo emite notas de operaciones gravadas.')
+        if line.quantity <= 0:
+            _fail(f'Línea {i}: la cantidad debe ser mayor que cero.')
+        if not line.description.strip():
+            _fail(f'Línea {i}: falta la descripción del ítem.')
+
+    try:
+        data.check()
+    except ValueError as exc:
+        _fail(str(exc))
+
+    for i, line in enumerate(data.lines, 1):
+        esperado = (line.quantity * line.unit_price).quantize(Decimal('0.01'))
+        if abs(esperado - line.line_amount) > Decimal('0.01'):
+            _fail(f'Línea {i}: {line.quantity} × {line.unit_price} = {esperado}, '
+                  f'pero el importe declarado es {line.line_amount}.')

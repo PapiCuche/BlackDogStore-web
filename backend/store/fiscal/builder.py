@@ -32,10 +32,12 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from lxml import etree
 
-from .data import InvoiceData, Line
+from .data import InvoiceData, Line, NoteData
 
 NS = {
     'inv': 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2',
+    'cn': 'urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2',
+    'dn': 'urn:oasis:names:specification:ubl:schema:xsd:DebitNote-2',
     'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2',
     'cbc': 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2',
     'ext': 'urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2',
@@ -158,10 +160,16 @@ def _party(parent, tag: str, party, *, with_address: bool):
     return holder
 
 
-def _line(parent, index: int, line: Line, currency: str):
-    node = _el(parent, 'cac:InvoiceLine')
+def _line(parent, index: int, line: Line, currency: str, *,
+          line_tag: str = 'cac:InvoiceLine',
+          qty_tag: str = 'cbc:InvoicedQuantity'):
+    # La misma línea sirve a factura/boleta (`InvoiceLine`/`InvoicedQuantity`) y a
+    # las notas (`CreditNoteLine`/`CreditedQuantity`, `DebitNoteLine`/
+    # `DebitedQuantity`): sólo cambian los nombres del renglón y de la cantidad;
+    # la aritmética y el desglose son idénticos.
+    node = _el(parent, line_tag)
     _el(node, 'cbc:ID', index)
-    _el(node, 'cbc:InvoicedQuantity', _money(line.quantity), unitCode=line.unit_code)
+    _el(node, qty_tag, _money(line.quantity), unitCode=line.unit_code)
     _el(node, 'cbc:LineExtensionAmount', _money(line.line_amount), currencyID=currency)
 
     # El precio que ve el cliente, con impuesto incluido. Va aparte del valor
@@ -185,6 +193,48 @@ def _line(parent, index: int, line: Line, currency: str):
     _el(price, 'cbc:PriceAmount', _unit_value(line.unit_price), currencyID=currency)
 
 
+def _ubl_extensions(root, operation_type: str):
+    """
+    Las dos `ext:UBLExtension`: la primera con la información adicional de SUNAT
+    (tipo de operación, Catálogo 17), la segunda RESERVADA a la firma —
+    `signing.sign_invoice` usa la ÚLTIMA `ext:ExtensionContent`—. Compartida por
+    la factura/boleta y las notas: es el mismo andamiaje de SUNAT.
+    """
+    extensions = _el(root, 'ext:UBLExtensions')
+    first = _el(_el(extensions, 'ext:UBLExtension'), 'ext:ExtensionContent')
+    info = _el(first, 'sac:AdditionalInformation')
+    transaction = _el(info, 'sac:SUNATTransaction')
+    _el(transaction, 'cbc:ID', operation_type)
+    _el(_el(extensions, 'ext:UBLExtension'), 'ext:ExtensionContent')
+
+
+def _signature_block(root, document_id: str, signatory):
+    """El bloque `cac:Signature` (mismo en factura/boleta y notas)."""
+    signature = _el(root, 'cac:Signature')
+    _el(signature, 'cbc:ID', document_id)
+    party = _el(signature, 'cac:SignatoryParty')
+    ident = _el(party, 'cac:PartyIdentification')
+    _el(ident, 'cbc:ID', signatory.doc_number)
+    name = _el(party, 'cac:PartyName')
+    _el(name, 'cbc:Name', signatory.legal_name)
+    attachment = _el(signature, 'cac:DigitalSignatureAttachment')
+    external = _el(attachment, 'cac:ExternalReference')
+    _el(external, 'cbc:URI', '#SignatureSP')
+
+
+def _monetary_total(root, *, taxable: Decimal, total: Decimal, currency: str,
+                    tag: str = 'cac:LegalMonetaryTotal'):
+    """
+    El total monetario. Factura/boleta y Nota de Crédito usan
+    `cac:LegalMonetaryTotal`; la Nota de Débito usa `cac:RequestedMonetaryTotal`
+    (así lo exige su XSD). Los renglones internos son los mismos.
+    """
+    totals = _el(root, tag)
+    _el(totals, 'cbc:LineExtensionAmount', _money(taxable), currencyID=currency)
+    _el(totals, 'cbc:TaxInclusiveAmount', _money(total), currencyID=currency)
+    _el(totals, 'cbc:PayableAmount', _money(total), currencyID=currency)
+
+
 def build_invoice_xml(data: InvoiceData) -> bytes:
     """
     El XML sin firmar, en el orden que exige el esquema.
@@ -198,14 +248,7 @@ def build_invoice_xml(data: InvoiceData) -> bytes:
         'ext': NS['ext'], 'ds': NS['ds'], 'sac': NS['sac'],
     })
 
-    # Dos extensiones: la primera para la información adicional de SUNAT, la
-    # segunda reservada a la firma. `signing.sign_invoice` usa la ÚLTIMA.
-    extensions = _el(root, 'ext:UBLExtensions')
-    first = _el(_el(extensions, 'ext:UBLExtension'), 'ext:ExtensionContent')
-    info = _el(first, 'sac:AdditionalInformation')
-    transaction = _el(info, 'sac:SUNATTransaction')
-    _el(transaction, 'cbc:ID', data.operation_type)
-    _el(_el(extensions, 'ext:UBLExtension'), 'ext:ExtensionContent')
+    _ubl_extensions(root, data.operation_type)
 
     _el(root, 'cbc:UBLVersionID', '2.1')
     _el(root, 'cbc:CustomizationID', '2.0')
@@ -224,16 +267,7 @@ def build_invoice_xml(data: InvoiceData) -> bytes:
         _el(root, 'cbc:Note', extra)
     _el(root, 'cbc:DocumentCurrencyCode', data.currency)
 
-    signature = _el(root, 'cac:Signature')
-    _el(signature, 'cbc:ID', data.document_id)
-    party = _el(signature, 'cac:SignatoryParty')
-    ident = _el(party, 'cac:PartyIdentification')
-    _el(ident, 'cbc:ID', data.supplier.doc_number)
-    name = _el(party, 'cac:PartyName')
-    _el(name, 'cbc:Name', data.supplier.legal_name)
-    attachment = _el(signature, 'cac:DigitalSignatureAttachment')
-    external = _el(attachment, 'cac:ExternalReference')
-    _el(external, 'cbc:URI', '#SignatureSP')
+    _signature_block(root, data.document_id, data.supplier)
 
     _party(root, 'cac:AccountingSupplierParty', data.supplier, with_address=True)
     _party(root, 'cac:AccountingCustomerParty', data.customer, with_address=False)
@@ -245,14 +279,71 @@ def build_invoice_xml(data: InvoiceData) -> bytes:
 
     _tax_block(root, taxable=data.taxable_amount, tax=data.tax_amount,
                currency=data.currency)
-
-    totals = _el(root, 'cac:LegalMonetaryTotal')
-    _el(totals, 'cbc:LineExtensionAmount', _money(data.taxable_amount),
-        currencyID=data.currency)
-    _el(totals, 'cbc:TaxInclusiveAmount', _money(data.total), currencyID=data.currency)
-    _el(totals, 'cbc:PayableAmount', _money(data.total), currencyID=data.currency)
+    _monetary_total(root, taxable=data.taxable_amount, total=data.total,
+                    currency=data.currency)
 
     for index, line in enumerate(data.lines, 1):
         _line(root, index, line, data.currency)
+
+    return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
+
+
+def build_note_xml(data: NoteData) -> bytes:
+    """
+    El XML sin firmar de una Nota de Crédito (07) o de Débito (08).
+
+    Comparte las primitivas con la factura —partes, desglose de impuestos, líneas,
+    firma, totales— pero NO es una factura con otra raíz: lleva su propia raíz
+    (`CreditNote`/`DebitNote`), su relación con el original (`DiscrepancyResponse`
+    y `BillingReference`) y su renglón propio (`CreditNoteLine`/`DebitNoteLine`).
+    El orden lo dicta el XSD; se valida contra él antes de firmar.
+    """
+    is_credit = data.document_type == '07'
+    root_ns = NS['cn'] if is_credit else NS['dn']
+    root_local = 'CreditNote' if is_credit else 'DebitNote'
+    line_tag = 'cac:CreditNoteLine' if is_credit else 'cac:DebitNoteLine'
+    qty_tag = 'cbc:CreditedQuantity' if is_credit else 'cbc:DebitedQuantity'
+
+    root = etree.Element(f'{{{root_ns}}}{root_local}', nsmap={
+        None: root_ns, 'cac': NS['cac'], 'cbc': NS['cbc'],
+        'ext': NS['ext'], 'ds': NS['ds'], 'sac': NS['sac'],
+    })
+
+    _ubl_extensions(root, '01')
+
+    _el(root, 'cbc:UBLVersionID', '2.1')
+    _el(root, 'cbc:CustomizationID', '2.0')
+    _el(root, 'cbc:ID', data.document_id)
+    _el(root, 'cbc:IssueDate', data.issue_date.isoformat())
+    _el(root, 'cbc:IssueTime', data.issue_time.isoformat())
+    _el(root, 'cbc:Note', data.amount_in_words, languageLocaleID='1000')
+    for extra in data.notes:
+        _el(root, 'cbc:Note', extra)
+    _el(root, 'cbc:DocumentCurrencyCode', data.currency)
+
+    # La relación con el comprobante que se modifica.
+    discrepancy = _el(root, 'cac:DiscrepancyResponse')
+    _el(discrepancy, 'cbc:ReferenceID', data.original_id)
+    _el(discrepancy, 'cbc:ResponseCode', data.reason_code)
+    _el(discrepancy, 'cbc:Description', data.reason_description)
+
+    billing = _el(root, 'cac:BillingReference')
+    ref = _el(billing, 'cac:InvoiceDocumentReference')
+    _el(ref, 'cbc:ID', data.original_id)
+    _el(ref, 'cbc:DocumentTypeCode', data.original_type)
+
+    _signature_block(root, data.document_id, data.supplier)
+
+    _party(root, 'cac:AccountingSupplierParty', data.supplier, with_address=True)
+    _party(root, 'cac:AccountingCustomerParty', data.customer, with_address=False)
+
+    _tax_block(root, taxable=data.taxable_amount, tax=data.tax_amount,
+               currency=data.currency)
+    _monetary_total(
+        root, taxable=data.taxable_amount, total=data.total, currency=data.currency,
+        tag='cac:LegalMonetaryTotal' if is_credit else 'cac:RequestedMonetaryTotal')
+
+    for index, line in enumerate(data.lines, 1):
+        _line(root, index, line, data.currency, line_tag=line_tag, qty_tag=qty_tag)
 
     return etree.tostring(root, xml_declaration=True, encoding='UTF-8')

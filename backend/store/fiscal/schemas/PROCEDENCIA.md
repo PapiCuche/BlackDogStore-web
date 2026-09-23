@@ -42,3 +42,25 @@ la hoja de reglas de validación, no en el esquema.
 
 UBL 2.1 es de OASIS. El aviso de copyright viene embebido en cada `.xsd` y se ha
 conservado intacto; no se ha modificado ni una línea de los ficheros.
+
+## Añadido en ERP-FISCAL-5A — CreditNote y DebitNote 2.1
+
+**Origen**: OASIS, paquete oficial UBL 2.1 OS (Release Date 04 November 2013), el
+MISMO estándar sin modificar que SUNAT redistribuye para el árbol 2.1 (ver el
+hallazgo de arriba: «el árbol 2.1 no contiene ningún esquema propio de SUNAT»). Se
+toma de la fuente original —OASIS, la autoridad del estándar— porque el sitio de
+SUNAT bloquea las descargas automatizadas (Cloudflare 403).
+
+    https://docs.oasis-open.org/ubl/os-UBL-2.1/xsd/maindoc/UBL-CreditNote-2.1.xsd
+    https://docs.oasis-open.org/ubl/os-UBL-2.1/xsd/maindoc/UBL-DebitNote-2.1.xsd
+
+**Descargado**: 23 de septiembre de 2026.
+**SHA-256**:
+
+    a54651b1225052f811bf2ba01346f13f2454e7cc3e0be290c91dd680dc7b7b1a  UBL-CreditNote-2.1.xsd
+    295d142102a2a0cd8b223a79b8314c0fe1b55055478221dd2f0ed7603fecf920  UBL-DebitNote-2.1.xsd
+
+Sólo estos dos `maindoc/`. Importan por ruta relativa el mismo `common/` ya
+conservado (la nota y la factura comparten `CommonAggregate/Basic/Extension`,
+`Signature*`, `xmldsig`, etc.), así que compilan contra el árbol existente sin
+añadir nada más. Verificado: `etree.XMLSchema` compila los tres maindoc.
