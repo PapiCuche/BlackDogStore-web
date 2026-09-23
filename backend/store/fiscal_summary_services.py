@@ -59,6 +59,14 @@ _ELIGIBLE_BOLETA_STATES = (
     FiscalDocumentStatus.SIGNED,
 )
 
+#: Estados desde los que enviar un resumen es SEGURO. `SUBMISSION_UNKNOWN` NO está:
+#: su resultado remoto es incierto y reenviar podría duplicar en SUNAT (§13/§14).
+_SUBMITTABLE_STATES = (
+    FiscalSummaryStatus.GENERATED,
+    FiscalSummaryStatus.SIGNED,
+    FiscalSummaryStatus.SUBMISSION_ERROR,
+)
+
 
 @dataclass(frozen=True)
 class SummaryPollResult:
@@ -241,6 +249,17 @@ def submit_daily_summary(summary: FiscalDailySummary, provider
         if fresh.ticket:
             # Ya tiene ticket: está en la cola de SUNAT. No se reenvía; se consulta.
             return fresh
+        # RC-TIMEOUT-01 (§12/§13): un envío con resultado INCIERTO NO se reenvía
+        # por el flujo normal —podría duplicar en SUNAT—. Exige revisión manual.
+        if fresh.status == FiscalSummaryStatus.SUBMISSION_UNKNOWN:
+            raise FiscalError(
+                f'El envío de {fresh.identifier} quedó con resultado INCIERTO: '
+                f'puede existir un ticket que no recibimos. No se reenvía a ciegas; '
+                f'requiere verificar en SUNAT y decidir la retransmisión de forma '
+                f'explícita (RC-TIMEOUT-01).')
+        if fresh.status not in _SUBMITTABLE_STATES:
+            raise FiscalError(
+                f'Un resumen en estado «{fresh.get_status_display()}» no se envía.')
         if fresh.submitting_since and fresh.submitting_since >= limite:
             raise FiscalSummaryInProgress(
                 f'Ya hay un envío en curso para {fresh.identifier}. Espere.')
@@ -263,9 +282,15 @@ def submit_daily_summary(summary: FiscalDailySummary, provider
         if result.outcome == SummaryOutcome.TICKET:
             fresh.ticket = result.ticket
             fresh.status = FiscalSummaryStatus.SUBMITTED
-        else:
-            # Transporte incierto o respuesta sin ticket: reintentable, sin ticket.
+        elif result.outcome == SummaryOutcome.TRANSPORT_ERROR:
+            # Demostrablemente NO transmitido (fallo de conexión): seguro reintentar.
             fresh.status = FiscalSummaryStatus.SUBMISSION_ERROR
+            fresh.sunat_response_code = result.status_code
+            fresh.sunat_response_message = result.safe_message
+        else:
+            # TRANSPORT_UNKNOWN / respuesta sin ticket: se transmitió pero el
+            # resultado es INCIERTO. NO reintentable por el flujo normal (§14).
+            fresh.status = FiscalSummaryStatus.SUBMISSION_UNKNOWN
             fresh.sunat_response_code = result.status_code
             fresh.sunat_response_message = result.safe_message
         fresh.save(update_fields=[

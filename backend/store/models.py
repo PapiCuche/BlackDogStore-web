@@ -7484,8 +7484,13 @@ class FiscalSummaryStatus(models.TextChoices):
     ACCEPTED = 'accepted', 'Aceptado por SUNAT'
     ACCEPTED_WITH_OBSERVATION = 'accepted_observed', 'Aceptado con observaciones'
     REJECTED = 'rejected', 'Rechazado por SUNAT'
-    #: Se intentó enviar (o consultar) y no se sabe qué pasó. Reintentable.
-    SUBMISSION_ERROR = 'submission_error', 'Error de envío'
+    #: Fallo ANTES de transmitir (no se estableció conexión): SUNAT no lo recibió.
+    #: Es SEGURO reintentar el envío.
+    SUBMISSION_ERROR = 'submission_error', 'Error de envío (no transmitido)'
+    #: Se transmitió la petición pero NO llegó respuesta ni ticket: el resultado
+    #: remoto es INCIERTO. Puede existir un ticket que nunca recibimos. NO se
+    #: reenvía por el flujo normal: exige revisión manual (RC-TIMEOUT-01, §14/§17).
+    SUBMISSION_UNKNOWN = 'submission_unknown', 'Envío con resultado incierto'
 
 
 class FiscalDailySummary(models.Model):

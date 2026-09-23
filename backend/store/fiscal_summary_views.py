@@ -38,7 +38,19 @@ logger = logging.getLogger(__name__)
 
 
 def summary_payload(summary: FiscalDailySummary) -> dict:
-    """Los metadatos del resumen. Sin el XML, sin el CDR, sin secretos."""
+    """
+    Los metadatos del resumen. Sin el XML, sin el CDR, sin secretos.
+
+    Las banderas de acción son la autoridad del backend, no una cortesía (§19): un
+    resumen con resultado INCIERTO NO ofrece `can_submit=true`; ofrece
+    `can_recover` para señalar que requiere revisión manual, no reenvío automático.
+    """
+    from .models import FiscalSummaryStatus
+
+    can_submit = summary.status in (
+        FiscalSummaryStatus.SIGNED, FiscalSummaryStatus.SUBMISSION_ERROR)
+    can_poll = bool(summary.ticket) and summary.status == FiscalSummaryStatus.SUBMITTED
+    can_recover = summary.status == FiscalSummaryStatus.SUBMISSION_UNKNOWN
     return {
         'id': summary.pk,
         'identifier': summary.identifier,
@@ -55,6 +67,11 @@ def summary_payload(summary: FiscalDailySummary) -> dict:
         'is_accepted': summary.is_accepted,
         'has_xml': bool(summary.signed_xml),
         'has_cdr': bool(summary.cdr_xml),
+        # Banderas de acción; el backend las vuelve a comprobar.
+        'can_submit': can_submit,
+        'can_poll': can_poll,
+        # Resultado incierto: requiere investigar en SUNAT, no reenviar (§17/§19).
+        'can_recover': can_recover,
         'created_at': summary.created_at,
     }
 
@@ -173,11 +190,18 @@ class AdminFiscalSummarySubmitView(APIView):
         except FiscalError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Auditoría del envío. Para un resultado INCIERTO (§18) queda constancia
+        # exacta de QUÉ pudo enviarse: el hash del XML firmado y la fecha de
+        # referencia identifican el resumen y su contenido sin guardar secretos.
         AdminAuditLog.log(
             actor=request.user, action='fiscal_summary_submitted',
             target_type='fiscal_daily_summary', target_id=summary.pk,
             metadata={'identifier': summary.identifier, 'status': summary.status,
-                      'ticket': summary.ticket, 'response_code': summary.sunat_response_code},
+                      'ticket': summary.ticket,
+                      'response_code': summary.sunat_response_code,
+                      'safe_message': summary.sunat_response_message,
+                      'reference_date': str(summary.reference_date),
+                      'signed_xml_sha256': summary.signed_xml_sha256},
             request=request, company=company)
         return Response(summary_payload(summary))
 

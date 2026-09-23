@@ -56408,3 +56408,163 @@ class C22ESummaryApiTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['status'], FiscalSummaryStatus.SUBMITTED)
         self.assertEqual(res.data['ticket'], 'API-TICKET-1')
+
+
+# ===========================================================================
+# ERP-FISCAL-4.1 — RC-TIMEOUT-01: envío con resultado incierto
+# ===========================================================================
+
+class FiscalSendSummaryTransportTest(SimpleTestCase):
+    """
+    El proveedor distingue «no transmitido» (seguro) de «incierto» (§16), sin
+    heurísticas de nombre: sólo un fallo de la fase de CONEXIÓN es seguro.
+    """
+
+    def setUp(self):
+        self.p = SunatSoapProvider(
+            endpoint='https://x/billService', ruc='20100066603',
+            sol_user='MODDATOS', sol_password='moddatos')
+
+    def _send_with(self, exc=None, response=None):
+        from unittest.mock import patch as _patch
+        import requests
+        if exc is not None:
+            with _patch('requests.post', side_effect=exc):
+                return self.p.send_summary(filename='x.ZIP', zip_bytes=b'z')
+        with _patch.object(SunatSoapProvider, '_post', return_value=response):
+            return self.p.send_summary(filename='x.ZIP', zip_bytes=b'z')
+
+    def test_connect_timeout_is_never_sent_safe(self):
+        import requests
+        r = self._send_with(exc=requests.exceptions.ConnectTimeout('connect'))
+        self.assertEqual(r.outcome, SummaryOutcome.TRANSPORT_ERROR)
+
+    def test_read_timeout_is_uncertain(self):
+        import requests
+        r = self._send_with(exc=requests.exceptions.ReadTimeout('read'))
+        self.assertEqual(r.outcome, SummaryOutcome.TRANSPORT_UNKNOWN)
+
+    def test_connection_reset_is_uncertain(self):
+        import requests
+        r = self._send_with(exc=requests.exceptions.ConnectionError('reset'))
+        self.assertEqual(r.outcome, SummaryOutcome.TRANSPORT_UNKNOWN)
+
+    def test_http_500_is_uncertain(self):
+        r = self._send_with(response=(b'<x/>', 500))
+        self.assertEqual(r.outcome, SummaryOutcome.TRANSPORT_UNKNOWN)
+
+    def test_a_ticket_is_a_ticket(self):
+        from lxml import etree
+        SOAP = 'http://schemas.xmlsoap.org/soap/envelope/'
+        SER = 'http://service.sunat.gob.pe'
+        env = etree.Element(f'{{{SOAP}}}Envelope', nsmap={'soapenv': SOAP})
+        body = etree.SubElement(env, f'{{{SOAP}}}Body')
+        resp = etree.SubElement(body, f'{{{SER}}}sendSummaryResponse')
+        etree.SubElement(resp, 'ticket').text = '999'
+        r = self._send_with(response=(etree.tostring(env), 200))
+        self.assertEqual(r.outcome, SummaryOutcome.TICKET)
+        self.assertEqual(r.ticket, '999')
+
+    def test_a_fault_has_no_ticket(self):
+        r = self._send_with(response=(_soap_fault(), 200))
+        self.assertEqual(r.outcome, SummaryOutcome.UNKNOWN_RESPONSE)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22FSummaryTimeoutTest(TestCase):
+    """El estado del resumen ante cada desenlace del envío (RC-TIMEOUT-01, §20)."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c22f-rc', 'Empresa RC TO', tax_id='20100066603',
+                                  legal_name='EMPRESA RC TO SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.today = timezone.localdate()
+
+    def _signed_summary(self):
+        base = timezone.make_aware(
+            timezone.datetime(self.today.year, self.today.month, self.today.day, 12, 0))
+        o = Order.objects.create(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        FiscalDocument.objects.create(
+            order=o, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=1,
+            issued_at=base, environment=FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC TO SAC',
+            customer_doc_type='0', customer_doc_number='0', customer_legal_name='VARIOS',
+            currency='PEN', taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+        s = generate_daily_summaries(self.company, self.today, FiscalEnvironment.BETA)[0]
+        return sign_daily_summary(s, key_pem=self.key_pem.encode(),
+                                  cert_pem=self.cert_pem.encode())
+
+    def _submit_with(self, result):
+        return submit_daily_summary(self._signed_summary(), _FakeSummaryProvider(submit=result))
+
+    def test_never_sent_is_reintentable(self):
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_ERROR, safe_message='connect'))
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMISSION_ERROR)
+        # reintentable: can_submit
+        from .fiscal_summary_views import summary_payload
+        p = summary_payload(s)
+        self.assertTrue(p['can_submit'])
+        self.assertFalse(p['can_recover'])
+
+    def test_uncertain_transport_becomes_submission_unknown(self):
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='ReadTimeout'))
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMISSION_UNKNOWN)
+        self.assertEqual(s.ticket, '')
+
+    def test_an_unknown_summary_refuses_to_resend(self):
+        """§12/§13: un envío incierto NO se reenvía por el flujo normal."""
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='ReadTimeout'))
+        with self.assertRaises(FiscalError):
+            submit_daily_summary(s, _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='SHOULD-NOT-HAPPEN')))
+
+    def test_an_unknown_summary_flags_recover_not_submit(self):
+        from .fiscal_summary_views import summary_payload
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='ReadTimeout'))
+        p = summary_payload(s)
+        self.assertFalse(p['can_submit'])   # §19: nunca can_submit tras incierto
+        self.assertFalse(p['can_poll'])     # no hay ticket
+        self.assertTrue(p['can_recover'])   # requiere revisión manual
+
+    def test_a_ticket_becomes_submitted_and_pollable(self):
+        from .fiscal_summary_views import summary_payload
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='T1'))
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+        p = summary_payload(s)
+        self.assertTrue(p['can_poll'])
+        self.assertFalse(p['can_submit'])
+
+    def test_an_unknown_summary_locks_its_boletas(self):
+        """No se re-informan las boletas de un resumen incierto (no duplicar)."""
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='ReadTimeout'))
+        with self.assertRaises(FiscalError):  # sus boletas siguen tomadas
+            generate_daily_summaries(self.company, self.today, FiscalEnvironment.BETA)
+
+    def test_a_response_without_ticket_is_uncertain(self):
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.UNKNOWN_RESPONSE, safe_message='sin ticket'))
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMISSION_UNKNOWN)

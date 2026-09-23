@@ -166,7 +166,12 @@ class SummaryOutcome(str, Enum):
     """
 
     TICKET = 'ticket'
+    #: Fallo ANTES de transmitir (fase de conexión): SUNAT no lo recibió. Seguro
+    #: reintentar.
     TRANSPORT_ERROR = 'transport_error'
+    #: Se transmitió pero no llegó respuesta ni ticket: resultado remoto INCIERTO.
+    #: Puede existir un ticket que no recibimos. NO se reintenta a ciegas.
+    TRANSPORT_UNKNOWN = 'transport_unknown'
     UNKNOWN_RESPONSE = 'unknown_response'
 
 
@@ -229,7 +234,18 @@ def _sanitize(text: str, *, limit: int = 500) -> str:
 
 
 class _TransportError(Exception):
-    """Interno: la red no dejó una respuesta utilizable. Nunca es un rechazo."""
+    """
+    Interno: la red no dejó una respuesta utilizable. Nunca es un rechazo.
+
+    `never_sent` es True SÓLO cuando se puede DEMOSTRAR que la petición no llegó a
+    transmitirse (un fallo en la fase de CONEXIÓN): entonces reintentar es seguro.
+    Ante cualquier duda —un timeout de lectura, un corte tras enviar el cuerpo— es
+    False: el resultado remoto queda INCIERTO y no se reintenta a ciegas (§16).
+    """
+
+    def __init__(self, message: str, *, never_sent: bool = False):
+        super().__init__(message)
+        self.never_sent = never_sent
 
 
 class _SunatSoapClient:
@@ -293,9 +309,16 @@ class _SunatSoapClient:
                 status_code = response.status_code
                 body = response.raw.read(MAX_UNTRUSTED_XML_BYTES + 1, decode_content=True)
         except Exception as exc:  # noqa: BLE001 — cualquier fallo de red es incierto
+            # Sólo un fallo en la fase de CONEXIÓN prueba que el cuerpo no se
+            # transmitió (reintentar es seguro). Un `ReadTimeout` o un corte tras
+            # enviar dejan el resultado INCIERTO: never_sent=False (§16).
+            never_sent = isinstance(exc, requests.exceptions.ConnectTimeout)
             raise _TransportError(
-                f'{type(exc).__name__} al contactar con el servicio') from exc
+                f'{type(exc).__name__} al contactar con el servicio',
+                never_sent=never_sent) from exc
         if len(body) > MAX_UNTRUSTED_XML_BYTES:
+            # Se recibió respuesta (se transmitió): un cuerpo enorme no es «no
+            # enviado». Incierto respecto de si SUNAT procesó, no seguro.
             raise _TransportError('Respuesta del servicio demasiado grande')
         return body, status_code
 
@@ -573,9 +596,12 @@ class SunatSoapProvider(_SunatSoapClient, FiscalProvider):
         try:
             resp, status = self._post(envelope, 'urn:sendSummary')
         except _TransportError as exc:
+            # Sólo un fallo demostrable de conexión es «no transmitido» (seguro);
+            # cualquier otra cosa deja el envío INCIERTO (§11/§16).
+            outcome = (SummaryOutcome.TRANSPORT_ERROR if exc.never_sent
+                       else SummaryOutcome.TRANSPORT_UNKNOWN)
             return SummarySubmissionResult(
-                outcome=SummaryOutcome.TRANSPORT_ERROR,
-                safe_message=str(exc), request_sha256=request_hash)
+                outcome=outcome, safe_message=str(exc), request_sha256=request_hash)
         return self._interpret_summary(resp, status, request_hash)
 
     def _interpret_summary(self, body: bytes, status: int,
@@ -583,8 +609,10 @@ class SunatSoapProvider(_SunatSoapClient, FiscalProvider):
         response_hash = _sha(body)
         base = {'request_sha256': request_hash, 'response_sha256': response_hash}
         if status >= 500:
+            # Hubo respuesta (se transmitió) pero el servidor erró: no sabemos si
+            # llegó a encolar. INCIERTO, no «seguro reintentar».
             return SummarySubmissionResult(
-                outcome=SummaryOutcome.TRANSPORT_ERROR,
+                outcome=SummaryOutcome.TRANSPORT_UNKNOWN,
                 safe_message=f'HTTP {status} del servicio', **base)
         try:
             doc = parse_untrusted(body)
