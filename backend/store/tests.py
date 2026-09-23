@@ -56746,3 +56746,707 @@ class C22GSummaryIdentityTest(TestCase):
         typ = party.find(f'{{{_CBC_S}}}AdditionalAccountID')
         self.assertEqual(cust.text, '-')
         self.assertEqual(typ.text, '-')
+
+
+# ---------------------------------------------------------------------------
+# ERP-FISCAL-5A — Nota de Crédito (07) y Nota de Débito (08)
+# ---------------------------------------------------------------------------
+
+class Fiscal5aNoteBase(TestCase):
+    """
+    Escenario común: una empresa con serie de factura (F001) y de nota (FN01),
+    un producto y un pedido pagado con factura, del que se emite y ACEPTA el
+    original — porque una nota sólo procede sobre un comprobante que existe para
+    SUNAT.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'f5a', 'Empresa Nota', tax_id='20100066603',
+            legal_name='EMPRESA NOTA SAC')
+        self.series_fac = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001', next_number=1)
+        self.series_nc = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.CREDIT_NOTE,
+            series='FN01', next_number=1)
+        self.series_nd = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.DEBIT_NOTE,
+            series='FD01', next_number=1)
+        self.product = _c1_product(self.company, 'Articulo Fiscal', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _paid_invoice_order(self, **extra):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch, **extra)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _accepted_invoice(self):
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        key, cert = self_signed_pem('20100066603')
+        self._key, self._cert = key, cert
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        doc = submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        self.assertTrue(doc.is_accepted)
+        return doc
+
+
+class Fiscal5aCreditNoteTest(Fiscal5aNoteBase):
+    """La Nota de Crédito de una factura: anulación total (Catálogo 09, 01)."""
+
+    def test_a_full_reversal_mirrors_the_original_amounts(self):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+
+        note, created = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION DE LA OPERACION',
+            request_key='abc')
+        self.assertTrue(created)
+        self.assertEqual(note.document_type, FiscalDocumentType.CREDIT_NOTE)
+        self.assertEqual(note.series, 'FN01')
+        self.assertEqual(note.original_document_id, original.pk)
+        # La nota refleja los importes del original, no los recalcula.
+        self.assertEqual(note.taxable_amount, original.taxable_amount)
+        self.assertEqual(note.tax_amount, original.tax_amount)
+        self.assertEqual(note.total, original.total)
+
+    def test_the_note_signs_validates_and_verifies(self):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION DE LA OPERACION',
+            request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+
+        self.assertEqual(note.status, FiscalDocumentStatus.SIGNED)
+        xml = note.signed_xml.encode()
+        _fs.validate_credit_note(xml)                       # XSD oficial
+        self.assertTrue(_fsign.verify(xml, cert_pem=self._cert))  # firma
+
+    def test_the_note_references_the_original(self):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+
+        root = _LET.fromstring(note.signed_xml.encode())
+        cbc = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+        cac = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+        ref = root.find(f'.//{{{cac}}}DiscrepancyResponse/{{{cbc}}}ReferenceID')
+        code = root.find(f'.//{{{cac}}}DiscrepancyResponse/{{{cbc}}}ResponseCode')
+        billed = root.find(
+            f'.//{{{cac}}}BillingReference/{{{cac}}}InvoiceDocumentReference/'
+            f'{{{cbc}}}ID')
+        typ = root.find(
+            f'.//{{{cac}}}BillingReference/{{{cac}}}InvoiceDocumentReference/'
+            f'{{{cbc}}}DocumentTypeCode')
+        self.assertEqual(ref.text, original.document_id)
+        self.assertEqual(code.text, '01')
+        self.assertEqual(billed.text, original.document_id)
+        self.assertEqual(typ.text, FiscalDocumentType.INVOICE)
+
+    def test_the_note_customer_is_the_original_customer(self):
+        # §41: una nota lleva el mismo adquirente que el comprobante que corrige.
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        self.assertEqual(note.customer_doc_number, original.customer_doc_number)
+        self.assertEqual(note.customer_legal_name, original.customer_legal_name)
+
+    def test_the_same_request_key_is_idempotent(self):
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        first, c1 = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='same')
+        second, c2 = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='same')
+        self.assertTrue(c1)
+        self.assertFalse(c2)
+        self.assertEqual(first.pk, second.pk)
+        self.series_nc.refresh_from_db()
+        self.assertEqual(self.series_nc.next_number, 2, 'sólo se reservó uno')
+
+    def test_a_second_note_on_the_same_original_is_legal(self):
+        # §20: varias notas sobre un mismo original son legales (con claves
+        # distintas). No hay get_or_create(original).
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        a, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='a')
+        b, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='b')
+        self.assertNotEqual(a.pk, b.pk)
+        self.assertNotEqual(a.number, b.number)
+
+    def test_signing_the_note_does_not_touch_the_original(self):
+        # §15: el original es inmutable. Emitir una nota no lo altera.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        before = (original.signed_xml_sha256, original.status,
+                  original.total)
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        original.refresh_from_db()
+        self.assertEqual(
+            (original.signed_xml_sha256, original.status, original.total), before)
+
+    def test_a_note_on_an_unaccepted_invoice_is_refused(self):
+        # §10: sin CDR aceptado, no hay nota.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        key, cert = self_signed_pem('20100066603')
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)  # firmada, sin enviar
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                doc, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='01', reason_description='x', request_key='k')
+
+    def test_a_debit_reason_is_refused_on_a_credit_note(self):
+        # El motivo debe pertenecer al catálogo de su tipo, y se comprueba al
+        # CREAR —antes de reservar un correlativo—.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='99', reason_description='inventado', request_key='k')
+
+    def test_a_note_of_a_factura_goes_out_by_sendbill(self):
+        # §29: la nota de una factura se envía por sendBill (no por Resumen).
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        note = submit_fiscal_document(note, _FakeProvider(_accepted()))
+        self.assertTrue(note.is_accepted)
+
+    def test_a_timeout_sending_a_note_is_not_a_rejection(self):
+        # §54: se reutiliza la reconciliación de FISCAL-3, sin reintento a ciegas.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        note = submit_fiscal_document(note, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        self.assertEqual(note.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertNotEqual(note.status, FiscalDocumentStatus.REJECTED)
+
+
+class Fiscal5aDebitNoteTest(Fiscal5aNoteBase):
+    """La Nota de Débito de una factura: aumento de valor (Catálogo 10, 02)."""
+
+    def test_an_explicit_amount_debit_note_signs_and_validates(self):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.DEBIT_NOTE,
+            reason_code='02', reason_description='INTERES POR MORA',
+            request_key='k', taxable_amount=Decimal('50.00'),
+            tax_amount=Decimal('9.00'))
+        self.assertEqual(note.total, Decimal('59.00'))
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+
+        self.assertEqual(note.series, 'FD01')
+        xml = note.signed_xml.encode()
+        _fs.validate_debit_note(xml)
+        self.assertTrue(_fsign.verify(xml, cert_pem=self._cert))
+        # La ND lleva RequestedMonetaryTotal, no LegalMonetaryTotal.
+        root = _LET.fromstring(xml)
+        cac = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+        self.assertIsNotNone(root.find(f'.//{{{cac}}}RequestedMonetaryTotal'))
+        self.assertIsNone(root.find(f'.//{{{cac}}}LegalMonetaryTotal'))
+
+    def test_a_credit_reason_is_refused_on_a_debit_note(self):
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.DEBIT_NOTE,
+                reason_code='10', reason_description='sólo cat 09', request_key='k',
+                taxable_amount=Decimal('50.00'), tax_amount=Decimal('9.00'))
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class Fiscal5aNoteApiTest(TestCase):
+    """
+    La superficie interna de las notas: quién puede emitirlas y de dónde sale la
+    identidad. El `pk` de la URL es el comprobante ORIGINAL; del cuerpo sólo se
+    aceptan el motivo y —en la ND— el importe. Nada que identifique un ajeno.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'f5a-api', 'Empresa Nota API', tax_id='20100066603',
+            legal_name='EMPRESA NOTA API SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.CREDIT_NOTE,
+            series='FN01')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.DEBIT_NOTE,
+            series='FD01')
+        self.product = _c1_product(self.company, 'Articulo Nota', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+
+        self.emisor, _ = _p2d_member(
+            self.company, 'f5a_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'f5a_observador', ['company.view', 'sales.fiscal.view'])
+
+        self.otra = _p3_company(
+            'f5a-otra', 'Otra SAC', tax_id='20999999999', legal_name='OTRA SAC')
+        self.ajeno, _ = _p2d_member(
+            self.otra, 'f5a_ajeno',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+        key, cert = self_signed_pem('20100066603')
+        self.cert_pem, self.key_pem = cert.decode(), key.decode()
+        self.original = self._accepted_original()
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _accepted_original(self):
+        doc, _ = get_or_create_fiscal_document(self._order())
+        doc = sign_fiscal_document(
+            doc, key_pem=self.key_pem.encode(), cert_pem=self.cert_pem.encode())
+        return submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _post_note(self, kind='credit-notes', user=None, body=None):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem,
+                               FISCAL_KEY_PEM=self.key_pem):
+            return self._as(user or self.emisor).post(
+                f'/api/admin/fiscal-documents/{self.original.pk}/{kind}/',
+                body or {'reason_code': '01',
+                         'reason_description': 'ANULACION DE LA OPERACION'},
+                format='json')
+
+    def test_the_issuer_creates_a_signed_credit_note(self):
+        res = self._post_note()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['identifier'], 'FN01-1')
+        self.assertEqual(res.data['document_type'], FiscalDocumentType.CREDIT_NOTE)
+        self.assertEqual(res.data['status'], FiscalDocumentStatus.SIGNED)
+        self.assertEqual(res.data['original_document_id'], self.original.pk)
+        self.assertEqual(res.data['note_reason_code'], '01')
+        self.assertEqual(res.data['total'], '118.00')
+
+    def test_a_viewer_cannot_issue_a_note(self):
+        res = self._post_note(user=self.observador)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_another_tenant_cannot_see_the_original(self):
+        # Un original de otra empresa responde como inexistente: un 403 confirmaría
+        # que ese id existe.
+        res = self._post_note(user=self.ajeno)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_body_cannot_inject_another_identity(self):
+        # §40/§47: aunque el cuerpo traiga otro adquirente, otra empresa u otra
+        # serie, la nota los deriva del ORIGINAL. El cuerpo se ignora salvo motivo.
+        res = self._post_note(body={
+            'reason_code': '01', 'reason_description': 'x',
+            'customer_doc_number': '10000000009', 'company': self.otra.pk,
+            'series': 'ZZZZ', 'issuer_tax_id': '20999999999',
+            'total': '999999.00'})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        note = FiscalDocument.objects.get(pk=res.data['id'])
+        self.assertEqual(note.company_id, self.company.pk)
+        self.assertEqual(note.customer_doc_number, self.original.customer_doc_number)
+        self.assertEqual(note.issuer_tax_id, self.original.issuer_tax_id)
+        self.assertEqual(note.series, 'FN01')
+        self.assertEqual(note.total, self.original.total)
+
+    def test_the_same_request_key_is_idempotent_over_http(self):
+        body = {'reason_code': '01', 'reason_description': 'x', 'request_key': 'k1'}
+        first = self._post_note(body=body)
+        second = self._post_note(body=body)
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(first.data['id'], second.data['id'])
+
+    def test_a_debit_note_takes_its_amount_from_the_body(self):
+        res = self._post_note(kind='debit-notes', body={
+            'reason_code': '02', 'reason_description': 'INTERES POR MORA',
+            'taxable_amount': '50.00', 'tax_amount': '9.00'})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['identifier'], 'FD01-1')
+        self.assertEqual(res.data['document_type'], FiscalDocumentType.DEBIT_NOTE)
+        self.assertEqual(res.data['total'], '59.00')
+
+    def test_a_note_without_a_reason_is_refused(self):
+        res = self._post_note(body={'reason_description': 'sin codigo'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_note_on_an_unaccepted_original_is_refused(self):
+        # Un original firmado pero sin CDR: no procede una nota.
+        doc, _ = get_or_create_fiscal_document(self._order())
+        doc = sign_fiscal_document(
+            doc, key_pem=self.key_pem.encode(), cert_pem=self.cert_pem.encode())
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem,
+                               FISCAL_KEY_PEM=self.key_pem):
+            res = self._as(self.emisor).post(
+                f'/api/admin/fiscal-documents/{doc.pk}/credit-notes/',
+                {'reason_code': '01', 'reason_description': 'x'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_credit_note_ignores_body_amounts_over_http(self):
+        # REVIEW 5A (F5): el endpoint de NC no reenvía importes del cuerpo; la nota
+        # refleja el original aunque el cuerpo intente fijar la base y el IGV.
+        res = self._post_note(body={
+            'reason_code': '01', 'reason_description': 'x',
+            'taxable_amount': '1.00', 'tax_amount': '0.18'})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        note = FiscalDocument.objects.get(pk=res.data['id'])
+        self.assertEqual(note.taxable_amount, self.original.taxable_amount)
+        self.assertEqual(note.total, self.original.total)
+
+    def test_an_invalid_motivo_returns_400_and_burns_no_correlativo(self):
+        # REVIEW 5A (F9): motivo fuera de catálogo -> 400 sin gastar correlativo.
+        before = FiscalDocument.objects.filter(
+            document_type=FiscalDocumentType.CREDIT_NOTE).count()
+        res = self._post_note(body={'reason_code': '99', 'reason_description': 'x'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(FiscalDocument.objects.filter(
+            document_type=FiscalDocumentType.CREDIT_NOTE).count(), before)
+
+
+class Fiscal5aNotePdfTest(Fiscal5aNoteBase):
+    """La representación impresa y el QR de una nota, leídos de su XML firmado."""
+
+    def _signed_credit_note(self, **kw):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION DE LA OPERACION',
+            request_key='k', **kw)
+        return sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+
+    def test_the_representation_reads_a_credit_note(self):
+        from .fiscal.representation import parse_signed_invoice_for_representation
+        note = self._signed_credit_note()
+        rep = parse_signed_invoice_for_representation(note.signed_xml)
+        self.assertEqual(rep.document_id, note.document_id)
+        self.assertEqual(rep.payable_amount, note.total)      # LegalMonetaryTotal
+        self.assertEqual(len(rep.lines), 1)
+        self.assertEqual(rep.lines[0].line_amount, Decimal('100.00'))
+
+    def test_the_qr_carries_the_note_type_and_amounts(self):
+        from .fiscal_pdf_services import build_fiscal_context
+        note = self._signed_credit_note()
+        ctx = build_fiscal_context(note)
+        campos = ctx['qr_payload'].split('|')
+        self.assertEqual(campos[1], '07')                 # tipo: nota de crédito
+        self.assertEqual(campos[2], 'FN01')               # serie
+        self.assertEqual(ctx['title'], 'NOTA DE CRÉDITO ELECTRÓNICA')
+        self.assertEqual(ctx['note']['reference'], note.original_document.document_id)
+        self.assertEqual(ctx['note']['reason_code'], '01')
+
+    def test_both_pdf_formats_render_for_a_note(self):
+        from .fiscal_pdf_services import (
+            generate_fiscal_pdf, generate_fiscal_ticket_pdf,
+        )
+        note = self._signed_credit_note()
+        a4 = generate_fiscal_pdf(note)
+        ticket = generate_fiscal_ticket_pdf(note)
+        self.assertTrue(a4.startswith(b'%PDF'))
+        self.assertTrue(ticket.startswith(b'%PDF'))
+        self.assertGreater(len(a4), 1000)
+
+
+class Fiscal5aBoletaNotePendingTest(Fiscal5aNoteBase):
+    """
+    NC-BOL / ND-BOL es PENDIENTE en esta fase y se falla CERRADO: ni se emite ni
+    se envía una nota de boleta por el canal individual.
+    """
+
+    def _accepted_boleta(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CONSUMIDOR',
+            document_type=Order.DocumentType.DNI, document_number='12345678',
+            receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT,
+            series='B001')
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        self._key, self._cert = key, cert
+        # Una boleta se otorga al firmarse; su envío va por el Resumen.
+        return sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_a_credit_note_of_a_boleta_is_refused_at_creation(self):
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        boleta = self._accepted_boleta()
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                boleta, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='01', reason_description='x', request_key='k')
+
+    def test_the_send_channel_refuses_a_boleta_note(self):
+        # Defensa en profundidad: aunque existiera una nota con serie B, el envío
+        # individual la rechaza (su canal es el Resumen Diario).
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        note.series = 'BN01'  # como si fuese nota de boleta
+        with self.assertRaises(FiscalError):
+            submit_fiscal_document(note, _FakeProvider(_accepted()))
+
+
+class Fiscal5aReviewHardeningTest(Fiscal5aNoteBase):
+    """
+    Cierra los hallazgos de la revisión adversarial de ERP-FISCAL-5A: fidelidad de
+    la anulación (tasa e importes del original), reserva que no se gasta en un
+    camino que falla, e idempotencia que libera su hueco al rechazarse.
+    """
+
+    _CBC = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+    _CAC = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+
+    def _accepted(self, order):
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        self._key, self._cert = key, cert
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        return submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+    def _nonround_order(self):
+        # IGV incluido no divisible: sobre 10.00 -> base 8.47 / IGV 1.53. La tasa
+        # declarada sigue siendo 18.00, pero 1.53/8.47*100 = 18.06 (el bug).
+        prod = _c1_product(self.company, 'Precio no redondo', '10.00')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('10.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('10.00'),
+            taxable_amount=Decimal('8.47'), tax_amount=Decimal('1.53'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=prod, quantity=1, price=Decimal('10.00'))
+        return order
+
+    def _two_line_order(self):
+        p1 = _c1_product(self.company, 'Art uno', '118.00')
+        p2 = _c1_product(self.company, 'Art dos', '118.00')
+        for p in (p1, p2):
+            _c1_stock(self.company.default_inventory_branch, p, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('236.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('236.00'),
+            taxable_amount=Decimal('200.00'), tax_amount=Decimal('36.00'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=p1, quantity=1, price=Decimal('118.00'))
+        OrderItem.objects.create(order=order, product=p2, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_a_full_reversal_mirrors_the_original_line_tax_rate(self):
+        # REVIEW 5A (F1): la NC refleja la TASA del original (18.00), no un
+        # porcentaje recomputado (18.06) por el redondeo del IGV incluido.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted(self._nonround_order())
+        orig = _LET.fromstring(original.signed_xml.encode())
+        op = orig.find(
+            f'.//{{{self._CAC}}}InvoiceLine//{{{self._CAC}}}TaxCategory/'
+            f'{{{self._CBC}}}Percent')
+        self.assertEqual(op.text, '18.00')
+
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        root = _LET.fromstring(note.signed_xml.encode())
+        np = root.find(
+            f'.//{{{self._CAC}}}CreditNoteLine//{{{self._CAC}}}TaxCategory/'
+            f'{{{self._CBC}}}Percent')
+        self.assertEqual(np.text, '18.00',
+                         'la nota debe reflejar la tasa 18.00 del original, no 18.06')
+
+    def test_a_credit_note_ignores_body_amounts(self):
+        # REVIEW 5A (F5/F7): una NC de anulación NO toma importes del cuerpo.
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k',
+            taxable_amount=Decimal('5.00'), tax_amount=Decimal('0.90'))
+        self.assertEqual(note.taxable_amount, original.taxable_amount)
+        self.assertEqual(note.tax_amount, original.tax_amount)
+        self.assertEqual(note.total, original.total)
+
+    def test_a_multi_line_original_is_mirrored_line_by_line(self):
+        # REVIEW 5A (F4): una línea de nota por cada línea del original.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted(self._two_line_order())
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        root = _LET.fromstring(note.signed_xml.encode())
+        lines = root.findall(f'{{{self._CAC}}}CreditNoteLine')
+        self.assertEqual(len(lines), 2)
+        for ln in lines:
+            self.assertEqual(
+                ln.find(f'{{{self._CBC}}}LineExtensionAmount').text, '100.00')
+
+    def test_the_note_lines_come_from_the_signed_xml_not_the_order(self):
+        # REVIEW 5A (F4) + §15: mutar la Order tras la firma no cambia la nota.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        oi = OrderItem.objects.filter(order=original.order).first()
+        oi.price = Decimal('999.00')
+        oi.save(update_fields=['price'])
+        self.product.name = 'NOMBRE CAMBIADO'
+        self.product.save(update_fields=['name'])
+
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        root = _LET.fromstring(note.signed_xml.encode())
+        amt = root.find(
+            f'.//{{{self._CAC}}}CreditNoteLine/{{{self._CBC}}}LineExtensionAmount')
+        self.assertEqual(amt.text, '100.00', 'lee el XML firmado, no la Order mutada')
+        desc = root.find(
+            f'.//{{{self._CAC}}}CreditNoteLine//{{{self._CBC}}}Description')
+        self.assertNotEqual((desc.text or ''), 'NOMBRE CAMBIADO')
+
+    def test_an_invalid_motivo_burns_no_correlativo(self):
+        # REVIEW 5A (F6/F8/F9): un motivo fuera de catálogo se rechaza ANTES de
+        # reservar; ni gasta correlativo ni deja una nota a medias.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        before = self.series_nc.next_number
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='99', reason_description='x', request_key='k')
+        self.series_nc.refresh_from_db()
+        self.assertEqual(self.series_nc.next_number, before)
+        self.assertEqual(
+            FiscalDocument.objects.filter(original_document=original).count(), 0)
+
+    def test_a_debit_note_requires_an_amount(self):
+        # REVIEW 5A: una ND sin importe no tiene cargo que declarar.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.DEBIT_NOTE,
+                reason_code='02', reason_description='x', request_key='k')
+
+    def test_reemitting_after_a_rejected_note_with_the_same_key_works(self):
+        # REVIEW 5A (F2/F3): una nota RECHAZADA libera su hueco de idempotencia;
+        # reintentar con la misma clave crea una nota nueva, no un 500.
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        first, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='dup')
+        first.status = FiscalDocumentStatus.REJECTED
+        first.save(update_fields=['status'])
+        second, created = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='dup')
+        self.assertTrue(created)
+        self.assertNotEqual(first.pk, second.pk)
+
+    def test_the_idempotency_constraint_rejects_a_duplicate_live_note(self):
+        # REVIEW 5A (F10): la restricción DB —no sólo el pre-chequeo Python—
+        # impide dos notas VIVAS con la misma clave (la carrera del except).
+        from django.db import IntegrityError, transaction
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            FiscalDocument.objects.create(
+                order=original.order, company=original.company,
+                series_ref=self.series_nc,
+                document_type=FiscalDocumentType.CREDIT_NOTE, series='FN01',
+                number=999, issued_at=timezone.now(),
+                environment=self.series_nc.environment,
+                issuer_tax_id=original.issuer_tax_id, currency='PEN',
+                taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+                total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+                status=FiscalDocumentStatus.GENERATED, original_document=original,
+                note_reason_code='01', note_request_key='k')
