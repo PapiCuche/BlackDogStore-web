@@ -63,6 +63,9 @@ class Command(BaseCommand):
         parser.add_argument('--customer-ruc', default='20100066603')
         parser.add_argument('--customer-dni', default='12345678',
                             help='DNI del adquirente para la boleta (§66).')
+        parser.add_argument('--anonymous', action='store_true',
+                            help='Boleta a consumidor final SIN documento (<= S/700). '
+                                 'La línea del resumen va con «-» (RC-ANON-01).')
         parser.add_argument('--poll-attempts', type=int, default=6)
         parser.add_argument('--poll-seconds', type=int, default=10)
 
@@ -167,12 +170,17 @@ class Command(BaseCommand):
                 environment=FiscalEnvironment.BETA, is_active=True).exists():
             raise CommandError('La empresa no tiene una serie de boleta BETA activa.')
 
-        # 1) Boleta con receptor identificado (§66): se emite, firma y envía por
-        #    resumen. NO se considera «aceptada» individualmente (§68).
+        # 1) Boleta: identificada (§66) o a consumidor final sin documento
+        #    (RC-ANON-01). Se emite, firma y envía por resumen; NO se considera
+        #    «aceptada» individualmente (§68).
+        if options['anonymous']:
+            doc_type, doc_number, name = '', '', 'VARIOS'
+        else:
+            doc_type = Order.DocumentType.DNI
+            doc_number, name = options['customer_dni'], 'CLIENTE DE PRUEBA'
         order = self._paid_order(
             receipt_type=Order.ReceiptType.BOLETA, price=options['price'],
-            qty=options['qty'], doc_type=Order.DocumentType.DNI,
-            doc_number=options['customer_dni'], name='CLIENTE DE PRUEBA')
+            qty=options['qty'], doc_type=doc_type, doc_number=doc_number, name=name)
         boleta, _ = get_or_create_fiscal_document(order)
         creds = resolve_credentials(self.company)
         boleta = sign_fiscal_document(
