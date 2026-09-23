@@ -4,6 +4,20 @@
 **Estado del proyecto:** MVP en desarrollo; no apto todavía para producción ni pagos reales  
 **Objetivo del documento:** proporcionar contexto verificable a desarrolladores y asistentes de IA sobre la arquitectura, funcionalidades, problemas, riesgos y prioridades actuales del repositorio.
 
+> **Actualización ERP-FISCAL-4.1 (23-09-2026, rama `erp/fiscal-sunat`).** Cierre
+> normativo del Resumen Diario antes de NC/ND, cuatro puertas. **RC-ID-01:** el
+> `cbc:ID` lleva el correlativo (`RC-YYYYMMDD-N`, reglas 2210/2220) y su fecha es la
+> de GENERACIÓN (regla 2346), no la de emisión de las boletas; el correlativo pasa
+> a ser único por (empresa, ambiente, fecha de generación) —migración 0087—.
+> **RC-TIMEOUT-01:** un `sendSummary` transmitido sin ticket es INCIERTO
+> (`SUBMISSION_UNKNOWN`, migración 0086), distinto de un fallo no transmitido
+> (seguro); no se reenvía a ciegas, con banderas `can_submit`/`can_poll`/`can_recover`
+> y auditoría de evidencia. **RC-ANON-01:** el consumidor final va con guión `-` en
+> la línea del resumen (la boleta conserva `0`). **RC-XSD-01:** validación estructural
+> local (el XSD oficial 2.0 no pudo descargarse —SUNAT tras Cloudflare, y la fase
+> prohíbe *mirrors*—). Dos migraciones aditivas, sin frontend, sin producción. Suite
+> PostgreSQL 4275 verde (skipped=3). Detalle en el CHANGELOG y ADR-27/28.
+>
 > **Actualización ERP-FISCAL-4 (22-09-2026, rama `erp/fiscal-sunat`).** Añade la
 > **boleta electrónica (tipo 03)** y el **Resumen Diario de Boletas (RC)**. La
 > boleta reutiliza el generador, la firma, el XSD (es UBL Invoice 2.1), VEN-02 y el

@@ -550,3 +550,55 @@ entorno (la descarga del ZIP no fue posible). La estructura del generador se apo
 en la Guía del Resumen Diario y en ejemplos oficiales, se comprueba con pruebas de
 estructura y se confirma contra BETA. La boleta sí valida contra el
 `UBL-Invoice-2.1.xsd` incluido. Bundlear el XSD 2.0 queda como deuda declarada.
+
+---
+
+# ADR — ERP-FISCAL-4.1
+
+## ADR-27 · La identidad del resumen: correlativo en el cbc:ID y fecha de generación
+
+**Decisión.** El `cbc:ID` del Resumen Diario es `RC-<YYYYMMDD>-<correlativo>` —con
+el correlativo dentro— y su fecha es la de **GENERACIÓN** del resumen, no la de
+emisión de las boletas. El nombre del archivo (`<RUC>-RC-<YYYYMMDD>-<correlativo>`)
+usa la misma fecha y el mismo correlativo, y el `cbc:ID` coincide con la base del
+nombre. El correlativo es único por `(empresa, ambiente, fecha de generación)`. La
+fecha de emisión de las boletas informadas va, aparte, en `cbc:ReferenceDate`.
+
+**Por qué.** Las reglas de validación vigentes lo imponen: **2210** exige el formato
+`RC-fecha-correlativo`, **2220** que el `cbc:ID` coincida con el nombre del archivo,
+y **2346** que la fecha del nombre sea la de generación. La prosa de la guía de
+enero-2018 que muestra `RC-20180123` (sin correlativo) es una inconsistencia del
+propio documento —contradicha por sus ejemplos XML (`RC-20171227-00001`)— y
+superada por las reglas. Sin el correlativo en el `cbc:ID`, dos bloques de 500 del
+mismo día tendrían identificadores idénticos: SUNAT no podría distinguirlos y el
+`ReferenceID` del CDR sería ambiguo. Y usar la fecha de EMISIÓN en el id —como se
+hacía— rompía la regla 2346 en cuanto un resumen se generaba en un día distinto al
+de sus boletas (SUNAT admite hasta siete días para informarlas). La aceptación en
+BETA de `RC-20260922-1` no era, por sí sola, prueba de la norma; la evidencia es la
+hoja de reglas de validación.
+
+## ADR-28 · Un envío transmitido sin ticket es INCIERTO, no un reintento seguro
+
+**Decisión.** Si `sendSummary` transmite la petición pero no devuelve ticket
+(timeout de lectura, corte tras enviar, 5xx, respuesta ilegible), el resumen pasa a
+`SUBMISSION_UNKNOWN`: el resultado remoto es incierto —puede existir un ticket que
+nunca recibimos—. Es un estado DISTINTO de `SUBMISSION_ERROR`, que queda reservado
+para un fallo **demostrablemente no transmitido** (sólo la fase de conexión —un
+`ConnectTimeout`—), que sí es seguro reintentar. Un `SUBMISSION_UNKNOWN` NO se
+reenvía por el flujo normal, no inventa un ticket, no crea otro resumen, y sus
+boletas quedan bloqueadas (no se re-informan). Recuperarlo es una decisión manual y
+consciente.
+
+**Por qué.** Reenviar a ciegas un resumen que quizá SUNAT ya encoló produce un
+duplicado. La distinción no puede apoyarse en el nombre de una excepción: sólo un
+fallo en la fase de CONEXIÓN prueba que el cuerpo no se transmitió; ante cualquier
+otra cosa —incluida una respuesta rara— se asume incierto (§16). No hay un
+`getStatusCdr` para un ticket que nunca recibimos, así que no existe recuperación
+automática segura: el detalle expone `can_recover` en vez de `can_submit`, y la
+auditoría del envío conserva el hash del XML firmado y la fecha de referencia para
+poder demostrar exactamente qué ZIP pudo haberse enviado, sin secretos.
+
+**Nota XSD (RC-XSD-01).** El paquete XSD `SummaryDocuments-1` (UBL 2.0) no pudo
+incorporarse (el sitio de SUNAT devuelve 403 a descargas automatizadas y la fase
+prohíbe *mirrors*). Una validación ESTRUCTURAL local —no el XSD oficial, y así se
+declara— corre antes de firmar; la estructura se confirma además contra BETA.

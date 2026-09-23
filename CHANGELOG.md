@@ -9,6 +9,56 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## ERP-FISCAL-4.1 — Cierre normativo y hardening de Boleta / Resumen Diario
+
+**Estado: IMPLEMENTADO (backend).** Rama `erp/fiscal-sunat`. Dos migraciones
+aditivas (`0086`, `0087`), sin cambios de frontend. Cierra cuatro puertas antes de
+NC/ND. No añade tipos de comprobante ni habilita producción.
+
+- **RC-ID-01 — Identidad del resumen (`abc7fa2`, migración `0087`).** El `cbc:ID`
+  del RC lleva el correlativo (`RC-YYYYMMDD-N`): lo EXIGEN las reglas de validación
+  vigentes (2210 «formato RC-fecha-correlativo», 2220 «el ID coincide con el nombre
+  del archivo») y lo muestran los propios ejemplos de la guía; la prosa
+  «RC-20180123 sin correlativo» es una inconsistencia superada. **Corrección:** la
+  FECHA del id y del nombre es la de **GENERACIÓN** (regla 2346), no la de emisión
+  de las boletas —que va en `cbc:ReferenceDate`—. El correlativo pasa a ser único
+  por `(empresa, ambiente, fecha de generación)`: dos resúmenes generados el mismo
+  día no colisionan aunque informen fechas de emisión distintas. Un resumen
+  generado en un día posterior al de las boletas ahora se forma correctamente.
+- **RC-TIMEOUT-01 — Envío con resultado incierto (`2c3b548`, migración `0086`).** Un
+  `sendSummary` que transmitió la petición pero no devolvió ticket (timeout de
+  lectura, corte tras enviar, 5xx, respuesta ilegible) deja el resultado remoto
+  INCIERTO: puede existir un ticket que nunca recibimos. Nuevo estado
+  `SUBMISSION_UNKNOWN`, distinto de `SUBMISSION_ERROR` (reservado ahora para un
+  fallo **demostrablemente no transmitido** —sólo la fase de conexión—, seguro de
+  reintentar). El proveedor distingue ambos SIN heurística de nombre: sólo un
+  `ConnectTimeout` es «no enviado». Un resumen incierto **no se reenvía** por el
+  flujo normal (ni inventa ticket, ni crea otro resumen), sus boletas quedan
+  bloqueadas, y la recuperación es una decisión manual (§17). El detalle expone
+  `can_submit`/`can_poll`/`can_recover` (un incierto nunca muestra `can_submit`), y
+  la auditoría del envío guarda el hash del XML firmado y la fecha de referencia
+  como constancia de qué pudo enviarse.
+- **RC-ANON-01 — Consumidor final (`abc7fa2`).** En la LÍNEA del resumen el
+  adquirente sin documento va con **guión `-`** en tipo (`AdditionalAccountID`) y
+  número (`CustomerAssignedAccountID`), según la Guía del Resumen Diario —no `0`/`0`
+  como en la boleta—. La boleta individual conserva `0` (convención de mercado; la
+  guía de la boleta no documenta el caso). Las dos representaciones difieren y ya
+  no se propaga el `0` de la boleta al resumen.
+- **RC-XSD-01 — XSD del Resumen (`abc7fa2`).** El paquete XSD oficial
+  `SummaryDocuments-1` (UBL 2.0) **no pudo incorporarse**: el sitio de SUNAT
+  responde 403 a descargas automatizadas (Cloudflare) y la fase prohíbe *mirrors*.
+  En su lugar, una **validación estructural** local corre antes de firmar
+  (raíz/espacios de nombres, orden de la cabecera, formato del `cbc:ID`, campos
+  obligatorios de cada línea y sus tres `BillingPayment`, tope de 500). NO es el
+  XSD oficial y así se declara; la estructura se confirma además contra BETA.
+
+Baseline PostgreSQL: 4275 tests, `OK (skipped=3)`. Revisión adversaria de las dos
+dimensiones (conformidad normativa del RC; timeout/estado/concurrencia); los
+revisores automáticos independientes no estuvieron disponibles en esta corrida (se
+colgaron), así que la revisión fue manual y se deja constancia. Ver ADR-27/28.
+
+---
+
 ## ERP-FISCAL-4 — Boleta electrónica y Resumen Diario de Boletas
 
 **Estado: IMPLEMENTADO (backend).** Rama `erp/fiscal-sunat`. **Una migración**
