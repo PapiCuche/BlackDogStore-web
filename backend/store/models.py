@@ -7558,11 +7558,13 @@ class FiscalDailySummary(models.Model):
         verbose_name = 'Resumen diario de boletas'
         verbose_name_plural = 'Resúmenes diarios de boletas'
         constraints = [
-            # El correlativo es único por RUC, ambiente y día. Es la red de
-            # seguridad de la reserva concurrente: dos procesos que calculen el
-            # mismo número chocan aquí en vez de crear dos RC con el mismo id.
+            # El correlativo es único por RUC, ambiente y día de GENERACIÓN
+            # (RC-ID-01: el id/nombre llevan la fecha de generación —reglas
+            # 2346/2220—, así que dos resúmenes generados el mismo día no pueden
+            # compartir correlativo aunque informen fechas de emisión distintas).
+            # Es la red de seguridad de la reserva concurrente.
             models.UniqueConstraint(
-                fields=['company', 'environment', 'reference_date', 'correlativo'],
+                fields=['company', 'environment', 'issue_date', 'correlativo'],
                 name='fiscal_summary_unique_correlativo',
             ),
             models.UniqueConstraint(

@@ -25,6 +25,7 @@ se comprueba con pruebas de estructura y —al final— contra BETA.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -142,6 +143,84 @@ def _line(parent, line: SummaryLine, currency: str):
     _el(scheme, CBC_NS, 'ID', '1000')
     _el(scheme, CBC_NS, 'Name', 'IGV')
     _el(scheme, CBC_NS, 'TaxTypeCode', 'VAT')
+
+
+class SummaryStructureError(ValueError):
+    """El XML del resumen no cumple la estructura esperada. Señala el nodo."""
+
+
+#: Orden de la cabecera del `SummaryDocuments` (tras `UBLExtensions`), según la
+#: Guía del Resumen Diario. El orden importa: UBL es una secuencia.
+_HEADER_ORDER = [
+    (CBC_NS, 'UBLVersionID'), (CBC_NS, 'CustomizationID'), (CBC_NS, 'ID'),
+    (CBC_NS, 'ReferenceDate'), (CBC_NS, 'IssueDate'),
+    (CAC_NS, 'Signature'), (CAC_NS, 'AccountingSupplierParty'),
+]
+
+_ID_RE = re.compile(r'^RC-\d{8}-\d{1,5}$')
+
+
+def validate_summary_structure(xml: bytes) -> None:
+    """
+    Validación ESTRUCTURAL local del Resumen Diario antes de firmar/enviar.
+
+    NO es el XSD oficial `SummaryDocuments-1` (el paquete UBL 2.0 de SUNAT no pudo
+    incorporarse en este entorno; ver RC-XSD-01). Comprueba lo comprobable sin él:
+    raíz y espacio de nombres correctos, ORDEN de la cabecera, `cbc:ID` con el
+    formato `RC-YYYYMMDD-correlativo`, y que cada línea traiga sus campos
+    obligatorios. Es una red de regresión, no la autoridad normativa: la estructura
+    se confirma además contra el XSD oficial —cuando se pueda incorporar— y contra
+    SUNAT BETA.
+    """
+    if isinstance(xml, str):
+        xml = xml.encode('utf-8')
+    try:
+        root = etree.fromstring(xml)
+    except etree.XMLSyntaxError as exc:
+        raise SummaryStructureError(f'XML mal formado: {exc}') from None
+
+    if root.tag != _q(SD_NS, 'SummaryDocuments'):
+        raise SummaryStructureError(
+            f'La raíz debe ser SummaryDocuments; llegó {root.tag!r}.')
+
+    children = [c for c in root if isinstance(c.tag, str)]
+    if not children or children[0].tag != _q(EXT_NS, 'UBLExtensions'):
+        raise SummaryStructureError('Falta ext:UBLExtensions al inicio.')
+
+    # Orden de la cabecera.
+    after_ext = [c.tag for c in children[1:]]
+    for i, (ns, tag) in enumerate(_HEADER_ORDER):
+        if i >= len(after_ext) or after_ext[i] != _q(ns, tag):
+            got = after_ext[i] if i < len(after_ext) else '(nada)'
+            raise SummaryStructureError(
+                f'Cabecera fuera de orden: se esperaba {tag} en la posición {i}, '
+                f'llegó {got!r}.')
+
+    doc_id = root.findtext(_q(CBC_NS, 'ID'))
+    if not doc_id or not _ID_RE.fullmatch(doc_id):
+        raise SummaryStructureError(
+            f'cbc:ID debe cumplir RC-YYYYMMDD-correlativo; llegó {doc_id!r}.')
+
+    lines = root.findall(_q(SAC_NS, 'SummaryDocumentsLine'))
+    if not lines:
+        raise SummaryStructureError('El resumen no tiene ninguna línea.')
+    if len(lines) > 500:
+        raise SummaryStructureError(
+            f'El resumen excede 500 líneas ({len(lines)}).')
+    required_line = [
+        (CBC_NS, 'LineID'), (CBC_NS, 'DocumentTypeCode'), (CBC_NS, 'ID'),
+        (CAC_NS, 'AccountingCustomerParty'), (CAC_NS, 'Status'),
+        (SAC_NS, 'TotalAmount'),
+    ]
+    for n, line in enumerate(lines, 1):
+        for ns, tag in required_line:
+            if line.find(_q(ns, tag)) is None:
+                raise SummaryStructureError(
+                    f'Línea {n}: falta {tag}.')
+        if len(line.findall(_q(SAC_NS, 'BillingPayment'))) != 3:
+            raise SummaryStructureError(
+                f'Línea {n}: se esperan 3 sac:BillingPayment (gravadas, '
+                f'exoneradas, inafectas).')
 
 
 def build_summary_xml(data: SummaryData) -> bytes:

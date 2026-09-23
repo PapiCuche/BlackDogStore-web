@@ -31,7 +31,9 @@ from lxml import etree
 
 from .fiscal import packaging, signing
 from .fiscal.provider import ProviderOutcome, SummaryOutcome, TicketStatus
-from .fiscal.summary import SummaryData, SummaryLine, build_summary_xml
+from .fiscal.summary import (
+    SummaryData, SummaryLine, build_summary_xml, validate_summary_structure,
+)
 from .fiscal_services import FiscalError
 from .models import (
     FiscalDailySummary, FiscalDailySummaryDocument, FiscalDocument,
@@ -144,15 +146,20 @@ def generate_daily_summaries(company, reference_date: date, environment: str, *,
 
 def _create_summary(company, environment, reference_date, issue_date, boletas):
     with transaction.atomic():
+        # RC-ID-01: el id y el nombre del archivo llevan la fecha de GENERACIÓN
+        # (regla 2346: la fecha del nombre = fecha de generación; regla 2220: el
+        # cbc:ID = nombre). El correlativo es, por tanto, único por (RUC, ambiente,
+        # fecha de generación): dos resúmenes generados el mismo día —aunque sean
+        # de fechas de emisión distintas— no pueden compartir correlativo.
         existing = list(
             FiscalDailySummary.objects.select_for_update().filter(
                 company=company, environment=environment,
-                reference_date=reference_date,
+                issue_date=issue_date,
             ).values_list('correlativo', flat=True))
         correlativo = (max(existing) + 1) if existing else 1
         summary = FiscalDailySummary.objects.create(
             company=company,
-            identifier=packaging.summary_identifier(reference_date, correlativo),
+            identifier=packaging.summary_identifier(issue_date, correlativo),
             correlativo=correlativo, reference_date=reference_date,
             issue_date=issue_date, environment=environment,
             status=FiscalSummaryStatus.GENERATED)
@@ -161,6 +168,23 @@ def _create_summary(company, environment, reference_date, issue_date, boletas):
                 summary=summary, document=doc, line_id=line_id,
                 condition_code='1')
         return summary
+
+
+#: Catálogo N.º 06 código `0` («sin documento») y su equivalente vacío: en la
+#: BOLETA el consumidor final va con tipo/número `0`, pero en el RESUMEN la Guía
+#: exige el GUIÓN `-` cuando no se cuenta con la información (RC-ANON-01, §22).
+_ANON_DOC_TYPES = frozenset({'0', ''})
+
+
+def _summary_customer(doc_type: str, doc_number: str) -> dict:
+    """Traduce el adquirente de la boleta a como debe ir en la LÍNEA del resumen.
+
+    Consumidor final sin documento → `-`/`-` (no `0`/`0`). Un adquirente
+    identificado (DNI/CE/RUC) se traslada tal cual.
+    """
+    if (doc_type or '') in _ANON_DOC_TYPES:
+        return {'customer_doc_type': '-', 'customer_doc_number': '-'}
+    return {'customer_doc_type': doc_type, 'customer_doc_number': doc_number or '-'}
 
 
 def _build_summary_data(summary: FiscalDailySummary) -> SummaryData:
@@ -177,8 +201,8 @@ def _build_summary_data(summary: FiscalDailySummary) -> SummaryData:
         SummaryLine(
             line_id=row.line_id, document_type=row.document.document_type,
             document_id=row.document.document_id,
-            customer_doc_type=row.document.customer_doc_type or '0',
-            customer_doc_number=row.document.customer_doc_number or '0',
+            **_summary_customer(row.document.customer_doc_type,
+                                row.document.customer_doc_number),
             condition_code=row.condition_code,
             total=row.document.total,
             taxable_amount=row.document.taxable_amount,
@@ -209,6 +233,10 @@ def sign_daily_summary(summary: FiscalDailySummary, *, key_pem: bytes,
 
     data = _build_summary_data(summary)
     xml = build_summary_xml(data)
+    # Validación estructural local antes de firmar (RC-XSD-01): si el XML no
+    # cumple la estructura del Resumen, falla aquí en microsegundos y no tras la
+    # red. No sustituye al XSD oficial, lo complementa.
+    validate_summary_structure(xml)
     signed = signing.sign_invoice(
         etree.fromstring(xml), key_pem=key_pem, cert_pem=cert_pem)
     signed_bytes = etree.tostring(signed, xml_declaration=True, encoding='UTF-8')
@@ -266,8 +294,10 @@ def submit_daily_summary(summary: FiscalDailySummary, provider
         fresh.submitting_since = timezone.now()
         fresh.save(update_fields=['submitting_since', 'updated_at'])
 
+    # RC-ID-01: el nombre del archivo lleva la fecha de GENERACIÓN (regla 2346) y
+    # coincide con el cbc:ID (regla 2220).
     name = packaging.summary_name(
-        _issuer_ruc(fresh), fresh.reference_date, fresh.correlativo)
+        _issuer_ruc(fresh), fresh.issue_date, fresh.correlativo)
     zip_bytes = packaging.build_zip(name, fresh.signed_xml.encode('utf-8'))
 
     result = provider.send_summary(filename=f'{name}.ZIP', zip_bytes=zip_bytes)
