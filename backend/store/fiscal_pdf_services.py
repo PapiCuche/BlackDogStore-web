@@ -31,7 +31,14 @@ from decimal import Decimal
 from .fiscal.qr import build_qr_payload, render_qr_png
 from .models import FiscalDocument, FiscalDocumentStatus, FiscalEnvironment
 
-_TITLE = {'01': 'FACTURA ELECTRÓNICA', '03': 'BOLETA DE VENTA ELECTRÓNICA'}
+_TITLE = {
+    '01': 'FACTURA ELECTRÓNICA', '03': 'BOLETA DE VENTA ELECTRÓNICA',
+    '07': 'NOTA DE CRÉDITO ELECTRÓNICA', '08': 'NOTA DE DÉBITO ELECTRÓNICA',
+}
+
+#: Etiqueta del comprobante que una nota modifica, para el «Documento que
+#: modifica» del papel. Catálogo N.º 01.
+_ORIGINAL_TYPE_LABEL = {'01': 'Factura', '03': 'Boleta de venta'}
 
 #: Sólo se imprime «aceptada» cuando hay constancia. Los demás estados se dicen
 #: como son: un papel que afirma una aceptación que no ocurrió es peor que uno
@@ -105,8 +112,24 @@ def build_fiscal_context(document: FiscalDocument) -> dict:
         digest_value=rep.digest_value or document.digest_value,
     )
     legal_datetime = datetime.combine(rep.issue_date, rep.issue_time or _time(0, 0, 0))
+
+    # Si es una nota (07/08): qué comprobante modifica y por qué. Del documento,
+    # no de una columna nueva; `None` en un comprobante normal, de modo que la
+    # plantilla sólo dibuja el bloque cuando existe.
+    note = None
+    if document.original_document_id:
+        original = document.original_document
+        note = {
+            'reference': original.document_id,
+            'reference_type': _ORIGINAL_TYPE_LABEL.get(
+                original.document_type, 'Comprobante'),
+            'reason_code': document.note_reason_code,
+            'reason_description': document.note_reason_description,
+        }
+
     return {
         'title': _TITLE.get(document.document_type, 'COMPROBANTE ELECTRÓNICO'),
+        'note': note,
         'identifier': rep.document_id or document.document_id,
         'issued_at': legal_datetime,
         'currency': rep.currency or document.currency,
@@ -233,6 +256,30 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
         ]))
         story.append(aviso)
         story.append(Spacer(1, 8))
+
+    # --- documento que modifica (sólo en una nota) ---
+    if ctx.get('note'):
+        n = ctx['note']
+        motivo = n['reason_description'] or ''
+        if n['reason_code']:
+            motivo = f"({n['reason_code']}) {motivo}".strip()
+        modifica = Table([
+            ['Documento que modifica:',
+             f"{n['reference_type']} {n['reference']}"],
+            ['Motivo:', motivo],
+        ], colWidths=[4 * cm, 13 * cm])
+        modifica.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8.5),
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f9fafb')),
+            ('BOX', (0, 0), (-1, -1), 0.4, colors.HexColor('#e5e7eb')),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#374151')),
+        ]))
+        story.append(modifica)
+        story.append(Spacer(1, 10))
 
     # --- adquirente y fecha ---
     story.append(Paragraph('Adquirente', h2))
@@ -361,6 +408,17 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
                         bold=True, align='center')
             cursor.line('SIN VALIDEZ TRIBUTARIA', size=7, bold=True, align='center')
         cursor.rule()
+
+        if ctx.get('note'):
+            n = ctx['note']
+            cursor.row('Modifica:', f"{n['reference_type']} {n['reference']}",
+                       size=6.5)
+            if n['reason_code'] or n['reason_description']:
+                motivo = n['reason_description'] or ''
+                if n['reason_code']:
+                    motivo = f"({n['reason_code']}) {motivo}".strip()
+                cursor.line(f"Motivo: {motivo}", size=6.5)
+            cursor.rule()
 
         cursor.row('Fecha:', ctx['issued_at'].strftime('%d/%m/%Y %H:%M'), size=6.5)
         cursor.row('RUC cliente:', ctx['customer']['doc_number'], size=6.5)

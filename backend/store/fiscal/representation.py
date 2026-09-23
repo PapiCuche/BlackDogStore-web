@@ -37,6 +37,11 @@ class RepLine:
     unit_price_with_tax: Decimal  # precio unitario CON impuesto
     line_amount: Decimal          # valor de venta de la línea
     tax_amount: Decimal
+    #: La TASA declarada en la línea (cbc:Percent), tal cual la firmó el original.
+    #: Se conserva —no se deriva de impuesto/base— para que una nota de anulación
+    #: pueda reflejar el original al pie de la letra, incluida su tasa (18.00), sin
+    #: reintroducir un porcentaje inventado por el redondeo (REVIEW ERP-FISCAL-5A).
+    tax_percent: Decimal = Decimal('0')
 
 
 @dataclass(frozen=True)
@@ -65,24 +70,49 @@ def _dec(node, path: str) -> Decimal:
     return Decimal(_text(node, path, '0') or '0')
 
 
+#: Lo único que cambia entre una factura/boleta y sus notas: el nombre del
+#: renglón, el de la cantidad y el del total. Los componentes comunes (`cac:`,
+#: `cbc:`) son idénticos —de ahí que el resto del parser no distinga el tipo—.
+#: La ND usa `RequestedMonetaryTotal`; la factura, la boleta y la NC comparten
+#: `LegalMonetaryTotal`.
+_LAYOUT_BY_ROOT = {
+    'Invoice': ('cac:InvoiceLine', 'cbc:InvoicedQuantity', 'cac:LegalMonetaryTotal'),
+    'CreditNote': ('cac:CreditNoteLine', 'cbc:CreditedQuantity',
+                   'cac:LegalMonetaryTotal'),
+    'DebitNote': ('cac:DebitNoteLine', 'cbc:DebitedQuantity',
+                  'cac:RequestedMonetaryTotal'),
+}
+
+
 def parse_signed_invoice_for_representation(xml) -> SignedInvoiceRepresentation:
-    """Extrae del XML firmado lo necesario para PDF/QR. Sólo lectura."""
+    """
+    Extrae del XML firmado lo necesario para PDF/QR. Sólo lectura.
+
+    Sirve a la factura, la boleta y sus notas (07/08): el nombre local de la raíz
+    decide los tres nombres que cambian entre ellos —renglón, cantidad y total—;
+    todo lo demás son componentes comunes que no dependen del tipo.
+    """
     if isinstance(xml, str):
         xml = xml.encode('utf-8')
-    root = parse_untrusted(xml)  # elemento raíz Invoice (namespace inv)
+    root = parse_untrusted(xml)
+
+    local = root.tag.rsplit('}', 1)[-1]  # «Invoice», «CreditNote», «DebitNote»
+    line_tag, qty_tag, total_tag = _LAYOUT_BY_ROOT.get(local, _LAYOUT_BY_ROOT['Invoice'])
 
     lines = tuple(
         RepLine(
             description=_text(node, 'cac:Item/cbc:Description'),
-            quantity=_dec(node, 'cbc:InvoicedQuantity'),
+            quantity=_dec(node, qty_tag),
             unit_price=_dec(node, 'cac:Price/cbc:PriceAmount'),
             unit_price_with_tax=_dec(
                 node,
                 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'),
             line_amount=_dec(node, 'cbc:LineExtensionAmount'),
             tax_amount=_dec(node, 'cac:TaxTotal/cbc:TaxAmount'),
+            tax_percent=_dec(
+                node, 'cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cbc:Percent'),
         )
-        for node in root.findall('cac:InvoiceLine', NS)
+        for node in root.findall(line_tag, NS)
     )
 
     issue_time_text = _text(root, 'cbc:IssueTime')
@@ -106,6 +136,6 @@ def parse_signed_invoice_for_representation(xml) -> SignedInvoiceRepresentation:
         lines=lines,
         taxable_amount=_dec(root, 'cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount'),
         tax_amount=_dec(root, 'cac:TaxTotal/cbc:TaxAmount'),
-        payable_amount=_dec(root, 'cac:LegalMonetaryTotal/cbc:PayableAmount'),
+        payable_amount=_dec(root, f'{total_tag}/cbc:PayableAmount'),
         digest_value=_text(root, './/ds:DigestValue'),
     )
