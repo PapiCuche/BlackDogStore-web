@@ -5,7 +5,8 @@ from .staff_views import (
     AdminStaffListView, AdminStaffMembershipView, StaffInvitationAcceptView,
 )
 from .fiscal_views import (
-    AdminFiscalDocumentCdrView, AdminFiscalDocumentPdfView,
+    AdminFiscalDocumentCdrView, AdminFiscalDocumentCreditNoteView,
+    AdminFiscalDocumentDebitNoteView, AdminFiscalDocumentPdfView,
     AdminFiscalDocumentReconcileView, AdminFiscalDocumentSubmitView,
     AdminFiscalDocumentXmlView, AdminOrderFiscalDocumentView,
 )
@@ -177,6 +178,8 @@ urlpatterns = [
     path('admin/orders/<int:pk>/sales-note/', AdminOrderSalesNoteView.as_view(), name='admin-order-sales-note'),
     # --- C2.2A.1: comprobantes electrónicos. NO es la nota de venta interna ---
     path('admin/orders/<int:pk>/fiscal-document/', AdminOrderFiscalDocumentView.as_view(), name='admin-order-fiscal-document'),
+    path('admin/fiscal-documents/<int:pk>/credit-notes/', AdminFiscalDocumentCreditNoteView.as_view(), name='admin-fiscal-document-credit-note'),
+    path('admin/fiscal-documents/<int:pk>/debit-notes/', AdminFiscalDocumentDebitNoteView.as_view(), name='admin-fiscal-document-debit-note'),
     path('admin/fiscal-documents/<int:pk>/submit/', AdminFiscalDocumentSubmitView.as_view(), name='admin-fiscal-document-submit'),
     path('admin/fiscal-documents/<int:pk>/reconcile/', AdminFiscalDocumentReconcileView.as_view(), name='admin-fiscal-document-reconcile'),
     path('admin/fiscal-summaries/', AdminFiscalSummaryListView.as_view(), name='admin-fiscal-summaries'),

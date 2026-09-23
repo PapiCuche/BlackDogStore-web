@@ -36,7 +36,9 @@ from .fiscal_services import (
     reconcile_fiscal_document, sign_fiscal_document, submit_fiscal_document,
 )
 from .inventory_views import _company_context
-from .models import AdminAuditLog, FiscalDocument, FiscalDocumentStatus
+from .models import (
+    AdminAuditLog, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType,
+)
 from .tenancy import visible_orders
 from .throttles import FiscalIssueThrottle, FiscalReadThrottle
 
@@ -155,6 +157,12 @@ def document_payload(document: FiscalDocument) -> dict:
         'total': str(document.total),
         'customer_doc_number': document.customer_doc_number,
         'customer_legal_name': document.customer_legal_name,
+        # Si es una nota (07/08): a qué comprobante corrige y por qué. Nulo/vacío
+        # en un comprobante normal, de modo que añadir estas claves no altera lo
+        # que la interfaz ya leía.
+        'original_document_id': document.original_document_id,
+        'note_reason_code': document.note_reason_code,
+        'note_reason_description': document.note_reason_description,
         # El código y el mensaje de SUNAT ya vienen saneados por el adaptador.
         'response_code': document.sunat_response_code,
         'response_message': document.sunat_response_message,
@@ -284,6 +292,151 @@ class AdminOrderFiscalDocumentView(APIView):
             document_payload(document),
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+
+def _parse_note_amount(raw) -> "Decimal | None":
+    """Un importe del cuerpo, si viene. Vacío = ausente. Basura = error."""
+    from decimal import Decimal, InvalidOperation
+
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, ValueError):
+        raise FiscalError('Importe de la nota inválido.')
+
+
+class _AdminFiscalNoteView(APIView):
+    """
+    Emitir una nota sobre un comprobante YA EMITIDO, dentro del tenant y de la
+    sucursal de quien llama.
+
+    LA IDENTIDAD SALE DEL ORIGINAL, NO DEL CUERPO (§40/§46/§47)
+    ----------------------------------------------------------
+    El `pk` de la URL es el comprobante ORIGINAL, resuelto con el mismo criterio
+    de tenant y de sucursal que cualquier otra acción fiscal (`_fiscal_document`).
+    La empresa, la sucursal, la serie de la nota, el adquirente y —en una
+    anulación total— los importes se DERIVAN de ese original. Del cuerpo sólo se
+    aceptan el motivo, su descripción, una clave de idempotencia y, para una nota
+    de débito, el importe del cargo. Nada que identifique un comprobante ajeno.
+
+    Emitir NO habla con SUNAT: deja la nota numerada y firmada. Enviarla es la
+    llamada `submit/` de siempre —una nota es un `FiscalDocument`—, de modo que un
+    fallo de red no se confunde con un fallo al emitir.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [FiscalIssueThrottle]
+    #: '07' o '08'. Lo fija la subclase; NUNCA llega del cliente.
+    note_type: str = ''
+
+    def post(self, request, pk):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+
+        original, error = _fiscal_document(request, pk, CAP_FISCAL_ISSUE)
+        if error:
+            return error
+
+        body = request.data if isinstance(request.data, dict) else {}
+        reason_code = str(body.get('reason_code', '')).strip()
+        reason_description = str(body.get('reason_description', '')).strip()
+        request_key = str(body.get('request_key', '')).strip()[:64]
+        if not reason_code or not reason_description:
+            return Response(
+                {'detail': 'Una nota necesita un motivo y su descripción.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # El importe del cuerpo sólo lo lee la NOTA DE DÉBITO (un cargo nuevo). Una
+        # nota de crédito es, en esta fase, una anulación total: sus importes salen
+        # del original y un `taxable_amount`/`tax_amount` del cuerpo NO se reenvía
+        # —así el importe de una NC nunca depende del cliente (anti-IDOR, §40/§47)—.
+        taxable = tax = None
+        if self.note_type == FiscalDocumentType.DEBIT_NOTE:
+            try:
+                taxable = _parse_note_amount(body.get('taxable_amount'))
+                tax = _parse_note_amount(body.get('tax_amount'))
+            except FiscalError as exc:
+                return Response(
+                    {'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            if (taxable is None) != (tax is None):
+                return Response(
+                    {'detail': 'Para un importe explícito indique base e impuesto '
+                               'juntos.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            note, created = create_fiscal_note(
+                original, note_type=self.note_type, reason_code=reason_code,
+                reason_description=reason_description, request_key=request_key,
+                taxable_amount=taxable, tax_amount=tax,
+            )
+        except FiscalError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except FiscalConfigError as exc:
+            return Response(
+                {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        if created:
+            AdminAuditLog.log(
+                actor=request.user, action='fiscal_note_created',
+                target_type='fiscal_document', target_id=note.pk,
+                metadata={
+                    'identifier': note.document_id,
+                    'note_type': note.document_type,
+                    'original_id': original.pk,
+                    'original_identifier': original.document_id,
+                    'reason_code': reason_code,
+                    'series_id': note.series_ref_id,
+                },
+                request=request, company=note.company,
+            )
+
+        if not note.signed_xml:
+            try:
+                from .fiscal_config import resolve_credentials
+
+                credentials = resolve_credentials(note.company)
+                note = sign_fiscal_note(
+                    note, key_pem=credentials['key_pem'],
+                    cert_pem=credentials['cert_pem'])
+            except FiscalConfigError as exc:
+                return Response(
+                    {'detail': str(exc)},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            except FiscalError as exc:
+                return Response(
+                    {'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                logger.exception('Fiscal note signing failed for %s', note.pk)
+                return Response(
+                    {'detail': 'No se pudo firmar la nota.'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            AdminAuditLog.log(
+                actor=request.user, action='fiscal_note_signed',
+                target_type='fiscal_document', target_id=note.pk,
+                metadata={'identifier': note.document_id,
+                          'xml_sha256': note.signed_xml_sha256},
+                request=request, company=note.company,
+            )
+
+        return Response(
+            document_payload(note),
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class AdminFiscalDocumentCreditNoteView(_AdminFiscalNoteView):
+    """POST /api/admin/fiscal-documents/{pk}/credit-notes/ — Nota de Crédito (07)."""
+
+    note_type = FiscalDocumentType.CREDIT_NOTE
+
+
+class AdminFiscalDocumentDebitNoteView(_AdminFiscalNoteView):
+    """POST /api/admin/fiscal-documents/{pk}/debit-notes/ — Nota de Débito (08)."""
+
+    note_type = FiscalDocumentType.DEBIT_NOTE
 
 
 class AdminFiscalDocumentSubmitView(APIView):
