@@ -49,17 +49,30 @@ from ...models import (
 
 
 class Command(BaseCommand):
-    help = ('Prueba de humo contra SUNAT BETA. --mode factura (por defecto) o '
-            '--mode boleta-summary (boleta + resumen diario). Opt-in '
+    help = ('Prueba de humo contra SUNAT BETA. --mode factura (por defecto), '
+            'boleta-summary (boleta + resumen diario), credit-note o debit-note '
+            '(una factura aceptada y su nota, §51/§52). Opt-in '
             '(FISCAL_BETA_SMOKE_ENABLED=true), sólo BETA, nunca en CI.')
 
     def add_arguments(self, parser):
         parser.add_argument('--company-tax-id', required=True,
                             help='RUC de una empresa YA existente con serie BETA.')
-        parser.add_argument('--mode', choices=['factura', 'boleta-summary'],
-                            default='factura')
+        parser.add_argument(
+            '--mode',
+            choices=['factura', 'boleta-summary', 'credit-note', 'debit-note'],
+            default='factura')
         parser.add_argument('--price', default='118.00')
         parser.add_argument('--qty', type=int, default=1)
+        # Motivo e importe de la nota (§51/§52). La NC es anulación total; la ND
+        # lleva un cargo explícito.
+        parser.add_argument('--nc-reason', default='01',
+                            help='Motivo de la NC (Catálogo 09); 01 = anulación.')
+        parser.add_argument('--nd-reason', default='02',
+                            help='Motivo de la ND (Catálogo 10); 02 = aumento de valor.')
+        parser.add_argument('--nd-taxable', default='50.00',
+                            help='Base gravada del cargo de la ND.')
+        parser.add_argument('--nd-tax', default='9.00',
+                            help='IGV del cargo de la ND.')
         parser.add_argument('--customer-ruc', default='20100066603')
         parser.add_argument('--customer-dni', default='12345678',
                             help='DNI del adquirente para la boleta (§66).')
@@ -90,6 +103,8 @@ class Command(BaseCommand):
 
         if options['mode'] == 'boleta-summary':
             self._run_boleta_summary(options)
+        elif options['mode'] in ('credit-note', 'debit-note'):
+            self._run_note(options, options['mode'])
         else:
             self._run_factura(options)
 
@@ -155,6 +170,64 @@ class Command(BaseCommand):
             f'  mensaje   = {document.sunat_response_message!r}\n'
             f'  cdr       = {"sí" if document.cdr_xml else "no"}'
             f' (sha256 {document.cdr_sha256 or "-"})'))
+
+    def _run_note(self, options, mode):
+        """
+        §51/§52. Emite una factura BETA, espera su aceptación, y sobre ella emite
+        una nota — de crédito (anulación total) o de débito (cargo explícito)— por
+        `sendBill`, y reporta su CDR. Sólo una factura ACEPTADA admite una nota:
+        SUNAT no acepta una nota sobre un comprobante que no existe para ellos.
+        """
+        from ...fiscal_note_services import create_fiscal_note, sign_fiscal_note
+
+        note_type = (FiscalDocumentType.CREDIT_NOTE if mode == 'credit-note'
+                     else FiscalDocumentType.DEBIT_NOTE)
+        if not FiscalSeries.objects.filter(
+                company=self.company, document_type=note_type,
+                environment=FiscalEnvironment.BETA, is_active=True,
+                series__startswith='F').exists():
+            raise CommandError(
+                f'La empresa no tiene una serie BETA de nota {note_type} con '
+                f'prefijo F activa (una nota de factura).')
+
+        # 1) La factura original: emitir, firmar, enviar. Debe quedar ACEPTADA.
+        order = self._paid_order(
+            receipt_type=Order.ReceiptType.FACTURA, price=options['price'],
+            qty=options['qty'], doc_type=Order.DocumentType.RUC,
+            doc_number=options['customer_ruc'], name='CLIENTE DE PRUEBA SAC')
+        original = self._issue_and_send(order)
+        self._report_document(original)
+        if not original.is_accepted:
+            raise CommandError(
+                f'La factura {original.document_id} no quedó ACEPTADA '
+                f'(estado {original.status}); sin CDR no procede una nota.')
+
+        # 2) La nota sobre esa factura aceptada.
+        creds = resolve_credentials(self.company)
+        if note_type == FiscalDocumentType.CREDIT_NOTE:
+            note, _ = create_fiscal_note(
+                original, note_type=note_type, reason_code=options['nc_reason'],
+                reason_description='ANULACION DE LA OPERACION',
+                request_key='beta-smoke-nc')
+        else:
+            note, _ = create_fiscal_note(
+                original, note_type=note_type, reason_code=options['nd_reason'],
+                reason_description='CARGO ADICIONAL',
+                request_key='beta-smoke-nd',
+                taxable_amount=Decimal(options['nd_taxable']),
+                tax_amount=Decimal(options['nd_tax']))
+        note = sign_fiscal_note(
+            note, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
+        self.stdout.write(
+            f'NOTA FIRMADA {note.document_id} sobre {original.document_id} '
+            f'(motivo {note.note_reason_code}) total={note.total}')
+
+        # 3) Enviar la nota por sendBill (mismo canal que la factura) y reportar.
+        note = submit_fiscal_document(note, resolve_provider(self.company))
+        self._report_document(note)
+        self.stdout.write(
+            'Nota: la factura y su nota QUEDAN en la base. Un envío a SUNAT no se '
+            'deshace; ambos correlativos están gastados.')
 
     def _run_boleta_summary(self, options):
         import time

@@ -238,6 +238,20 @@ antes de sobrevivir). Once hallazgos confirmados, todos corregidos:
 | F10 | media (test) | La restricción DB de idempotencia no se ejercía (sólo el pre-chequeo Python). | Test que fuerza el choque a nivel de base de datos. |
 | F11 | baja | El espejo se decidía por igualdad de importes; una ND de importe casual igual al original se malclasificaba. | `_note_lines` decide por TIPO (NC espeja, ND una línea), no por importe. |
 
+## 12.2 · Prueba de humo BETA (§51/§52/§53)
+
+El comando `fiscal_beta_smoke` gana dos modos, `--mode credit-note` y
+`--mode debit-note`: emiten una factura BETA, esperan su aceptación y sobre ella
+emiten la nota (NC de anulación / ND de cargo) por `sendBill`, reportando el CDR.
+Como el resto de la prueba de humo, es **opt-in del operador** y jamás corre en CI:
+exige `FISCAL_BETA_SMOKE_ENABLED=true`, sólo opera BETA, persiste todo y no revierte
+nada (un envío a SUNAT no se deshace con un rollback; el correlativo queda gastado).
+La aceptación real contra SUNAT BETA se demuestra ejecutándolo con las credenciales
+públicas (RUC 20100066603 / MODDATOS / moddatos) sobre una empresa con series BETA
+de factura y de nota (07/08, prefijo F) — una acción del operador, igual que la
+aceptación de la factura y del resumen en las fases previas. La NC-BOL/ND-BOL por
+Resumen (§53) no se prueba: es PENDIENTE (véase §11/§16).
+
 ## 13 · Postura de seguridad
 
 Sólo credenciales BETA públicas (RUC 20100066603 / MODDATOS / moddatos); ningún
