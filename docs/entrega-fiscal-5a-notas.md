@@ -188,8 +188,8 @@ el papel muestra además «Documento que modifica» y el motivo. El QR lleva el 
 
 | Caso | Estado | Evidencia / motivo |
 |---|---|---|
-| **NC-FAC** | **IMPLEMENTADO** | Anulación total espejo del original; emite, firma, valida XSD, verifica firma, referencia el original, `sendBill`, reconcilia, PDF/QR. 13 tests de servicio + 8 de API + 3 de PDF. |
-| **ND-FAC** | **IMPLEMENTADO** | Cargo de importe explícito; `RequestedMonetaryTotal`; mismo canal y superficie. |
+| **NC-FAC** | **IMPLEMENTADO · ACEPTADA EN BETA** | Anulación total espejo del original; emite, firma, valida XSD, verifica firma, referencia el original, `sendBill`, reconcilia, PDF/QR. 36 tests dirigidos. **Evidencia SUNAT BETA: `FN01-1` sobre `F001-1` (motivo 01), código `0`, «La Nota de Credito numero FN01-1, ha sido aceptada», CDR sha256 `b55dd752…`.** |
+| **ND-FAC** | **IMPLEMENTADO · ACEPTADA EN BETA** | Cargo de importe explícito; `RequestedMonetaryTotal`; mismo canal y superficie. **Evidencia SUNAT BETA: `FD01-1` sobre `F001-2` (motivo 02), código `0`, «La Nota de Debito numero FD01-1, ha sido aceptada», CDR sha256 `235d69f2…`.** |
 | **NC-BOL** | **PENDIENTE** | Canal = Resumen Diario, que aún no lleva líneas de nota. Fallo cerrado en creación y envío. |
 | **ND-BOL** | **PENDIENTE** | Igual que NC-BOL. |
 
@@ -246,11 +246,23 @@ emiten la nota (NC de anulación / ND de cargo) por `sendBill`, reportando el CD
 Como el resto de la prueba de humo, es **opt-in del operador** y jamás corre en CI:
 exige `FISCAL_BETA_SMOKE_ENABLED=true`, sólo opera BETA, persiste todo y no revierte
 nada (un envío a SUNAT no se deshace con un rollback; el correlativo queda gastado).
-La aceptación real contra SUNAT BETA se demuestra ejecutándolo con las credenciales
-públicas (RUC 20100066603 / MODDATOS / moddatos) sobre una empresa con series BETA
-de factura y de nota (07/08, prefijo F) — una acción del operador, igual que la
-aceptación de la factura y del resumen en las fases previas. La NC-BOL/ND-BOL por
-Resumen (§53) no se prueba: es PENDIENTE (véase §11/§16).
+**EJECUTADO Y ACEPTADO (2026-09-24).** Se corrió contra SUNAT BETA con las
+credenciales públicas (RUC 20100066603 / MODDATOS / moddatos), certificado
+autofirmado efímero y una base aislada, sobre una empresa con series BETA de
+factura y de nota (F001 / FN01 / FD01). Los cuatro envíos fueron **aceptados con
+código `0`**:
+
+| Documento | Estado | Mensaje de SUNAT | CDR sha256 |
+|---|---|---|---|
+| `F001-1` factura | accepted | La Factura numero F001-1, ha sido aceptada | `216bf0eb…` |
+| **`FN01-1` NC** sobre `F001-1` (motivo 01) | **accepted** | La Nota de Credito numero FN01-1, ha sido aceptada | `b55dd752…` |
+| `F001-2` factura | accepted | La Factura numero F001-2, ha sido aceptada | `e8cc4f59…` |
+| **`FD01-1` ND** sobre `F001-2` (motivo 02) | **accepted** | La Nota de Debito numero FD01-1, ha sido aceptada | `235d69f2…` |
+
+Eso cierra la evidencia externa de 5A: **NC-FAC y ND-FAC quedan IMPLEMENTADAS PARA
+BETA**. Los correlativos están gastados y los documentos persisten: un envío a
+SUNAT no se deshace. La NC-BOL/ND-BOL por Resumen (§53) no se prueba: es PENDIENTE
+(véase §11/§16).
 
 ## 13 · Postura de seguridad
 

@@ -11,8 +11,8 @@ información que no esté respaldada por código o commits.
 
 ## ERP-FISCAL-5A — Nota de Crédito (07) y Nota de Débito (08)
 
-**Estado: IMPLEMENTADO (backend) para NC-FAC y ND-FAC · NC-BOL y ND-BOL
-PENDIENTES y declaradas.** Rama `erp/fiscal-sunat`. Una migración aditiva (`0088`),
+**Estado: IMPLEMENTADO Y ACEPTADO EN SUNAT BETA para NC-FAC y ND-FAC · NC-BOL y
+ND-BOL PENDIENTES y declaradas.** Rama `erp/fiscal-sunat`. Una migración aditiva (`0088`),
 sin cambios de frontend. No habilita producción, ni Comunicación de Baja, ni
 devolución de stock, ni reembolso: una nota es un hecho FISCAL, y sólo eso.
 
@@ -69,8 +69,8 @@ devolución de stock, ni reembolso: una nota es un hecho FISCAL, y sólo eso.
 
 | Caso | Estado | Motivo |
 |---|---|---|
-| **NC-FAC** (nota de crédito de factura) | IMPLEMENTADO | Anulación total espejo del original; emite, firma, valida XSD, envía por `sendBill`, reconcilia, imprime. |
-| **ND-FAC** (nota de débito de factura) | IMPLEMENTADO | Cargo de importe explícito; `RequestedMonetaryTotal`; mismo canal y superficie. |
+| **NC-FAC** (nota de crédito de factura) | **ACEPTADA EN BETA** | Anulación total espejo del original; emite, firma, valida XSD, envía por `sendBill`, reconcilia, imprime. **Evidencia: `FN01-1` sobre `F001-1`, motivo 01 — «La Nota de Credito numero FN01-1, ha sido aceptada», código 0, CDR `b55dd752…`.** |
+| **ND-FAC** (nota de débito de factura) | **ACEPTADA EN BETA** | Cargo de importe explícito; `RequestedMonetaryTotal`; mismo canal y superficie. **Evidencia: `FD01-1` sobre `F001-2`, motivo 02 — «La Nota de Debito numero FD01-1, ha sido aceptada», código 0, CDR `235d69f2…`.** |
 | **NC-BOL** (nota de crédito de boleta) | PENDIENTE | Su canal es el Resumen Diario, que aún no lleva líneas de nota. Se falla cerrado. |
 | **ND-BOL** (nota de débito de boleta) | PENDIENTE | Igual que NC-BOL. |
 
