@@ -57552,3 +57552,105 @@ class Fiscal5bGrantEvidenceTest(Fiscal5aNoteBase):
             {m.value for m in FiscalGrantMethod},
             {'ecommerce_portal', 'email', 'pos_print', 'pos_electronic',
              'manual', 'api'})
+
+
+class Fiscal5bVoidBuilderTest(SimpleTestCase):
+    """
+    El XML de la Comunicación de Baja contra el XSD **OFICIAL** de SUNAT.
+
+    Aquí no hay validación artesanal: `UBLPE-VoidedDocuments-1.0.xsd` viene en el
+    paquete oficial y está versionado en `schemas/2.0/`. Eso distingue la baja del
+    Resumen por documento, que sigue sin esquema publicado (RC-XSD-01).
+    """
+
+    _SAC = 'urn:sunat:names:specification:ubl:peru:schema:xsd:SunatAggregateComponents-1'
+    _CBC = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+
+    def _data(self, lines=None, identifier='RA-20260925-1'):
+        # `lines is not None`, NO `lines or ...`: una tupla vacía es falsa, así que
+        # el atajo habría sustituido silenciosamente el caso «sin líneas» por el
+        # de por defecto, y el test de la guarda no habría probado nada.
+        from .fiscal.void import VoidData, VoidLine
+        if lines is None:
+            lines = (VoidLine(
+                line_id=1, document_type='01', document_serial='F001',
+                document_number=1, reason='EMITIDA POR ERROR, NO OTORGADA'),)
+        return VoidData(
+            identifier=identifier, issue_date=_date(2026, 9, 25),
+            reference_date=_date(2026, 9, 24), supplier_ruc='20100066603',
+            supplier_name='EMPRESA DE PRUEBA SAC', lines=lines)
+
+    def _built(self, **kw):
+        from .fiscal.void import build_void_xml
+        return build_void_xml(self._data(**kw))
+
+    def test_a_void_communication_validates_against_the_official_xsd(self):
+        from .fiscal import schema
+        schema.validate_voided_documents(self._built())
+
+    def test_a_grouped_void_of_an_invoice_and_its_notes_validates(self):
+        # Artículo 14.1.b: cabe más de un documento, si comparten el día.
+        from .fiscal import schema
+        from .fiscal.void import VoidLine
+        xml = self._built(lines=(
+            VoidLine(1, '01', 'F001', 7, 'NO OTORGADA'),
+            VoidLine(2, '07', 'FN01', 3, 'NOTA NO OTORGADA'),
+            VoidLine(3, '08', 'FD01', 2, 'NOTA NO OTORGADA')))
+        schema.validate_voided_documents(xml)
+
+    def test_the_reference_date_comes_before_the_issue_date(self):
+        # Es al revés de lo que uno escribiría por instinto, y el XSD lo exige.
+        from lxml import etree
+        root = etree.fromstring(self._built())
+        orden = [c.tag.rsplit('}', 1)[-1] for c in root]
+        self.assertLess(orden.index('ReferenceDate'), orden.index('IssueDate'))
+
+    def test_only_the_last_three_line_children_are_sunat_namespaced(self):
+        # El reparto de espacios de nombres de la línea es fácil de equivocar.
+        from lxml import etree
+        root = etree.fromstring(self._built())
+        line = root.find(f'{{{self._SAC}}}VoidedDocumentsLine')
+        self.assertEqual(
+            [c.tag for c in line],
+            [f'{{{self._CBC}}}LineID', f'{{{self._CBC}}}DocumentTypeCode',
+             f'{{{self._SAC}}}DocumentSerialID', f'{{{self._SAC}}}DocumentNumberID',
+             f'{{{self._SAC}}}VoidReasonDescription'])
+
+    def test_the_customization_id_is_the_baja_version_not_the_summary_one(self):
+        # La baja es 1.0; el Resumen por documento es 1.1. Copiar al hermano sin
+        # mirar habría puesto el valor equivocado.
+        from lxml import etree
+        root = etree.fromstring(self._built())
+        self.assertEqual(root.findtext(f'{{{self._CBC}}}CustomizationID'), '1.0')
+        self.assertEqual(root.findtext(f'{{{self._CBC}}}UBLVersionID'), '2.0')
+
+    def test_a_boleta_is_refused_by_this_channel(self):
+        # Una boleta no se da de baja con una RA: se anula informando el Resumen.
+        from .fiscal.void import VoidLine, VoidStructureError
+        with self.assertRaises(VoidStructureError):
+            self._built(lines=(VoidLine(1, '03', 'B001', 1, 'x'),))
+
+    def test_a_malformed_identifier_is_refused(self):
+        from .fiscal.void import VoidStructureError
+        for malo in ('RA-BAD', 'RC-20260925-1', 'RA-20260925-123456', ''):
+            with self.subTest(identifier=malo), \
+                    self.assertRaises(VoidStructureError):
+                self._built(identifier=malo)
+
+    def test_a_reason_is_mandatory_and_bounded(self):
+        from .fiscal.void import VoidLine, VoidStructureError
+        for motivo in ('', '   ', 'X' * 101):
+            with self.subTest(reason=motivo[:12]), \
+                    self.assertRaises(VoidStructureError):
+                self._built(lines=(VoidLine(1, '01', 'F001', 1, motivo),))
+
+    def test_a_repeated_line_id_is_refused(self):
+        from .fiscal.void import VoidLine, VoidStructureError
+        with self.assertRaises(VoidStructureError):
+            self._built(lines=(VoidLine(1, '01', 'F001', 1, 'a'),
+                               VoidLine(1, '01', 'F001', 2, 'b')))
+
+    def test_a_communication_without_lines_voids_nothing(self):
+        from .fiscal.void import VoidStructureError
+        with self.assertRaises(VoidStructureError):
+            self._built(lines=())

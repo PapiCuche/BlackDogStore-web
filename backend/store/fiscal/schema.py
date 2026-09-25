@@ -34,6 +34,18 @@ INVOICE_XSD = SCHEMA_DIR / 'maindoc' / 'UBL-Invoice-2.1.xsd'
 CREDIT_NOTE_XSD = SCHEMA_DIR / 'maindoc' / 'UBL-CreditNote-2.1.xsd'
 DEBIT_NOTE_XSD = SCHEMA_DIR / 'maindoc' / 'UBL-DebitNote-2.1.xsd'
 
+#: El paquete UBL 2.0 de SUNAT, para los documentos que no son UBL 2.1.
+SCHEMA_DIR_20 = Path(__file__).parent / 'schemas' / '2.0'
+#: Comunicación de Baja. Éste SÍ es el esquema oficial que nos aplica.
+VOIDED_DOCUMENTS_XSD = SCHEMA_DIR_20 / 'maindoc' / 'UBLPE-VoidedDocuments-1.0.xsd'
+
+#: OJO — NO existe aquí un `SUMMARY_XSD`, y es deliberado. El paquete trae
+#: `UBLPE-SummaryDocuments-1.0.xsd`, pero es el Resumen por RANGOS de 2012 (línea
+#: con `Start/EndDocumentNumberID`, sin `cac:Status` ni adquirente), no el Resumen
+#: por DOCUMENTO que emite `summary.py`. Validar contra él rechazaría documentos
+#: correctos, así que el Resumen conserva su validación estructural propia
+#: (RC-XSD-01 sigue PARCIAL). Ver `schemas/PROCEDENCIA.md`.
+
 
 class SchemaError(Exception):
     """El XML no cumple el esquema. El mensaje dice qué nodo y por qué."""
@@ -92,3 +104,14 @@ def validate_credit_note(xml: bytes) -> None:
 def validate_debit_note(xml: bytes) -> None:
     """Valida una Nota de Débito contra `UBL-DebitNote-2.1.xsd`."""
     _validate_against(xml, DEBIT_NOTE_XSD, 'UBL-DebitNote-2.1.xsd')
+
+
+def validate_voided_documents(xml: bytes) -> None:
+    """
+    Valida una Comunicación de Baja contra `UBLPE-VoidedDocuments-1.0.xsd`.
+
+    Aquí SÍ hay esquema oficial —viene en el paquete de SUNAT y está versionado en
+    `schemas/2.0/`—, así que la baja no necesita validación artesanal. Es la
+    diferencia con el Resumen por documento, que sigue sin esquema publicado.
+    """
+    _validate_against(xml, VOIDED_DOCUMENTS_XSD, 'UBLPE-VoidedDocuments-1.0.xsd')
