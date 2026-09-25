@@ -42,6 +42,12 @@ _NAME_RE = re.compile(r'^\d{11}-\d{2}-[A-Z0-9]{4}-\d{1,8}$')
 #: del resumen.
 _SUMMARY_NAME_RE = re.compile(r'^\d{11}-RC-\d{8}-\d{1,5}$')
 
+#: Nombre de la Comunicación de Baja (RA): `<RUC>-RA-<YYYYMMDD>-<correlativo>`.
+#: Misma forma que el Resumen —correlativo de 1 a 5 dígitos, sin relleno— pero con
+#: `RA` fijo y con la fecha de GENERACIÓN. Ejemplos oficiales:
+#: `20100066603-RA-20110522-1`.
+_VOID_NAME_RE = re.compile(r'^\d{11}-RA-\d{8}-\d{1,5}$')
+
 
 def document_name(ruc: str, document_type: str, serie: str, correlativo: int) -> str:
     """
@@ -84,6 +90,38 @@ def summary_name(ruc: str, document_date, correlativo: int) -> str:
     if not _SUMMARY_NAME_RE.fullmatch(name):
         raise ValueError(
             f'Nombre de resumen fuera de la nomenclatura del Anexo N.º 6: {name!r}'
+        )
+    return name
+
+
+def void_identifier(generation_date, correlativo: int) -> str:
+    """
+    El `cbc:ID` de la Comunicación de Baja: `RA-<YYYYMMDD>-<correlativo>`.
+
+    OJO, ES DISTINTO DEL RESUMEN: aquí la fecha es la de **GENERACIÓN** de la
+    comunicación, no la de los comprobantes que da de baja. La guía oficial lo dice
+    así («RA-<Fecha de generación del archivo>-<correlativo>») y sus ejemplos lo
+    confirman (`RA-20110323-1`). El día común de los comprobantes viaja aparte, en
+    `cbc:ReferenceDate`.
+
+    Y el identificador NO lleva el RUC: el RUC aparece sólo en el nombre del
+    archivo.
+    """
+    return f'RA-{generation_date.strftime("%Y%m%d")}-{correlativo}'
+
+
+def void_name(ruc: str, generation_date, correlativo: int) -> str:
+    """
+    El nombre del archivo de la Comunicación de Baja, sin extensión.
+
+    Se valida el resultado en vez de confiar en quien llama: este nombre viaja en
+    la petición SOAP y un carácter de más lo convierte en un rechazo que llega por
+    la red en vez de aquí.
+    """
+    name = f'{ruc}-RA-{generation_date.strftime("%Y%m%d")}-{correlativo}'
+    if not _VOID_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f'Nombre de comunicación de baja fuera de la nomenclatura: {name!r}'
         )
     return name
 

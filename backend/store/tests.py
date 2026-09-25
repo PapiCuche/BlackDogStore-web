@@ -57654,3 +57654,194 @@ class Fiscal5bVoidBuilderTest(SimpleTestCase):
         from .fiscal.void import VoidStructureError
         with self.assertRaises(VoidStructureError):
             self._built(lines=())
+
+
+from .models import (  # noqa: E402
+    FiscalVoidCommunication, FiscalVoidCommunicationDocument, FiscalVoidStatus,
+)
+
+
+class Fiscal5bVoidServiceTest(Fiscal5aNoteBase):
+    """
+    Las puertas de la Comunicación de Baja, y la historia que NO se reescribe.
+
+    El artículo 14 sólo admite dar de baja la numeración de documentos NO
+    OTORGADOS, dentro de siete días calendario contados desde el día siguiente de
+    recibir la CDR aceptada. Cada condición niega por separado, y ninguna se
+    sustituye por una inferencia.
+    """
+
+    def _eligible(self):
+        """Una factura aceptada, con fecha de CDR y sin otorgar: la baja procede."""
+        original = self._accepted_invoice()
+        original.refresh_from_db()
+        self.assertIsNotNone(original.cdr_accepted_at)
+        self.assertIsNone(original.granted_at)
+        return original
+
+    def _create(self, targets=None, **kw):
+        from .fiscal_void_services import create_void_communication
+        if targets is None:
+            targets = [(self._eligible(), 'EMITIDA POR ERROR, NO OTORGADA')]
+        return create_void_communication(self.company, targets=targets, **kw)
+
+    # -- camino bueno ---------------------------------------------------------
+
+    def test_an_eligible_invoice_yields_a_void_communication(self):
+        void = self._create()
+        self.assertTrue(void.identifier.startswith('RA-'))
+        self.assertEqual(void.lines.count(), 1)
+        self.assertEqual(void.lines.first().void_reason,
+                         'EMITIDA POR ERROR, NO OTORGADA')
+        self.assertEqual(void.status, FiscalVoidStatus.GENERATED)
+
+    def test_it_signs_and_validates_against_the_official_xsd(self):
+        from .fiscal import schema
+        from .fiscal_void_services import sign_void_communication
+        void = sign_void_communication(
+            self._create(), key_pem=self._key, cert_pem=self._cert)
+        self.assertEqual(void.status, FiscalVoidStatus.SIGNED)
+        schema.validate_voided_documents(void.signed_xml.encode())
+        self.assertEqual(len(void.signed_xml_sha256), 64)
+
+    def test_the_correlativo_advances_within_the_generation_day(self):
+        primera = self._create()
+        segunda = self._create()
+        self.assertEqual([primera.correlativo, segunda.correlativo], [1, 2])
+        self.assertNotEqual(primera.identifier, segunda.identifier)
+
+    # -- puertas que niegan ---------------------------------------------------
+
+    def test_a_boleta_is_refused_because_its_channel_is_the_summary(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        boleta = FiscalDocument(document_type=FiscalDocumentType.RECEIPT)
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(boleta)
+        self.assertIn('Resumen', str(ctx.exception))
+
+    def test_an_unaccepted_invoice_is_refused(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        key, cert = self_signed_pem('20100066603')
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        with self.assertRaises(FiscalError):
+            check_void_eligible(doc)
+
+    def test_an_accepted_invoice_without_a_cdr_date_fails_closed(self):
+        # La puerta del PLAZO: sin fecha demostrable no se infiere de otra.
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        FiscalDocument.objects.filter(pk=original.pk).update(cdr_accepted_at=None)
+        original.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        self.assertIn('REVISIÓN', str(ctx.exception).upper())
+
+    def test_an_invoice_past_the_seven_day_window_is_refused(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        FiscalDocument.objects.filter(pk=original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=10))
+        original.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        # Y NO se ofrece una nota como sustituto automático.
+        self.assertIn('plazo', str(ctx.exception).lower())
+
+    def test_the_window_edge_is_inclusive(self):
+        # Recibida hace 7 días: el séptimo día calendario todavía admite la baja.
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        FiscalDocument.objects.filter(pk=original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=7))
+        original.refresh_from_db()
+        check_void_eligible(original)  # no levanta
+
+    def test_a_granted_invoice_is_refused(self):
+        # La puerta del OTORGAMIENTO: lo entregado no se da de baja.
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        FiscalDocument.objects.filter(pk=original.pk).update(
+            granted_at=timezone.now(), granted_method='pos_print')
+        original.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        self.assertIn('OTORGADO', str(ctx.exception).upper())
+
+    def test_an_invoice_with_an_accepted_credit_note_is_refused(self):
+        # Corregir con nota y dar de baja son caminos excluyentes, y la nota NO se
+        # invalida.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        FiscalDocument.objects.filter(pk=note.pk).update(
+            status=FiscalDocumentStatus.ACCEPTED)
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        self.assertIn('nota', str(ctx.exception).lower())
+        note.refresh_from_db()
+        self.assertEqual(note.status, FiscalDocumentStatus.ACCEPTED)
+
+    def test_an_invoice_already_in_a_live_void_is_refused(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        self._create(targets=[(original, 'NO OTORGADA')])
+        with self.assertRaises(FiscalError):
+            check_void_eligible(original)
+
+    def test_documents_from_different_days_cannot_be_grouped(self):
+        # Artículo 14.1.b: agrupar sí, mezclar días no.
+        from .fiscal_services import FiscalError
+        uno = self._eligible()
+        otro = self._eligible()
+        FiscalDocument.objects.filter(pk=otro.pk).update(
+            issued_at=timezone.now() - timedelta(days=2))
+        otro.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            self._create(targets=[(uno, 'a'), (otro, 'b')])
+        self.assertIn('MISMO día', str(ctx.exception))
+
+    # -- la historia no se reescribe -----------------------------------------
+
+    def test_an_accepted_void_leaves_the_original_untouched(self):
+        from .fiscal_void_services import is_voided
+        original = self._eligible()
+        antes = (original.status, original.signed_xml_sha256, original.cdr_sha256,
+                 original.series, original.number)
+        self.assertFalse(is_voided(original))
+
+        void = self._create(targets=[(original, 'NO OTORGADA')])
+        FiscalVoidCommunication.objects.filter(pk=void.pk).update(
+            status=FiscalVoidStatus.ACCEPTED)
+
+        original.refresh_from_db()
+        self.assertEqual(
+            (original.status, original.signed_xml_sha256, original.cdr_sha256,
+             original.series, original.number), antes,
+            'dar de baja no reescribe el comprobante original')
+        # Y aun así se puede responder «quedó dado de baja», por la RELACIÓN.
+        self.assertTrue(is_voided(original))
+
+    def test_a_rejected_void_releases_its_documents_without_voiding_them(self):
+        from .fiscal_void_services import is_voided
+        original = self._eligible()
+        void = self._create(targets=[(original, 'NO OTORGADA')])
+        FiscalVoidCommunication.objects.filter(pk=void.pk).update(
+            status=FiscalVoidStatus.REJECTED)
+        void.refresh_from_db()
+        void.lines.update(superseded=True)
+
+        self.assertFalse(is_voided(original), 'un rechazo no da de baja nada')
+        # Liberado: puede intentarse en otra comunicación.
+        from .fiscal_void_services import check_void_eligible
+        check_void_eligible(original)
