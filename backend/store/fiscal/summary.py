@@ -164,8 +164,13 @@ def validate_summary_structure(xml: bytes) -> None:
     """
     Validación ESTRUCTURAL local del Resumen Diario antes de firmar/enviar.
 
-    NO es el XSD oficial `SummaryDocuments-1` (el paquete UBL 2.0 de SUNAT no pudo
-    incorporarse en este entorno; ver RC-XSD-01). Comprueba lo comprobable sin él:
+    NO es el XSD oficial del Resumen POR DOCUMENTO, porque ése no existe en el
+    paquete que SUNAT publica (ver RC-XSD-01 y `schemas/PROCEDENCIA.md`). Ojo con el
+    matiz: el paquete UBL 2.0 oficial SÍ está incorporado en `schemas/2.0/`, pero su
+    `UBLPE-SummaryDocuments-1.0.xsd` es el Resumen por RANGOS de 2012 —línea con
+    `DocumentSerialID` + `Start/EndDocumentNumberID`, sin `cac:Status` ni
+    `cbc:ConditionCode` ni adquirente—, que NO es lo que se emite aquí. Validar
+    contra él rechazaría documentos correctos. Comprueba lo comprobable sin él:
     raíz y espacio de nombres correctos, ORDEN de la cabecera, `cbc:ID` con el
     formato `RC-YYYYMMDD-correlativo`, y que cada línea traiga sus campos
     obligatorios. Es una red de regresión, no la autoridad normativa: la estructura
