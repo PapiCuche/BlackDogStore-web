@@ -603,6 +603,23 @@ incorporarse (el sitio de SUNAT devuelve 403 a descargas automatizadas y la fase
 prohíbe *mirrors*). Una validación ESTRUCTURAL local —no el XSD oficial, y así se
 declara— corre antes de firmar; la estructura se confirma además contra BETA.
 
+**Corrección posterior (ERP-FISCAL-5B).** Lo de «no pudo incorporarse» era cierto de
+`cpe.sunat.gob.pe`, pero no del todo: SUNAT publica el paquete completo en su host de
+contenidos, y allí sí se descargó (está en `schemas/2.0/`, con su SHA-256). El
+hallazgo, sin embargo, fue el contrario del esperado: ese `SummaryDocuments` es el
+Resumen **por RANGOS** de 2012 —línea con `DocumentSerialID` y
+`Start/EndDocumentNumberID`, sin `cac:Status`, sin `cbc:ConditionCode` y sin
+adquirente— y aquí se emite el Resumen **por DOCUMENTO**, que ese paquete no trae.
+Así que RC-XSD-01 sigue PARCIAL, pero por un motivo distinto y más preciso: el
+esquema publicado NO es el que aplica, y adoptarlo rechazaría documentos correctos y
+empujaría el generador a un formato superado. La validación estructural local se
+mantiene como única red del Resumen.
+
+Lo que el mismo paquete SÍ resolvió es la **Comunicación de Baja**:
+`UBLPE-VoidedDocuments-1.0.xsd` es oficial y utilizable tal cual, y es lo que permitió
+construir la baja de ERP-FISCAL-5B contra un esquema de verdad en vez de una
+imitación. Ver `schemas/PROCEDENCIA.md`.
+
 ---
 
 ## ADR-29 · Una nota es un `FiscalDocument`, no una entidad nueva

@@ -130,6 +130,14 @@ NC/ND. No añade tipos de comprobante ni habilita producción.
   (raíz/espacios de nombres, orden de la cabecera, formato del `cbc:ID`, campos
   obligatorios de cada línea y sus tres `BillingPayment`, tope de 500). NO es el
   XSD oficial y así se declara; la estructura se confirma además contra BETA.
+  > **Corregido en ERP-FISCAL-5B.** El paquete SÍ se publica —en otro host oficial
+  > de SUNAT— y está incorporado en `schemas/2.0/`. Pero resultó ser **la versión
+  > equivocada**: su `SummaryDocuments` es el Resumen por RANGOS de 2012, sin
+  > `cac:Status`, sin `cbc:ConditionCode` y sin adquirente, mientras aquí se emite
+  > el Resumen por DOCUMENTO, que ese paquete no contiene. RC-XSD-01 sigue
+  > **PARCIAL**, ahora por un motivo preciso: no es que no se pueda descargar, es
+  > que el esquema publicado no aplica, y validar contra él rechazaría documentos
+  > correctos. Detalle en `schemas/PROCEDENCIA.md`.
 
 Baseline PostgreSQL: 4275 tests, `OK (skipped=3)`. Revisión adversaria de las dos
 dimensiones (conformidad normativa del RC; timeout/estado/concurrencia); los

@@ -313,3 +313,14 @@ frontend. Cada uno es una decisión con su propia autorización y su propia fase
   de FACTURA (usan los `maindoc` UBL 2.1, obtenidos de OASIS y verificados por
   hash). Sí condiciona a NC-BOL/ND-BOL, que además necesitan la extensión del
   Resumen: doble razón para su estado PENDIENTE.
+
+  > **Corregido en ERP-FISCAL-5B.** El 403 era de `cpe.sunat.gob.pe`, pero SUNAT
+  > publica el paquete completo en su host de contenidos: está incorporado en
+  > `schemas/2.0/` con su SHA-256, sin mirror y sin descarga en runtime. El
+  > hallazgo fue el opuesto al esperado: ese `SummaryDocuments` es el Resumen **por
+  > RANGOS** de 2012 (sin `cac:Status`, sin `cbc:ConditionCode`, sin adquirente) y
+  > aquí se emite el Resumen **por DOCUMENTO**, que el paquete no trae. RC-XSD-01
+  > sigue PARCIAL por un motivo más preciso —el esquema publicado no aplica, y
+  > validar contra él rechazaría documentos correctos—, así que NC-BOL/ND-BOL
+  > siguen PENDIENTES. Lo que el mismo paquete sí resolvió es la Comunicación de
+  > Baja: `UBLPE-VoidedDocuments-1.0.xsd` es oficial y utilizable tal cual.

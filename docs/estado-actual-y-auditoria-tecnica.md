@@ -15,7 +15,10 @@
 > y auditoría de evidencia. **RC-ANON-01:** el consumidor final va con guión `-` en
 > la línea del resumen (la boleta conserva `0`). **RC-XSD-01:** validación estructural
 > local (el XSD oficial 2.0 no pudo descargarse —SUNAT tras Cloudflare, y la fase
-> prohíbe *mirrors*—). Dos migraciones aditivas, sin frontend, sin producción. Suite
+> prohíbe *mirrors*—; **corregido en 5B:** el paquete sí se publica en otro host
+> oficial y está en `schemas/2.0/`, pero es el Resumen por RANGOS de 2012 y aquí se
+> emite el Resumen por DOCUMENTO, así que RC-XSD-01 sigue PARCIAL y la validación
+> estructural se mantiene). Dos migraciones aditivas, sin frontend, sin producción. Suite
 > PostgreSQL 4275 verde (skipped=3). Detalle en el CHANGELOG y ADR-27/28.
 >
 > **Actualización ERP-FISCAL-4 (22-09-2026, rama `erp/fiscal-sunat`).** Añade la
