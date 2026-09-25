@@ -7769,6 +7769,192 @@ class FiscalDailySummaryDocument(models.Model):
         return f'{self.summary.identifier} · L{self.line_id}'
 
 
+class FiscalVoidStatus(models.TextChoices):
+    """
+    El recorrido de una Comunicación de Baja (RA).
+
+    Coincide hoy, estado por estado, con el del Resumen Diario, y aun así es un
+    enum PROPIO: una baja no es un resumen. Son documentos distintos, con raíz,
+    nomenclatura y CDR distintos (CDR-Baja), y compartir el enum ataría su
+    evolución a la del resumen por parecido accidental. La misma razón por la que
+    `FiscalSummaryStatus` no reutiliza `FiscalDocumentStatus`.
+    """
+
+    GENERATED = 'generated', 'XML generado'
+    SIGNED = 'signed', 'Firmado'
+    #: SUNAT devolvió un ticket; el proceso asíncrono está en marcha.
+    SUBMITTED = 'submitted', 'Enviado (ticket recibido)'
+    ACCEPTED = 'accepted', 'Aceptada por SUNAT'
+    ACCEPTED_WITH_OBSERVATION = 'accepted_observed', 'Aceptada con observaciones'
+    REJECTED = 'rejected', 'Rechazada por SUNAT'
+    #: Fallo ANTES de transmitir: SUNAT no la recibió. Es SEGURO reintentar.
+    SUBMISSION_ERROR = 'submission_error', 'Error de envío (no transmitido)'
+    #: Se transmitió pero NO llegó ticket: el resultado remoto es INCIERTO. No se
+    #: reenvía por el flujo normal; exige revisión manual (RC-TIMEOUT-01).
+    SUBMISSION_UNKNOWN = 'submission_unknown', 'Envío con resultado incierto'
+
+
+class FiscalVoidCommunication(models.Model):
+    """
+    Una Comunicación de Baja (RA). La UNIDAD que se envía a SUNAT.
+
+    QUÉ ES, Y QUÉ NO
+    ----------------
+    Da de baja la NUMERACIÓN de comprobantes NO OTORGADOS (artículo 14 de la RS
+    097-2012, sustituido en bloque por la RS 114-2019). NO es una nota: una nota
+    corrige un comprobante que sigue vigente; la baja comunica que esa numeración
+    no se usó. Y NO borra nada nuestro: el comprobante original conserva su
+    `signed_xml`, su CDR, su serie, su número y su historia. Lo que cambia es que,
+    cuando el CDR-Baja se acepta, ese comprobante queda dado de baja — un hecho
+    NUEVO que se suma, no que reescribe.
+
+    POR QUÉ ES UN MODELO PROPIO (y no un estado en `FiscalDocument`)
+    ---------------------------------------------------------------
+    Tiene identidad (`RA-yyyyMMdd-N`), correlativo con su propio ámbito, ticket,
+    estado asíncrono y CDR propios, y agrupa UNO O MÁS comprobantes. Nada de eso
+    cabe en una bandera sobre el comprobante afectado.
+
+    AGRUPACIÓN Y `reference_date`
+    ----------------------------
+    El artículo 14.1.b admite incluir «uno o más documentos, siempre que todos
+    hayan sido generados o emitidos en un mismo día». De ahí que `reference_date`
+    sea UNA sola fecha para toda la comunicación: es ese día común. Por eso no se
+    impone «una RA por comprobante», pero tampoco se mezclan días distintos.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT,
+        related_name='fiscal_void_communications',
+    )
+
+    #: `RA-yyyyMMdd-N`, tal cual va en `cbc:ID`. OJO: el identificador NO lleva el
+    #: RUC; el RUC aparece sólo en el nombre del archivo (`RUC-RA-yyyyMMdd-N`).
+    identifier = models.CharField(max_length=32)
+    #: El correlativo. Hasta 5 posiciones, único por RUC/ambiente y día de
+    #: GENERACIÓN. Monótono: un número gastado no se recicla.
+    correlativo = models.PositiveBigIntegerField()
+    #: `cbc:ReferenceDate`: el día común en que se generaron o emitieron los
+    #: comprobantes que se dan de baja (véase AGRUPACIÓN).
+    reference_date = models.DateField(db_index=True)
+    #: `cbc:IssueDate`: la fecha de GENERACIÓN de la comunicación. No es la
+    #: anterior, y es la que va en el identificador y en el nombre del archivo.
+    issue_date = models.DateField()
+    environment = models.CharField(
+        max_length=16, choices=FiscalEnvironment.choices,
+    )
+    status = models.CharField(
+        max_length=24, choices=FiscalVoidStatus.choices,
+        default=FiscalVoidStatus.GENERATED, db_index=True,
+    )
+
+    signed_xml = models.TextField(blank=True)
+    signed_xml_sha256 = models.CharField(max_length=64, blank=True)
+    #: El ticket de `sendSummary`. Se PERSISTE antes de consultar: es la única
+    #: referencia al proceso remoto y perderlo lo deja irrastreable.
+    ticket = models.CharField(max_length=100, blank=True)
+    #: «Hay un envío en curso», puesta bajo bloqueo ANTES de la red y retirada al
+    #: terminar, para que dos envíos simultáneos no creen dos tickets.
+    submitting_since = models.DateTimeField(null=True, blank=True)
+
+    #: El CDR-Baja. Es un CDR distinto del de factura/nota y del de resumen.
+    cdr_xml = models.TextField(blank=True)
+    cdr_sha256 = models.CharField(max_length=64, blank=True)
+    sunat_response_code = models.CharField(max_length=8, blank=True)
+    sunat_response_message = models.CharField(max_length=500, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Comunicación de baja'
+        verbose_name_plural = 'Comunicaciones de baja'
+        constraints = [
+            # Mismo criterio que el resumen: el correlativo es único por RUC,
+            # ambiente y día de GENERACIÓN, porque es esa fecha la que viaja en el
+            # identificador y en el nombre del archivo.
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'issue_date', 'correlativo'],
+                name='fiscal_void_unique_correlativo',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'identifier'],
+                name='fiscal_void_unique_identifier',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'reference_date']),
+        ]
+
+    def __str__(self) -> str:
+        return self.identifier
+
+    @property
+    def document_id(self) -> str:
+        return self.identifier
+
+    @property
+    def is_accepted(self) -> bool:
+        return self.status in (
+            FiscalVoidStatus.ACCEPTED,
+            FiscalVoidStatus.ACCEPTED_WITH_OBSERVATION,
+        )
+
+
+class FiscalVoidCommunicationDocument(models.Model):
+    """
+    Un comprobante DENTRO de una Comunicación de Baja: congela la pertenencia.
+
+    «Qué comprobantes fueron en qué baja» no se deduce después por fecha: puede
+    haber varias bajas del mismo día. La pertenencia se guarda al armarla y no se
+    recalcula, igual que en el resumen.
+
+    UN COMPROBANTE NO ENTRA VIVO EN DOS BAJAS. La restricción única parcial sobre
+    `document` (mientras no esté `superseded`) lo impide en la base. Si la baja
+    queda RECHAZADA, sus filas se marcan `superseded` y esos comprobantes pueden
+    volver a intentarse en una baja nueva — pero eso debe ser una decisión
+    registrada, no un borrado silencioso de la intención.
+    """
+
+    void_communication = models.ForeignKey(
+        FiscalVoidCommunication, on_delete=models.CASCADE, related_name='lines',
+    )
+    document = models.ForeignKey(
+        FiscalDocument, on_delete=models.PROTECT, related_name='void_inclusions',
+    )
+    #: El `cbc:LineID` de este comprobante dentro de la comunicación.
+    line_id = models.PositiveIntegerField()
+    #: `sac:VoidReasonDescription`: el motivo, obligatorio y an..100 según el
+    #: Anexo N.º 9. Es texto libre: no hay catálogo de motivos de baja.
+    void_reason = models.CharField(max_length=100)
+    #: Verdadero cuando su comunicación quedó rechazada: libera al comprobante
+    #: para poder intentarse en otra sin violar la unicidad activa.
+    superseded = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Comprobante en comunicación de baja'
+        verbose_name_plural = 'Comprobantes en comunicación de baja'
+        ordering = ['void_communication', 'line_id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['void_communication', 'document'],
+                name='fiscal_void_line_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['void_communication', 'line_id'],
+                name='fiscal_void_line_id_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['document'],
+                condition=models.Q(superseded=False),
+                name='fiscal_void_one_active_per_document',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.void_communication.identifier} · L{self.line_id}'
+
+
 # ---------------------------------------------------------------------------
 # H4.1 — alta de personal por invitación
 # ---------------------------------------------------------------------------
