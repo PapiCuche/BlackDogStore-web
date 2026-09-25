@@ -7282,6 +7282,28 @@ class FiscalDocumentStatus(models.TextChoices):
     SUBMISSION_ERROR = 'submission_error', 'Error de envío'
 
 
+class FiscalGrantMethod(models.TextChoices):
+    """
+    CÓMO se otorgó el comprobante al adquirente (artículo 15, OTORGAMIENTO).
+
+    «Otorgar» no es «emitir»: es entregarlo o ponerlo a disposición del adquirente,
+    por medios electrónicos o como representación impresa. La distinción es
+    load-bearing, no académica — el artículo 14 sólo admite dar de baja la
+    numeración de documentos **NO OTORGADOS**.
+
+    Los canales se nombran de forma genérica a propósito: no se codifica esta
+    tienda ni este flujo, para que la integración futura (checkout y punto de
+    venta) tenga dónde encajar sin volver a tocar el modelo.
+    """
+
+    ECOMMERCE_PORTAL = 'ecommerce_portal', 'Puesto a disposición en el portal'
+    EMAIL = 'email', 'Enviado por correo electrónico'
+    POS_PRINT = 'pos_print', 'Impreso y entregado en mostrador'
+    POS_ELECTRONIC = 'pos_electronic', 'Entregado electrónicamente en mostrador'
+    MANUAL = 'manual', 'Registrado manualmente por un operador'
+    API = 'api', 'Entregado por una integración'
+
+
 class FiscalDocument(models.Model):
     """
     Un comprobante de pago electrónico. INMUTABLE una vez numerado.
@@ -7385,6 +7407,55 @@ class FiscalDocument(models.Model):
 
     sunat_response_code = models.CharField(max_length=8, blank=True)
     sunat_response_message = models.CharField(max_length=500, blank=True)
+
+    # -- Recepción de la CDR aceptada (ERP-FISCAL-5B) --------------------------
+    #
+    #: CUÁNDO se recibió la CDR con estado ACEPTADA. Es la AUTORIDAD DEL PLAZO de
+    #: la Comunicación de Baja: el artículo 14.1.b (RS 097-2012, sustituido en
+    #: bloque por la RS 114-2019, vigente desde el 1.7.2019) manda enviarla «a más
+    #: tardar hasta el sétimo día calendario contado a partir del día calendario
+    #: siguiente de haber recibido la respectiva CDR con estado de aceptada» — NO
+    #: desde la fecha de emisión. (Otros regímenes SÍ cuentan desde la emisión;
+    #: confundirlos daría un plazo equivocado.)
+    #:
+    #: SE ESCRIBE UNA SOLA VEZ. Lo estampan los DOS caminos que pueden aceptar un
+    #: comprobante —el envío y la reconciliación por `getStatusCdr`— y ninguna
+    #: reconciliación posterior lo mueve: sobrescribirlo correría el plazo solo.
+    #:
+    #: `updated_at` NO sirve para esto: es `auto_now`, significa «última
+    #: modificación» y cualquier guardado lo desplaza. La reconciliación, además,
+    #: no deja fila de intento, así que sin este campo los comprobantes aceptados
+    #: de forma asíncrona no tendrían ninguna fecha fiable.
+    #:
+    #: NULL en un comprobante aceptado antes de existir este campo: NO se inventa
+    #: una fecha. Sin fecha demostrable, la baja FALLA CERRADO y exige revisión.
+    cdr_accepted_at = models.DateTimeField(null=True, blank=True)
+
+    # -- Otorgamiento al adquirente (ERP-FISCAL-5B) ----------------------------
+    #
+    #: CUÁNDO se otorgó el comprobante: entregado o puesto a disposición del
+    #: adquirente (artículo 15, OTORGAMIENTO). Es un hecho DISTINTO de «emitido» y
+    #: de «CDR aceptada», y es condición de la baja: el encabezado del artículo 14
+    #: sólo permite dar de baja la numeración de los documentos **NO OTORGADOS**.
+    #:
+    #: NULL significa DESCONOCIDO, nunca «no otorgado». Un comprobante sin
+    #: evidencia de otorgamiento NO se puede dar de baja: se falla cerrado. Tratar
+    #: la ausencia como prueba permitiría anular la numeración de un comprobante
+    #: que el cliente ya tiene en la mano — y el mostrador imprime y entrega sin
+    #: que hoy quede rastro, así que la ausencia es justamente lo ambiguo.
+    granted_at = models.DateTimeField(null=True, blank=True)
+    granted_method = models.CharField(
+        max_length=20, blank=True, choices=FiscalGrantMethod.choices)
+    granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fiscal_documents_granted',
+    )
+    #: Evidencia del otorgamiento, SIN secretos: el canal, el destino enmascarado,
+    #: el identificador de la entrega. Nunca una credencial ni el XML entero.
+    granted_evidence = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

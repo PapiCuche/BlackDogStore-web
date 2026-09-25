@@ -620,6 +620,15 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         document.sunat_response_message = result.safe_message
         campos = ['status', 'sunat_response_code', 'sunat_response_message',
                   'updated_at']
+        # LA FECHA DE RECEPCIÓN DE LA CDR ACEPTADA, UNA SOLA VEZ (ERP-FISCAL-5B).
+        #
+        # De aquí sale el plazo de la Comunicación de Baja: el artículo 14.1.b
+        # cuenta desde el día siguiente de haber RECIBIDO la CDR aceptada. Si ya
+        # estaba puesta no se toca — reescribirla correría el plazo solo, y el
+        # plazo es lo que separa una baja válida de una rechazada.
+        if document.is_accepted and document.cdr_accepted_at is None:
+            document.cdr_accepted_at = timezone.now()
+            campos.append('cdr_accepted_at')
         if result.cdr_xml:
             document.cdr_xml = result.cdr_xml.decode('utf-8', 'replace')
             document.cdr_sha256 = hashlib.sha256(result.cdr_xml).hexdigest()
@@ -780,9 +789,19 @@ def _apply_reconciliation(document: FiscalDocument, result) -> ReconciliationRes
         fresh.sunat_response_message = cdr_result.safe_message
         fresh.cdr_xml = cdr_bytes.decode('utf-8', 'replace')
         fresh.cdr_sha256 = hashlib.sha256(cdr_bytes).hexdigest()
-        fresh.save(update_fields=[
-            'status', 'sunat_response_code', 'sunat_response_message',
-            'cdr_xml', 'cdr_sha256', 'updated_at'])
+        campos = ['status', 'sunat_response_code', 'sunat_response_message',
+                  'cdr_xml', 'cdr_sha256', 'updated_at']
+        # LA MISMA FECHA, POR EL OTRO CAMINO (ERP-FISCAL-5B).
+        #
+        # Una aceptación que llega por reconciliación cuenta igual que una que
+        # llega por el envío, así que estampa la fecha —y también sólo la primera
+        # vez—. Sin esto, precisamente los comprobantes aceptados de forma
+        # asíncrona se quedarían sin plazo calculable: esta vía no crea fila de
+        # intento, y `updated_at` es `auto_now` (cualquier guardado lo mueve).
+        if fresh.is_accepted and fresh.cdr_accepted_at is None:
+            fresh.cdr_accepted_at = timezone.now()
+            campos.append('cdr_accepted_at')
+        fresh.save(update_fields=campos)
 
     return ReconciliationResult(
         fresh, 'reconciled', new_status=new_status,

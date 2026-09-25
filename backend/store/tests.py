@@ -57450,3 +57450,105 @@ class Fiscal5aReviewHardeningTest(Fiscal5aNoteBase):
                 total=Decimal('118.00'), tax_rate=Decimal('0.18'),
                 status=FiscalDocumentStatus.GENERATED, original_document=original,
                 note_reason_code='01', note_request_key='k')
+
+
+class Fiscal5bAcceptanceDateTest(Fiscal5aNoteBase):
+    """
+    `cdr_accepted_at`: la fecha de recepción de la CDR aceptada (ERP-FISCAL-5B).
+
+    De aquí saldrá el plazo de la Comunicación de Baja —el artículo 14.1.b cuenta
+    desde el día siguiente de haberla RECIBIDO—, así que tiene que quedar sellada
+    por los DOS caminos que aceptan un comprobante y no moverse nunca más.
+    """
+
+    def _signed(self):
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        key, cert = self_signed_pem('20100066603')
+        self._key, self._cert = key, cert
+        return sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_submit_stamps_the_acceptance_date(self):
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(_accepted()))
+        self.assertTrue(doc.is_accepted)
+        self.assertIsNotNone(doc.cdr_accepted_at)
+
+    def test_reconciliation_also_stamps_the_acceptance_date(self):
+        # EL CAMINO QUE ANTES NO DEJABA NINGUNA FECHA FIABLE: la reconciliación no
+        # crea fila de intento, así que sin este campo un comprobante aceptado de
+        # forma asíncrona no tendría plazo calculable.
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        self.assertIsNone(doc.cdr_accepted_at)
+
+        outcome = reconcile_fiscal_document(
+            doc, _FakeConsultProvider(_resolved_cdr(reference_id=doc.document_id)))
+        outcome.document.refresh_from_db()
+        self.assertTrue(outcome.document.is_accepted)
+        self.assertIsNotNone(outcome.document.cdr_accepted_at)
+
+    def test_the_acceptance_date_is_written_once(self):
+        # Reescribirla correría el plazo solo. Ni un reenvío ni una consulta
+        # posterior la mueven.
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(_accepted()))
+        antes = doc.cdr_accepted_at
+        self.assertIsNotNone(antes)
+
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        reconcile_fiscal_document(
+            doc, _FakeConsultProvider(_resolved_cdr(reference_id=doc.document_id)))
+        doc.refresh_from_db()
+        self.assertEqual(doc.cdr_accepted_at, antes)
+
+    def test_a_transport_error_invents_no_acceptance_date(self):
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertIsNone(doc.cdr_accepted_at,
+                          'sin aceptación no se inventa una fecha')
+
+    def test_an_acceptance_with_observations_also_stamps_the_date(self):
+        # «Aceptado con observaciones» es una aceptación: también abre el plazo.
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.ACCEPTED_WITH_OBSERVATION, response_code='4000',
+            safe_message='aceptada con observaciones',
+            cdr_xml=b'<ApplicationResponse/>', cdr_filename='R-x.XML')))
+        self.assertTrue(doc.is_accepted)
+        self.assertIsNotNone(doc.cdr_accepted_at)
+
+
+class Fiscal5bGrantEvidenceTest(Fiscal5aNoteBase):
+    """
+    Otorgamiento (ERP-FISCAL-5B): NULL significa DESCONOCIDO, no «no otorgado».
+
+    El artículo 14 sólo admite dar de baja la numeración de documentos NO
+    OTORGADOS, y hoy el sistema no registra la entrega en ningún sitio: el
+    mostrador imprime y entrega sin dejar rastro. Por eso la ausencia de evidencia
+    es ambigua y la baja tendrá que fallar cerrado sobre ella.
+    """
+
+    def test_a_freshly_issued_document_has_no_grant_evidence(self):
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        self.assertIsNone(doc.granted_at)
+        self.assertEqual(doc.granted_method, '')
+        self.assertIsNone(doc.granted_by)
+        self.assertEqual(doc.granted_evidence, {})
+
+    def test_acceptance_by_sunat_is_not_otorgamiento(self):
+        # «CDR aceptada» NO es «otorgado». Son hechos distintos y el artículo 14
+        # depende del segundo, no del primero.
+        key, cert = self_signed_pem('20100066603')
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        doc = submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        self.assertTrue(doc.is_accepted)
+        self.assertIsNone(doc.granted_at,
+                          'la aceptación de SUNAT no otorga el comprobante')
+
+    def test_the_grant_methods_are_generic_channels(self):
+        # No se codifica esta tienda: la integración futura (checkout y POS) tiene
+        # que encajar sin volver a tocar el modelo.
+        from .models import FiscalGrantMethod
+        self.assertEqual(
+            {m.value for m in FiscalGrantMethod},
+            {'ecommerce_portal', 'email', 'pos_print', 'pos_electronic',
+             'manual', 'api'})
