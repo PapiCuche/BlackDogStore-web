@@ -64,3 +64,37 @@ Sólo estos dos `maindoc/`. Importan por ruta relativa el mismo `common/` ya
 conservado (la nota y la factura comparten `CommonAggregate/Basic/Extension`,
 `Signature*`, `xmldsig`, etc.), así que compilan contra el árbol existente sin
 añadir nada más. Verificado: `etree.XMLSchema` compila los tres maindoc.
+
+---
+
+## Paquete oficial SUNAT UBL 2.0 — `2.0/` (ERP-FISCAL-5B)
+
+**Qué es.** El paquete XSD oficial de SUNAT para los documentos UBL 2.0 del SEE:
+`VoidedDocuments` (Comunicación de Baja), `SummaryDocuments` (Resumen Diario),
+`ApplicationResponse` (CDR) y los `Invoice`/`CreditNote`/`DebitNote` de la era 2.0,
+con todo su árbol `common/` (incluido `xmldsig-core-schema.xsd`).
+
+**Procedencia.** Descargado de la fuente oficial, enlazada desde la página oficial
+`https://orientacion.sunat.gob.pe/10-xsd-de-los-documentos-electronicos-bv`:
+
+    http://contenido.app.sunat.gob.pe/insc/ComprobantesDePago+Electronicos/XSD.ZIP
+
+Consultado el 2026-09-24. 22 entradas, 142 899 bytes.
+SHA-256 del paquete: `391e45abc16107c54989b4f67900bbfc6f9164c10a8212aafef227b6d61a494d`
+
+**No es un mirror.** `contenido.app.sunat.gob.pe` es un host de SUNAT; sirve el
+fichero por HTTP simple (no tiene listener HTTPS, de ahí que haya que pedirlo con
+`http://`). No se descarga en tiempo de ejecución: el paquete queda versionado aquí.
+
+**Por qué importa — cierra RC-XSD-01.** Desde ERP-FISCAL-4 se declaró que el XSD
+`SummaryDocuments` (UBL 2.0) era INOBTENIBLE porque `cpe.sunat.gob.pe` devuelve 403
+a las descargas automatizadas y la fase prohíbe mirrors. Eso era cierto de ESE host,
+pero el paquete sí se publica, íntegro y oficial, en el host de contenidos. Con él:
+
+- `maindoc/UBLPE-VoidedDocuments-1.0.xsd` — SHA-256 `eedb85d7d46ae1d5c9366f1a5562fc78c339cc0c1468da620bd37784ded12b08`
+- `maindoc/UBLPE-SummaryDocuments-1.0.xsd` — SHA-256 `6c14376ffac0513a6012586307a3aa28b297d70b04cee6677c647f30eb4fca64`
+- `common/UBLPE-SunatAggregateComponents-1.0.xsd` — SHA-256 `5c32be3b710db2ba2f5d7d2fb0b88734224b4bc9a2ad3204e8f9b7d584a955c8`
+
+Ambos `maindoc` COMPILAN localmente con sus imports resueltos y sin red (verificado
+con `lxml.etree.XMLSchema`), así que la validación estructural artesanal del Resumen
+deja de ser la única opción disponible.
