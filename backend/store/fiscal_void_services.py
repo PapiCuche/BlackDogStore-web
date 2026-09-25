@@ -180,14 +180,27 @@ def check_void_eligible(document: FiscalDocument, *, today=None) -> None:
 
 # --- creación ---------------------------------------------------------------
 
+def _live_request(company, environment, request_key):
+    """La comunicación viva que ya atendió esta clave, si la hay."""
+    return FiscalVoidCommunication.objects.filter(
+        company=company, environment=environment, request_key=request_key,
+    ).exclude(status=FiscalVoidStatus.REJECTED).order_by('-pk').first()
+
+
 def create_void_communication(company, *, targets, environment=None,
-                              reference_date=None) -> FiscalVoidCommunication:
+                              reference_date=None, request_key=''
+                              ) -> FiscalVoidCommunication:
     """
     Crea (sin firmar) una Comunicación de Baja sobre `targets`.
 
     `targets` es una secuencia de `(FiscalDocument, motivo)`. Puede llevar más de
     uno —el artículo 14.1.b lo admite— SIEMPRE que todos compartan el día en que se
     generaron o emitieron; de ahí que `reference_date` sea una sola fecha.
+
+    IDEMPOTENTE POR `request_key`: dos clics, o dos workers, con la misma clave
+    devuelven LA MISMA comunicación. Sin ella no se puede distinguir un reintento de
+    una segunda baja legítima, y dar de baja dos veces la misma numeración es
+    exactamente lo que no debe poder pasar por un doble clic.
 
     La red no entra aquí. El correlativo se reserva DENTRO de la transacción, y sólo
     después de que todas las puertas de elegibilidad hayan pasado: una baja que se
@@ -200,6 +213,11 @@ def create_void_communication(company, *, targets, environment=None,
         raise FiscalError('Una comunicación de baja sin comprobantes no baja nada.')
 
     environment = environment or resolve_environment()
+
+    if request_key:
+        ya = _live_request(company, environment, request_key)
+        if ya is not None:
+            return ya
 
     for document, _motivo in targets:
         if document.company_id != company.pk:
@@ -236,7 +254,7 @@ def create_void_communication(company, *, targets, environment=None,
                     company=company, environment=environment,
                     identifier=packaging.void_identifier(issue_date, correlativo),
                     correlativo=correlativo, issue_date=issue_date,
-                    reference_date=reference_date,
+                    reference_date=reference_date, request_key=request_key,
                     status=FiscalVoidStatus.GENERATED)
                 for line_id, (document, motivo) in enumerate(targets, 1):
                     FiscalVoidCommunicationDocument.objects.create(
@@ -244,6 +262,21 @@ def create_void_communication(company, *, targets, environment=None,
                         line_id=line_id, void_reason=(motivo or '').strip())
                 return void
         except IntegrityError:
+            # DOS choques distintos comparten excepción, y confundirlos daría un
+            # error engañoso:
+            #
+            # - Idempotencia: otro proceso ganó la carrera con ESTA misma clave. No
+            #   hay nada que reintentar; se devuelve su comunicación.
+            # - Correlativo: dos procesos pidieron el mismo número. Ahí sí se
+            #   reintenta con el siguiente.
+            #
+            # Sin esta distinción, una carrera de idempotencia agotaría los cinco
+            # intentos y saldría como «no se pudo reservar un correlativo», que es
+            # falso y manda a investigar el sitio equivocado.
+            if request_key:
+                ya = _live_request(company, environment, request_key)
+                if ya is not None:
+                    return ya
             continue
     raise FiscalError(
         'No se pudo reservar un correlativo de comunicación de baja; reintente.')

@@ -7856,6 +7856,13 @@ class FiscalVoidCommunication(models.Model):
     #: terminar, para que dos envíos simultáneos no creen dos tickets.
     submitting_since = models.DateTimeField(null=True, blank=True)
 
+    #: Clave de idempotencia de la PETICIÓN. Dos clics —o dos workers— con la misma
+    #: clave producen UNA sola comunicación, no dos bajas de la misma numeración.
+    #: Una comunicación RECHAZADA libera su hueco, igual que una nota rechazada:
+    #: reintentar una baja que SUNAT rechazó es legítimo, y bloquear la clave para
+    #: siempre convertiría un rechazo en un callejón sin salida.
+    request_key = models.CharField(max_length=64, blank=True)
+
     #: El CDR-Baja. Es un CDR distinto del de factura/nota y del de resumen.
     cdr_xml = models.TextField(blank=True)
     cdr_sha256 = models.CharField(max_length=64, blank=True)
@@ -7879,6 +7886,15 @@ class FiscalVoidCommunication(models.Model):
             models.UniqueConstraint(
                 fields=['company', 'environment', 'identifier'],
                 name='fiscal_void_unique_identifier',
+            ),
+            # Idempotencia de la petición: una clave, una comunicación. Se excluye
+            # la clave vacía (quien no la manda no compite con nadie) y se excluye
+            # la RECHAZADA, para que un rechazo de SUNAT no deje la clave quemada.
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'request_key'],
+                condition=(~models.Q(request_key='')
+                           & ~models.Q(status=FiscalVoidStatus.REJECTED)),
+                name='fiscal_void_idempotent_request',
             ),
         ]
         indexes = [

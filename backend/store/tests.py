@@ -57845,3 +57845,126 @@ class Fiscal5bVoidServiceTest(Fiscal5aNoteBase):
         # Liberado: puede intentarse en otra comunicación.
         from .fiscal_void_services import check_void_eligible
         check_void_eligible(original)
+
+    # -- idempotencia ---------------------------------------------------------
+
+    def test_the_same_request_key_yields_one_communication(self):
+        original = self._eligible()
+        primera = self._create(targets=[(original, 'NO OTORGADA')], request_key='k1')
+        segunda = self._create(targets=[(original, 'NO OTORGADA')], request_key='k1')
+        self.assertEqual(primera.pk, segunda.pk)
+        self.assertEqual(
+            FiscalVoidCommunication.objects.filter(company=self.company).count(), 1,
+            'un doble clic no da de baja la misma numeración dos veces')
+
+    def test_a_rejected_communication_releases_its_request_key(self):
+        # Reintentar una baja que SUNAT rechazó es legítimo: la clave no queda
+        # quemada para siempre.
+        original = self._eligible()
+        primera = self._create(targets=[(original, 'NO OTORGADA')], request_key='k2')
+        FiscalVoidCommunication.objects.filter(pk=primera.pk).update(
+            status=FiscalVoidStatus.REJECTED)
+        primera.refresh_from_db()
+        primera.lines.update(superseded=True)
+
+        segunda = self._create(targets=[(original, 'OTRO INTENTO')], request_key='k2')
+        self.assertNotEqual(primera.pk, segunda.pk)
+
+    def test_the_database_itself_refuses_a_duplicate_live_request_key(self):
+        # No basta el pre-chequeo en Python: la carrera de dos workers la para la
+        # restricción, y es de ella de la que depende el except IntegrityError.
+        from django.db import IntegrityError, transaction
+        original = self._eligible()
+        self._create(targets=[(original, 'NO OTORGADA')], request_key='k3')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            FiscalVoidCommunication.objects.create(
+                company=self.company, environment=FiscalEnvironment.BETA,
+                identifier='RA-20260925-999', correlativo=999,
+                issue_date=timezone.localdate(),
+                reference_date=timezone.localdate(),
+                request_key='k3', status=FiscalVoidStatus.GENERATED)
+
+    # -- envío, ticket y CDR-Baja --------------------------------------------
+
+    def _signed(self, **kw):
+        from .fiscal_void_services import sign_void_communication
+        return sign_void_communication(
+            self._create(**kw), key_pem=self._key, cert_pem=self._cert)
+
+    def test_a_ticket_is_persisted_and_the_communication_is_submitted(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import submit_void_communication
+        void = submit_void_communication(self._signed(), _FakeSummaryProvider(
+            submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='TICKET-1')))
+        self.assertEqual(void.ticket, 'TICKET-1')
+        self.assertEqual(void.status, FiscalVoidStatus.SUBMITTED)
+
+    def test_a_connection_failure_is_safe_to_retry(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import submit_void_communication
+        void = submit_void_communication(self._signed(), _FakeSummaryProvider(
+            submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TRANSPORT_ERROR, safe_message='no conectó')))
+        self.assertEqual(void.status, FiscalVoidStatus.SUBMISSION_ERROR)
+        self.assertEqual(void.ticket, '')
+
+    def test_a_transmitted_send_without_a_ticket_is_uncertain_and_not_resent(self):
+        # La distinción que gobierna todo: transmitido sin respuesta NO es
+        # reintentable, porque podría duplicar la baja en SUNAT.
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import submit_void_communication
+        proveedor = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='timeout'))
+        void = submit_void_communication(self._signed(), proveedor)
+        self.assertEqual(void.status, FiscalVoidStatus.SUBMISSION_UNKNOWN)
+
+        with self.assertRaises(FiscalError):
+            submit_void_communication(void, proveedor)
+        self.assertEqual(proveedor.submit_calls, 1, 'no se reenvió a ciegas')
+
+    def test_a_processing_ticket_leaves_it_submitted(self):
+        from .fiscal.provider import (
+            SummaryOutcome, SummarySubmissionResult, TicketStatus)
+        from .fiscal_void_services import poll_void_communication, submit_void_communication
+        void = submit_void_communication(self._signed(), _FakeSummaryProvider(
+            submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='T')))
+        result = poll_void_communication(void, _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=void.identifier,
+                                  ticket_status=TicketStatus.PROCESSING,
+                                  with_cdr=False)))
+        self.assertEqual(result.action, 'processing')
+        result.void_communication.refresh_from_db()
+        self.assertEqual(result.void_communication.status, FiscalVoidStatus.SUBMITTED)
+
+    def test_an_accepted_cdr_voids_the_numbering_without_touching_the_original(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import (
+            is_voided, poll_void_communication, submit_void_communication)
+        original = self._eligible()
+        antes = (original.status, original.signed_xml_sha256)
+        void = submit_void_communication(
+            self._signed(targets=[(original, 'NO OTORGADA')]),
+            _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='T')))
+        result = poll_void_communication(void, _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=void.identifier)))
+        self.assertEqual(result.action, 'reconciled')
+        self.assertTrue(result.void_communication.is_accepted)
+        self.assertTrue(is_voided(original))
+        original.refresh_from_db()
+        self.assertEqual((original.status, original.signed_xml_sha256), antes)
+
+    def test_a_cdr_of_another_communication_is_never_applied(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import poll_void_communication, submit_void_communication
+        void = submit_void_communication(self._signed(), _FakeSummaryProvider(
+            submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='T')))
+        result = poll_void_communication(void, _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id='RA-20260101-99')))
+        self.assertEqual(result.action, 'cdr_mismatch')
+        result.void_communication.refresh_from_db()
+        self.assertFalse(result.void_communication.is_accepted)
