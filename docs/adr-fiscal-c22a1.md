@@ -722,3 +722,182 @@ declaradas, para la fase que extienda el Resumen.
 **Consecuencia.** El prefijo de la serie de la nota (F/B) lo resuelve
 `resolve_note_series` a partir del original, con la misma regla determinista que
 `resolve_series`: ambigüedad = fallo, nunca un desempate improvisado.
+
+---
+
+## ADR-34 · El «no otorgamiento» se ATESTIGUA; una ausencia no prueba nada
+
+**Decisión.** El artículo 14 sólo admite dar de baja la numeración de documentos NO
+OTORGADOS, y eso se establece con un hecho positivo y firmado: `not_granted_at`,
+`not_granted_by` y `not_granted_reason`, escritos por una acción administrativa
+auditada. `granted_at` nulo significa DESCONOCIDO, nunca «no otorgado», y una
+`CheckConstraint` prohíbe que un comprobante esté a la vez otorgado y atestiguado.
+
+**Por qué.** Hoy nada registra las entregas: el mostrador imprime y entrega sin dejar
+rastro, y ningún correo adjunta el comprobante. Si la ausencia de evidencia contara
+como «no se entregó», se podría anular la numeración de un comprobante que el cliente
+tiene en la mano. Y si bastara un booleano en el cuerpo de la petición, quien llama
+autorizaría su propia baja.
+
+**Descartado.** (a) Deducirlo de que nadie haya descargado el PDF —el mostrador no
+deja rastro, así que la inferencia es falsa justo donde importa—. (b) Aceptar
+`not_granted: true` del cuerpo. (c) Dejar sólo la acción que registra el
+otorgamiento: sin su simétrica, ninguna baja habría sido elegible nunca.
+
+**Consecuencia.** Es la palabra de una persona, no una deducción del sistema: queda su
+autor, su momento y su motivo. La prueba de humo BETA la registra SIN autor —un
+comando no tiene usuario de petición— y lo dice, en vez de falsificar una firma.
+
+---
+
+## ADR-35 · `cdr_accepted_at` existe porque el plazo cuenta desde la RECEPCIÓN
+
+**Decisión.** Un campo de primera clase en `FiscalDocument`, que se escribe UNA sola
+vez, estampado por los DOS caminos que pueden aceptar un comprobante: el envío y la
+reconciliación por `getStatusCdr`. Ninguna reconciliación posterior lo mueve.
+
+**Por qué.** El artículo 14.1.b cuenta «hasta el sétimo día calendario contado a partir
+del día calendario siguiente de haber recibido la respectiva CDR con estado de
+aceptada». Sin esa fecha no hay plazo demostrable. Y las dos vías dejaban rastros
+ASIMÉTRICOS: el envío deja `FiscalSubmissionAttempt.finished_at`, pero la
+reconciliación no crea fila de intento alguna — su único rastro era `updated_at`, que
+es `auto_now`, significa «última modificación» y se desplaza con cualquier guardado.
+El plazo se habría calculado mal precisamente sobre los comprobantes aceptados de
+forma asíncrona.
+
+**Descartado.** Derivarlo del intento aceptado (obliga a elegir la fila correcta entre
+varias, y no existe para la vía asíncrona) o de `updated_at` / `issued_at` /
+`created_at`. Otros regímenes SÍ cuentan desde la emisión; confundirlos daría un plazo
+equivocado.
+
+**Consecuencia.** Un comprobante aceptado antes de existir el campo queda en NULL. No
+se le inventa una fecha: su baja FALLA CERRADO y exige revisión.
+
+---
+
+## ADR-36 · El paquete XSD oficial se incorporó, y sólo uno de sus esquemas nos aplica
+
+**Decisión.** El paquete UBL 2.0 de SUNAT está versionado en `schemas/2.0/` con sus
+hashes. `UBLPE-VoidedDocuments-1.0.xsd` es la autoridad de la Comunicación de Baja y
+se valida contra él. `UBLPE-SummaryDocuments-1.0.xsd` NO se usa para el Resumen.
+
+**Por qué.** Desde ERP-FISCAL-4 el registro decía que el XSD del Resumen era
+inobtenible (403 de Cloudflare, prohibido *mirror*). Era cierto de ESE host: SUNAT lo
+publica íntegro en su host de contenidos. Pero al incorporarlo se vio que es el
+Resumen **por RANGOS** de 2012 —línea con `DocumentSerialID` y
+`Start/EndDocumentNumberID`, sin `cac:Status`, sin `cbc:ConditionCode` y sin
+adquirente— y aquí se emite el Resumen **por DOCUMENTO**, que el paquete no trae.
+
+**Descartado.** Adoptarlo como autoridad del Resumen: rechazaría documentos correctos
+y empujaría el generador a un formato superado.
+
+**Consecuencia.** RC-XSD-01 sigue PARCIAL, ahora por un motivo preciso —el esquema
+publicado no aplica—, y la validación estructural local sigue siendo la única red del
+Resumen. La baja, en cambio, no necesita imitación: tiene su XSD de verdad.
+
+---
+
+## ADR-37 · Una nota también puede ser objeto de baja; la boleta no, por este canal
+
+**Decisión.** La Comunicación de Baja acepta factura (01) y las notas (07/08)
+vinculadas a una factura. Una boleta —y una nota de boleta— se anula informándola en
+el Resumen Diario, y se rechaza en la RA.
+
+**Por qué.** El artículo 14 distingue por el comprobante afectado, no por «es una
+nota»: 14.1 cubre la factura y la nota electrónica vinculada; 14.2 manda las boletas
+por el Resumen, con dos plazos propios. Una regla absoluta del tipo «una nota no se da
+de baja» habría sido normativamente falsa.
+
+**Descartado.** Filtrar sólo por `document_type`: un 07 puede ser de factura o de
+boleta, y el tipo por sí solo no lo distingue — hay que mirar el original.
+
+**Consecuencia.** La guarda de la nota-de-boleta existe antes de que NC-BOL/ND-BOL se
+emitan (siguen PENDIENTES), para que el día que se emitan no entren por el canal
+equivocado. Su test construye la fila a mano y lo dice.
+
+---
+
+## ADR-38 · El plazo se comprueba al CREAR y otra vez al ENVIAR
+
+**Decisión.** La ventana del artículo 14.1.b se evalúa en un único ayudante que
+consultan tanto el envío como la bandera `can_submit` de la API. Una comunicación cuyo
+plazo venció NO se transmite.
+
+**Por qué.** El artículo pone el plazo sobre el ENVÍO, no sobre la generación.
+Comprobarlo sólo al crear dejaba la puerta abierta de par en par: `/void/` firma sin
+enviar, y un `SUBMISSION_ERROR` es reintentable, así que una RA firmada en plazo podía
+salir semanas después —con su `cbc:IssueDate` y su nombre de archivo congelados y ya
+rancios—. La revisión §43 lo demostró ejecutándolo: el mismo documento que la puerta de
+creación negaba, el envío lo transmitía.
+
+**Descartado.** «Refrescar» la fecha de generación al reenviar: eso es otra
+comunicación, no la misma. Y calcular la bandera aparte del criterio del envío: que el
+botón y la puerta se computen en dos sitios es exactamente cómo se abrió el agujero.
+
+**Consecuencia.** Fuera de plazo se niega y se pide revisión operativa/tributaria. NO
+se sustituye por una nota de crédito automáticamente: una nota exige que el
+comprobante haya sido otorgado y que el motivo corresponda legalmente.
+
+---
+
+## ADR-39 · Un envío transmitido sin ticket es INCIERTO, también en la baja
+
+**Decisión.** La RA reutiliza el patrón del Resumen: claim bajo bloqueo → red fuera de
+transacción → finalize bajo bloqueo. Un fallo de conexión demostrable deja
+`SUBMISSION_ERROR` (seguro reintentar); cualquier otra cosa —transmitido sin respuesta,
+respuesta ilegible— deja `SUBMISSION_UNKNOWN`, que NO se reenvía por el flujo normal.
+
+**Por qué.** Reenviar a ciegas una baja que quizá SUNAT ya encoló produce un duplicado
+sobre una numeración. La distinción no puede apoyarse en el nombre de una excepción:
+sólo un fallo en la fase de CONEXIÓN prueba que el cuerpo no se transmitió.
+
+**Descartado.** Un tercer comportamiento propio de la baja. Es el mismo problema que el
+Resumen ya resolvió (RC-TIMEOUT-01), y resolverlo dos veces produciría dos criterios
+que divergen.
+
+**Consecuencia.** La API expone `can_recover`, no `can_submit`, para un envío incierto:
+hay que verificar en SUNAT y decidir la retransmisión de forma explícita.
+
+---
+
+## ADR-40 · Dar de baja es un acto FISCAL, y nada más
+
+**Decisión.** La baja no reembolsa, no repone stock, no crea movimientos, no cancela la
+`Order` ni el `Payment`, y no toca `FiscalDocument.status`. Que un comprobante quedó
+dado de baja se responde por la RELACIÓN —una inclusión no superada en una comunicación
+aceptada—, no por un estado sobrescrito.
+
+**Por qué.** Fiscalidad, dinero, inventario y flujo comercial son cuatro dominios
+distintos, y anular la numeración ante SUNAT no decide ninguno de los otros tres.
+Sobrescribir el estado del original destruiría además la pregunta que una auditoría
+necesita poder hacer: «aceptado el X, dado de baja el Y».
+
+**Descartado.** Un estado `ANNULLED` en `FiscalDocument`. Haría parecer que el
+comprobante nunca fue aceptado, y borraría la mitad de la historia.
+
+**Consecuencia.** Una baja RECHAZADA libera sus comprobantes marcando las filas como
+superadas, sin borrar el intento: queda registro de que se intentó y de que SUNAT dijo
+no.
+
+---
+
+## ADR-41 · La emisión y el otorgamiento son eventos distintos (regla para la fase de UI)
+
+**Decisión.** Se registra como requisito vinculante, sin implementarlo aquí: en el
+checkout y en el punto de venta, el CLIENTE o el operador ELIGE boleta o factura, el
+backend valida los datos fiscales, y la emisión automática ocurre sólo tras confirmar
+el pago. La entrega —el otorgamiento— es un evento SEPARADO que debe registrarse con
+su canal, aunque operativamente ocurra un segundo después.
+
+**Por qué.** «Emisión automática» no significa que el backend adivine el comprobante:
+la elección pertenece a quien compra o a quien vende, y queda congelada en la venta.
+Y sin registrar la entrega, el artículo 14 no es comprobable — que es exactamente el
+agujero que ADR-34 tuvo que tapar con una atestación manual.
+
+**Descartado.** Un default silencioso «si no elige → boleta», y cambiar boleta↔factura
+después de emitir. Una corrección posterior usa NC/ND o la baja, no una reescritura.
+
+**Consecuencia.** Los canales de `FiscalGrantMethod` se nombran genéricos
+(`ECOMMERCE_PORTAL`, `EMAIL`, `POS_PRINT`, `POS_ELECTRONIC`, `MANUAL`, `API`) para que
+esa fase encaje sin volver a tocar el modelo. NC/ND/RA/bajas quedan como flujos
+internos, nunca como acción directa del comprador.
