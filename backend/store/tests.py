@@ -58085,3 +58085,165 @@ class Fiscal5bVoidServiceTest(Fiscal5aNoteBase):
                          'una baja no repone stock')
         self.assertEqual(PaymentTransaction.objects.count(), antes_pagos,
                          'una baja no reembolsa')
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class Fiscal5bVoidApiTest(TestCase):
+    """
+    La superficie de la baja y del otorgamiento: quién puede, y de dónde sale el
+    dato. El `pk` es el comprobante autorizado; del cuerpo sólo el motivo y la
+    clave. En particular, «no otorgado» NO se acepta del cuerpo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'f5b-api', 'Empresa Baja API', tax_id='20100066603',
+            legal_name='EMPRESA BAJA API SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Baja', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+
+        self.emisor, _ = _p2d_member(
+            self.company, 'f5b_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'f5b_observador', ['company.view', 'sales.fiscal.view'])
+        self.otra = _p3_company('f5b-ajena', 'Ajena SAC', tax_id='20999999999',
+                                legal_name='AJENA SAC')
+        self.ajeno, _ = _p2d_member(
+            self.otra, 'f5b_ajeno',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+        key, cert = self_signed_pem('20100066603')
+        self.cert_pem, self.key_pem = cert.decode(), key.decode()
+        self.original = self._accepted()
+
+    def _accepted(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        doc, _ = get_or_create_fiscal_document(order)
+        doc = sign_fiscal_document(
+            doc, key_pem=self.key_pem.encode(), cert_pem=self.cert_pem.encode())
+        return submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _attest(self, user=None, reason='NUNCA SE ENTREGÓ'):
+        return self._as(user or self.emisor).post(
+            f'/api/admin/fiscal-documents/{self.original.pk}/not-granted/',
+            {'reason': reason}, format='json')
+
+    def _void(self, user=None, body=None):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem,
+                               FISCAL_KEY_PEM=self.key_pem):
+            return self._as(user or self.emisor).post(
+                f'/api/admin/fiscal-documents/{self.original.pk}/void/',
+                body or {'reason': 'EMITIDA POR ERROR, NO OTORGADA'}, format='json')
+
+    # -- la puerta del cuerpo -------------------------------------------------
+
+    def test_the_body_cannot_fake_a_not_granted_attestation(self):
+        """
+        §15. Si un booleano del cuerpo bastara, quien llama autorizaría su propia
+        baja. La atestación se registra por su propia acción, firmada.
+        """
+        res = self._void(body={'reason': 'x', 'not_granted': True,
+                               'granted_at': None, 'not_granted_at': '2026-01-01'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.original.refresh_from_db()
+        self.assertIsNone(self.original.not_granted_at,
+                          'el cuerpo no puede atestiguar nada')
+
+    def test_the_attestation_endpoint_records_its_author(self):
+        res = self._attest()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.original.refresh_from_db()
+        self.assertIsNotNone(self.original.not_granted_at)
+        self.assertEqual(self.original.not_granted_by, self.emisor)
+        self.assertEqual(self.original.not_granted_reason, 'NUNCA SE ENTREGÓ')
+
+    def test_an_attestation_without_a_reason_is_refused(self):
+        res = self._attest(reason='   ')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # -- emisión de la baja ---------------------------------------------------
+
+    def test_an_attested_invoice_can_be_voided(self):
+        self._attest()
+        res = self._void()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(res.data['identifier'].startswith('RA-'))
+        self.assertEqual(res.data['status'], FiscalVoidStatus.SIGNED)
+        self.assertEqual(res.data['documents'][0]['document_id'],
+                         self.original.document_id)
+
+    def test_voiding_without_an_attestation_is_refused(self):
+        res = self._void()
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_void_without_a_reason_is_refused(self):
+        self._attest()
+        res = self._void(body={'reason': ''})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_the_same_request_key_is_idempotent_over_http(self):
+        self._attest()
+        body = {'reason': 'NO OTORGADA', 'request_key': 'ra-1'}
+        primera = self._void(body=body)
+        segunda = self._void(body=body)
+        self.assertEqual(primera.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segunda.status_code, status.HTTP_200_OK)
+        self.assertEqual(primera.data['id'], segunda.data['id'])
+
+    # -- permisos y aislamiento ----------------------------------------------
+
+    def test_a_viewer_cannot_attest_or_void(self):
+        self.assertEqual(self._attest(user=self.observador).status_code,
+                         status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._void(user=self.observador).status_code,
+                         status.HTTP_403_FORBIDDEN)
+
+    def test_another_tenant_sees_no_document(self):
+        self.assertEqual(self._attest(user=self.ajeno).status_code,
+                         status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self._void(user=self.ajeno).status_code,
+                         status.HTTP_404_NOT_FOUND)
+
+    def test_granting_requires_a_known_channel(self):
+        res = self._as(self.emisor).post(
+            f'/api/admin/fiscal-documents/{self.original.pk}/grant/',
+            {'method': 'paloma-mensajera'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # -- las banderas no mienten ---------------------------------------------
+
+    def test_an_uncertain_send_offers_recover_and_never_submit(self):
+        self._attest()
+        void_id = self._void().data['id']
+        FiscalVoidCommunication.objects.filter(pk=void_id).update(
+            status=FiscalVoidStatus.SUBMISSION_UNKNOWN)
+        res = self._as(self.emisor).get(
+            f'/api/admin/fiscal-void-communications/{void_id}/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['can_recover'])
+        self.assertFalse(res.data['can_submit'],
+                         'un envío incierto no se reenvía a ciegas')

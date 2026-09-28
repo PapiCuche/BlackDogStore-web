@@ -14,6 +14,11 @@ from .fiscal_summary_views import (
     AdminFiscalSummaryDetailView, AdminFiscalSummaryListView,
     AdminFiscalSummaryStatusView, AdminFiscalSummarySubmitView,
 )
+from .fiscal_void_views import (
+    AdminFiscalDocumentGrantView, AdminFiscalDocumentNotGrantedView,
+    AdminFiscalDocumentVoidView, AdminFiscalVoidDetailView,
+    AdminFiscalVoidStatusView, AdminFiscalVoidSubmitView,
+)
 from .views import (
     CategoryViewSet,
     ProductViewSet,
@@ -180,6 +185,12 @@ urlpatterns = [
     path('admin/orders/<int:pk>/fiscal-document/', AdminOrderFiscalDocumentView.as_view(), name='admin-order-fiscal-document'),
     path('admin/fiscal-documents/<int:pk>/credit-notes/', AdminFiscalDocumentCreditNoteView.as_view(), name='admin-fiscal-document-credit-note'),
     path('admin/fiscal-documents/<int:pk>/debit-notes/', AdminFiscalDocumentDebitNoteView.as_view(), name='admin-fiscal-document-debit-note'),
+    path('admin/fiscal-documents/<int:pk>/grant/', AdminFiscalDocumentGrantView.as_view(), name='admin-fiscal-document-grant'),
+    path('admin/fiscal-documents/<int:pk>/not-granted/', AdminFiscalDocumentNotGrantedView.as_view(), name='admin-fiscal-document-not-granted'),
+    path('admin/fiscal-documents/<int:pk>/void/', AdminFiscalDocumentVoidView.as_view(), name='admin-fiscal-document-void'),
+    path('admin/fiscal-void-communications/<int:pk>/', AdminFiscalVoidDetailView.as_view(), name='admin-fiscal-void-detail'),
+    path('admin/fiscal-void-communications/<int:pk>/submit/', AdminFiscalVoidSubmitView.as_view(), name='admin-fiscal-void-submit'),
+    path('admin/fiscal-void-communications/<int:pk>/status/', AdminFiscalVoidStatusView.as_view(), name='admin-fiscal-void-status'),
     path('admin/fiscal-documents/<int:pk>/submit/', AdminFiscalDocumentSubmitView.as_view(), name='admin-fiscal-document-submit'),
     path('admin/fiscal-documents/<int:pk>/reconcile/', AdminFiscalDocumentReconcileView.as_view(), name='admin-fiscal-document-reconcile'),
     path('admin/fiscal-summaries/', AdminFiscalSummaryListView.as_view(), name='admin-fiscal-summaries'),

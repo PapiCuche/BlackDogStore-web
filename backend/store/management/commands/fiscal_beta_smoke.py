@@ -59,8 +59,12 @@ class Command(BaseCommand):
                             help='RUC de una empresa YA existente con serie BETA.')
         parser.add_argument(
             '--mode',
-            choices=['factura', 'boleta-summary', 'credit-note', 'debit-note'],
+            choices=['factura', 'boleta-summary', 'credit-note', 'debit-note',
+                     'void'],
             default='factura')
+        parser.add_argument(
+            '--void-reason', default='EMITIDA POR ERROR, NO OTORGADA AL ADQUIRENTE',
+            help='Motivo de la baja (sac:VoidReasonDescription, hasta 100).')
         parser.add_argument('--price', default='118.00')
         parser.add_argument('--qty', type=int, default=1)
         # Motivo e importe de la nota (§51/§52). La NC es anulación total; la ND
@@ -105,6 +109,8 @@ class Command(BaseCommand):
             self._run_boleta_summary(options)
         elif options['mode'] in ('credit-note', 'debit-note'):
             self._run_note(options, options['mode'])
+        elif options['mode'] == 'void':
+            self._run_void(options)
         else:
             self._run_factura(options)
 
@@ -228,6 +234,99 @@ class Command(BaseCommand):
         self.stdout.write(
             'Nota: la factura y su nota QUEDAN en la base. Un envío a SUNAT no se '
             'deshace; ambos correlativos están gastados.')
+
+    def _run_void(self, options):
+        """
+        §38. Emite una factura BETA, la acepta, ATESTIGUA que no se otorgó y la da de
+        baja: `VoidedDocuments` → `sendSummary` → ticket → `getStatus` → CDR-Baja.
+
+        La atestación queda SIN AUTOR. Un comando no tiene usuario de petición, y
+        antes que inventar uno se registra sin él: por la superficie interna la firma
+        una persona (`/not-granted/`), y ahí sí queda atribuida. Se dice aquí para
+        que nadie lea esta evidencia como si alguien la hubiera firmado.
+
+        Todo PERSISTE y nada se revierte: los correlativos —de la factura y de la
+        comunicación— quedan gastados.
+        """
+        import time
+
+        from ...fiscal_void_services import (
+            attest_not_granted, create_void_communication,
+            poll_void_communication, sign_void_communication,
+            submit_void_communication,
+        )
+        from ...models import FiscalVoidStatus
+
+        if not FiscalSeries.objects.filter(
+                company=self.company, document_type=FiscalDocumentType.INVOICE,
+                environment=FiscalEnvironment.BETA, is_active=True).exists():
+            raise CommandError('La empresa no tiene una serie de factura BETA activa.')
+
+        # 1) La factura original, aceptada por SUNAT. Sin CDR aceptada no hay baja.
+        order = self._paid_order(
+            receipt_type=Order.ReceiptType.FACTURA, price=options['price'],
+            qty=options['qty'], doc_type=Order.DocumentType.RUC,
+            doc_number=options['customer_ruc'], name='CLIENTE DE PRUEBA SAC')
+        original = self._issue_and_send(order)
+        self._report_document(original)
+        if not original.is_accepted:
+            raise CommandError(
+                f'La factura {original.document_id} no quedó ACEPTADA '
+                f'(estado {original.status}); sin CDR aceptada no procede la baja.')
+
+        original.refresh_from_db()
+        if original.cdr_accepted_at is None:
+            raise CommandError(
+                'La factura quedó aceptada pero sin fecha de recepción de la CDR: '
+                'el plazo no sería demostrable.')
+
+        # 2) La atestación de NO otorgamiento. Es lo que abre la puerta, y es un
+        #    hecho registrado, no una deducción.
+        attest_not_granted(original, actor=None, reason=options['void_reason'])
+        original.refresh_from_db()
+        self.stdout.write(
+            f'ATESTIGUADO NO OTORGADO {original.document_id} '
+            f'(sin autor: lo registra un comando, no una persona)')
+
+        # 3) La comunicación de baja: crear, firmar (XSD OFICIAL) y enviar.
+        creds = resolve_credentials(self.company)
+        void = create_void_communication(
+            self.company, targets=[(original, options['void_reason'])],
+            request_key='beta-smoke-ra')
+        void = sign_void_communication(
+            void, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
+        self.stdout.write(
+            f'BAJA FIRMADA {void.identifier} sobre {original.document_id} '
+            f'(ref {void.reference_date})')
+
+        provider = resolve_provider(self.company)
+        void = submit_void_communication(void, provider)
+        self.stdout.write(
+            f'  enviada: estado={void.status} ticket={void.ticket!r}')
+
+        # 4) Polling ACOTADO del ticket. Ninguna transacción se sostiene esperando.
+        attempts = options['poll_attempts']
+        for i in range(attempts):
+            if void.status != FiscalVoidStatus.SUBMITTED:
+                break
+            time.sleep(options['poll_seconds'])
+            result = poll_void_communication(void, provider)
+            void = result.void_communication
+            self.stdout.write(
+                f'  consulta {i + 1}/{attempts}: {result.action} '
+                f'estado={void.status} codigo={void.sunat_response_code!r}')
+
+        self.stdout.write(self.style.SUCCESS(
+            f'COMUNICACIÓN DE BAJA {void.identifier}\n'
+            f'  estado  = {void.status}\n'
+            f'  codigo  = {void.sunat_response_code!r}\n'
+            f'  mensaje = {void.sunat_response_message!r}\n'
+            f'  cdr     = {"sí" if void.cdr_xml else "no"}'
+            f' (sha256 {void.cdr_sha256 or "-"})'))
+        self.stdout.write(
+            'Nota: la factura y su comunicación de baja QUEDAN en la base. Un envío '
+            'a SUNAT no se deshace; ambos correlativos están gastados. El original '
+            'conserva su XML, su CDR y su estado: la baja NO lo reescribe.')
 
     def _run_boleta_summary(self, options):
         import time
