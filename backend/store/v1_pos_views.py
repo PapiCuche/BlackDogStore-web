@@ -115,6 +115,7 @@ class V1PosContextView(V1PosSurfaceMixin, APIView):
             company, branches,
             default_branch=pos_payloads.default_branch_for(company, branches),
             actor=request.user,
+            receipt_options=pos_services.receipt_options(company, branches, request.user),
             can_manage_customers=has_capability(
                 request.user, company, CAP_CUSTOMERS_MANAGE,
             ),
@@ -322,6 +323,7 @@ class V1PosSaleView(V1PosSurfaceMixin, APIView):
                 # one and answer the second sale with the first one's order; the
                 # service validates and rejects instead.
                 idempotency_key=data.get('idempotency_key'),
+                receipt_type=data.get('receipt_type'),
                 terms_confirmed=data.get('terms_confirmed') is True,
                 coupon_code=data.get('coupon_code', ''),
                 manual_discount_type=data.get('manual_discount_type', ''),

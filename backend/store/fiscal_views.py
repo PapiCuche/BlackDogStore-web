@@ -34,10 +34,11 @@ from .fiscal_config import (
 from .fiscal_services import (
     FiscalError, FiscalSubmissionInProgress, get_or_create_fiscal_document,
     reconcile_fiscal_document, sign_fiscal_document, submit_fiscal_document,
+    original_fiscal_documents,
 )
 from .inventory_views import _company_context
 from .models import (
-    AdminAuditLog, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType,
+    AdminAuditLog, FISCAL_NOTE_TYPES, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType,
 )
 from .tenancy import visible_orders
 from .throttles import FiscalIssueThrottle, FiscalReadThrottle
@@ -134,10 +135,13 @@ def document_payload(document: FiscalDocument) -> dict:
     siéndolo hasta la pantalla: entregarlos como números JSON invita al navegador
     a hacer aritmética que no coincidirá con el papel.
     """
-    puede_enviar = document.status in (
+    envio_individual = document.document_type != FiscalDocumentType.RECEIPT and not (
+        document.document_type in FISCAL_NOTE_TYPES and document.series.startswith('B')
+    )
+    puede_enviar = envio_individual and document.status in (
         FiscalDocumentStatus.GENERATED, FiscalDocumentStatus.SIGNED,
     )
-    puede_reintentar = document.status == FiscalDocumentStatus.SUBMISSION_ERROR
+    puede_reintentar = envio_individual and document.status == FiscalDocumentStatus.SUBMISSION_ERROR
     return {
         'id': document.pk,
         'order_id': document.order_id,
@@ -215,7 +219,7 @@ class AdminOrderFiscalDocumentView(APIView):
         if error:
             return error
         document = (
-            FiscalDocument.objects.filter(order=order).order_by('-pk').first()
+            original_fiscal_documents(order).order_by('-pk').first()
         )
         if document is None:
             return Response(

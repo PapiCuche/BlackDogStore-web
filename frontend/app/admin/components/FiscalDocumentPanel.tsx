@@ -4,9 +4,8 @@
  * El comprobante electrónico de una venta. NO es la nota de venta interna.
  *
  * Son dos documentos distintos y por eso son dos bloques distintos. La nota
- * interna se numera con `NV-` y lleva impreso que no vale ante SUNAT; esto es
- * una factura electrónica. Juntarlas invitaría a confundir un papel que no tiene
- * validez tributaria con uno que sí la tiene.
+ * interna lleva impreso que no vale ante SUNAT; este panel consulta boletas y
+ * facturas del circuito BETA y conserva el estado real de cada documento.
  *
  * EL BACKEND MANDA
  * ----------------
@@ -32,8 +31,9 @@ type Props = {
   orderId: number;
   /** Sólo se emite comprobante de una venta pagada. */
   isPaid: boolean;
-  /** `factura`, `boleta`… Esta fase sólo emite facturas. */
+  /** Tipos fiscales soportados: `factura` y `boleta`. */
   receiptType: string;
+  canIssue?: boolean;
 };
 
 /** Colores por estado. Un rechazo tiene que verse como un rechazo. */
@@ -44,11 +44,12 @@ const TONE: Record<string, string> = {
   submission_error: "text-warning",
 };
 
-export function FiscalDocumentPanel({ orderId, isPaid, receiptType }: Props) {
+export function FiscalDocumentPanel({ orderId, isPaid, receiptType, canIssue = false }: Props) {
   const [document, setDocument] = useState<FiscalDocument | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     // La carga vive DENTRO del efecto y con bandera de cancelación: así el
@@ -60,10 +61,13 @@ export function FiscalDocumentPanel({ orderId, isPaid, receiptType }: Props) {
       try {
         const found = await fetchFiscalDocument(orderId);
         if (!cancelled) setDocument(found);
-      } catch {
-        // Un 404 significa «todavía no hay comprobante», que es un estado
-        // normal y no un fallo: la pantalla lo dice y ofrece emitirlo.
-        if (!cancelled) setDocument(null);
+      } catch (err) {
+        // fetchFiscalDocument convierte la ausencia en null. Otros errores
+        // deben mostrarse y no habilitar una emisión basada en datos incompletos.
+        if (!cancelled) {
+          setLoadFailed(true);
+          setError(err instanceof Error ? err.message : "No se pudo consultar el comprobante.");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -97,9 +101,8 @@ export function FiscalDocumentPanel({ orderId, isPaid, receiptType }: Props) {
     }
   }
 
-  // Esta fase sólo emite facturas. Una venta que pidió boleta no muestra el
-  // bloque en vez de mostrar un botón que siempre falla.
-  if (receiptType !== "factura") return null;
+  // La boleta se firma aquí y se informa por el Resumen Diario existente.
+  if (!["factura", "boleta"].includes(receiptType)) return null;
 
   return (
     <section className="rounded-xl border border-bd-border bg-surface p-6">
@@ -107,8 +110,11 @@ export function FiscalDocumentPanel({ orderId, isPaid, receiptType }: Props) {
         Comprobante electrónico
       </h2>
       <p className="mb-4 text-xs text-muted">
-        Factura solicitada. Distinta de la nota de venta interna.
+        {receiptType === "factura" ? "Factura" : "Boleta"} solicitada. Ambiente BETA de pruebas, sin emisión en producción.
       </p>
+      {receiptType === "boleta" ? <p className="mb-4 text-xs text-muted">
+        El envío de boletas se gestiona mediante el Resumen Diario. Esta pantalla permite preparar, firmar y consultar; la gestión del resumen aún no está disponible en la web.
+      </p> : null}
 
       {!isPaid ? (
         <p className="text-sm text-muted">
@@ -185,18 +191,18 @@ export function FiscalDocumentPanel({ orderId, isPaid, receiptType }: Props) {
           ) : null}
 
           <div className="flex flex-wrap gap-2">
-            {!document ? (
+            {canIssue && (!document || !document.has_xml) && !loadFailed ? (
               <button
                 type="button"
                 onClick={() => void run("issue", () => issueFiscalDocument(orderId))}
                 disabled={busy !== null}
                 className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {busy === "issue" ? "Emitiendo…" : "Emitir factura"}
+                {busy === "issue" ? "Preparando…" : document ? "Firmar comprobante" : `Preparar ${receiptType}`}
               </button>
             ) : null}
 
-            {document?.can_submit ? (
+            {canIssue && receiptType === "factura" && document?.can_submit && document.has_xml ? (
               <button
                 type="button"
                 onClick={() =>
@@ -214,7 +220,7 @@ export function FiscalDocumentPanel({ orderId, isPaid, receiptType }: Props) {
               misma serie y su mismo correlativo. Que el botón lo diga evita que
               alguien crea que está creando uno nuevo.
             */}
-            {document?.can_retry ? (
+            {canIssue && receiptType === "factura" && document?.can_retry ? (
               <button
                 type="button"
                 onClick={() =>

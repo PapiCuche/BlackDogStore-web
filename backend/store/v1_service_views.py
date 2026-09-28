@@ -205,6 +205,8 @@ class V1ServiceContextView(V1ServiceSurfaceMixin, APIView):
         )
         return Response({
             'statuses': V1RepairStatusSettingSerializer(settings_rows, many=True).data,
+            'device_types': [{'value': value, 'label': label}
+                             for value, label in Device.TYPE_CHOICES],
             'available_branches': [
                 {'id': b.pk, 'name': b.name}
                 for b in visible_branches(request.user, company)

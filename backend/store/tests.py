@@ -9061,6 +9061,8 @@ class Phase2a1SeedAndRegressionTest(TestCase):
             {'service.customers.view', 'service.customers.manage',
              'service.devices.view', 'service.devices.manage',
              'service.orders.create', 'service.orders.view',
+             # Stabilization: reception may deliver through its dedicated API.
+             'service.delivery.manage',
              # M12B. The counter takes the money for a repair; a legacy `sales`
              # membership that never adopted RBAC does not.
              'service.payments.manage',
@@ -9073,10 +9075,11 @@ class Phase2a1SeedAndRegressionTest(TestCase):
              # RBAC no debe adquirir visibilidad sobre comprobantes electrónicos
              # porque se desplegó software.
              'sales.fiscal.view'},
-            'la diferencia debe ser recepción técnica, el cobro del servicio y '
+            'la diferencia debe ser recepción/entrega técnica, el cobro del servicio y '
             'la consulta de comprobantes electrónicos',
         )
         self.assertNotIn('service.payments.manage', legacy_sales)
+        self.assertNotIn('service.delivery.manage', legacy_sales)
         self.assertNotIn('sales.fiscal.view', legacy_sales)
         self.assertNotIn('sales.fiscal.issue', set(ventas.capabilities))
 
@@ -21141,6 +21144,32 @@ class C1PosConcurrencyTest(TransactionTestCase):
         self.assertNotIn('BranchStock.objects.update', inspect.getsource(_pos))
         self.assertNotIn('Product.objects.update', inspect.getsource(_pos))
 
+    def test_two_simultaneous_pos_notes_have_distinct_numbers(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from django.db import connection, connections
+        if connection.vendor != 'postgresql':
+            self.skipTest('Requires PostgreSQL row locks.')
+        _c1_stock(self.branch, self.product, 4)
+        seller, _ = _p2d_member(self.company, 'receipt_concurrent',
+                              ['company.view', _C1_POS, 'sales.notes.manage'])
+        barrier = Barrier(2)
+
+        def sell(index):
+            try:
+                barrier.wait(timeout=10)
+                order, _ = _c1_sale(actor=seller, company=self.company, branch=self.branch,
+                    items=[{'product': self.product.pk, 'quantity': 1}],
+                    idempotency_key=f'receipt-concurrent-{index}', receipt_type='sales_note')
+                return SalesNote.objects.get(order=order).number
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            numbers = list(pool.map(sell, range(2)))
+        self.assertEqual(len(set(numbers)), 2)
+        self.assertEqual(SalesNote.objects.filter(order__company=self.company).count(), 2)
+
 
 # ===========================================================================
 # C1.1 — hardening: idempotency, forecast window, transfers, timezone, consent
@@ -28616,6 +28645,120 @@ class M8ServiceBase(TestCase):
             reported_issue='No enciende.',
             actor=actor or self.staff,
         )
+
+
+class StabilizationServiceAccessTest(M8ServiceBase):
+    def test_sales_delivery_changes_state_and_keeps_history(self):
+        self.preset('ventas')
+        order = self.make_order()
+        order.status = 'ready_for_pickup'
+        order.save(update_fields=['status'])
+        response = self.client.post(_m8_url('m8-taller', f'orders/{order.pk}/delivery/'),
+                                    {'recipient_name': 'Cliente', 'idempotency_key': 'delivery-stabilization'}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'delivered')
+        self.assertEqual(order.status_history.count(), 2)
+        self.assertTrue(AdminAuditLog.objects.filter(company=self.company, target_id=order.pk).exists())
+
+    def test_foreign_order_ids_are_hidden_for_sales_and_technician(self):
+        foreign = _m8_service.create_repair_order(company=self.other, branch=self.foreign_branch,
+            customer=self.foreign_customer, device=self.foreign_device, reported_issue='Ajeno')
+        for role in ('ventas', 'servicio-tecnico'):
+            self.preset(role)
+            base = _m8_url('m8-taller', f'orders/{foreign.pk}/')
+            self.assertEqual(self.client.get(base).status_code, 404)
+            # The generic transition checks authority first: sales is 403,
+            # technicians then hit the tenant lookup and receive 404.
+            response = self.client.post(base + 'transition/', {'status': 'diagnosing'}, format='json')
+            self.assertEqual(response.status_code, 403 if role == 'ventas' else 404)
+            self.assertEqual(self.client.post(base + 'delivery/', {'recipient_name': 'X'}, format='json').status_code, 404)
+
+    def test_inventory_customer_and_platform_admin_keep_their_boundaries(self):
+        order = self.make_order()
+        url = _m8_url('m8-taller', f'orders/{order.pk}/')
+        self.preset('inventario')
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.assertEqual(_m7_login('cliente_m8').get(url).status_code, 404)
+        self.staff.is_superuser = True
+        self.staff.save(update_fields=['is_superuser'])
+        self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_delivery_migration_preserves_custom_roles(self):
+        from importlib import import_module
+        from django.apps import apps
+        from django.db import connection
+        migration = import_module('store.migrations.0093_sales_service_delivery')
+        role = self.company.roles.get(slug='ventas')
+        role.capabilities = sorted(migration.PREVIOUS - {'sales.orders.manage'})
+        role.save(update_fields=['capabilities'])
+        migration.extend_sales(apps, connection.schema_editor())
+        role.refresh_from_db()
+        self.assertNotIn('service.delivery.manage', role.capabilities)
+
+    def test_sales_can_deliver_but_has_no_technical_management_capability(self):
+        caps = self.company.roles.get(slug='ventas').capabilities
+        self.assertIn('service.delivery.manage', caps)
+        self.assertNotIn('service.orders.manage', caps)
+        self.assertNotIn('service.repair.manage', caps)
+
+    def test_customer_summary_does_not_expose_hidden_current_status(self):
+        from .v1_service_serializers import V1CustomerRepairDetailSerializer
+        order = self.make_order()
+        _M8StatusSetting.objects.filter(company=self.company, code='diagnosing').update(is_customer_visible=False)
+        order = _m8_service.transition_repair_order(repair_order=order, to_status='diagnosing', actor=self.staff)
+        data = V1CustomerRepairDetailSerializer(order).data
+        self.assertEqual(data['status'], 'received')
+        self.assertNotIn('diagnosing', [event['status'] for event in data['timeline']])
+
+    def preset(self, slug):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(self.membership, self.company.roles.get(slug=slug))
+        cache.clear()
+
+    def test_sales_and_technician_can_open_every_detail_dependency(self):
+        order = self.make_order()
+        for role in ('ventas', 'servicio-tecnico', 'administrador'):
+            self.preset(role)
+            for suffix in ('', 'history/', 'diagnostics/', 'quotes/', 'execution/',
+                           'parts/', 'parts/candidates/', 'quality/', 'quality/history/',
+                           'delivery/', 'payments/'):
+                with self.subTest(role=role, resource=suffix):
+                    response = self.client.get(_m8_url('m8-taller', f'orders/{order.pk}/{suffix}'))
+                    self.assertEqual(response.status_code, 200, response.data)
+
+    def test_sales_and_technician_create_but_cannot_manipulate_foreign_ids(self):
+        for role in ('ventas', 'servicio-tecnico'):
+            self.preset(role)
+            body = dict(customer_id=self.customer.pk, device_id=self.device.pk,
+                        branch_id=self.branch_a.pk, reported_issue='No enciende')
+            response = self.client.post(_m8_url('m8-taller', 'orders/'), body, format='json')
+            self.assertEqual(response.status_code, 201, response.data)
+            for field, foreign in [('customer_id', self.foreign_customer.pk),
+                                   ('device_id', self.foreign_device.pk),
+                                   ('branch_id', self.foreign_branch.pk)]:
+                with self.subTest(role=role, field=field):
+                    response = self.client.post(_m8_url('m8-taller', 'orders/'),
+                                                {**body, field: foreign}, format='json')
+                    self.assertEqual(response.status_code, 404)
+
+    def test_sales_cannot_run_technical_transitions(self):
+        self.preset('ventas')
+        order = self.make_order()
+        response = self.client.post(_m8_url('m8-taller', f'orders/{order.pk}/transition/'),
+                                    {'status': 'diagnosing'}, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(order.status_history.count(), 1)
+
+    def test_technician_transition_is_audited_and_branch_scoped(self):
+        self.preset('servicio-tecnico')
+        self.restrict_to_branch_a()
+        for branch, expected in [(self.branch_a, 200), (self.branch_b, 404)]:
+            order = self.make_order(branch=branch)
+            response = self.client.post(_m8_url('m8-taller', f'orders/{order.pk}/transition/'),
+                                        {'status': 'diagnosing', 'comment': 'Revisión'}, format='json')
+            self.assertEqual(response.status_code, expected, response.data)
+            self.assertEqual(order.status_history.count(), 2 if expected == 200 else 1)
 
 
 class M8ProvisioningTest(M8ServiceBase):
@@ -37800,16 +37943,16 @@ class M12RbacMatrixTest(M12DeliveryBase):
         self.assertTrue(self._may(self.staff, 'service.orders.manage'))
         self.assertFalse(self._may(self.staff))
 
-    def test_the_sales_preset_cannot_deliver(self):
-        # The owner's decision, pinned: releasing a repaired device is a service
-        # act, and the sales preset is a shop counter for the catalogue.
-        for slug in ('ventas', 'inventario'):
+    def test_sales_can_deliver_but_inventory_cannot(self):
+        # Reception may release a ready device through the dedicated operation;
+        # this grants neither technical lifecycle management nor inventory access.
+        for slug, allowed in (('ventas', True), ('inventario', False)):
             MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
             _assign(
                 self.membership,
                 CompanyRole.objects.get(company=self.company, slug=slug),
             )
-            self.assertFalse(self._may(self.staff), slug)
+            self.assertEqual(self._may(self.staff), allowed, slug)
 
     def test_the_legacy_technician_fallback_was_NOT_widened(self):
         from .tenancy import LEGACY_ROLE_CAPABILITIES
@@ -41111,6 +41254,101 @@ class Ip1PosBase(TestCase):
         ).quantity
 
 
+class StabilizationPosReceiptTest(Ip1PosBase):
+    def sell(self, **over):
+        return self.client.post('/api/v1/internal/ip1-tienda/sales/pos/sales/',
+                                self.sale_body(**over), format='json')
+
+    def test_unknown_receipt_is_rejected_without_sale_or_stock_change(self):
+        response = self.sell(receipt_type='inventado')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(self.stock(), 10)
+
+    def test_internal_note_is_created_once_with_the_existing_sequence(self):
+        first = self.sell(receipt_type='sales_note')
+        self.assertEqual(first.status_code, 201, first.data)
+        second = self.sell(receipt_type='sales_note')
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(first.data['receipt_type'], 'sales_note')
+        note = SalesNote.objects.get(order_id=first.data['order_id'])
+        self.assertEqual(note.order.company_id, self.company.pk)
+        self.assertEqual(second.data['document_number'], note.number)
+        self.assertEqual(self.stock(), 8)
+
+    def test_note_permission_is_checked_on_direct_post(self):
+        self.only_caps('sales.pos.use')
+        self.assertEqual(self.sell(receipt_type='sales_note').status_code, 403)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_changing_receipt_on_retry_is_a_conflict(self):
+        self.assertEqual(self.sell(receipt_type='sales_note').status_code, 201)
+        self.assertEqual(self.sell(receipt_type='factura').status_code, 409)
+
+    def test_legacy_request_still_has_no_automatic_document(self):
+        response = self.sell()
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(SalesNote.objects.filter(order_id=response.data['order_id']).exists())
+
+    def test_fiscal_selection_is_not_authorized_by_pos_permission(self):
+        self.assertEqual(self.sell(receipt_type='factura').status_code, 403)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def fiscal_setup(self):
+        self.only_caps('sales.pos.use', 'sales.fiscal.issue', 'sales.notes.manage')
+        self.company.tax_id = '20100066603'
+        self.company.legal_name = 'EMPRESA PRUEBA SAC'
+        self.company.save()
+        for kind, series in [('01', 'F001'), ('03', 'B001')]:
+            FiscalSeries.objects.create(company=self.company, document_type=kind, series=series)
+
+    @override_settings(FISCAL_ENABLED=True)
+    def test_boleta_is_persisted_and_generated_without_claiming_acceptance(self):
+        self.fiscal_setup()
+        response = self.sell(receipt_type='boleta')
+        self.assertEqual(response.status_code, 201, response.data)
+        order = Order.objects.get(pk=response.data['order_id'])
+        self.assertEqual(order.receipt_type, 'boleta')
+        document = FiscalDocument.objects.get(order=order)
+        self.assertEqual(document.document_type, '03')
+        self.assertEqual(document.status, FiscalDocumentStatus.GENERATED)
+        self.assertEqual(document.environment, 'beta')
+        from .fiscal_views import document_payload
+        self.assertFalse(document_payload(document)['can_submit'])
+        self.assertFalse(document_payload(document)['can_retry'])
+        self.assertEqual(self.sell(receipt_type='boleta').status_code, 200)
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+
+    @override_settings(FISCAL_ENABLED=True)
+    def test_factura_requires_customer_ruc_and_rolls_back_sale_and_number(self):
+        self.fiscal_setup()
+        response = self.sell(receipt_type='factura')
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+        self.assertEqual(self.stock(), 10)
+
+    @override_settings(FISCAL_ENABLED=True)
+    def test_factura_uses_customer_snapshot_and_tenant_series(self):
+        self.fiscal_setup()
+        customer = _v1_customer(self.company, None, document_type='ruc',
+                                document_number='20100070970', first_name='Cliente SAC')
+        response = self.sell(receipt_type='factura', customer=customer.pk)
+        self.assertEqual(response.status_code, 201, response.data)
+        order = Order.objects.get(pk=response.data['order_id'])
+        self.assertEqual(order.receipt_type, 'factura')
+        document = FiscalDocument.objects.get(order=order)
+        self.assertEqual(document.customer_doc_number, '20100070970')
+        self.assertEqual(document.company_id, self.company.pk)
+        self.assertEqual(document.series, 'F001')
+
+    @override_settings(FISCAL_ENABLED=False)
+    def test_disabled_fiscal_is_rejected_even_with_capability(self):
+        self.fiscal_setup()
+        self.assertEqual(self.sell(receipt_type='boleta').status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+
+
 class Ip1PosContractTest(Ip1PosBase):
     """The contract, exercised over HTTP."""
 
@@ -42706,6 +42944,36 @@ class M12BServiceEventsTest(TestCase):
         self.assertIsNotNone(note)
         self.assertIn('listo para recoger', note.title.lower())
 
+    def test_hidden_status_is_not_sent_to_the_customer(self):
+        from .models import RepairStatusSetting, RepairStatusCode
+        RepairStatusSetting.objects.filter(company=self.company,
+            code=RepairStatusCode.READY_FOR_PICKUP).update(is_customer_visible=False)
+        self._advance_to_ready()
+        self.assertFalse(_Notif.objects.filter(customer=self.customer).exists())
+        self.assertTrue(_Notif.objects.filter(audience=_Notif.Audience.INTERNAL).exists())
+
+    def test_order_detail_reports_real_customer_notifications_without_claiming_email_sent(self):
+        from .v1_service_serializers import V1ServiceOrderDetailSerializer
+        self._advance_to_ready()
+        notices = V1ServiceOrderDetailSerializer(self.order).data['customer_notifications']
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]['email_status'], 'pending')
+        self.assertIn('listo para recoger', notices[0]['title'].lower())
+        from .models import NotificationDelivery
+        for state in ('failed', 'sent', 'skipped'):
+            NotificationDelivery.objects.update_or_create(
+                notification_id=notices[0]['id'], channel='email', defaults={'status': state},
+            )
+            updated = V1ServiceOrderDetailSerializer(self.order).data['customer_notifications']
+            self.assertEqual(updated[0]['email_status'], state)
+        _Notif.objects.create(
+            company=self.company, customer=self.customer,
+            audience=_Notif.Audience.CUSTOMER, title='Aviso en bandeja',
+            target_type='repair_order', target_id=self.order.pk,
+        )
+        updated = V1ServiceOrderDetailSerializer(self.order).data['customer_notifications']
+        self.assertEqual(updated[0]['email_status'], 'not_applicable')
+
     def test_19_ready_for_pickup_also_reaches_delivery_staff_of_that_branch(self):
         self._advance_to_ready()
         staff_notes = _Notif.objects.filter(
@@ -43972,7 +44240,9 @@ class M12CAudienceTest(M12CBase):
     def test_capability(self):
         got = self.recipients_of(
             self.rule(_Rule.Kind.CAPABILITY,
-                      capability_code='service.delivery.manage'),
+                      # Delivery is now also a reception capability. Repair
+                      # remains technical and keeps this negative case useful.
+                      capability_code='service.repair.manage'),
         )
         self.assertIn(self.tech.pk, got)
         self.assertNotIn(self.seller.pk, got)
@@ -57260,6 +57530,24 @@ class Fiscal5aNoteApiTest(TestCase):
     def test_a_viewer_cannot_issue_a_note(self):
         res = self._post_note(user=self.observador)
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_order_document_remains_the_original_after_a_credit_note(self):
+        from .pos_payloads import sale_payload
+        self.assertEqual(self._post_note().status_code, 201)
+        order = self.original.order
+        with self.subTest(surface='historical POS payload'):
+            payload = sale_payload(order, order.fulfillment_branch,
+                                   created=False, may_see_commission=False)
+            self.assertEqual(payload['document_number'], self.original.document_id)
+        with self.subTest(surface='order fiscal detail'):
+            response = self._as(self.observador).get(
+                f'/api/admin/orders/{order.pk}/fiscal-document/')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data['id'], self.original.pk)
+        with self.subTest(surface='idempotent issuance'):
+            document, created = get_or_create_fiscal_document(order)
+            self.assertFalse(created)
+            self.assertEqual(document.pk, self.original.pk)
 
     def test_another_tenant_cannot_see_the_original(self):
         # Un original de otra empresa responde como inexistente: un 403 confirmaría

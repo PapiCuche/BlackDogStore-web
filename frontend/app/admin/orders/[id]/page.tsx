@@ -368,22 +368,12 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
           <SalesNotePanel orderId={order.id} isPaid={order.status === "paid"} />
         )}
 
-        {/*
-          El comprobante electrónico va APARTE de la nota interna, y no por
-          orden visual: son dos documentos distintos. La nota lleva impreso que
-          no vale ante SUNAT; esto es una factura electrónica. Juntarlos
-          invitaría a confundir el papel que no tiene validez tributaria con el
-          que sí la tiene.
-
-          Sin comprobación de permiso en el cliente: el panel pregunta al
-          backend, y quien no tenga la capacidad recibe un 404 y ve «todavía no
-          tiene comprobante». Ocultarlo aquí sería duplicar una decisión que ya
-          toma el servidor, y las dos copias se separarían.
-        */}
+        {/* El backend vuelve a comprobar la capacidad para cada acción fiscal. */}
         <FiscalDocumentPanel
           orderId={order.id}
           isPaid={order.status === "paid"}
           receiptType={order.receipt_type ?? ""}
+          canIssue={access.can('sales.fiscal.issue')}
         />
 
         {/* Fulfillment management */}

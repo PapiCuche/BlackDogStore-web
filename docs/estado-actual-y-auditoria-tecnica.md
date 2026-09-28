@@ -4,6 +4,18 @@
 **Estado del proyecto:** MVP en desarrollo; no apto todavía para producción ni pagos reales  
 **Objetivo del documento:** proporcionar contexto verificable a desarrolladores y asistentes de IA sobre la arquitectura, funcionalidades, problemas, riesgos y prioridades actuales del repositorio.
 
+> **Actualización de estabilización (28-09-2026, `erp/sales-fiscal-ui`).**
+> POS permite seleccionar documentos realmente soportados y conserva su número
+> y tipo, incluso cuando luego existen notas fiscales correctivas. La recepción
+> técnica web usa el RBAC y los endpoints existentes; Ventas puede entregar con
+> la capacidad específica, sin gestionar transiciones técnicas generales. Se
+> corrigen timeline, filtros y privacidad de estados/avisos. El 401/403 reportado
+> al abrir órdenes autorizadas no se reprodujo en el HEAD auditado. Fiscal sigue
+> en BETA; WhatsApp/SMS no están integrados. Migraciones locales 0085–0093
+> aplicadas con respaldo. Persisten dos errores de build/typecheck preexistentes
+> en páginas de inventario. Evidencia y límites en
+> [la auditoría de estabilización](estabilizacion-funcional-2026-09-28.md).
+
 > **Actualización ERP-FISCAL-5B (28-09-2026, rama `erp/fiscal-sunat`).**
 > **Comunicación de Baja (RA)** para FACTURA y para las NC/ND ligadas a factura, y
 > la distinción entre EMITIR y OTORGAR. Cuatro migraciones aditivas (`0089`–`0092`),

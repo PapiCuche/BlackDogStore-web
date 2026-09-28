@@ -3275,6 +3275,8 @@ def _emit_status_changed(*, order, to_status):
 
     message = _CUSTOMER_STATUS_MESSAGES.get(to_status)
     customer = _customer_of(order)
+    if not is_status_customer_visible(order.company, to_status):
+        customer = None
     is_ready = to_status == RepairStatusCode.READY_FOR_PICKUP
 
     if message is None and not is_ready:

@@ -85,6 +85,41 @@ MAX_LINES = 100
 MAX_QUANTITY_PER_LINE = 1000
 MAX_IDEMPOTENCY_KEY = 64
 
+
+def receipt_options(company, branches, actor):
+    """Documents this operator can prepare, resolved against tenant series."""
+    from .tenancy import has_capability
+    from . import fiscal_config, fiscal_services
+
+    options = []
+    for value, label, capability in (
+        ('sales_note', 'Nota de venta interna', 'sales.notes.manage'),
+        *((value, f'{label} · BETA', 'sales.fiscal.issue')
+          for value, label in Order.ReceiptType.choices),
+    ):
+        if not has_capability(actor, company, capability):
+            continue
+        if value != 'sales_note' and not fiscal_config.fiscal_enabled():
+            continue
+        allowed = []
+        for branch in branches:
+            try:
+                if value == 'sales_note':
+                    # The internal resolver lazily provisions sequences when
+                    # issuing. Calling it from this GET would perform writes.
+                    allowed.append(branch.pk)
+                    continue
+                else:
+                    fiscal_config.resolve_series(
+                        company, branch=branch,
+                        document_type=fiscal_services.RECEIPT_TYPE_TO_DOCUMENT_TYPE[value])
+            except fiscal_config.FiscalConfigError:
+                continue
+            allowed.append(branch.pk)
+        if allowed:
+            options.append({'value': value, 'label': label, 'branches': allowed})
+    return options
+
 _KEY_ALLOWED = re.compile(r'^[\x21-\x7E]{8,64}$')
 
 
@@ -177,7 +212,7 @@ def request_fingerprint(
     *, company, branch, customer_id, seller_id, payment_method, items,
     coupon_code='', manual_discount_type='', manual_discount_value=None,
     discount_reason='', amount_received=None, payment_reference='',
-    external_reference='', sale_notes='', terms_confirmed=False,
+    external_reference='', sale_notes='', terms_confirmed=False, receipt_type=None,
 ) -> str:
     """
     A hash of WHAT THE OPERATOR ASKED FOR — never of what the system worked out.
@@ -243,6 +278,9 @@ def request_fingerprint(
         'sale_notes': ' '.join((sale_notes or '').split()),
         'terms': bool(terms_confirmed),
     }
+    # Preserve fingerprints of older clients, which did not select a document.
+    if receipt_type is not None:
+        payload['receipt_type'] = receipt_type
     blob = json.dumps(payload, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(blob.encode('utf-8')).hexdigest()
 
@@ -852,6 +890,7 @@ def create_pos_sale(
     payment_reference: str = '',
     external_reference: str = '',
     sale_notes: str = '',
+    receipt_type=None,
     may_assign_seller: bool = False,
     may_apply_manual_discount: bool = False,
     request=None,
@@ -924,6 +963,7 @@ def create_pos_sale(
         external_reference=external_reference,
         sale_notes=sale_notes,
         terms_confirmed=terms_confirmed,
+        receipt_type=receipt_type,
     )
 
     # Same key + same request → hand back what was already created.
@@ -946,6 +986,19 @@ def create_pos_sale(
         may_apply_manual_discount=may_apply_manual_discount,
     )
 
+    if receipt_type is not None:
+        from .tenancy import has_capability
+        if receipt_type not in ('sales_note', *Order.ReceiptType.values):
+            raise PosValidationError('Tipo de comprobante no soportado.')
+        capability = ('sales.notes.manage' if receipt_type == 'sales_note'
+                      else 'sales.fiscal.issue')
+        if not has_capability(actor, company, capability):
+            raise PosPermissionError('No tienes permiso para emitir este documento.')
+        if receipt_type != 'sales_note':
+            from .fiscal_config import fiscal_enabled
+            if not fiscal_enabled():
+                raise PosValidationError('La emisión fiscal no está habilitada.')
+
     now = timezone.now()
     seller = priced['seller']
     discount = priced['discount']
@@ -958,6 +1011,7 @@ def create_pos_sale(
         company_snapshot=build_identity_snapshot(company, branch),
         sales_channel=SalesChannel.POS,
         payment_method=payment_method,
+        receipt_type=receipt_type if receipt_type in Order.ReceiptType.values else '',
         sold_by=seller if getattr(seller, 'is_authenticated', False) else None,
         seller_name_snapshot=seller_display_name(seller),
         pos_idempotency_key=idempotency_key,
@@ -1013,6 +1067,33 @@ def create_pos_sale(
         OrderItem(order=order, product=product, quantity=quantity, price=unit_price)
         for product, quantity, unit_price in priced['lines']
     ])
+
+    # Local document preparation is atomic with the sale. No signing, network
+    # or claim of SUNAT acceptance happens here. Unsupported fiscal baskets
+    # unwind the sale AND the number through the existing fiscal validator.
+    if receipt_type == 'sales_note':
+        from .sales_note_services import get_or_create_sales_note, SalesNoteError
+        from .sequences import SequenceError
+        try:
+            document, _ = get_or_create_sales_note(order, actor=actor)
+        except (SalesNoteError, SequenceError) as exc:
+            raise PosValidationError(str(exc)) from exc
+    elif receipt_type is not None:
+        from .fiscal_services import get_or_create_fiscal_document, FiscalError
+        try:
+            document, _ = get_or_create_fiscal_document(order)
+        except FiscalError as exc:
+            raise PosValidationError(str(exc)) from exc
+
+    if receipt_type is not None:
+        AdminAuditLog.log(
+            actor=actor, company=company, request=request,
+            action=('sales_note_created' if receipt_type == 'sales_note'
+                    else 'fiscal_document_created'),
+            target_type='sales_note' if receipt_type == 'sales_note' else 'fiscal_document',
+            target_id=document.pk,
+            metadata={'order_id': order.pk, 'origin': 'pos'},
+        )
 
     # STRICT: raises InsufficientStockError, which unwinds this whole
     # transaction. Nothing was captured, so nothing needs repairing.

@@ -9,6 +9,25 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## 2026-09-28 — Estabilización POS y recepción técnica
+
+**IMPLEMENTADO en el árbol de trabajo; fiscal limitado a BETA.**
+
+- POS selecciona y valida nota interna, boleta o factura según permisos y
+  configuración. Venta, documento y numeración se guardan en una transacción;
+  la idempotencia distingue el tipo elegido y admite clientes anteriores.
+- Recepción web de equipos con los endpoints existentes. Ventas abre la cola
+  autorizada y puede entregar mediante `service.delivery.manage`, sin obtener
+  transiciones técnicas generales. Migración selectiva `0093` para presets intactos.
+- Timeline corregido y avisos con resultado real del correo. Los estados
+  ocultos no se notifican al cliente ni se exponen como estado actual del portal.
+- Panel fiscal para boletas/facturas con firma previa al envío y acciones por
+  capacidad. La consulta de la venta conserva el comprobante original después
+  de emitir una nota de crédito o débito.
+- Auditoría, baseline, pruebas y limitaciones en
+  [la entrega de estabilización](docs/estabilizacion-funcional-2026-09-28.md).
+  Los dos errores previos de exports de páginas de inventario siguen pendientes.
+
 ## ERP-FISCAL-5B — Comunicación de Baja (RA) y otorgamiento del comprobante
 
 **Estado: IMPLEMENTADO para el subflujo A (RA de FACTURA y de NC/ND ligadas a

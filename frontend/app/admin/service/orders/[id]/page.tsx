@@ -257,6 +257,13 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         <ErrorNote error={error} />
 
         <OrderSummary order={order} />
+        <Panel title="Avisos al cliente" subtitle="Los cambios relevantes generan avisos automáticos. El estado del correo se registra por separado; no se envía WhatsApp ni SMS.">
+          {(order.customer_notifications ?? []).length === 0 ? <p className="text-sm text-muted">Sin avisos registrados para esta orden.</p> : (
+            <ul className="space-y-2 text-sm">{order.customer_notifications?.map((notice) => (
+              <li key={notice.id}>{notice.title} · Correo: {({ not_applicable: 'no previsto para este aviso', pending: 'pendiente', sent: 'enviado', failed: 'fallido', skipped: 'omitido (sin destinatario)' } as Record<string, string>)[notice.email_status] ?? notice.email_status}</li>
+            ))}</ul>
+          )}
+        </Panel>
         <LifecycleSection order={order} may={may} busy={busy} run={run} slug={slug} />
         <AssignmentSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <DiagnosticSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
@@ -1332,7 +1339,7 @@ function HistorySection({ history }: { history: ServiceHistoryEntry[] }) {
           {[...history].reverse().map((event) => (
             <li key={event.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
               <span className="text-muted">
-                {event.status_label}
+                {event.to_status_label}
                 {event.comment ? <span className="text-muted"> — {event.comment}</span> : null}
               </span>
               <span className="text-xs text-muted">

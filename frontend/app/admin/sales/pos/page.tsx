@@ -36,6 +36,7 @@
  */
 
 import Link from "next/link";
+import { PosReceiptSelector } from "./PosReceiptSelector";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import {
@@ -119,6 +120,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const [branch, setBranch] = useState<number | null>(null);
   const [lines, setLines] = useState<Line[]>([]);
   const [payment, setPayment] = useState("cash");
+  const [receiptType, setReceiptType] = useState("");
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [charging, setCharging] = useState(false);
   const [done, setDone] = useState<PosSaleResult | null>(null);
@@ -371,6 +373,14 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
   async function charge() {
     if (charging || !lines.length || branch === null || !terms) return;
+    if (!context?.receipt_options.some((option) => option.value === receiptType && option.branches.includes(branch))) {
+      setFeedback({ kind: "error", text: "Selecciona un comprobante habilitado para esta sucursal." });
+      return;
+    }
+    if (receiptType === "factura" && customer?.document_type !== "ruc") {
+      setFeedback({ kind: "error", text: "Selecciona un cliente con RUC para la factura." });
+      return;
+    }
     if (isCash && (received === "" || Number(received) < total)) return;
     setCharging(true);
     setFeedback(null);
@@ -382,6 +392,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         seller,
         payment_method: payment,
         idempotency_key: keyRef.current,
+        receipt_type: receiptType,
         terms_confirmed: terms,
         coupon_code: couponCode.trim(),
         manual_discount_type: manualType,
@@ -502,6 +513,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           <p className="font-display text-3xl text-foreground">{money(done.total)}</p>
           <div className="space-y-1 rounded-xl border border-bd-border bg-surface p-5 text-left text-sm text-muted">
             <p>Pedido #{done.order_id}</p>
+            <p>{done.receipt_type === "sales_note" ? "Nota interna" : `${done.receipt_type} · BETA, pendiente de envío`}: {done.document_number}</p>
             <p>Cliente: {done.customer || "Sin identificar"}</p>
             <p>Vendedor: {done.seller || "—"}</p>
             <p>Sucursal: {done.branch.name}</p>
@@ -565,7 +577,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             <button
               type="button"
               onClick={() => void handlePrint("ticket")}
-              disabled={printing !== null}
+              disabled={printing !== null || done.receipt_type !== "sales_note"}
               className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {printing === "ticket" ? "Preparando…" : "Imprimir ticket"}
@@ -573,7 +585,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             <button
               type="button"
               onClick={() => void handlePrint("a4")}
-              disabled={printing !== null}
+              disabled={printing !== null || done.receipt_type !== "sales_note"}
               className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {printing === "a4" ? "Generando…" : "PDF A4"}
@@ -596,7 +608,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               href={`/admin/orders/${done.order_id}`}
               className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground"
             >
-              Ver pedido y nota interna
+              Ver pedido y documentos
             </Link>
           </div>
         </div>
@@ -1024,6 +1036,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 <p className="text-xs text-danger">{previewError}</p>
               ) : null}
             </div>
+
+            <PosReceiptSelector options={context.receipt_options ?? []} branch={branch}
+              value={receiptType} onChange={setReceiptType} disabled={charging} />
 
             <div className="border-t border-bd-border pt-3">
               <label

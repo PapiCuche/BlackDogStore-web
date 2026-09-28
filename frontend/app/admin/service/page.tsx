@@ -16,6 +16,8 @@
  */
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { ServiceIntake } from "./components/ServiceIntake";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
 import { InternalControlGuard, type InternalContext } from "../components/InternalControlGuard";
@@ -45,6 +47,8 @@ function StatusPill({ label }: { label: string }) {
 }
 
 function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
+  const router = useRouter();
+  const [intake, setIntake] = useState(false);
   const slug = ctx.dashboard?.company?.slug ?? null;
   const capabilities = ctx.dashboard?.access.capabilities ?? [];
   const mayView = capabilities.includes(CAP_ORDERS_VIEW);
@@ -56,17 +60,9 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
   const [status, setStatus] = useState("");
   const [branchId, setBranchId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
-  // "Mis reparaciones" — a flag the server resolves, not an id this page
-  // holds. See fetchServiceOrders.
-  //
-  // TRUE, because that is what this feature says it does. The comment below,
-  // the CHANGELOG entry and the PR all said the console opens on the
-  // technician's own queue; the code opened on the whole workshop. Three
-  // statements and one behaviour, and they disagreed. The behaviour now
-  // matches — a technician lands on their work, and "Todo el taller" is one
-  // click away for whoever needs it, including a supervisor who has no
-  // assigned repairs of their own.
-  const [mine, setMine] = useState(true);
+  // Technical staff start with assigned repairs; reception sees the authorized
+  // workshop. Both filters remain subject to server-side tenant/branch scope.
+  const [mine, setMine] = useState(capabilities.includes('service.repair.manage'));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -134,7 +130,14 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
               {count} orden(es) en el alcance que tu cuenta alcanza.
             </p>
           </div>
+          {['service.orders.create', 'service.customers.view', 'service.devices.view'].every((cap) => capabilities.includes(cap)) ? (
+            <button type="button" className="rounded-lg border border-bd-border px-4 py-2 text-sm"
+              onClick={() => setIntake(!intake)}>{intake ? 'Cerrar recepción' : 'Nueva orden'}</button>
+          ) : null}
         </div>
+
+        {intake && context ? <ServiceIntake key={slug} slug={slug} context={context}
+          may={(cap) => capabilities.includes(cap)} onCreated={(id) => router.push(`/admin/service/orders/${id}`)} /> : null}
 
         <Panel>
           {/* M12A — "Mis reparaciones" primero.

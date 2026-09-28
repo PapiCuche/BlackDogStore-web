@@ -87,6 +87,7 @@ export type ServiceStatusSetting = {
 };
 
 export type ServiceContext = {
+  device_types?: { value: string; label: string }[];
   statuses: ServiceStatusSetting[];
   available_branches: { id: number; name: string }[];
 };
@@ -107,6 +108,7 @@ export type ServiceOrderRow = {
 export type ServiceTransition = { code: string; label: string };
 
 export type ServiceOrderDetail = ServiceOrderRow & {
+  customer_notifications?: { id: number; title: string; created_at: string; email_status: string }[];
   reported_issue: string;
   physical_condition: string;
   received_accessories: string;
@@ -121,7 +123,7 @@ export type ServiceHistoryEntry = {
   id: number;
   from_status: string;
   to_status: string;
-  status_label: string;
+  to_status_label: string;
   origin: string;
   comment: string;
   actor_name: string;
@@ -320,6 +322,21 @@ type Rows<T> = { count: number; results: T[] };
 
 export const fetchServiceContext = (slug: string) =>
   get<ServiceContext>(`${base(slug)}/context/`);
+
+export const searchServiceCustomers = (slug: string, search: string) =>
+  get<Rows<{ id: number; display_name: string }>>(`${base(slug)}/customers/?search=${encodeURIComponent(search)}`);
+
+export const fetchCustomerDevices = (slug: string, customerId: number) =>
+  get<Rows<{ id: number; display_name: string }>>(`${base(slug)}/devices/?customer_id=${customerId}`);
+
+export const createServiceDevice = (slug: string, body: {
+  customer_id: number; device_type: string; brand: string; model: string;
+}) => post<{ id: number; display_name: string }>(`${base(slug)}/devices/`, body);
+
+export const createServiceOrder = (slug: string, body: {
+  customer_id: number; device_id: number; branch_id: number; reported_issue: string;
+  physical_condition: string; received_accessories: string;
+}) => post<ServiceOrderDetail>(`${base(slug)}/orders/`, body);
 
 export function fetchServiceOrders(
   slug: string,

@@ -7,14 +7,12 @@ const API = process.env.E2E_API_BASE ?? "http://127.0.0.1:8000/api";
  *
  * QUÉ PRUEBA ESTO QUE NADA MÁS PRUEBA
  * -----------------------------------
- * Los tests de Python comprueban que el ticket se genera bien cuando alguien
- * llama a la función. Ninguno comprueba que el BOTÓN de la pantalla llegue a
- * llamarla — ni que la nota se cree sola al imprimir, que es la decisión de
- * diseño más discutible de esta fase.
+ * Comprueba que elegir nota interna al cobrar permite imprimir el documento
+ * persistido mediante los botones de la pantalla.
  *
  * La secuencia esperada, y que esta prueba observa en la red:
- *   GET  .../sales-note/      -> 404   (todavía no hay nota: la venta no la crea)
- *   POST .../sales-note/      -> 201   (se crea AL IMPRIMIR)
+ *   POST .../pos/sales/      -> 201   (crea venta y nota seleccionada)
+ *   GET  .../sales-note/      -> 200   (recupera la nota existente)
  *   GET  .../sales-note/pdf/?formato=ticket80 -> 200 application/pdf
  *
  * Depende de las cuentas de desarrollo y de que el catálogo tenga stock. Si
@@ -109,6 +107,7 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
   expect(/IGV \(\d+(\.\d+)?%\)/.test(beforeCharging), "la previsualización no muestra el IGV").toBe(true);
 
   await page.getByRole("checkbox").first().check();
+  await page.getByLabel('Tipo de comprobante').selectOption('sales_note');
   const cash = page.locator("input[inputmode='decimal'], input[type='number']").last();
   if (await cash.count()) await cash.fill("99999");
 
@@ -123,7 +122,7 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
   expect(/Op\. gravada:/.test(afterCharging), afterCharging.slice(0, 400)).toBe(true);
   expect(/IGV \(\d+(\.\d+)?%\):/.test(afterCharging)).toBe(true);
 
-  // LA NOTA SE CREA AL IMPRIMIR. Se observa en la red, no se supone.
+  // Imprimir recupera la nota creada al cobrar.
   const calls: string[] = [];
   page.on("response", (r) => {
     if (r.url().includes("sales-note") && r.status() !== 307 && r.status() !== 308) {
@@ -148,11 +147,11 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
   expect(bytes.subarray(0, 4).toString(), "lo devuelto no es un PDF").toBe("%PDF");
   expect(bytes.length).toBeGreaterThan(800);
 
-  // Una sola creación. Imprimir no puede gastar dos correlativos.
+  // La nota seleccionada ya existe: imprimir no debe crear otro documento.
   expect(
     calls.filter((c) => c.startsWith("POST")).length,
     `llamadas a la nota: ${calls.join(", ")}`,
-  ).toBeLessThanOrEqual(1);
+  ).toBe(0);
 
   // LOS BOTONES TIENEN QUE VOLVER.
   //

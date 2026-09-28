@@ -40,7 +40,7 @@ from .fiscal import builder, packaging, rules, schema, signing
 from .fiscal.data import InvoiceData, Line, Party
 from .fiscal.provider import ProviderOutcome
 from .models import (
-    FISCAL_NOTE_TYPES, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType,
+    FISCAL_NOTE_TYPES, FISCAL_ORIGINAL_TYPES, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType,
     FiscalSeries, FiscalSubmissionAttempt, Order,
 )
 
@@ -307,6 +307,13 @@ def _reserve(series: FiscalSeries) -> int:
     return number
 
 
+def original_fiscal_documents(order: Order):
+    """Original receipts for this sale; correcting notes have their own routes."""
+    return FiscalDocument.objects.filter(
+        company_id=order.company_id, order=order, document_type__in=FISCAL_ORIGINAL_TYPES,
+    )
+
+
 def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
     """
     El comprobante de esta venta, creándolo si no existe. IDEMPOTENTE.
@@ -350,7 +357,7 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             f'la rebaja y declararía un precio unitario que no se cobró.'
         )
 
-    existing = FiscalDocument.objects.filter(order=order).order_by('-pk').first()
+    existing = original_fiscal_documents(order).order_by('-pk').first()
     if existing is not None and existing.status != FiscalDocumentStatus.REJECTED:
         return existing, False
 
@@ -437,7 +444,7 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
         # violación hay un documento vivo para esta venta, es esa carrera; si no,
         # la IntegrityError es otra cosa y se re-lanza (sigue siendo 500).
         existing = (
-            FiscalDocument.objects.filter(order=order)
+            original_fiscal_documents(order)
             .exclude(status=FiscalDocumentStatus.REJECTED)
             .order_by('-pk').first()
         )

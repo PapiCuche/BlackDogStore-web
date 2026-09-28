@@ -56,7 +56,7 @@ def product_payload(product, branch, *, barcode=None) -> dict:
 def context_payload(
     company, branches, *, default_branch, actor,
     can_manage_customers: bool, can_assign_seller: bool,
-    can_apply_discount: bool, can_view_commissions: bool, sellers,
+    can_apply_discount: bool, can_view_commissions: bool, sellers, receipt_options=None,
 ) -> dict:
     """
     What this till may do, before it opens.
@@ -74,6 +74,7 @@ def context_payload(
         'company': {'id': company.pk, 'name': company.name},
         'branches': [{'id': b.pk, 'name': b.name} for b in branches],
         'default_branch': default_branch,
+        'receipt_options': receipt_options or [],
         'payment_methods': [
             {'value': v, 'label': l}
             for v, l in PaymentMethod.choices
@@ -211,8 +212,14 @@ def sale_payload(
     not need to know what the sale paid a colleague.
     """
     commission = getattr(order, 'sales_commission', None)
+    note = getattr(order, 'sales_note', None)
+    from .fiscal_services import original_fiscal_documents
+    fiscal = original_fiscal_documents(order).order_by('-pk').first() if order.receipt_type else None
     payload = {
         'order_id': order.pk,
+        'receipt_type': order.receipt_type or ('sales_note' if note else ''),
+        'document_number': fiscal.document_id if fiscal else note.number if note else '',
+        'document_status': fiscal.status if fiscal else note.status if note else '',
         'created': created,
         'subtotal': str(order.total + order.discount_amount),
         'discount': str(order.discount_amount),

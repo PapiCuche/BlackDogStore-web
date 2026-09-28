@@ -154,6 +154,8 @@ _SALES_CAPS = (
     # deliberately does NOT get this: authorised technicians manage the STATES
     # of a repair, and it does not follow that every technician handles cash.
     'service.payments.manage',
+    # Reception may hand back a device after the existing quality/payment gates.
+    'service.delivery.manage',
 )
 _INVENTORY_CAPS = (
     'company.view', 'products.view', 'reports.view',

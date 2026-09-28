@@ -750,6 +750,7 @@ export type PosBranch = { id: number; name: string };
 export type PosPaymentMethod = { value: string; label: string };
 
 export type PosContext = {
+  receipt_options: { value: string; label: string; branches: number[] }[];
   company: { id: number; name: string };
   branches: PosBranch[];
   /** null when the till must ask: several branches and no authorised default. */
@@ -797,6 +798,9 @@ export type TaxBreakdown = {
 };
 
 export type PosSaleResult = {
+  receipt_type: string;
+  document_number: string;
+  document_status: string;
   order_id: number;
   created: boolean;
   subtotal: string;
@@ -1040,6 +1044,7 @@ export type PosPreview = {
 };
 
 export type PosSaleInput = {
+  receipt_type?: string;
   branch: number;
   items: PosSaleLine[];
   customer?: number | null;
