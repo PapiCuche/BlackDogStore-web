@@ -4,6 +4,63 @@
 **Estado del proyecto:** MVP en desarrollo; no apto todavía para producción ni pagos reales  
 **Objetivo del documento:** proporcionar contexto verificable a desarrolladores y asistentes de IA sobre la arquitectura, funcionalidades, problemas, riesgos y prioridades actuales del repositorio.
 
+> **Actualización ERP-FISCAL-5B (28-09-2026, rama `erp/fiscal-sunat`).**
+> **Comunicación de Baja (RA)** para FACTURA y para las NC/ND ligadas a factura, y
+> la distinción entre EMITIR y OTORGAR. Cuatro migraciones aditivas (`0089`–`0092`),
+> sin frontend, sin producción. **Dos subflujos, no uno:** la factura `01` y las
+> notas `07`/`08` ligadas a factura se anulan con `VoidedDocuments`/RA; la boleta
+> `03` y sus notas, por el Resumen Diario con el estado oficial de anulación
+> —`ConditionCode=3` es del camino de la boleta, no de la factura (ADR-37)—. El
+> subflujo de boleta queda **PENDIENTE y declarado**: el Catálogo N.º 19, el Anexo
+> N.º 10 y las Reglas de Validación CPE devuelven 403 en `cpe.sunat.gob.pe`, y sin
+> el código y las reglas exactas emitir sería adivinar; exige además rehacer
+> `fiscal_summary_one_active_per_document` y la semántica de `superseded` al
+> rechazarse. **Entidad propia** `FiscalVoidCommunication` +
+> `FiscalVoidCommunicationDocument` (`0090`) con su ciclo de vida, su ticket y su
+> **CDR-Baja** —el tercer CDR del proceso—; no se marca `status = ANNULLED`, el
+> estado del comprobante se DERIVA y la historia es inmutable (ADR-40).
+> **`VoidedDocuments` contra el XSD OFICIAL:** el paquete SUNAT UBL 2.0 sí se
+> publica en `contenido.app.sunat.gob.pe` (20 XSD en `schemas/2.0/`, SHA-256 en
+> `PROCEDENCIA.md`), con `CustomizationID` **1.0** y **`ReferenceDate` ANTES de
+> `IssueDate`**; `cbc:ID` = `RA-YYYYMMDD-N` (fecha de generación, sin RUC).
+> **CDR-ACCEPTED-AT:** el plazo NO son las 72 horas de la guía de 2012 —el art. 14
+> de la RS 097-2012 fue sustituido en bloque por la **RS 114-2019 numeral 2.5**,
+> vigente 01.07.2019—, sino **siete días calendario desde el día siguiente de
+> recibir la CDR aceptada**; eso obligó a `cdr_accepted_at` (`0089`), de escritura
+> única, sellado en las dos rutas de aceptación y **nunca aproximado** desde
+> `issued_at`/`updated_at`/`created_at`; sin ese dato el plazo no es demostrable y
+> se falla cerrado (ADR-35), y se comprueba al crear y otra vez al enviar (ADR-38).
+> **GRANT-EVIDENCE-01:** «emitido» no es «otorgado» —el art. 15 lo define y la baja
+> aplica a los NO otorgados—, así que se añadió la representación mínima auditable
+> (`granted_at`/`granted_method`/`granted_by`/`granted_evidence` con métodos
+> genéricos `ECOMMERCE_PORTAL`/`EMAIL`/`POS_PRINT`/`POS_ELECTRONIC`/`MANUAL`/`API`)
+> más una **atestación administrativa auditada** de no otorgamiento (`0092`), con
+> restricción de BD que los hace excluyentes; **nunca un booleano del cuerpo como
+> autoridad** (ADR-34). Queda una consecuencia operativa abierta: como todavía nada
+> registra entregas, hoy toda baja exige ese paso manual, hasta que el checkout y el
+> POS registren el otorgamiento (ADR-41). **Caminos excluyentes:** un comprobante
+> en una baja viva ya no admite nota, y una NC aceptada DENIEGA la baja sin
+> invalidar la NC. Agrupación de documentos compatibles del mismo día, idempotencia
+> por `request_key` (`0091`) que libera su hueco al rechazarse, correlativo con
+> autoridad de PostgreSQL, y `sendSummary` → ticket persistido → `getStatus` con
+> reclamar/confirmar/red/finalizar **sin bloqueo durante el SOAP**; transmitido sin
+> ticket = `SUBMISSION_UNKNOWN`, nunca reenvío a ciegas (ADR-39). Plazo vencido =
+> **negativa**, sin NC automática; no otorgado con plazo vencido = «REQUIERE
+> REVISIÓN OPERATIVA/TRIBUTARIA». Seis rutas internas (`grant/`, `not-granted/`,
+> `void/`, detalle, `submit/`, `status/`) que DERIVAN el objetivo del documento
+> local autorizado —el cuerpo sólo aporta motivo y `request_key`—, con
+> `sales.fiscal.issue`/`sales.fiscal.view` y **404** al cruzar empresas. Revisión
+> adversarial de §43 con dos revisores independientes: ocho hallazgos, cinco
+> confirmados y corregidos (entre ellos el plazo, que se exigía al crear pero no al
+> enviar). **SUNAT BETA ACEPTÓ LA BAJA (28-09-2026):** `RA-20260928-1` sobre la
+> factura `F001-3`, atestiguada como no otorgada, ticket `1790611064145`,
+> «La Comunicacion de baja RA-20260928-1, ha sido aceptada», código `0`, CDR-Baja
+> `49a11c28…`; el original conserva su XML, su CDR y su estado. La baja de una
+> NC/ND de factura queda IMPLEMENTADA pero **con BETA no ejercitado**: el humo dio
+> de baja una factura, no una nota. Suite PostgreSQL **4378 verde (skipped=3)**:
+> +67 tests sobre el baseline 4311/3 y **sin delta de omitidas**. Detalle en el
+> CHANGELOG, ADR-34/41 y `docs/entrega-fiscal-5b-baja.md`.
+>
 > **Actualización ERP-FISCAL-4.1 (23-09-2026, rama `erp/fiscal-sunat`).** Cierre
 > normativo del Resumen Diario antes de NC/ND, cuatro puertas. **RC-ID-01:** el
 > `cbc:ID` lleva el correlativo (`RC-YYYYMMDD-N`, reglas 2210/2220) y su fecha es la

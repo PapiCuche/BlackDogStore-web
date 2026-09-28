@@ -9,6 +9,141 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## ERP-FISCAL-5B — Comunicación de Baja (RA) y otorgamiento del comprobante
+
+**Estado: IMPLEMENTADO para el subflujo A (RA de FACTURA y de NC/ND ligadas a
+factura) · subflujo B (BOLETA, vía Resumen Diario con estado de anulación)
+PENDIENTE y declarado.** Rama `erp/fiscal-sunat`. Cuatro migraciones aditivas
+(`0089`–`0092`), sin cambios de frontend. No habilita producción, ni reembolso, ni
+devolución de stock, ni cancelación de la `Order`: dar de baja la NUMERACIÓN es un
+hecho FISCAL, y sólo eso.
+
+- **Dos subflujos, no uno.** Una factura `01` —y una `07`/`08` ligada a una
+  factura— se anula con **Comunicación de Baja / `VoidedDocuments` / RA**. Una
+  boleta `03` —y una nota ligada a boleta— se anula por el **Resumen Diario** con
+  el estado oficial de anulación. No son el mismo camino y no comparten XML:
+  `ConditionCode=3` pertenece al camino de la boleta, no al de la factura
+  (ADR-37). **Las notas SÍ pueden ser objeto de baja**: `VOIDABLE_TYPES = ('01',
+  '07', '08')`.
+- **Entidad propia, no un estado del comprobante.** `FiscalVoidCommunication` +
+  `FiscalVoidCommunicationDocument` (migración `0090`), con su ciclo de vida, su
+  ticket, su XML firmado y su CDR-Baja —el tercer CDR distinto del proceso, que no
+  se confunde con el de la factura ni con el del Resumen—. No se marca
+  `FiscalDocument.status = ANNULLED`: la baja es un documento que se emite y que
+  SUNAT acepta o rechaza, y el estado del comprobante se DERIVA de ella (ADR-40).
+  La historia es inmutable: no se borra XML firmado, ni CDR, ni serie, ni número,
+  ni relación; nada hace que el original parezca «nunca aceptado».
+- **`VoidedDocuments` con el XSD OFICIAL.** El paquete SUNAT UBL 2.0 sí se publica
+  (`contenido.app.sunat.gob.pe`): 20 XSD en `schemas/2.0/` —14 en `common/` y 6 en
+  `maindoc/`—, procedencia y
+  SHA-256 en `schemas/PROCEDENCIA.md`. `UBLPE-VoidedDocuments-1.0.xsd` valida de
+  verdad el RA que emitimos. Estructura confirmada: `cbc:UBLVersionID` 2.0,
+  `cbc:CustomizationID` **1.0** (no el 1.1 del Resumen) y **`cbc:ReferenceDate`
+  ANTES de `cbc:IssueDate`**; la línea lleva `cbc:LineID`,
+  `cbc:DocumentTypeCode`, `sac:DocumentSerialID`, `sac:DocumentNumberID` y
+  `sac:VoidReasonDescription`, todos obligatorios. `cbc:ID` = `RA-YYYYMMDD-N`
+  (fecha de GENERACIÓN, correlativo 1..5 dígitos, **sin RUC**); el nombre del
+  fichero sí lleva el RUC. Correlativo único por (empresa, ambiente, fecha de
+  generación), reservado DENTRO de la transacción y sólo después de que todas las
+  puertas de elegibilidad hayan pasado: una baja que se va a negar no gasta un
+  número que no se recicla. La reserva es `max()+1`, pero **no ingenua** —va bajo
+  `select_for_update()`, con la restricción única como red y un reintento acotado
+  que DISTINGUE los dos choques que comparten `IntegrityError`: si otro proceso ganó
+  la carrera con la misma clave de idempotencia se devuelve su comunicación, y sólo
+  si el choque fue de correlativo se reintenta con el siguiente—.
+- **CDR-ACCEPTED-AT — el plazo se cuenta desde un hecho, no desde una
+  aproximación.** El plazo vigente NO son las 72 horas de la guía XML de 2012: el
+  art. 14 de la RS 097-2012 fue sustituido en bloque por la **RS 114-2019 numeral
+  2.5** (vigente 01.07.2019), y son **siete días calendario contados a partir del
+  día siguiente de haber recibido la CDR con estado de aceptada**. Eso exige un
+  dato que no teníamos: `FiscalDocument.cdr_accepted_at` (migración `0089`),
+  de escritura única, sellado en las DOS rutas de aceptación (envío y
+  reconciliación). **Nunca se aproxima desde `issued_at`, `updated_at` ni
+  `created_at`.** Sin ese dato el plazo no es demostrable y se **falla cerrado**:
+  el legado aceptado sin fecha probable queda en NULL y no se le emite baja
+  (ADR-35). El plazo se comprueba al CREAR y otra vez al ENVIAR: un único
+  ayudante, `void_send_blocked_reason`, gobierna a la vez la puerta del envío y el
+  `can_submit` de la API, para que el botón y la puerta no puedan divergir
+  (ADR-38).
+- **GRANT-EVIDENCE-01 — «emitido» no es «otorgado».** La baja del art. 14 aplica a
+  comprobantes **no otorgados**, y «otorgado» está definido en el art. 15: ni
+  «emitido» ni «CDR aceptada» lo demuestran. Como el repositorio no tenía ninguna
+  autoridad sobre la entrega, se construyó la representación mínima auditable:
+  `granted_at`/`granted_method`/`granted_by`/`granted_evidence` con
+  `FiscalGrantMethod` (`ECOMMERCE_PORTAL`, `EMAIL`, `POS_PRINT`,
+  `POS_ELECTRONIC`, `MANUAL`, `API`) —genérica, no cableada a esta tienda— y, para
+  el presente, una **atestación administrativa auditada** de NO otorgamiento
+  (`not_granted_at`/`not_granted_by`/`not_granted_reason`, migración `0092`), con
+  una restricción de BD que hace los dos hechos mutuamente excluyentes
+  (`fiscal_document_grant_is_exclusive`). **Nunca se acepta un booleano del
+  cuerpo de la petición como autoridad** (ADR-34).
+- **Caminos excluyentes.** Un comprobante incluido en una baja viva o aceptada ya
+  no admite nota, y una NC aceptada contra el objetivo **DENIEGA** la baja —jamás
+  se invalida la NC—. Corregir con una nota y dar de baja la numeración son
+  caminos que se excluyen, y el servicio de notas lo comprueba.
+- **Agrupación e idempotencia.** Un RA agrupa documentos compatibles generados o
+  emitidos el mismo día —no se impone «un RA por factura»—. Repetir la petición
+  con el mismo `request_key` devuelve la misma comunicación en vez de emitir otra
+  (migración `0091`); la restricción libera su hueco al rechazarse, para que un
+  rechazo no bloquee el reintento legítimo.
+- **Transporte.** `sendSummary` → ticket persistido ANTES de consultar →
+  `getStatus`. Reclamar → confirmar → red → finalizar, **sin bloqueo durante el
+  SOAP**. Un envío transmitido sin ticket queda INCIERTO (`SUBMISSION_UNKNOWN`),
+  distinto de un fallo no transmitido; no se reenvía a ciegas (ADR-39). El
+  CDR-Baja se liga estrictamente a su comunicación.
+- **Plazo vencido = negativa, no invención.** Pasado el plazo se **DENIEGA** y no
+  se emite ninguna NC automática en su lugar; si el comprobante no fue otorgado
+  pero el plazo venció, el caso se marca «REQUIERE REVISIÓN OPERATIVA/TRIBUTARIA».
+- **Superficie interna.** Seis rutas: `grant/`, `not-granted/` y `void/` sobre
+  `admin/fiscal-documents/{id}`, y el detalle, `submit/` y `status/` sobre
+  `admin/fiscal-void-communications/{id}`. El objetivo se DERIVA del
+  `FiscalDocument` local autorizado; el cuerpo sólo aporta motivo y
+  `request_key`. `sales.fiscal.issue` para emitir, `sales.fiscal.view` para leer;
+  un cruce entre empresas da **404**. La bitácora nunca lleva credenciales.
+- **Pruebas.** 67 tests dirigidos en cinco clases (fecha de aceptación, evidencia
+  de otorgamiento, builder, servicio y API) sobre la suite completa en PostgreSQL:
+  **4378 tests, `OK (skipped=3)`**, 1447 s —baseline 5A 4311/3, así que +67 y
+  **delta de omitidas 0**—. Las 3 omitidas son las mismas de siempre y no dependen
+  de esta fase: de las 19 omisiones condicionales del árbol, 15 están guardadas por
+  `connection.vendor == 'sqlite'` y por tanto **se ejecutan** en PostgreSQL, 1 exige
+  un componente de frontend ausente y 3 se omiten porque el catálogo de capacidades
+  no reserva ninguna en esta fase. No hay decoradores `@skip`. Sin diff de
+  frontend: en los 13 commits, el único fichero fuera de `backend/` y `docs/` es
+  `CHANGELOG.md`.
+- **Revisión adversarial (§43).** Dos revisores independientes —normativa SUNAT y
+  seguridad/dominio—. Ocho hallazgos planteados, **cinco confirmados y corregidos**
+  (entre ellos el plazo, que se exigía al crear pero no al enviar: puerta y botón
+  ahora consultan el mismo ayudante), tres rechazados con motivo.
+
+**Clasificación de casos.**
+
+| Caso | Estado | Motivo |
+|---|---|---|
+| **RA-FAC** (baja de factura) | **ACEPTADA EN BETA** | Camino completo: reserva correlativo, construye, valida contra el XSD oficial, firma, envía por `sendSummary`, consulta el ticket y aplica el CDR-Baja. **Evidencia (28-09-2026): `RA-20260928-1` sobre `F001-3` —factura previamente aceptada, CDR `61a6890c…`—, atestiguada como NO otorgada, ticket `1790611064145`, primera consulta ya resuelta: «La Comunicacion de baja RA-20260928-1, ha sido aceptada», código `0`, CDR-Baja `49a11c28…`.** |
+| **RA-NC-FAC** (baja de NC de factura) | IMPLEMENTADO · **BETA no ejercitado** | El camino es el mismo y la cobertura local lo prueba —una nota ligada a factura sí es objeto de baja, y `VOIDABLE_TYPES` la admite—, pero el humo BETA dio de baja una FACTURA, no una nota. No se declara una aceptación que no se ejerció. |
+| **RA-ND-FAC** (baja de ND de factura) | IMPLEMENTADO · **BETA no ejercitado** | Igual que RA-NC-FAC, y por la misma razón. |
+| **VOID-BOL** (anulación de boleta) | PENDIENTE | Su camino es el Resumen Diario con el estado oficial de anulación. Bloqueado: el Catálogo N.º 19, el Anexo N.º 10 y las Reglas de Validación CPE no son accesibles desde este entorno (403 en `cpe.sunat.gob.pe`), y sin el código y las reglas exactas emitir sería adivinar. Requiere además rehacer `fiscal_summary_one_active_per_document` y la semántica de `superseded` al rechazarse. Se falla cerrado. |
+| **VOID-NC-BOL** / **VOID-ND-BOL** | PENDIENTE | Igual que VOID-BOL. |
+| **GRANT-EVIDENCE-01** | RESUELTO como mecanismo · consecuencia operativa abierta | Los campos, los métodos y la atestación auditada existen; pero como todavía nada registra entregas, toda baja exige hoy el paso manual de atestación. Se cierra cuando el checkout y el POS registren el otorgamiento (ADR-41). |
+| **CDR-ACCEPTED-AT** | RESUELTO | Dato de primera clase, escritura única, sellado en ambas rutas de aceptación; el legado sin fecha probable falla cerrado. |
+| **RC-XSD-01** | PARCIAL (sin cambio de veredicto, ADR-36) | El paquete oficial 2.0 SÍ se obtuvo, pero el `SummaryDocuments` publicado es el Resumen por RANGOS de 2012 y aquí se emite el Resumen por DOCUMENTO. La validación estructural local se mantiene; deliberadamente **no** existe un `SUMMARY_XSD`. |
+| **SUBMISSION-UNKNOWN** | IMPLEMENTADO para el RA | Un `sendSummary` transmitido sin ticket queda incierto y recuperable, nunca reenviado a ciegas. |
+
+**Reglas de producto DOCUMENTADAS, no implementadas** (fase futura
+`ERP-SALES-FISCAL-UI`): el checkout del e-commerce origina sólo BOLETA o FACTURA,
+lo elige el cliente, y la emisión ocurre únicamente tras el pago confirmado, sin
+default silencioso; en el POS el operador elige explícitamente y la elección queda
+congelada; NC/ND/RA/bajas son flujos internos de administración.
+
+**Lo que esta fase NO hace, y a propósito:** producción, frontend, POS,
+`ERP-SALES-FISCAL-UI`, reembolso, devolución de stock, cancelación de la
+`Order`/`Payment`, anulación de boleta, GRE, Consulta Integrada REST, merge y
+push.
+
+Detalle: [docs/entrega-fiscal-5b-baja.md](docs/entrega-fiscal-5b-baja.md)
+
+---
+
 ## ERP-FISCAL-5A — Nota de Crédito (07) y Nota de Débito (08)
 
 **Estado: IMPLEMENTADO Y ACEPTADO EN SUNAT BETA para NC-FAC y ND-FAC · NC-BOL y
