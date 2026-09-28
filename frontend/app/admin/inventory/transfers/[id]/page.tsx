@@ -18,6 +18,7 @@ import { AdminShell } from "../../../components/AdminShell";
 import { AccessGuard } from "../../../components/AccessGuard";
 import type { InternalAccess } from "../../../lib/internal-access";
 import {
+  TransferStatusBadge,
   EmptyBox,
   ErrorBox,
   Panel,
@@ -28,7 +29,6 @@ import {
   Th,
   formatDateTime,
 } from "../../../components/InventoryUi";
-import { TransferStatusBadge } from "../page";
 import {
   cancelTransfer,
   dispatchTransfer,

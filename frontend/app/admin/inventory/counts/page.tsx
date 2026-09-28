@@ -20,6 +20,7 @@ import type { InternalAccess } from "../../lib/internal-access";
 import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import {
+  CountStatusBadge,
   EmptyBox,
   ErrorBox,
   Panel,
@@ -45,24 +46,6 @@ const STATUS_FILTERS: { value: "" | CountStatus; label: string }[] = [
   { value: "approved", label: "Aprobados" },
   { value: "cancelled", label: "Anulados" },
 ];
-
-export function CountStatusBadge({ count }: { count: InventoryCount }) {
-  const emphasised = count.status === "counting" || count.status === "review";
-  const muted = count.status === "cancelled";
-  return (
-    <span
-      className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-        emphasised
-          ? "border-bd-border bg-surface-2 text-foreground"
-          : muted
-            ? "border-bd-border text-muted"
-            : "border-bd-border text-muted"
-      }`}
-    >
-      {count.status_label}
-    </span>
-  );
-}
 
 function CountsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const scope = useBranchScope({ preferAggregate: true });

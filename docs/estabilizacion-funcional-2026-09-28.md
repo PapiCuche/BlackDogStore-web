@@ -30,7 +30,7 @@ fuentes existentes; no se fabrican documentos históricos ni decisiones previas.
 | TypeScript | Inicialmente correcto; tras generar `.next/types`, aparecen dos errores preexistentes de exports de páginas |
 | ESLint | 0 errores, 33 advertencias |
 | Build normal | Turbopack: descarga de fuentes y luego restricción de apertura de puerto |
-| Build con Webpack | Compila; falla en typecheck: `CountStatusBadge` y `TransferStatusBadge` exportados desde `page.tsx` |
+| Build con Webpack | **En el baseline:** compila, pero falla en typecheck por `CountStatusBadge` y `TransferStatusBadge` exportados desde `page.tsx`. RESUELTO al cierre de la fase (ver Validación final) |
 
 ## POS — IMPLEMENTADO con alcance fiscal BETA
 
@@ -145,7 +145,7 @@ mismo estado no genera avisos repetidos.
 | FIS-03 | Histórico | Una nota correctiva sustituye al original en la consulta de la venta | HIGH | Sí, tres aserciones rojas | Se elegía el último documento sin filtrar su tipo | CORREGIDO en POS, consulta y emisión idempotente |
 | FIS-04 | Fiscal UI/API | Boleta ofrecía envío individual incompatible con su canal | MEDIUM | Sí, tests rojos | Pistas de acción sin distinguir el canal | CORREGIDO; Resumen Diario web PENDIENTE |
 | ENV-01 | Datos locales | Migraciones 0085–0092 pendientes | HIGH | Sí | Base local atrasada | CORREGIDO localmente con respaldo; aplicadas 0085–0093 |
-| BUILD-01 | Inventario/Next | Exports de dos páginas invalidan build | MEDIUM | Sí, antes de editar | Componentes exportados desde archivos `page.tsx` | PENDIENTE, preexistente fuera de esta fase |
+| BUILD-01 | Inventario/Next | Exports de dos páginas invalidan build | MEDIUM | Sí, antes de editar | Las páginas de detalle importaban un componente DESDE OTRA PÁGINA (`from "../page"`); un `page.tsx` es punto de entrada de ruta y no un módulo compartido | CORREGIDO: ambos badges viven en `app/admin/components/InventoryUi.tsx`, de donde esas páginas ya importaban sus primitivas. Typecheck y build pasan |
 
 No se modificaron pasarela Izipay, checkout público, inventario, promociones ni
 los servicios de stock. La regresión e-commerce corresponde a la suite backend
@@ -165,8 +165,8 @@ restaurar el respaldo antes de retomar escrituras. No revertir otros roles por
 nombre ni borrar historial. El deploy debe aplicar todas las migraciones
 pendientes sobre una base respaldada.
 
-En esta sesión se respaldó SQLite en
-`/tmp/blackdog-before-stabilization-20260928.sqlite3` y se aplicaron 0085–0093.
+En esta sesión se respaldó la SQLite local en un fichero efímero fuera del árbol
+del repositorio y se aplicaron 0085–0093.
 `check`, `migrate --check` y `makemigrations --check --dry-run` son correctos.
 Se conservaron 32 pedidos, 0 reparaciones y 5 membresías. El único preset Ventas
 local recibió la capacidad de entrega. No se migró ninguna base de producción.
@@ -181,7 +181,16 @@ baseline: 24 pruebas backend y 9 frontend.
 Comando ejecutado desde `backend/`:
 
 ```sh
-DEBUG=1 DATABASE_URL=postgres:///blackdog PYTHONPATH=/tmp:/tmp/blackdog-testdeps python3 manage.py test store --settings=blackdog_stabilization_settings --parallel=4 --keepdb --verbosity=1
+# Corrida de la estabilización: en paralelo, con un módulo de settings temporal
+# fuera del árbol y `tblib` instalado en un directorio efímero del PYTHONPATH.
+DEBUG=1 DATABASE_URL=postgres:///blackdog python3 manage.py test store \
+  --settings=<settings temporal> --parallel=4 --keepdb --verbosity=1
+
+# Validación final de cierre, con la configuración del propio repositorio, en
+# serie y creando la base de pruebas desde cero:
+#   Ran 4412 tests in 1448.619s — OK (skipped=3)
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/blackdog \
+  python3 manage.py test store.tests --noinput -v1
 ```
 
 La configuración temporal importa `backend.settings` y fija exclusivamente
@@ -198,11 +207,11 @@ Resultados observados sobre las correcciones:
 - SQLite: 11 pruebas de eventos de servicio, correctas, incluidos estados
   ocultos, idempotencia y estados de entrega del correo.
 - Frontend: 350 tests, 33 suites, correctos (`npm run test:ci`).
-- Typecheck: falla únicamente en los dos exports previos de inventario.
+- Typecheck (`npx tsc --noEmit`): **PASA**, 0 errores, tras extraer los dos
+  badges de inventario al módulo compartido de componentes.
 - Lint: 0 errores, 33 advertencias (`npm run lint`).
-- Build Webpack: compilación correcta; falla en esos mismos dos errores de
-  TypeScript. El build normal con Turbopack ya fallaba en el baseline por las
-  restricciones del entorno. No se etiqueta ninguno como PASS.
+- Build de producción (`npm run build`): **PASA**, con el manifiesto completo de
+  rutas. Los dos errores de TypeScript que lo bloqueaban están corregidos.
 - `check`, `migrate --check`, `makemigrations --check --dry-run` y
   `git diff --check`: correctos.
 
@@ -222,16 +231,20 @@ promociones, pagos y autenticación.
 Jest prueba recepción, selector, página de detalle para Ventas/Técnico/Admin y
 acciones fiscales. Simula la frontera HTTP: no es una prueba en un navegador
 contra un backend vivo. Se actualizó `e2e/pos-ticket.spec.ts` al documento creado
-al cobrar; **Playwright no se ejecutó**. Tampoco se hicieron pagos, entregas SMTP
-externas ni envíos reales a SUNAT. El alcance fiscal sigue BETA; el Resumen
+al cobrar. **Playwright SÍ se ejecutó: 17 de 17 correctos** —`pos-ticket`,
+`h411-auth-interop` y `demo-accounts`—, contra un servidor de desarrollo y una
+API ya en marcha en la máquina, no arrancados por esta auditoría. `pos-ticket`
+ejercita el selector de comprobante en un navegador real. No existe spec de orden
+de servicio, así que ese flujo NO tiene cobertura E2E. Tampoco se hicieron pagos,
+entregas SMTP externas ni envíos reales a SUNAT. El alcance fiscal sigue BETA; el Resumen
 Diario existe en backend, pero su operación web continúa pendiente.
 
-Evidencia temporal local: `/tmp/blackdog-baseline-backend.log`,
-`/tmp/blackdog-final-postgres.log`, `/tmp/blackdog-final-frontend.log`,
-`/tmp/blackdog-final-typecheck.log`, `/tmp/blackdog-final-lint.log`,
-`/tmp/blackdog-final-build.log` y `/tmp/blackdog-local-migrate.log`.
+La evidencia de ejecución quedó en registros locales efímeros del entorno de
+trabajo (baseline backend, PostgreSQL final, frontend, typecheck, lint, build y
+migración local). No se referencian por ruta absoluta: son artefactos de una
+máquina concreta y no forman parte del repositorio.
 
 La ejecución paralela inicialmente no podía reportar todos los fallos porque
-faltaba `tblib`. Se instaló solo en `/tmp/blackdog-testdeps`; no se cambiaron
+faltaba `tblib`. Se instaló en un directorio efímero fuera del árbol; no se cambiaron
 dependencias del repositorio. Las expectativas anteriores del preset Ventas se
 actualizaron para incluir entrega y seguir excluyendo gestión técnica y fiscal.

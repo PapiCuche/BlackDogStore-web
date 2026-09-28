@@ -15,6 +15,7 @@ import { AdminShell } from "../../../components/AdminShell";
 import { AccessGuard } from "../../../components/AccessGuard";
 import type { InternalAccess } from "../../../lib/internal-access";
 import {
+  CountStatusBadge,
   EmptyBox,
   ErrorBox,
   Panel,
@@ -25,7 +26,6 @@ import {
   Th,
   formatDateTime,
 } from "../../../components/InventoryUi";
-import { CountStatusBadge } from "../page";
 import {
   approveCount,
   cancelCount,

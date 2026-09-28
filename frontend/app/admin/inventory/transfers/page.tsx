@@ -19,6 +19,7 @@ import { AccessGuard } from "../../components/AccessGuard";
 import type { InternalAccess } from "../../lib/internal-access";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import {
+  TransferStatusBadge,
   EmptyBox,
   ErrorBox,
   Panel,
@@ -43,26 +44,6 @@ const STATUS_FILTERS: { value: "" | TransferStatus; label: string }[] = [
   { value: "received", label: "Recibidas" },
   { value: "cancelled", label: "Anuladas" },
 ];
-
-export function TransferStatusBadge({ transfer }: { transfer: StockTransfer }) {
-  // Monochrome, matching the rest of the panel. Only IN TRANSIT is emphasised:
-  // it is the one state that means somebody still has to do something.
-  const emphasised = transfer.status === "in_transit";
-  const muted = transfer.status === "cancelled";
-  return (
-    <span
-      className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-        emphasised
-          ? "border-bd-border bg-surface-2 text-foreground"
-          : muted
-            ? "border-bd-border text-muted"
-            : "border-bd-border text-muted"
-      }`}
-    >
-      {transfer.status_label}
-    </span>
-  );
-}
 
 function TransfersContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const scope = useBranchScope({ preferAggregate: true });

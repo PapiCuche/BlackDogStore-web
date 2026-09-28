@@ -12,8 +12,10 @@
 > corrigen timeline, filtros y privacidad de estados/avisos. El 401/403 reportado
 > al abrir órdenes autorizadas no se reprodujo en el HEAD auditado. Fiscal sigue
 > en BETA; WhatsApp/SMS no están integrados. Migraciones locales 0085–0093
-> aplicadas con respaldo. Persisten dos errores de build/typecheck preexistentes
-> en páginas de inventario. Evidencia y límites en
+> aplicadas con respaldo. Los dos errores de build/typecheck de páginas de
+> inventario quedan RESUELTOS extrayendo ambos badges al módulo compartido de
+> componentes; typecheck y build de producción pasan, y Playwright cubre POS y
+> acceso interno con 17 de 17. Evidencia y límites en
 > [la auditoría de estabilización](estabilizacion-funcional-2026-09-28.md).
 
 > **Actualización ERP-FISCAL-5B (28-09-2026, rama `erp/fiscal-sunat`).**

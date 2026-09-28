@@ -26,7 +26,9 @@ información que no esté respaldada por código o commits.
   de emitir una nota de crédito o débito.
 - Auditoría, baseline, pruebas y limitaciones en
   [la entrega de estabilización](docs/estabilizacion-funcional-2026-09-28.md).
-  Los dos errores previos de exports de páginas de inventario siguen pendientes.
+  Los dos errores previos de exports de páginas de inventario quedan RESUELTOS:
+  `CountStatusBadge` y `TransferStatusBadge` se movieron a
+  `app/admin/components/InventoryUi.tsx`. Typecheck y build de producción pasan.
 
 ## ERP-FISCAL-5B — Comunicación de Baja (RA) y otorgamiento del comprobante
 
