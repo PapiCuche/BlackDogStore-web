@@ -36,9 +36,10 @@ from .fiscal_views import (
 from .fiscal_void_services import (
     FiscalVoidInProgress, attest_not_granted, create_void_communication,
     poll_void_communication, record_grant, sign_void_communication,
-    submit_void_communication, void_deadline,
+    submit_void_communication, void_deadline, void_send_blocked_reason,
 )
 from .inventory_views import _company_context
+from .tenancy import visible_orders
 from .models import (
     AdminAuditLog, FiscalGrantMethod, FiscalVoidCommunication, FiscalVoidStatus,
 )
@@ -49,8 +50,13 @@ logger = logging.getLogger(__name__)
 
 def void_payload(void: FiscalVoidCommunication) -> dict:
     """Los metadatos de la comunicación. Sin el XML, sin el CDR, sin secretos."""
-    can_submit = void.status in (
-        FiscalVoidStatus.SIGNED, FiscalVoidStatus.SUBMISSION_ERROR)
+    # `can_submit` pregunta al MISMO sitio que el envío, no a una copia del criterio:
+    # el estado por sí solo decía «sí» sobre una baja cuyo plazo ya había vencido, y
+    # la interfaz seguía ofreciendo el botón. Un botón que ofrece lo que el backend va
+    # a negar no es cortesía, es una trampa.
+    can_submit = (
+        void.status in (FiscalVoidStatus.SIGNED, FiscalVoidStatus.SUBMISSION_ERROR)
+        and void_send_blocked_reason(void) is None)
     can_poll = bool(void.ticket) and void.status == FiscalVoidStatus.SUBMITTED
     can_recover = void.status == FiscalVoidStatus.SUBMISSION_UNKNOWN
     return {
@@ -84,11 +90,25 @@ def void_payload(void: FiscalVoidCommunication) -> dict:
 
 
 def _void(request, pk, capability):
-    """La comunicación, dentro del tenant de quien llama. Ajena = inexistente."""
+    """
+    La comunicación, dentro del tenant Y DE LA SUCURSAL de quien llama.
+
+    Una comunicación no tiene alcance propio: lo hereda de los comprobantes que da
+    de baja. Filtrar sólo por empresa —como hacía— dejaba que quien opera una
+    sucursal leyera, transmitiera y cerrara la baja de OTRA, que es justo lo que
+    `visible_orders` existe para impedir en el resto de la superficie fiscal
+    (H4.1.2). Ajena = inexistente: un 403 confirmaría que ese id existe.
+    """
     company, error = _company_context(request, capability, _NO_LEGACY_BRIDGE)
     if error:
         return None, None, error
-    void = FiscalVoidCommunication.objects.filter(company=company, pk=pk).first()
+    void = (
+        FiscalVoidCommunication.objects.filter(
+            company=company, pk=pk,
+            lines__document__order__in=visible_orders(request.user, company),
+        )
+        .distinct().first()
+    )
     if void is None:
         return None, None, Response(
             {'detail': 'No se encontró la comunicación de baja.'},

@@ -49,6 +49,24 @@ def _original_is_eligible(original: FiscalDocument) -> None:
         raise FiscalError('Sólo una factura o una boleta admiten notas.')
     if not original.signed_xml:
         raise FiscalError('El comprobante original no está firmado.')
+
+    # UNA NOTA Y UNA BAJA SON EXCLUYENTES, Y LA EXCLUSIÓN VA EN LAS DOS DIRECCIONES.
+    #
+    # La baja ya se niega cuando hay una nota aceptada en contra del original
+    # (ERP-FISCAL-5B). Faltaba lo simétrico: emitir una nota sobre una numeración que
+    # está dada de baja —o en camino de estarlo— afirmaría corregir un comprobante
+    # que ante SUNAT dejó de estar vigente. Se mira `superseded=False`, el mismo
+    # predicado que usa el lado de la baja: una comunicación RECHAZADA libera sus
+    # filas, así que lo que queda vivo es lo aceptado y lo que está en vuelo. Ante
+    # una baja en vuelo se falla CERRADO: si luego se acepta, la nota sobraría.
+    from .models import FiscalVoidCommunicationDocument
+
+    if FiscalVoidCommunicationDocument.objects.filter(
+            document=original, superseded=False).exists():
+        raise FiscalError(
+            f'{original.document_id} está incluido en una comunicación de baja viva '
+            f'o aceptada: no se le emite una nota. Corregir con una nota y dar de '
+            f'baja la numeración son caminos excluyentes.')
     if original.document_type == FiscalDocumentType.INVOICE:
         # Una factura debe estar ACEPTADA por SUNAT (tiene CDR): sobre una que no
         # existe para SUNAT no se emite una nota. SIGNED no basta (§10).

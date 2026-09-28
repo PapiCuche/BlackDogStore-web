@@ -181,6 +181,38 @@ def void_deadline(document: FiscalDocument):
     return recibido + timedelta(days=VOID_PLAZO_DAYS)
 
 
+def void_send_blocked_reason(void: FiscalVoidCommunication, *, today=None):
+    """
+    Por qué NO se puede transmitir esta comunicación hoy, o `None` si sí se puede.
+
+    EL PLAZO ES DEL ENVÍO, NO DE LA GENERACIÓN. El artículo 14.1.b dice que el
+    emisor «debe ENVIAR a la SUNAT la comunicación de baja a más tardar hasta el
+    sétimo día calendario...». Comprobarlo sólo al crear dejaba la puerta abierta:
+    `/void/` firma sin enviar, y un `SUBMISSION_ERROR` es reintentable, así que una
+    RA firmada en plazo podía transmitirse semanas después —con su `cbc:IssueDate` y
+    su nombre de archivo ya rancios, porque quedan congelados al crearla—.
+    Refrescarlos no es posible sin emitir otra comunicación, así que si el plazo de
+    algún comprobante venció, ésta no sale.
+
+    Vive en UNA función y la usan el envío y la bandera `can_submit` de la API: que
+    la puerta y el botón se calculen en dos sitios distintos es exactamente cómo se
+    abrió este agujero.
+    """
+    today = today or timezone.localdate()
+    for row in void.lines.select_related('document').all():
+        limite = void_deadline(row.document)
+        if limite is None:
+            return (f'No consta cuándo se recibió la CDR aceptada de '
+                    f'{row.document.document_id}: el plazo no es demostrable. '
+                    f'REQUIERE REVISIÓN OPERATIVA/TRIBUTARIA.')
+        if today > limite:
+            return (f'El plazo para dar de baja {row.document.document_id} venció el '
+                    f'{limite.isoformat()}. Una comunicación firmada fuera de plazo '
+                    f'no se transmite: su fecha de generación está congelada y no se '
+                    f'puede refrescar sin emitir otra.')
+    return None
+
+
 def check_void_eligible(document: FiscalDocument, *, today=None) -> None:
     """
     Todas las condiciones del artículo 14, ANTES de reservar un correlativo.
@@ -195,6 +227,18 @@ def check_void_eligible(document: FiscalDocument, *, today=None) -> None:
             f'Un comprobante tipo {document.document_type} no se da de baja por '
             f'este canal. Una boleta (y sus notas) se anula informándola en el '
             f'Resumen Diario (artículo 14.2.b).')
+
+    # Una NOTA hereda el canal del comprobante que corrige. Un 07/08 de una BOLETA
+    # va por el Resumen, igual que la boleta —artículo 14.2.b—, así que no entra
+    # aquí. El tipo por sí solo no lo distingue: hay que mirar el original.
+    if (document.document_type in (FiscalDocumentType.CREDIT_NOTE,
+                                   FiscalDocumentType.DEBIT_NOTE)
+            and document.original_document_id
+            and document.original_document.document_type
+            == FiscalDocumentType.RECEIPT):
+        raise FiscalError(
+            f'{document.document_id} es una nota de BOLETA: se anula informándola '
+            f'en el Resumen Diario, no por una comunicación de baja.')
 
     if not document.signed_xml:
         raise FiscalError('El comprobante no está firmado: no hay nada que dar de baja.')
@@ -263,11 +307,30 @@ def check_void_eligible(document: FiscalDocument, *, today=None) -> None:
 
 # --- creación ---------------------------------------------------------------
 
-def _live_request(company, environment, request_key):
-    """La comunicación viva que ya atendió esta clave, si la hay."""
-    return FiscalVoidCommunication.objects.filter(
+def _live_request(company, environment, request_key, expected_ids=None):
+    """
+    La comunicación viva que ya atendió esta clave, si la hay.
+
+    Y COMPRUEBA QUE SEA LA MISMA PETICIÓN. La clave sola no identifica nada: si se
+    reutiliza con OTROS comprobantes, devolver la comunicación anterior daría un
+    «listo» que nombra un comprobante distinto del que se pidió dar de baja —y el
+    segundo nunca se daría de baja, sin que nadie se enterara—. Ante ese choque se
+    levanta, que es lo honesto: la clave está usada para otra cosa.
+    """
+    ya = FiscalVoidCommunication.objects.filter(
         company=company, environment=environment, request_key=request_key,
     ).exclude(status=FiscalVoidStatus.REJECTED).order_by('-pk').first()
+    if ya is None or expected_ids is None:
+        return ya
+
+    suyos = set(ya.lines.values_list('document_id', flat=True))
+    if suyos != set(expected_ids):
+        raise FiscalError(
+            f'La clave de idempotencia {request_key!r} ya se usó para otra baja '
+            f'({ya.identifier}), sobre comprobantes distintos de los pedidos. Use '
+            f'una clave nueva: reutilizarla habría dado por hecha una baja que no '
+            f'se pidió, y dejado sin dar de baja la que sí.')
+    return ya
 
 
 def create_void_communication(company, *, targets, environment=None,
@@ -297,8 +360,9 @@ def create_void_communication(company, *, targets, environment=None,
 
     environment = environment or resolve_environment()
 
+    esperados = [document.pk for document, _motivo in targets]
     if request_key:
-        ya = _live_request(company, environment, request_key)
+        ya = _live_request(company, environment, request_key, esperados)
         if ya is not None:
             return ya
 
@@ -357,7 +421,7 @@ def create_void_communication(company, *, targets, environment=None,
             # intentos y saldría como «no se pudo reservar un correlativo», que es
             # falso y manda a investigar el sitio equivocado.
             if request_key:
-                ya = _live_request(company, environment, request_key)
+                ya = _live_request(company, environment, request_key, esperados)
                 if ya is not None:
                     return ya
             continue
@@ -446,6 +510,13 @@ def submit_void_communication(void: FiscalVoidCommunication, provider
         raise FiscalError('La comunicación de baja no está firmada.')
     if void.is_accepted:
         return void
+
+    # El plazo, OTRA VEZ, aquí. No es redundante: el artículo 14.1.b lo pone sobre el
+    # envío, y entre crear y enviar puede pasar cualquier cosa (un timeout, una noche,
+    # una semana). Comprobarlo sólo al crear permitía transmitir una baja vencida.
+    bloqueo = void_send_blocked_reason(void)
+    if bloqueo:
+        raise FiscalError(bloqueo)
 
     limite = timezone.now() - timedelta(minutes=STALE_SUBMISSION_MINUTES)
     with transaction.atomic():

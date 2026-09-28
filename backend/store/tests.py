@@ -57989,6 +57989,123 @@ class Fiscal5bVoidServiceTest(Fiscal5aNoteBase):
         result.void_communication.refresh_from_db()
         self.assertFalse(result.void_communication.is_accepted)
 
+    # -- hallazgos de la revisión §43 -----------------------------------------
+
+    def test_the_plazo_is_enforced_again_when_sending(self):
+        """
+        REVIEW §43 A/B. El artículo 14.1.b pone el plazo sobre el ENVÍO.
+
+        Comprobarlo sólo al crear dejaba transmitir una baja vencida: `/void/` firma
+        sin enviar, así que entre una cosa y otra puede pasar una semana.
+        """
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import submit_void_communication
+        original = self._eligible()
+        void = self._signed(targets=[(original, 'NO OTORGADA')])
+        FiscalDocument.objects.filter(pk=original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=10))
+
+        proveedor = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='NO-DEBE-SALIR'))
+        with self.assertRaises(FiscalError) as ctx:
+            submit_void_communication(void, proveedor)
+        self.assertIn('plazo', str(ctx.exception).lower())
+        self.assertEqual(proveedor.submit_calls, 0,
+                         'no se transmitió una baja fuera de plazo')
+
+    def test_a_retry_after_a_transport_error_still_respects_the_plazo(self):
+        # El camino real: el primer envío falla (reintentable), y el reintento llega
+        # tarde. Antes salía sin mirar la fecha.
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import submit_void_communication
+        original = self._eligible()
+        void = self._signed(targets=[(original, 'NO OTORGADA')])
+        fallo = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_ERROR, safe_message='no conectó'))
+        void = submit_void_communication(void, fallo)
+        self.assertEqual(void.status, FiscalVoidStatus.SUBMISSION_ERROR)
+
+        FiscalDocument.objects.filter(pk=original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=10))
+        reintento = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='TARDE'))
+        with self.assertRaises(FiscalError):
+            submit_void_communication(void, reintento)
+        self.assertEqual(reintento.submit_calls, 0)
+
+    def test_sending_without_a_provable_cdr_date_is_refused(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import submit_void_communication
+        original = self._eligible()
+        void = self._signed(targets=[(original, 'NO OTORGADA')])
+        FiscalDocument.objects.filter(pk=original.pk).update(cdr_accepted_at=None)
+        with self.assertRaises(FiscalError) as ctx:
+            submit_void_communication(void, _FakeSummaryProvider(
+                submit=SummarySubmissionResult(
+                    outcome=SummaryOutcome.TICKET, ticket='X')))
+        self.assertIn('REVISIÓN', str(ctx.exception).upper())
+
+    def test_a_request_key_reused_on_another_document_is_refused(self):
+        # La clave sola no identifica nada: reutilizarla con otro comprobante daba
+        # un «listo» que nombraba el comprobante equivocado.
+        from .fiscal_services import FiscalError
+        uno = self._eligible()
+        otro = self._eligible()
+        self._create(targets=[(uno, 'a')], request_key='k9')
+        with self.assertRaises(FiscalError) as ctx:
+            self._create(targets=[(otro, 'b')], request_key='k9')
+        self.assertIn('idempotencia', str(ctx.exception).lower())
+
+    def test_a_note_cannot_be_issued_over_a_comprobante_being_voided(self):
+        # La exclusión nota/baja va en LAS DOS direcciones.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._eligible()
+        self._create(targets=[(original, 'NO OTORGADA')])
+        with self.assertRaises(FiscalError) as ctx:
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='01', reason_description='x', request_key='n1')
+        self.assertIn('baja', str(ctx.exception).lower())
+
+    def test_a_note_of_a_boleta_never_reaches_the_ra_channel(self):
+        """
+        Una nota hereda el canal de lo que corrige: un 07 de BOLETA va por el
+        Resumen (artículo 14.2.b), no por una RA.
+
+        Se construye la fila a mano porque hoy `create_fiscal_note` ni siquiera
+        emite notas de boleta (NC-BOL/ND-BOL están PENDIENTES): la guarda existe
+        para que el día que se emitan no entren por el canal equivocado.
+        """
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        serie_b = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT,
+            series='B001')
+        boleta = FiscalDocument.objects.create(
+            order=self._paid_invoice_order(), company=self.company,
+            series_ref=serie_b, document_type=FiscalDocumentType.RECEIPT,
+            series='B001', number=1, issued_at=timezone.now(),
+            environment=serie_b.environment, issuer_tax_id='20100066603',
+            currency='PEN', taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), total=Decimal('118.00'),
+            tax_rate=Decimal('0.18'), status=FiscalDocumentStatus.SIGNED)
+        nota = FiscalDocument.objects.create(
+            order=boleta.order, company=self.company, series_ref=serie_b,
+            document_type=FiscalDocumentType.CREDIT_NOTE, series='BN01', number=1,
+            issued_at=timezone.now(), environment=serie_b.environment,
+            issuer_tax_id='20100066603', currency='PEN',
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, original_document=boleta,
+            note_reason_code='01')
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(nota)
+        self.assertIn('Resumen', str(ctx.exception))
+
     # -- otorgamiento: el silencio no prueba nada -----------------------------
 
     def test_without_an_attestation_the_baja_is_denied(self):
@@ -58235,6 +58352,51 @@ class Fiscal5bVoidApiTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
     # -- las banderas no mienten ---------------------------------------------
+
+    def test_another_branch_cannot_see_or_move_the_communication(self):
+        """
+        REVIEW §43 B. Una comunicación no tiene alcance propio: lo hereda de los
+        comprobantes que da de baja. Filtrar sólo por empresa dejaba que quien opera
+        una sucursal leyera, transmitiera y cerrara la baja de OTRA (H4.1.2).
+        """
+        self._attest()
+        void_id = self._void().data['id']
+
+        otra_sucursal = Branch.objects.create(
+            company=self.company, name='Sucursal ajena', is_active=True)
+        de_otra, _ = _p2d_member(
+            self.company, 'f5b_otra_sucursal',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'],
+            branches=[otra_sucursal])
+
+        cliente = self._as(de_otra)
+        self.assertEqual(
+            cliente.get(f'/api/admin/fiscal-void-communications/{void_id}/').status_code,
+            status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            cliente.post(
+                f'/api/admin/fiscal-void-communications/{void_id}/submit/').status_code,
+            status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            cliente.post(
+                f'/api/admin/fiscal-void-communications/{void_id}/status/').status_code,
+            status.HTTP_404_NOT_FOUND)
+
+    def test_can_submit_turns_false_once_the_plazo_closes(self):
+        # El botón no puede ofrecer lo que el backend va a negar: la bandera y la
+        # puerta consultan el mismo criterio.
+        self._attest()
+        void_id = self._void().data['id']
+        res = self._as(self.emisor).get(
+            f'/api/admin/fiscal-void-communications/{void_id}/')
+        self.assertTrue(res.data['can_submit'])
+
+        FiscalDocument.objects.filter(pk=self.original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=10))
+        res = self._as(self.emisor).get(
+            f'/api/admin/fiscal-void-communications/{void_id}/')
+        self.assertFalse(res.data['can_submit'],
+                         'fuera de plazo no se ofrece enviar')
 
     def test_an_uncertain_send_offers_recover_and_never_submit(self):
         self._attest()
