@@ -57671,12 +57671,27 @@ class Fiscal5bVoidServiceTest(Fiscal5aNoteBase):
     sustituye por una inferencia.
     """
 
+    def _actor(self):
+        if not hasattr(self, '_attestor'):
+            self._attestor, _ = _p2d_member(
+                self.company, 'f5b_attestor', ['company.view'])
+        return self._attestor
+
     def _eligible(self):
-        """Una factura aceptada, con fecha de CDR y sin otorgar: la baja procede."""
+        """
+        Una factura aceptada, con fecha de CDR y CON atestación de no otorgamiento.
+
+        La atestación es parte del escenario elegible, no un adorno: sin ella la
+        baja se deniega, porque el silencio no prueba que no se entregó.
+        """
+        from .fiscal_void_services import attest_not_granted
         original = self._accepted_invoice()
         original.refresh_from_db()
         self.assertIsNotNone(original.cdr_accepted_at)
         self.assertIsNone(original.granted_at)
+        attest_not_granted(original, actor=self._actor(),
+                           reason='NUNCA SE ENTREGÓ AL ADQUIRENTE')
+        original.refresh_from_db()
         return original
 
     def _create(self, targets=None, **kw):
@@ -57763,11 +57778,16 @@ class Fiscal5bVoidServiceTest(Fiscal5aNoteBase):
 
     def test_a_granted_invoice_is_refused(self):
         # La puerta del OTORGAMIENTO: lo entregado no se da de baja.
+        #
+        # Se parte de una factura SIN atestación, no de `_eligible()`: atestiguar que
+        # no se entregó y luego registrar la entrega son afirmaciones opuestas, y la
+        # restricción de la base lo prohíbe. El escenario real es éste — aceptada,
+        # entregada, nunca atestiguada.
         from .fiscal_services import FiscalError
-        from .fiscal_void_services import check_void_eligible
-        original = self._eligible()
-        FiscalDocument.objects.filter(pk=original.pk).update(
-            granted_at=timezone.now(), granted_method='pos_print')
+        from .fiscal_void_services import check_void_eligible, record_grant
+        original = self._accepted_invoice()
+        original.refresh_from_db()
+        record_grant(original, actor=self._actor(), method='pos_print')
         original.refresh_from_db()
         with self.assertRaises(FiscalError) as ctx:
             check_void_eligible(original)
@@ -57968,3 +57988,100 @@ class Fiscal5bVoidServiceTest(Fiscal5aNoteBase):
         self.assertEqual(result.action, 'cdr_mismatch')
         result.void_communication.refresh_from_db()
         self.assertFalse(result.void_communication.is_accepted)
+
+    # -- otorgamiento: el silencio no prueba nada -----------------------------
+
+    def test_without_an_attestation_the_baja_is_denied(self):
+        """
+        LA PUERTA QUE MÁS IMPORTA. Ni otorgado ni atestiguado = DESCONOCIDO.
+
+        Hoy nada registra las entregas, así que si el silencio contara como «no se
+        entregó» se podría anular la numeración de un comprobante que el cliente
+        tiene en la mano.
+        """
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._accepted_invoice()
+        original.refresh_from_db()
+        self.assertIsNone(original.granted_at)
+        self.assertIsNone(original.not_granted_at)
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        self.assertIn('atestación', str(ctx.exception).lower())
+
+    def test_an_attestation_records_who_said_it_when_and_why(self):
+        from .fiscal_void_services import attest_not_granted
+        original = self._accepted_invoice()
+        attest_not_granted(original, actor=self._actor(), reason='NO SE ENTREGÓ')
+        original.refresh_from_db()
+        self.assertIsNotNone(original.not_granted_at)
+        self.assertEqual(original.not_granted_by, self._actor())
+        self.assertEqual(original.not_granted_reason, 'NO SE ENTREGÓ')
+
+    def test_an_attestation_demands_a_reason(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import attest_not_granted
+        original = self._accepted_invoice()
+        for motivo in ('', '   '):
+            with self.subTest(reason=motivo), self.assertRaises(FiscalError):
+                attest_not_granted(original, actor=self._actor(), reason=motivo)
+
+    def test_granting_and_attesting_refuse_each_other(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import attest_not_granted, record_grant
+        otorgado = self._accepted_invoice()
+        record_grant(otorgado, actor=self._actor(), method='pos_print')
+        with self.assertRaises(FiscalError):
+            attest_not_granted(otorgado, actor=self._actor(), reason='x')
+
+        atestiguado = self._eligible()
+        with self.assertRaises(FiscalError):
+            record_grant(atestiguado, actor=self._actor(), method='email')
+
+    def test_the_database_refuses_a_document_both_granted_and_not_granted(self):
+        # Son afirmaciones opuestas: que el servicio las impida no basta, porque la
+        # elegibilidad de una baja no puede depender del orden de lectura.
+        from django.db import IntegrityError, transaction
+        original = self._accepted_invoice()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            FiscalDocument.objects.filter(pk=original.pk).update(
+                granted_at=timezone.now(), not_granted_at=timezone.now())
+
+    # -- aislamiento y ausencia de efectos colaterales ------------------------
+
+    def test_a_document_of_another_company_is_refused(self):
+        from .fiscal_services import FiscalError
+        otra = _p3_company('f5b-otra', 'Otra Baja SAC', tax_id='20999999999',
+                           legal_name='OTRA BAJA SAC')
+        ajeno = FiscalDocument(company=otra,
+                               document_type=FiscalDocumentType.INVOICE)
+        with self.assertRaises(FiscalError) as ctx:
+            self._create(targets=[(ajeno, 'x')])
+        self.assertIn('empresas distintas', str(ctx.exception))
+
+    def test_an_accepted_void_moves_no_money_no_stock_and_no_order(self):
+        # §26: fiscal != financiero != inventario != flujo comercial. Dar de baja es
+        # un acto FISCAL y nada más.
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import (
+            poll_void_communication, submit_void_communication)
+        original = self._eligible()
+        order = original.order
+        antes_order = (order.status, order.paid, order.total)
+        antes_stock = StockMovement.objects.count()
+        antes_pagos = PaymentTransaction.objects.count()
+
+        void = submit_void_communication(
+            self._signed(targets=[(original, 'NO OTORGADA')]),
+            _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='T')))
+        result = poll_void_communication(void, _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=void.identifier)))
+        self.assertTrue(result.void_communication.is_accepted)
+
+        order.refresh_from_db()
+        self.assertEqual((order.status, order.paid, order.total), antes_order)
+        self.assertEqual(StockMovement.objects.count(), antes_stock,
+                         'una baja no repone stock')
+        self.assertEqual(PaymentTransaction.objects.count(), antes_pagos,
+                         'una baja no reembolsa')

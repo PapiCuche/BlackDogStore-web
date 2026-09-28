@@ -50,7 +50,7 @@ from .fiscal.void import VoidData, VoidLine, VoidStructureError, build_void_xml
 from .fiscal_services import FiscalError
 from .fiscal_summary_services import STALE_SUBMISSION_MINUTES
 from .models import (
-    FiscalDocument, FiscalDocumentStatus, FiscalDocumentType,
+    FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalGrantMethod,
     FiscalVoidCommunication, FiscalVoidCommunicationDocument, FiscalVoidStatus,
 )
 
@@ -94,6 +94,78 @@ class VoidPollResult:
     action: str
     sunat_code: str = ''
     safe_message: str = ''
+
+
+# --- otorgamiento -----------------------------------------------------------
+#
+# Estas dos funciones hablan de la ENTREGA del comprobante, no de la baja. Viven
+# aquí porque es la baja quien necesita el dato y quien lo introdujo; cuando el
+# checkout y el punto de venta empiecen a registrar entregas por su cuenta, su sitio
+# natural será el módulo de emisión. Queda dicho para que se mueva a conciencia.
+
+def record_grant(document: FiscalDocument, *, actor, method: str,
+                 evidence: dict | None = None) -> FiscalDocument:
+    """
+    Registra que el comprobante SE OTORGÓ: se entregó o se puso a disposición del
+    adquirente (artículo 15). Se escribe una sola vez.
+
+    Otorgar cierra la puerta de la baja, y para siempre: el artículo 14 sólo admite
+    dar de baja la numeración de lo NO otorgado.
+    """
+    if document.granted_at is not None:
+        return document
+    if document.not_granted_at is not None:
+        raise FiscalError(
+            f'{document.document_id} tiene una atestación de NO otorgamiento; no se '
+            f'puede registrar su entrega sin resolver esa contradicción.')
+    if method not in dict(FiscalGrantMethod.choices):
+        raise FiscalError(f'Canal de otorgamiento no reconocido: {method!r}.')
+
+    document.granted_at = timezone.now()
+    document.granted_method = method
+    document.granted_by = actor if getattr(actor, 'pk', None) else None
+    document.granted_evidence = evidence or {}
+    document.save(update_fields=[
+        'granted_at', 'granted_method', 'granted_by', 'granted_evidence',
+        'updated_at'])
+    return document
+
+
+def attest_not_granted(document: FiscalDocument, *, actor, reason: str
+                       ) -> FiscalDocument:
+    """
+    Registra la ATESTACIÓN de que el comprobante NO se otorgó.
+
+    POR QUÉ HACE FALTA UN HECHO Y NO BASTA UNA AUSENCIA
+    ---------------------------------------------------
+    El artículo 14 exige que el documento no haya sido otorgado, pero hoy nada
+    registra las entregas: el mostrador imprime y entrega sin dejar rastro. Si la
+    ausencia de evidencia contara como «no otorgado», se podría anular la numeración
+    de un comprobante que el cliente tiene en la mano. Y si bastara un booleano en la
+    petición, el cliente autorizaría su propia baja.
+
+    Así que la negativa se declara y se firma: queda el autor, el momento y el
+    motivo. Es la palabra de una persona, registrada por el backend y auditable — no
+    una deducción del sistema ni un dato del cuerpo de una petición.
+    """
+    if document.granted_at is not None:
+        raise FiscalError(
+            f'{document.document_id} consta OTORGADO el '
+            f'{timezone.localtime(document.granted_at).date().isoformat()}: no se '
+            f'puede atestiguar que no se otorgó.')
+    if not (reason or '').strip():
+        raise FiscalError(
+            'La atestación exige un motivo: una baja sin motivo registrado no se '
+            'puede auditar después.')
+    if document.not_granted_at is not None:
+        return document
+
+    document.not_granted_at = timezone.now()
+    document.not_granted_by = actor if getattr(actor, 'pk', None) else None
+    document.not_granted_reason = reason.strip()[:200]
+    document.save(update_fields=[
+        'not_granted_at', 'not_granted_by', 'not_granted_reason', 'updated_at'])
+    return document
 
 
 # --- elegibilidad -----------------------------------------------------------
@@ -151,12 +223,23 @@ def check_void_eligible(document: FiscalDocument, *, today=None) -> None:
             f'otorgado, REQUIERE REVISIÓN OPERATIVA/TRIBUTARIA.')
 
     # PUERTA DEL OTORGAMIENTO. El artículo 14 sólo admite dar de baja documentos NO
-    # OTORGADOS. Nulo = DESCONOCIDO, y un desconocido no autoriza nada.
+    # OTORGADOS, y eso hay que DEMOSTRARLO, no deducirlo de un silencio.
     if document.granted_at is not None:
         raise FiscalError(
             f'{document.document_id} fue OTORGADO el '
             f'{timezone.localtime(document.granted_at).date().isoformat()}; sólo se '
             f'da de baja la numeración de documentos no otorgados.')
+    if document.not_granted_at is None:
+        # Ni otorgado ni atestiguado: DESCONOCIDO. Y un desconocido no autoriza
+        # nada. Hoy nada registra las entregas —el mostrador imprime y entrega sin
+        # dejar rastro—, así que tomar este silencio por un «no se entregó»
+        # permitiría anular la numeración de un comprobante que el cliente tiene en
+        # la mano. Hace falta la atestación firmada (`attest_not_granted`).
+        raise FiscalError(
+            f'No consta que {document.document_id} no haya sido otorgado. La baja '
+            f'exige una atestación registrada de NO otorgamiento, con su autor y su '
+            f'motivo: la ausencia de evidencia de entrega no es prueba de que no se '
+            f'entregó.')
 
     # Una nota aceptada en su contra y una baja son caminos excluyentes: si ya se
     # corrigió con una nota, el comprobante existe y se otorgó. No se toca la nota.

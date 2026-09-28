@@ -7457,6 +7457,32 @@ class FiscalDocument(models.Model):
     #: el identificador de la entrega. Nunca una credencial ni el XML entero.
     granted_evidence = models.JSONField(default=dict, blank=True)
 
+    # -- Atestación de NO otorgamiento (ERP-FISCAL-5B) -------------------------
+    #
+    #: CUÁNDO alguien declaró, y se registró, que este comprobante NO se otorgó.
+    #:
+    #: Hace falta porque la AUSENCIA de evidencia no prueba nada: `granted_at` nulo
+    #: significa DESCONOCIDO, y el artículo 14 exige que el documento no haya sido
+    #: otorgado. Sin un hecho POSITIVO que lo afirme, ninguna baja sería elegible
+    #: nunca —y aceptar un «no otorgado» en el cuerpo de una petición dejaría que el
+    #: cliente autorizara su propia baja—. Así que la negativa también se REGISTRA:
+    #: con su autor, su momento y su motivo, por una acción administrativa auditada.
+    #:
+    #: Es una declaración de una persona, no una deducción del sistema: quien la
+    #: firma responde por ella, y queda en la bitácora para poder responder «quién
+    #: dijo que no se entregó, cuándo y por qué».
+    not_granted_at = models.DateTimeField(null=True, blank=True)
+    not_granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fiscal_documents_attested_not_granted',
+    )
+    #: Por qué no se otorgó. Obligatorio cuando hay atestación: una baja sin motivo
+    #: registrado no se puede auditar después.
+    not_granted_reason = models.CharField(max_length=200, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -7498,6 +7524,16 @@ class FiscalDocument(models.Model):
                 condition=(~models.Q(note_request_key='')
                            & ~models.Q(status=FiscalDocumentStatus.REJECTED)),
                 name='fiscal_note_idempotent_per_original',
+            ),
+            # OTORGADO y ATESTIGUADO COMO NO OTORGADO son afirmaciones opuestas, y
+            # nada impediría escribir las dos: se prohíbe en la base. Que las dos
+            # coexistieran dejaría la elegibilidad de una baja a merced del orden en
+            # que se leyeran los campos — y eso decide si se anula la numeración de
+            # un comprobante que el cliente ya tiene.
+            models.CheckConstraint(
+                condition=~(models.Q(granted_at__isnull=False)
+                            & models.Q(not_granted_at__isnull=False)),
+                name='fiscal_document_grant_is_exclusive',
             ),
         ]
         indexes = [
