@@ -720,6 +720,39 @@ def build_pos_sale(
     if payment_method not in PaymentMethod.values:
         raise PosValidationError('Método de pago inválido.')
 
+    # THE COUNTER CANNOT DECLARE ITSELF GATEWAY-PAID.
+    #
+    # `ONLINE` does not describe a way of handing money over: it means the
+    # storefront's gateway captured it, and the only server-side evidence of that
+    # is a `PaymentTransaction` the notification endpoint verified and authorised.
+    # A counter sale has no such record — this module does not even import the
+    # model — so at the till the value can only ever be an unverified claim.
+    #
+    # It was already refused everywhere EXCEPT here: `context_payload` filters it
+    # out of the offered list («the gateway method belongs to the online channel;
+    # a counter cannot pick it»), and this module's own docstring separates the two
+    # channels by exactly this property. But `PaymentMethod.values` contains it, so
+    # the membership check above waved it through, and neither view re-checked what
+    # it forwarded. A value hidden in the UI is not validated: the API is reachable
+    # without the UI, and a direct POST produced a sale marked PAID.
+    #
+    # Worse, it also skipped the money: `resolve_cash` returns `(None, None)` for
+    # anything that is not CASH, so `online` bought exemption from
+    # `amount_received` and from the change calculation at the same time.
+    #
+    # The refusal lives HERE, in the shared pricing core, so the sale and the
+    # preview inherit one rule and calling the service directly cannot bypass it.
+    # This is NOT a statement that a till may never take a gateway payment; it is
+    # that today nothing at the counter can prove one happened. The day the POS
+    # gains a real integration, the condition to relax is this one, and what must
+    # replace it is a verified transaction — never a string from the request.
+    if payment_method == PaymentMethod.ONLINE:
+        raise PosValidationError(
+            'El pago en línea lo confirma la pasarela, no el mostrador. '
+            'Registra cómo se recibió el dinero: efectivo, tarjeta, '
+            'transferencia u otro.'
+        )
+
     items = normalize_items(items)
     products = resolve_pos_products(company, items)
     customer = resolve_pos_customer(company, customer)

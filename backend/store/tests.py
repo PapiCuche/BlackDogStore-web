@@ -20861,6 +20861,178 @@ class C1AnalyticsTest(TestCase):
             )
 
 
+class HardeningPosPaymentAuthorityTest(TestCase):
+    """
+    ERP-SALES-HARDENING-1 §14–§18 — a till cannot declare itself gateway-paid.
+
+    THE DEFECT THIS REPRODUCES. `build_pos_sale` validates the payment method
+    with `payment_method not in PaymentMethod.values`, and `ONLINE` is a member,
+    so it passes. Only the OFFERED list excludes it (`pos_payloads.context_payload`
+    filters `v != PaymentMethod.ONLINE` with the comment «a counter cannot pick
+    it»), and neither `AdminPosSaleView.post` nor `V1PosSaleView.post` re-checks
+    the value they forward. Hiding a value in the UI is not validation: the API
+    is reachable without the UI.
+
+    AND IT BYPASSES CASH VALIDATION AS A SECOND EFFECT. `resolve_cash` returns
+    `(None, None)` for anything that is not CASH, so choosing `online` skips the
+    "count the money" rules entirely — no `amount_received` required, no change
+    computed — while the order is still born `PAID`.
+
+    WHY THAT MATTERS. The POS processes no payment; it RECORDS what the person at
+    the counter says arrived. `ONLINE` means the storefront's gateway took the
+    money, and the only server-side evidence of that is a `PaymentTransaction`
+    the notification endpoint verified. The POS path has no such record and does
+    not even import the model, so at the counter the value can only ever be a
+    claim. A claim is not authority.
+
+    SCOPE. The refusal belongs to the POS flow alone. The STOREFRONT legitimately
+    uses `PaymentMethod.ONLINE` — it is the default of `Order.payment_method` and
+    `test_a_pos_sale_does_not_touch_the_online_channel` pins it — so a fix that
+    rejected the value globally would break the web channel it is meant to
+    protect. Both are asserted here.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('hard-pos-pay', 'Empresa Autoridad Pago')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Autoridad', '50.00')
+        _c1_stock(self.branch, self.product, 10)
+        self.seller, _ = _p2d_member(
+            self.company, 'hard_pos_seller', ['company.view', _C1_POS],
+        )
+
+    def _items(self):
+        return [{'product': self.product.pk, 'quantity': 1}]
+
+    def _sell(self, **kw):
+        # `_c1_sale` injects `amount_received` ONLY for CASH, so a non-cash
+        # method arrives here with no money counted — which is the point.
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=self._items(), **kw,
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # --- the defect ---------------------------------------------------------
+
+    def test_an_online_payment_method_is_refused_at_the_counter(self):
+        """
+        RED until the fix: today this sale is created and marked paid.
+
+        No gateway, no IPN, no webhook, no PaymentTransaction — just a string in
+        a service call.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method=PaymentMethod.ONLINE)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(PaymentTransaction.objects.count(), 0)
+
+    def test_the_http_surface_refuses_an_online_payment_method(self):
+        """The vector is a direct API call, so the refusal has to hold there."""
+        res = self._as(self.seller).post(
+            '/api/admin/pos/sales/',
+            {
+                'branch': self.branch.pk,
+                'items': self._items(),
+                'payment_method': PaymentMethod.ONLINE,
+                'idempotency_key': 'hardening-online-http-0001',
+                'terms_confirmed': True,
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_the_preview_refuses_an_online_payment_method(self):
+        """
+        The preview shares `build_pos_sale`, and §16 says every rejection a real
+        sale would hit happens there too. It must not quote a total for a sale
+        the charge would refuse.
+        """
+        res = self._as(self.seller).post(
+            '/api/admin/pos/preview/',
+            {
+                'branch': self.branch.pk,
+                'items': self._items(),
+                'payment_method': PaymentMethod.ONLINE,
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_online_cannot_be_used_to_skip_counting_the_cash(self):
+        """
+        The second effect, asserted as an outcome rather than as a mechanism: no
+        POS order may end up marked gateway-paid with no money recorded.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method=PaymentMethod.ONLINE)
+        self.assertFalse(
+            Order.objects.filter(
+                sales_channel=SalesChannel.POS,
+                payment_method=PaymentMethod.ONLINE,
+            ).exists()
+        )
+
+    # --- what must keep working --------------------------------------------
+
+    def test_cash_still_requires_the_money_on_the_counter(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _pos.create_pos_sale(
+                actor=self.seller, company=self.company, branch=self.branch,
+                items=self._items(), payment_method=PaymentMethod.CASH,
+                amount_received=None, terms_confirmed=True,
+                idempotency_key='hardening-cash-missing-0001',
+            )
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_insufficient_cash_is_still_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _pos.create_pos_sale(
+                actor=self.seller, company=self.company, branch=self.branch,
+                items=self._items(), payment_method=PaymentMethod.CASH,
+                amount_received=Decimal('10.00'), terms_confirmed=True,
+                idempotency_key='hardening-cash-short-0001',
+            )
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_valid_cash_still_sells(self):
+        order, created = self._sell(payment_method=PaymentMethod.CASH)
+        self.assertTrue(created)
+        self.assertTrue(order.paid)
+        self.assertEqual(order.payment_method, PaymentMethod.CASH)
+
+    def test_card_and_transfer_still_sell_without_counting_cash(self):
+        """Non-cash, non-gateway methods are what a counter really reports."""
+        for i, method in enumerate(
+            (PaymentMethod.CARD, PaymentMethod.TRANSFER, PaymentMethod.OTHER), 1
+        ):
+            order, created = self._sell(payment_method=method)
+            self.assertTrue(created, method)
+            self.assertEqual(order.payment_method, method)
+            self.assertIsNone(order.amount_received, method)
+            self.assertIsNone(order.change_amount, method)
+
+    def test_an_arbitrary_payment_method_is_still_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method='bitcoin')
+
+    def test_the_storefront_still_records_the_gateway_method(self):
+        """
+        The fix is POS-scoped. `ONLINE` is the default of `Order.payment_method`
+        and the web channel's truthful value; breaking that would trade one
+        defect for another.
+        """
+        web = _p3_order(self.company)
+        self.assertEqual(web.sales_channel, SalesChannel.ONLINE)
+        self.assertEqual(web.payment_method, PaymentMethod.ONLINE)
+
+
 class C1PosConcurrencyTest(TransactionTestCase):
     """
     §109 — two tills, one unit.
