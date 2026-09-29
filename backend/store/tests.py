@@ -23211,6 +23211,366 @@ class C13PromotionEngineTest(TestCase):
         )
         self.assertEqual(result['applied'], [])
 
+    # ------------------------------------------------------------------
+    # ERP-FISCAL-6 (ADR-42) — qué parte de la rebaja le toca a cada artículo.
+    #
+    # El descuento del combo ya estaba decidido y cobrado; esto sólo lo EXPLICA
+    # componente a componente, y la explicación tiene que ser la misma hoy y
+    # dentro de dos años. Cada test comprueba también que Σ componentes ==
+    # descuento de la promoción: la regla existe para cerrar exacto.
+    # ------------------------------------------------------------------
+
+    def _shares(self, entry):
+        """{product_id: discount_amount} de una promoción aplicada."""
+        return {c['product_id']: c['discount_amount'] for c in entry['components']}
+
+    def _assert_closes(self, entry):
+        self.assertEqual(
+            sum((c['discount_amount'] for c in entry['components']), Decimal('0.00')),
+            entry['discount_amount'],
+        )
+        self.assertEqual(
+            sum((c['regular_amount'] for c in entry['components']), Decimal('0.00')),
+            entry['regular_amount'],
+        )
+        for component in entry['components']:
+            self.assertIsInstance(component['discount_amount'], Decimal)
+            self.assertGreaterEqual(component['discount_amount'], Decimal('0.00'))
+            self.assertLessEqual(component['discount_amount'], component['regular_amount'])
+
+    def test_a_fixed_combo_explains_its_discount_per_component(self):
+        """
+        150 sobre 3 150: el teléfono (3 000) carga 142,857…, la funda 4,761…,
+        el vidrio 2,380…. Los pisos suman 149,99 y el céntimo que falta va al
+        mayor residuo, que es el del teléfono.
+        """
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            fixed_price='3000.00',
+        )
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1), (self.glass, 1)),
+            self.prices,
+        )['applied'][0]
+        self.assertEqual(self._shares(entry), {
+            self.phone.pk: Decimal('142.86'),
+            self.case.pk: Decimal('4.76'),
+            self.glass.pk: Decimal('2.38'),
+        })
+        self.assertEqual(entry['components'][0]['regular_amount'], Decimal('3000.00'))
+        self._assert_closes(entry)
+
+    def test_a_percentage_combo_explains_its_discount_per_component(self):
+        """10 % de cada valor regular cierra exacto: 300 + 10 + 5 = 315."""
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            percent='10.00',
+        )
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1), (self.glass, 1)),
+            self.prices,
+        )['applied'][0]
+        self.assertEqual(self._shares(entry), {
+            self.phone.pk: Decimal('300.00'),
+            self.case.pk: Decimal('10.00'),
+            self.glass.pk: Decimal('5.00'),
+        })
+        self._assert_closes(entry)
+
+    def test_components_with_distinct_values_share_in_proportion(self):
+        """50 sobre 150: 33,33 (funda) y 16,67 (vidrio); el céntimo, al vidrio."""
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )['applied'][0]
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('33.33'), self.glass.pk: Decimal('16.67'),
+        })
+        self._assert_closes(entry)
+
+    def test_a_one_cent_remainder_goes_to_the_largest_residual(self):
+        """
+        Dos residuos distintos, un céntimo: se lo lleva el mayor, no el primero
+        de la lista. 16,666… deja 0,0067; 33,333… deja 0,0033.
+        """
+        _c13_combo(self.company, [(self.glass, 1), (self.case, 1)], fixed_price='100.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )['applied'][0]
+        shares = self._shares(entry)
+        self.assertEqual(shares[self.glass.pk], Decimal('16.67'))
+        self.assertEqual(shares[self.case.pk], Decimal('33.33'))
+
+    def test_a_tie_is_broken_by_product_id_ascending(self):
+        """
+        Dos artículos del mismo precio y un solo céntimo de descuento: ambos
+        residuos son 0,005. Lo recibe el `product_id` menor, siempre. Depender
+        del orden del queryset daría dos explicaciones de la misma venta.
+        """
+        twin = _c1_product(self.company, 'Funda Gemela', '100.00')
+        _c1_stock(self.branch, twin, 5)
+        prices = {**self.prices, twin.pk: Decimal('100.00')}
+        _c13_combo(self.company, [(twin, 1), (self.case, 1)], fixed_price='199.99')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((twin, 1), (self.case, 1)), prices,
+        )['applied'][0]
+        self.assertEqual(entry['discount_amount'], Decimal('0.01'))
+        lowest = min(self.case.pk, twin.pk)
+        self.assertEqual(self._shares(entry)[lowest], Decimal('0.01'))
+        self.assertEqual(self._shares(entry)[max(self.case.pk, twin.pk)], Decimal('0.00'))
+
+    def test_multiple_applications_scale_the_attribution(self):
+        """Dos sets: la funda consume 4 unidades (400) y el vidrio 2 (100)."""
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 4), (self.glass, 2)), self.prices,
+        )['applied'][0]
+        self.assertEqual(entry['applications'], 2)
+        by_product = {c['product_id']: c for c in entry['components']}
+        self.assertEqual(by_product[self.case.pk]['quantity_used'], 4)
+        self.assertEqual(by_product[self.case.pk]['regular_amount'], Decimal('400.00'))
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('80.00'), self.glass.pk: Decimal('20.00'),
+        })
+        self._assert_closes(entry)
+
+    def test_a_partial_quantity_is_attributed_only_for_the_units_consumed(self):
+        """
+        Dos fundas en la cesta, una en el combo: la atribución se hace sobre
+        UNA funda (100), no sobre las dos. La sobrante no aparece.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 2), (self.glass, 1)), self.prices,
+        )['applied'][0]
+        by_product = {c['product_id']: c for c in entry['components']}
+        self.assertEqual(by_product[self.case.pk]['quantity_used'], 1)
+        self.assertEqual(by_product[self.case.pk]['regular_amount'], Decimal('100.00'))
+        self.assertEqual(entry['regular_amount'], Decimal('150.00'))
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('33.33'), self.glass.pk: Decimal('16.67'),
+        })
+
+    def test_leftover_units_carry_no_discount(self):
+        """§53 visto desde la atribución: lo que no entró en el combo no rebaja."""
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 3), (self.glass, 1), (self.phone, 1)), self.prices,
+        )
+        entry = result['applied'][0]
+        self.assertNotIn(self.phone.pk, self._shares(entry))
+        self.assertEqual(
+            sum((c['quantity_used'] for c in entry['components']), 0), 2,
+        )
+        self.assertEqual(result['discount'], Decimal('50.00'))
+
+    def test_the_scarce_component_bounds_the_attribution(self):
+        """Un solo vidrio → una aplicación: 2 fundas (200) y 1 vidrio (50)."""
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 4), (self.glass, 1)), self.prices,
+        )['applied'][0]
+        self.assertEqual(entry['applications'], 1)
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('40.00'), self.glass.pk: Decimal('10.00'),
+        })
+        self._assert_closes(entry)
+
+    def test_the_priority_winner_carries_the_whole_attribution(self):
+        """§46 no cambia: la ganadora explica su descuento; la otra no existe."""
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='100.00', priority=1, name='Baja',
+        )
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='50.00', priority=99, name='Alta',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(len(result['applied']), 1)
+        entry = result['applied'][0]
+        self.assertEqual(entry['promotion'].name, 'Alta')
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('66.67'), self.glass.pk: Decimal('33.33'),
+        })
+        self._assert_closes(entry)
+
+    def test_two_promotions_on_different_products_each_explain_their_own(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00', name='A')
+        _c13_combo(self.company, [(self.phone, 1)], percent='10.00', name='B')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1), (self.phone, 1)), self.prices,
+        )
+        self.assertEqual([e['promotion'].name for e in result['applied']], ['A', 'B'])
+        a, b = result['applied']
+        self.assertEqual(self._shares(a), {
+            self.case.pk: Decimal('33.33'), self.glass.pk: Decimal('16.67'),
+        })
+        self.assertEqual(self._shares(b), {self.phone.pk: Decimal('300.00')})
+        self._assert_closes(a)
+        self._assert_closes(b)
+        self.assertEqual(result['discount'], Decimal('350.00'))
+
+    def test_a_zero_priced_component_gets_no_discount(self):
+        """§36: precio cero es válido; su parte es 0,00 y el resto cierra igual."""
+        gift = _c1_product(self.company, 'Regalo', '0.00')
+        _c1_stock(self.branch, gift, 5)
+        prices = {**self.prices, gift.pk: Decimal('0.00')}
+        _c13_combo(self.company, [(self.case, 1), (gift, 1)], fixed_price='90.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (gift, 1)), prices,
+        )['applied'][0]
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('10.00'), gift.pk: Decimal('0.00'),
+        })
+        self._assert_closes(entry)
+
+    # --- la función pura, sin motor: forma, precondiciones y bordes -------
+
+    def _components(self):
+        return [
+            {'product_id': self.case.pk, 'product_name': 'Funda',
+             'quantity_per_application': 1, 'quantity_used': 1, 'unit_price': '100.00'},
+            {'product_id': self.glass.pk, 'product_name': 'Vidrio',
+             'quantity_per_application': 1, 'quantity_used': 1, 'unit_price': '50.00'},
+        ]
+
+    def test_allocating_a_zero_discount_explains_zeros(self):
+        out = _promo.allocate_component_discounts(
+            Decimal('150.00'), Decimal('0.00'), self._components())
+        self.assertEqual([c['discount_amount'] for c in out],
+                         [Decimal('0.00'), Decimal('0.00')])
+        self.assertEqual([c['regular_amount'] for c in out],
+                         [Decimal('100.00'), Decimal('50.00')])
+
+    def test_a_zero_regular_total_only_admits_a_zero_discount(self):
+        free = [{'product_id': self.case.pk, 'quantity_used': 2, 'unit_price': '0.00'}]
+        out = _promo.allocate_component_discounts(Decimal('0'), Decimal('0'), free)
+        self.assertEqual(out[0]['discount_amount'], Decimal('0.00'))
+        # Un descuento sobre base cero SUPERA la base: cae en la guarda general,
+        # antes de llegar a repartir nada. Lo que importa es que no se reparte.
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.allocate_component_discounts(Decimal('0'), Decimal('0.01'), free)
+        self.assertIn('supera el valor regular (0.00)', str(ctx.exception))
+
+    def test_a_discount_above_the_regular_value_fails_closed(self):
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.allocate_component_discounts(
+                Decimal('150.00'), Decimal('150.01'), self._components())
+        self.assertIn('supera', str(ctx.exception))
+
+    def test_a_regular_total_that_the_components_do_not_explain_fails_closed(self):
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.allocate_component_discounts(
+                Decimal('160.00'), Decimal('10.00'), self._components())
+        self.assertIn('incoherente', str(ctx.exception))
+
+    def test_the_catalogue_shape_is_refused_not_aliased(self):
+        """
+        §33. `combo_availability` describe el catálogo con `quantity`/`price`;
+        explicar una venta con eso sería explicarla a precios de hoy.
+        """
+        catalogue = [{'product_id': self.case.pk, 'quantity': 1,
+                      'price': '100.00', 'available': 5}]
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.allocate_component_discounts(Decimal('100'), Decimal('10'), catalogue)
+        self.assertIn('catálogo', str(ctx.exception))
+        with self.assertRaises(_promo.PromotionAllocationError):
+            _promo.allocate_component_discounts(Decimal('100'), Decimal('10'), ['x'])
+        with self.assertRaises(_promo.PromotionAllocationError):
+            _promo.allocate_component_discounts(Decimal('100'), Decimal('10'), [])
+
+    def test_the_allocator_does_not_mutate_its_input(self):
+        components = self._components()
+        _promo.allocate_component_discounts(Decimal('150.00'), Decimal('50.00'), components)
+        self.assertNotIn('discount_amount', components[0])
+        self.assertNotIn('regular_amount', components[1])
+
+    # --- lo que se leyó de una venta ya hecha ------------------------------
+
+    def test_a_legacy_snapshot_is_rebuilt_in_memory_with_the_current_rule(self):
+        """
+        §9/§11. Un snapshot anterior a la atribución sólo trae `quantity_used` y
+        `unit_price`: se reconstruye con la regla vigente y NADA se escribe.
+        """
+        legacy = self._components()
+        out = _promo.frozen_component_discounts(
+            Decimal('150.00'), Decimal('50.00'), legacy)
+        self.assertEqual({c['product_id']: c['discount_amount'] for c in out}, {
+            self.case.pk: Decimal('33.33'), self.glass.pk: Decimal('16.67'),
+        })
+        self.assertEqual(sum((c['discount_amount'] for c in out), Decimal('0')),
+                         Decimal('50.00'))
+        # El JSON histórico sigue diciendo exactamente lo que decía.
+        self.assertNotIn('discount_amount', legacy[0])
+        self.assertNotIn('regular_amount', legacy[1])
+
+    def test_a_legacy_snapshot_with_a_duplicated_product_fails_closed(self):
+        """§12. La constraint de `PromotionItem` no protege un JSON histórico."""
+        twice = self._components()
+        twice[1] = {**twice[1], 'product_id': self.case.pk}
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.frozen_component_discounts(Decimal('150.00'), Decimal('50.00'), twice)
+        self.assertIn('dos veces', str(ctx.exception))
+
+    def _frozen(self, case_discount='40.00', glass_discount='10.00',
+                case_regular='100.00'):
+        return [
+            {**self._components()[0], 'regular_amount': case_regular,
+             'discount_amount': case_discount},
+            {**self._components()[1], 'regular_amount': '50.00',
+             'discount_amount': glass_discount},
+        ]
+
+    def test_a_frozen_snapshot_is_the_historical_authority(self):
+        """
+        §7/§10. 40/10 NO es lo que daría la regla proporcional (33,33/16,67), y
+        aun así se devuelve tal cual: una venta explicada con la regla de su
+        día sigue explicándose así aunque la regla cambie.
+        """
+        out = _promo.frozen_component_discounts(
+            Decimal('150.00'), Decimal('50.00'), self._frozen())
+        self.assertEqual({c['product_id']: c['discount_amount'] for c in out}, {
+            self.case.pk: Decimal('40.00'), self.glass.pk: Decimal('10.00'),
+        })
+        self.assertIsInstance(out[0]['discount_amount'], Decimal)
+
+    def test_a_tampered_frozen_snapshot_fails_closed(self):
+        """§10. Sumas que no cuadran o un regular que no es su producto: nada se arregla."""
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.frozen_component_discounts(
+                Decimal('150.00'), Decimal('50.00'), self._frozen(case_discount='45.00'))
+        self.assertIn('congelados suman', str(ctx.exception))
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.frozen_component_discounts(
+                Decimal('150.00'), Decimal('50.00'), self._frozen(case_regular='90.00'))
+        self.assertIn('declara un valor regular', str(ctx.exception))
+        with self.assertRaises(_promo.PromotionAllocationError):
+            _promo.frozen_component_discounts(
+                Decimal('150.00'), Decimal('50.00'),
+                self._frozen(case_discount='101.00', glass_discount='-51.00'))
+
+    def test_a_partially_frozen_snapshot_fails_closed(self):
+        """§39. Un componente con atribución y otro sin ella: no se adivina cuál manda."""
+        mixed = [self._frozen()[0], self._components()[1]]
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.frozen_component_discounts(Decimal('150.00'), Decimal('50.00'), mixed)
+        self.assertIn('congelado a medias', str(ctx.exception))
+
 
 class C13PromotionSaleTest(TestCase):
     """§41, §47–48, §55–57 — what a promotion does to a real sale."""
@@ -23278,6 +23638,38 @@ class C13PromotionSaleTest(TestCase):
         self.assertEqual(applied.regular_amount, Decimal('3150.00'))
         self.assertEqual(applied.discount_amount, Decimal('150.00'))
         self.assertEqual(len(applied.metadata['components']), 3)
+
+    def test_the_frozen_snapshot_carries_each_components_share(self):
+        """
+        ERP-FISCAL-6 §38. `freeze()` persiste la atribución que calculó
+        `evaluate()`, como TEXTO —igual que `unit_price`— porque `Decimal` no es
+        JSON y `float` perdería céntimos. Leerla de vuelta devuelve exactamente
+        lo congelado, no una segunda cuenta.
+        """
+        order, _ = self._sell()
+        applied = AppliedPromotion.objects.get(order=order)
+        components = applied.metadata['components']
+        shares = {c['product_id']: c['discount_amount'] for c in components}
+        self.assertEqual(shares, {
+            self.phone.pk: '142.86', self.case.pk: '4.76', self.glass.pk: '2.38',
+        })
+        for component in components:
+            self.assertIsInstance(component['discount_amount'], str)
+            self.assertIsInstance(component['regular_amount'], str)
+            self.assertIsInstance(component['unit_price'], str)
+        self.assertEqual(
+            sum((Decimal(c['discount_amount']) for c in components), Decimal('0')),
+            applied.discount_amount,
+        )
+        read_back = _promo.frozen_component_discounts(
+            applied.regular_amount, applied.discount_amount, components)
+        self.assertEqual(
+            {c['product_id']: c['discount_amount'] for c in read_back},
+            {pid: Decimal(v) for pid, v in shares.items()},
+        )
+        # La fila no cambió por leerla.
+        applied.refresh_from_db()
+        self.assertEqual(applied.metadata['components'], components)
 
     def test_editing_the_promotion_does_not_rewrite_the_sale(self):
         """
