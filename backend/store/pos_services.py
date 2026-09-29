@@ -86,38 +86,113 @@ MAX_QUANTITY_PER_LINE = 1000
 MAX_IDEMPOTENCY_KEY = 64
 
 
+def _series_diagnosis(company, branch, document_type, noun):
+    """
+    Por qué esta sucursal no puede emitir este tipo, en términos del operador.
+
+    SE CLASIFICA CONTANDO SERIES, NO LEYENDO EL MENSAJE DE LA EXCEPCIÓN.
+    `resolve_series` levanta `FiscalConfigError` tanto cuando no hay serie como
+    cuando hay dos, y distinguirlo por el texto ataría esta pantalla a la
+    redacción de otra función: el día que alguien mejore una frase, la UI
+    empezaría a mentir. Se vuelve a preguntar a la base con las mismas
+    condiciones y se decide con números.
+    """
+    from .models import FiscalSeries
+    from . import fiscal_config
+
+    try:
+        environment = fiscal_config.resolve_environment()
+    except fiscal_config.FiscalConfigError:
+        return ('UNSUPPORTED_ENVIRONMENT',
+                'El ambiente fiscal configurado en este servidor no está '
+                'habilitado para emitir.')
+
+    activas = FiscalSeries.objects.filter(
+        company=company, document_type=document_type,
+        environment=environment, is_active=True,
+    )
+    de_sucursal = activas.filter(branch=branch).count()
+    de_empresa = activas.filter(branch__isnull=True).count()
+
+    if de_sucursal > 1 or (de_sucursal == 0 and de_empresa > 1):
+        return ('AMBIGUOUS_SERIES',
+                f'Hay más de una serie de {noun} activa que podría aplicarse a '
+                f'«{branch}». Desactive las que no correspondan.')
+    return ('NO_SERIES_FOR_BRANCH',
+            f'Falta una serie de {noun} activa para «{branch}».')
+
+
 def receipt_options(company, branches, actor):
-    """Documents this operator can prepare, resolved against tenant series."""
+    """
+    Documentos que este operador puede preparar, y por qué no puede los demás.
+
+    UNA OPCIÓN QUE NO SE PUEDE USAR SE DEVUELVE EXPLICADA, NO ESCONDIDA. Antes se
+    omitía, y el resultado era una pantalla que ofrecía sólo la nota interna sin
+    decir si faltaba un permiso, si la emisión estaba apagada en el servidor o si
+    la empresa no tenía serie: tres causas distintas con el mismo síntoma, y la
+    persona del mostrador sin nada que hacer al respecto.
+
+    LO QUE NO CAMBIA ES QUIÉN PUEDE EMITIR. Un operador sin
+    `sales.fiscal.issue` sigue recibiendo la lista sin las opciones fiscales —ni
+    habilitadas ni explicadas—, porque el estado de las series de la empresa es
+    configuración tributaria y no algo que deba contarse a quien no emite. La
+    explicación es para quien tiene la autoridad y le falta la configuración.
+    Esto informa; no autoriza. El backend sigue decidiendo en cada emisión.
+
+    Cada entrada lleva `branches` con las sucursales donde SÍ se puede usar, más
+    `enabled` y, cuando no, `disabled_code`/`disabled_reason`.
+    """
     from .tenancy import has_capability
     from . import fiscal_config, fiscal_services
 
     options = []
-    for value, label, capability in (
-        ('sales_note', 'Nota de venta interna', 'sales.notes.manage'),
-        *((value, f'{label} · BETA', 'sales.fiscal.issue')
-          for value, label in Order.ReceiptType.choices),
-    ):
-        if not has_capability(actor, company, capability):
+
+    if has_capability(actor, company, 'sales.notes.manage'):
+        # El resolutor interno aprovisiona secuencias al emitir; llamarlo desde
+        # esta lectura escribiría en la base.
+        options.append({
+            'value': 'sales_note', 'label': 'Nota de venta interna',
+            'branches': [b.pk for b in branches],
+            'enabled': bool(branches),
+            'disabled_code': '' if branches else 'NO_BRANCH',
+            'disabled_reason': '' if branches else 'No hay sucursal disponible.',
+        })
+
+    if not has_capability(actor, company, 'sales.fiscal.issue'):
+        return options
+
+    fiscal_on = fiscal_config.fiscal_enabled()
+    for value, noun in Order.ReceiptType.choices:
+        label = f'{noun} electrónica · BETA'
+        if not fiscal_on:
+            options.append({
+                'value': value, 'label': label, 'branches': [],
+                'enabled': False, 'disabled_code': 'FISCAL_DISABLED',
+                'disabled_reason': ('La emisión electrónica no está habilitada '
+                                    'en este servidor.'),
+            })
             continue
-        if value != 'sales_note' and not fiscal_config.fiscal_enabled():
-            continue
-        allowed = []
+
+        document_type = fiscal_services.RECEIPT_TYPE_TO_DOCUMENT_TYPE[value]
+        allowed, code, reason = [], '', ''
         for branch in branches:
             try:
-                if value == 'sales_note':
-                    # The internal resolver lazily provisions sequences when
-                    # issuing. Calling it from this GET would perform writes.
-                    allowed.append(branch.pk)
-                    continue
-                else:
-                    fiscal_config.resolve_series(
-                        company, branch=branch,
-                        document_type=fiscal_services.RECEIPT_TYPE_TO_DOCUMENT_TYPE[value])
+                fiscal_config.resolve_series(
+                    company, branch=branch, document_type=document_type)
             except fiscal_config.FiscalConfigError:
+                if not code:
+                    code, reason = _series_diagnosis(
+                        company, branch, document_type, noun.lower())
                 continue
             allowed.append(branch.pk)
-        if allowed:
-            options.append({'value': value, 'label': label, 'branches': allowed})
+
+        options.append({
+            'value': value, 'label': label, 'branches': allowed,
+            'enabled': bool(allowed),
+            'disabled_code': '' if allowed else (code or 'NO_SERIES_FOR_BRANCH'),
+            'disabled_reason': '' if allowed else (
+                reason or f'Falta una serie de {noun.lower()} activa.'),
+        })
     return options
 
 _KEY_ALLOWED = re.compile(r'^[\x21-\x7E]{8,64}$')

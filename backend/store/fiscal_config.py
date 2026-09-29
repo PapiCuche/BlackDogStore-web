@@ -68,6 +68,23 @@ def resolve_environment() -> str:
     return configured
 
 
+#: Cómo se llama cada tipo de comprobante cuando hay que decírselo a una
+#: persona. Los mensajes de esta función los lee quien atiende un mostrador, no
+#: un programador: decirle «no hay serie de factura» cuando lo que falta es la
+#: serie de boleta lo manda a revisar la configuración equivocada.
+#:
+#: Se consulta con `.get(...)` y un nombre genérico de reserva. Indexar
+#: directamente convertiría un tipo inesperado —un error de configuración, que
+#: es lo que esta función informa— en un `KeyError` que oculta el diagnóstico
+#: real detrás de otro fallo.
+_DOCUMENT_NOUN = {
+    FiscalDocumentType.INVOICE: 'factura',
+    FiscalDocumentType.RECEIPT: 'boleta',
+    FiscalDocumentType.CREDIT_NOTE: 'nota de crédito',
+    FiscalDocumentType.DEBIT_NOTE: 'nota de débito',
+}
+
+
 def resolve_series(company, *, branch=None,
                    document_type: str = FiscalDocumentType.INVOICE) -> FiscalSeries:
     """
@@ -88,6 +105,7 @@ def resolve_series(company, *, branch=None,
     documentos de series distintas para el mismo mostrador.
     """
     environment = resolve_environment()
+    noun = _DOCUMENT_NOUN.get(document_type, 'comprobante')
 
     candidates = FiscalSeries.objects.filter(
         company=company, document_type=document_type,
@@ -103,7 +121,7 @@ def resolve_series(company, *, branch=None,
         if len(de_sucursal) > 1:
             raise FiscalConfigError(
                 f'La sucursal «{branch}» tiene {len(de_sucursal)} series de '
-                f'factura activas y no hay regla para elegir entre ellas. '
+                f'{noun} activas y no hay regla para elegir entre ellas. '
                 f'Desactive las que no correspondan.'
             )
 
@@ -112,13 +130,13 @@ def resolve_series(company, *, branch=None,
         return de_empresa[0]
     if len(de_empresa) > 1:
         raise FiscalConfigError(
-            f'La empresa tiene {len(de_empresa)} series de factura activas sin '
+            f'La empresa tiene {len(de_empresa)} series de {noun} activas sin '
             f'sucursal y no hay regla para elegir entre ellas. Desactive las que '
             f'no correspondan o asígnelas a una sucursal.'
         )
 
     raise FiscalConfigError(
-        'No hay una serie de factura activa para esta empresa en el ambiente '
+        f'No hay una serie de {noun} activa para esta empresa en el ambiente '
         f'«{environment}».'
     )
 
