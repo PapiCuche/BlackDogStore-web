@@ -9528,7 +9528,7 @@ class DemoUsersCommandTest(TestCase):
             declared,
             {'-h', '--help', '--version', '-v', '--verbosity', '--settings',
              '--pythonpath', '--traceback', '--no-color', '--force-color',
-             '--skip-checks', '--company-slug', '--purge'},
+             '--skip-checks', '--company-slug', '--purge', '--fiscal-beta'},
         )
         for opt in declared:
             self.assertNotIn('force-production', opt)
@@ -9550,6 +9550,80 @@ class DemoUsersCommandTest(TestCase):
                 force_production=True,
             )
         self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)
+
+    # --- 1f: --fiscal-beta (ERP-FISCAL-6) --------------------------------------
+
+    def _fiscal_beta(self):
+        out = StringIO()
+        call_command('seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG,
+                     fiscal_beta=True, stdout=out)
+        return out.getvalue()
+
+    def _series(self):
+        return {
+            (s.document_type, s.series): s
+            for s in FiscalSeries.objects.filter(company=self.company)
+        }
+
+    @override_settings(FISCAL_ENVIRONMENT='beta')
+    def test_01f_fiscal_beta_prepares_f001_and_b001_once(self):
+        out = self._fiscal_beta()
+        series = self._series()
+        self.assertEqual(set(series), {('01', 'F001'), ('03', 'B001')})
+        for row in series.values():
+            self.assertEqual(row.environment, 'beta')
+            self.assertIsNone(row.branch)
+            self.assertTrue(row.is_active)
+            self.assertEqual(row.next_number, 1)
+        self.assertIn('creada', out)
+        # Idempotente: la segunda vez reutiliza y no crea nada.
+        again = self._fiscal_beta()
+        self.assertEqual(FiscalSeries.objects.filter(company=self.company).count(), 2)
+        self.assertIn('reutilizada', again)
+        self.assertNotIn('creada', again)
+
+    @override_settings(FISCAL_ENVIRONMENT='production')
+    def test_01g_fiscal_beta_refuses_any_environment_but_beta(self):
+        with self.assertRaises(CommandError) as ctx:
+            self._fiscal_beta()
+        self.assertIn('beta', str(ctx.exception))
+        self.assertEqual(FiscalSeries.objects.count(), 0)
+
+    @override_settings(DEBUG=False, FISCAL_ENVIRONMENT='beta')
+    def test_01h_fiscal_beta_is_refused_outside_development(self):
+        with self.assertRaises(CommandError):
+            self._fiscal_beta()
+        self.assertEqual(FiscalSeries.objects.count(), 0)
+
+    @override_settings(FISCAL_ENVIRONMENT='beta')
+    def test_01i_fiscal_beta_reuses_an_existing_series_and_never_touches_its_counter(self):
+        FiscalSeries.objects.create(
+            company=self.company, document_type='01', series='F777', next_number=42)
+        out = self._fiscal_beta()
+        series = self._series()
+        self.assertEqual(set(series), {('01', 'F777'), ('03', 'B001')})
+        self.assertEqual(series[('01', 'F777')].next_number, 42)
+        self.assertIn('reutilizada  F777', out)
+
+    @override_settings(FISCAL_ENVIRONMENT='beta')
+    def test_01j_fiscal_beta_stops_on_ambiguity_instead_of_choosing(self):
+        FiscalSeries.objects.create(company=self.company, document_type='01', series='F001')
+        FiscalSeries.objects.create(company=self.company, document_type='01', series='F002')
+        with self.assertRaises(CommandError) as ctx:
+            self._fiscal_beta()
+        self.assertIn('ambigüedad', str(ctx.exception))
+        self.assertEqual(FiscalSeries.objects.filter(company=self.company).count(), 2)
+
+    @override_settings(FISCAL_ENVIRONMENT='beta')
+    def test_01k_fiscal_beta_never_reaches_another_company(self):
+        other = _saas_company('Otra SA', 'otra-demo-co')
+        self._fiscal_beta()
+        self.assertEqual(FiscalSeries.objects.filter(company=other).count(), 0)
+        self.assertEqual(FiscalSeries.objects.filter(company=self.company).count(), 2)
+
+    def test_01l_seeding_without_the_flag_creates_no_series(self):
+        self._seed()
+        self.assertEqual(FiscalSeries.objects.count(), 0)
 
     # --- 2: the six accounts ---
 
@@ -41252,6 +41326,154 @@ class Ip1PosBase(TestCase):
         return BranchStock.objects.get(
             branch=branch or self.branch_a, product=product or self.cable,
         ).quantity
+
+
+@override_settings(FISCAL_ENABLED=True)
+class Fiscal6ReceiptOptionsTest(Ip1PosBase):
+    """
+    ERP-FISCAL-6 §18/§29 — qué comprobantes ofrece la caja, y por qué no los demás.
+
+    Una opción fiscal que no se puede usar se devuelve EXPLICADA a quien tiene
+    `sales.fiscal.issue`, y no se devuelve en absoluto a quien no la tiene: el
+    estado de las series de una empresa es configuración tributaria. `branches`
+    dice dónde SÍ hay resolución válida; una serie de otra sucursal no habilita
+    la actual. Esto informa; el backend sigue decidiendo en cada emisión.
+    """
+
+    CAPS = ('sales.pos.use', 'sales.notes.manage', 'sales.fiscal.issue')
+
+    def _options(self, *caps, branches=None):
+        self.only_caps(*(caps or self.CAPS))
+        branches = branches if branches is not None else [self.branch_a, self.branch_b]
+        return {o['value']: o for o in _pos.receipt_options(self.company, branches, self.staff)}
+
+    def _series(self, document_type, series, *, company=None, branch=None, **kw):
+        return FiscalSeries.objects.create(
+            company=company or self.company, document_type=document_type,
+            series=series, branch=branch, **kw)
+
+    def test_a_fully_configured_till_offers_the_three_documents(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        self._series(FiscalDocumentType.RECEIPT, 'B001')
+        options = self._options()
+        self.assertEqual(set(options), {'sales_note', 'factura', 'boleta'})
+        for value in ('sales_note', 'factura', 'boleta'):
+            self.assertTrue(options[value]['enabled'], value)
+            self.assertEqual(options[value]['branches'], [self.branch_a.pk, self.branch_b.pk])
+            self.assertEqual(options[value]['disabled_code'], '')
+        self.assertEqual(options['factura']['label'], 'Factura electrónica · BETA')
+        self.assertEqual(options['boleta']['label'], 'Boleta electrónica · BETA')
+        self.assertEqual(options['sales_note']['label'], 'Nota de venta interna')
+
+    def test_without_the_fiscal_capability_no_fiscal_entry_is_returned(self):
+        """Ni deshabilitada, ni con diagnóstico: la configuración tributaria no se cuenta."""
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        options = self._options('sales.pos.use', 'sales.notes.manage')
+        self.assertEqual(set(options), {'sales_note'})
+        self.assertNotIn('serie', json.dumps(list(options.values()), ensure_ascii=False))
+
+    def test_the_internal_note_keeps_every_visible_branch(self):
+        options = self._options()
+        self.assertEqual(options['sales_note']['branches'], [self.branch_a.pk, self.branch_b.pk])
+        self.assertTrue(options['sales_note']['enabled'])
+        # Sin sucursal visible no hay dónde emitirla, y se dice.
+        without = {o['value']: o for o in _pos.receipt_options(self.company, [], self.staff)}
+        self.assertEqual(
+            without['sales_note'],
+            {'value': 'sales_note', 'label': 'Nota de venta interna', 'branches': [],
+             'enabled': False, 'disabled_code': 'NO_BRANCH',
+             'disabled_reason': 'No hay sucursal disponible.'})
+
+    def test_with_fiscal_disabled_the_authorised_user_sees_a_safe_diagnosis(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        with override_settings(FISCAL_ENABLED=False):
+            options = self._options()
+        for value in ('factura', 'boleta'):
+            self.assertFalse(options[value]['enabled'])
+            self.assertEqual(options[value]['disabled_code'], 'FISCAL_DISABLED')
+            self.assertEqual(options[value]['branches'], [])
+            self.assertIn('no está habilitada', options[value]['disabled_reason'])
+        payload = json.dumps(list(options.values()), ensure_ascii=False).lower()
+        for secret in ('password', 'contraseña', 'pem', 'sol', 'clave'):
+            self.assertNotIn(secret, payload)
+
+    def test_only_a_boleta_series_enables_the_boleta_and_explains_the_factura(self):
+        self._series(FiscalDocumentType.RECEIPT, 'B001')
+        options = self._options()
+        self.assertTrue(options['boleta']['enabled'])
+        self.assertFalse(options['factura']['enabled'])
+        self.assertEqual(options['factura']['disabled_code'], 'NO_SERIES_FOR_BRANCH')
+        self.assertIn('factura', options['factura']['disabled_reason'])
+        self.assertIn(self.branch_a.name, options['factura']['disabled_reason'])
+
+    def test_only_a_factura_series_explains_the_boleta_in_its_own_words(self):
+        """El bug `_DOCUMENT_NOUN`: la boleta que falta se llama boleta, no factura."""
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        options = self._options()
+        self.assertTrue(options['factura']['enabled'])
+        self.assertFalse(options['boleta']['enabled'])
+        self.assertEqual(options['boleta']['disabled_code'], 'NO_SERIES_FOR_BRANCH')
+        self.assertIn('boleta', options['boleta']['disabled_reason'])
+        self.assertNotIn('factura', options['boleta']['disabled_reason'])
+
+    def test_a_series_of_another_branch_does_not_enable_this_one(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001', branch=self.branch_b)
+        options = self._options()
+        self.assertTrue(options['factura']['enabled'])            # en alguna sucursal
+        self.assertEqual(options['factura']['branches'], [self.branch_b.pk])
+        self.assertNotIn(self.branch_a.pk, options['factura']['branches'])
+
+    def test_the_backend_refuses_a_factura_where_the_series_is_not_resolvable(self):
+        """La pantalla filtra por `branches`; la autoridad sigue siendo el servidor."""
+        self._series(FiscalDocumentType.INVOICE, 'F001', branch=self.branch_b)
+        client = self.only_caps(*self.CAPS)
+        ruc = Customer.objects.create(
+            company=self.company, customer_type=Customer.TYPE_BUSINESS,
+            business_name='CLIENTE SAC', document_type=Order.DocumentType.RUC,
+            document_number='20000000001')
+        response = client.post(
+            '/api/v1/internal/ip1-tienda/sales/pos/sales/',
+            self.sale_body(receipt_type='factura', customer=ruc.pk,
+                           payment_method='card', amount_received=None),
+            format='json')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('serie', json.dumps(response.json(), ensure_ascii=False).lower())
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_series_of_another_tenant_never_appears(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001', company=self.other)
+        self._series(FiscalDocumentType.RECEIPT, 'B001', company=self.other)
+        options = self._options()
+        for value in ('factura', 'boleta'):
+            self.assertFalse(options[value]['enabled'])
+            self.assertEqual(options[value]['branches'], [])
+            self.assertEqual(options[value]['disabled_code'], 'NO_SERIES_FOR_BRANCH')
+
+    def test_ambiguous_series_are_not_resolved_by_picking_the_first(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        self._series(FiscalDocumentType.INVOICE, 'F002')
+        options = self._options()
+        self.assertFalse(options['factura']['enabled'])
+        self.assertEqual(options['factura']['disabled_code'], 'AMBIGUOUS_SERIES')
+        self.assertIn('más de una serie de factura', options['factura']['disabled_reason'])
+
+    def test_the_context_endpoint_carries_the_new_contract(self):
+        self._series(FiscalDocumentType.RECEIPT, 'B001')
+        client = self.only_caps(*self.CAPS)
+        response = client.get('/api/v1/internal/ip1-tienda/sales/pos/context/')
+        self.assertEqual(response.status_code, 200, response.content)
+        options = {o['value']: o for o in response.json()['receipt_options']}
+        self.assertEqual(set(options), {'sales_note', 'factura', 'boleta'})
+        for option in options.values():
+            self.assertEqual(
+                set(option),
+                {'value', 'label', 'branches', 'enabled', 'disabled_code', 'disabled_reason'})
+        self.assertTrue(options['boleta']['enabled'])
+        self.assertFalse(options['factura']['enabled'])
+        # Lo que NO va en una venta nueva: notas y comunicaciones son flujos posteriores.
+        labels = ' '.join(o['label'].lower() for o in options.values())
+        for forbidden in ('crédito', 'débito', 'baja', 'resumen'):
+            self.assertNotIn(forbidden, labels)
 
 
 class StabilizationPosReceiptTest(Ip1PosBase):

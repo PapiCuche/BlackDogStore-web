@@ -749,8 +749,26 @@ export function updateCustomer(
 export type PosBranch = { id: number; name: string };
 export type PosPaymentMethod = { value: string; label: string };
 
+/**
+ * Un documento que la caja puede preparar, o por qué no puede.
+ *
+ * `branches` son las sucursales donde SÍ hay una serie resoluble; `enabled`
+ * dice si la opción sirve en alguna. Una opción deshabilitada llega explicada
+ * (`disabled_reason`) sólo a quien tiene la capacidad fiscal: a quien no la
+ * tiene, el backend no le manda las opciones fiscales en absoluto.
+ */
+export type PosReceiptOption = {
+  value: string;
+  label: string;
+  branches: number[];
+  enabled: boolean;
+  /** `FISCAL_DISABLED` · `NO_SERIES_FOR_BRANCH` · `AMBIGUOUS_SERIES` · `UNSUPPORTED_ENVIRONMENT` · `NO_BRANCH`, o vacío. */
+  disabled_code: string;
+  disabled_reason: string;
+};
+
 export type PosContext = {
-  receipt_options: { value: string; label: string; branches: number[] }[];
+  receipt_options: PosReceiptOption[];
   company: { id: number; name: string };
   branches: PosBranch[];
   /** null when the till must ask: several branches and no authorised default. */

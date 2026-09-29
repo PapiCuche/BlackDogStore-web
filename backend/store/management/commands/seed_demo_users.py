@@ -32,6 +32,18 @@ Once Product/Order/Inventory are tenantised, the legacy half goes away.
 REMOVAL
 -------
     python manage.py seed_demo_users --purge
+
+FISCAL BETA (ERP-FISCAL-6)
+--------------------------
+    python manage.py seed_demo_users --company-slug <slug> --fiscal-beta
+
+Prepares the DEMO fiscal series (F001 for facturas, B001 for boletas) in the
+SUNAT BETA environment so the till can offer electronic receipts in development.
+These codes are development data, NOT SaaS defaults: nothing in the model, the
+series resolver or a migration assumes them. The flag requires DEBUG=True and
+FISCAL_ENVIRONMENT="beta" and fails closed otherwise; it reuses a series that
+already resolves, never touches an existing counter, and refuses to choose when
+two series are equally valid. Enabling BETA does not send anything to SUNAT.
 """
 
 from django.conf import settings
@@ -91,6 +103,15 @@ class Command(BaseCommand):
             '--purge', action='store_true',
             help='Elimina los usuarios demo en lugar de crearlos.',
         )
+        parser.add_argument(
+            '--fiscal-beta', action='store_true',
+            help=(
+                'Prepara series fiscales DEMO (F001 factura, B001 boleta) en el '
+                'ambiente SUNAT BETA para la empresa. Exige DEBUG=True y '
+                'FISCAL_ENVIRONMENT=beta; reutiliza series existentes y nunca '
+                'toca un correlativo.'
+            ),
+        )
 
     # -- guards ---------------------------------------------------------------
 
@@ -133,7 +154,9 @@ class Command(BaseCommand):
                 'Se requiere --company-slug. Ejemplo: '
                 '--company-slug mi-empresa'
             )
-        return self._seed(company_slug)
+        self._seed(company_slug)
+        if options.get('fiscal_beta'):
+            self._seed_fiscal_beta(company_slug)
 
     # -- purge ----------------------------------------------------------------
 
@@ -290,6 +313,96 @@ class Command(BaseCommand):
         Membership.objects.filter(user=master).delete()
 
         self._report(company)
+
+    # -- fiscal beta ----------------------------------------------------------
+
+    #: Las series DEMO, por tipo de comprobante. Sólo existen en este comando.
+    DEMO_FISCAL_SERIES = (('01', 'F001', 'factura'), ('03', 'B001', 'boleta'))
+
+    @transaction.atomic
+    def _seed_fiscal_beta(self, company_slug):
+        """
+        Una serie de factura y una de boleta resolubles para la sucursal de
+        despacho de la empresa, en BETA. Idempotente y no destructivo.
+
+        Por cada tipo: si `resolve_series` ya devuelve una serie, se reutiliza
+        tal cual —correlativo incluido—. Si no hay ninguna activa, se crea la
+        DEMO a nivel de empresa. Si hay varias y ninguna resuelve, se PARA: la
+        ambigüedad es exactamente lo que el resolutor se niega a decidir, y un
+        comando de desarrollo no tiene más autoridad que él para hacerlo.
+        """
+        from store import fiscal_config
+        from store.models import Company, FiscalEnvironment, FiscalSeries
+
+        configured = getattr(settings, 'FISCAL_ENVIRONMENT', None)
+        if configured != FiscalEnvironment.BETA:
+            raise CommandError(
+                f'--fiscal-beta sólo prepara el ambiente «{FiscalEnvironment.BETA}»; '
+                f'este servidor tiene FISCAL_ENVIRONMENT={configured!r}. No se toca nada.'
+            )
+        try:
+            environment = fiscal_config.resolve_environment()
+        except fiscal_config.FiscalConfigError as exc:
+            raise CommandError(str(exc))
+
+        company = Company.objects.get(slug=company_slug)
+        company.refresh_from_db()
+        branch = company.default_inventory_branch
+
+        self.stdout.write(self.style.SUCCESS(
+            f'\nSeries fiscales DEMO ({environment}) para "{company.name}":'
+        ))
+        for document_type, demo_series, noun in self.DEMO_FISCAL_SERIES:
+            try:
+                existing = fiscal_config.resolve_series(
+                    company, branch=branch, document_type=document_type,
+                )
+            except fiscal_config.FiscalConfigError:
+                existing = None
+            if existing is not None:
+                self.stdout.write(
+                    f'  reutilizada  {existing.series} ({noun}) — siguiente '
+                    f'correlativo {existing.next_number}, sin cambios'
+                )
+                continue
+
+            active = FiscalSeries.objects.filter(
+                company=company, document_type=document_type,
+                environment=environment, is_active=True,
+            ).count()
+            if active:
+                raise CommandError(
+                    f'La empresa tiene {active} serie(s) de {noun} activa(s) en '
+                    f'«{environment}» y ninguna resuelve para «{branch}». Resuelva '
+                    f'la ambigüedad a mano: este comando no elige ni desactiva series.'
+                )
+            if FiscalSeries.objects.filter(
+                company=company, document_type=document_type,
+                series=demo_series, environment=environment,
+            ).exists():
+                raise CommandError(
+                    f'Ya existe una serie {demo_series} ({noun}) desactivada en '
+                    f'«{environment}». Reactívela o elija otra a mano; este comando '
+                    f'no reescribe series.'
+                )
+            created = FiscalSeries.objects.create(
+                company=company, branch=None, document_type=document_type,
+                series=demo_series, environment=environment,
+            )
+            self.stdout.write(self.style.SUCCESS(
+                f'  creada       {created.series} ({noun}) — serie DEMO de empresa, '
+                f'ambiente {environment}'
+            ))
+
+        if not company.tax_id:
+            self.stdout.write(self.style.WARNING(
+                '  La empresa no tiene RUC configurado: la caja podrá elegir el '
+                'comprobante, pero la emisión fallará hasta que lo tenga.'
+            ))
+        self.stdout.write(self.style.WARNING(
+            '  SOLO DESARROLLO/BETA — ninguna serie apunta a producción y nada '
+            'se envía a SUNAT por preparar esto.\n'
+        ))
 
     def _upsert_user(self, User, username, *, legacy_role,
                      is_superuser=False, is_staff=False):

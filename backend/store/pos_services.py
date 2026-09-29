@@ -1143,6 +1143,21 @@ def create_pos_sale(
         for product, quantity, unit_price in priced['lines']
     ])
 
+    # THE PROMOTION SNAPSHOT, before any document that has to read it.
+    #
+    # ERP-FISCAL-6: a boleta or factura declares a promotion's discount line by
+    # line from `AppliedPromotion`, and the receipt is prepared inside this same
+    # transaction, a few lines below. Written after the receipt — where it used
+    # to be — the snapshot did not exist yet when the fiscal generator looked
+    # for it, and every promoted basket with a fiscal receipt failed with «no
+    # conserva ninguna promoción aplicada». It still sits inside the one
+    # transaction with the lines, the stock and the commission, so a failure
+    # anywhere unwinds all of them together.
+    if priced['promotions']['discount'] > 0:
+        from . import promotion_services
+
+        promotion_services.freeze(order, priced['promotions'])
+
     # Local document preparation is atomic with the sale. No signing, network
     # or claim of SUNAT acceptance happens here. Unsupported fiscal baskets
     # unwind the sale AND the number through the existing fiscal validator.
@@ -1173,13 +1188,6 @@ def create_pos_sale(
     # STRICT: raises InsufficientStockError, which unwinds this whole
     # transaction. Nothing was captured, so nothing needs repairing.
     inventory_services.record_sale_stock_movements(order, actor=actor, strict=True)
-
-    # THE PROMOTION SNAPSHOT, written before the commission so a failure
-    # anywhere still unwinds all three together.
-    if priced['promotions']['discount'] > 0:
-        from . import promotion_services
-
-        promotion_services.freeze(order, priced['promotions'])
 
     # THE COMMISSION IS WRITTEN ONLY WHEN THERE IS SOMETHING TO OWE.
     #

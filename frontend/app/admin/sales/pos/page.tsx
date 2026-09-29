@@ -39,6 +39,7 @@ import Link from "next/link";
 import { PosReceiptSelector } from "./PosReceiptSelector";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
+import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
 import {
   InternalControlGuard,
   type InternalContext,
@@ -373,7 +374,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
   async function charge() {
     if (charging || !lines.length || branch === null || !terms) return;
-    if (!context?.receipt_options.some((option) => option.value === receiptType && option.branches.includes(branch))) {
+    if (!context?.receipt_options.some((option) =>
+      option.value === receiptType && option.enabled !== false && option.branches.includes(branch))) {
       setFeedback({ kind: "error", text: "Selecciona un comprobante habilitado para esta sucursal." });
       return;
     }
@@ -504,6 +506,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   }
 
   if (done) {
+    const isFiscalReceipt = done.receipt_type === "factura" || done.receipt_type === "boleta";
+    // El backend sólo manda opciones fiscales a quien tiene `sales.fiscal.issue`;
+    // si la opción está en el contexto, esta persona puede firmar. El servidor
+    // lo vuelve a comprobar en cada acción del panel.
+    const canIssueFiscal = (context?.receipt_options ?? []).some(
+      (option) => option.value === done.receipt_type,
+    );
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
         <div className="mx-auto max-w-lg space-y-5 py-10 text-center">
@@ -513,7 +522,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           <p className="font-display text-3xl text-foreground">{money(done.total)}</p>
           <div className="space-y-1 rounded-xl border border-bd-border bg-surface p-5 text-left text-sm text-muted">
             <p>Pedido #{done.order_id}</p>
-            <p>{done.receipt_type === "sales_note" ? "Nota interna" : `${done.receipt_type} · BETA, pendiente de envío`}: {done.document_number}</p>
+            <p>
+              {done.receipt_type === "sales_note"
+                ? `Nota interna: ${done.document_number}`
+                : isFiscalReceipt
+                  ? `Comprobante electrónico: ${done.document_number || "—"}`
+                  : "Sin documento"}
+            </p>
             <p>Cliente: {done.customer || "Sin identificar"}</p>
             <p>Vendedor: {done.seller || "—"}</p>
             <p>Sucursal: {done.branch.name}</p>
@@ -570,27 +585,51 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           ) : null}
 
           {/*
-            Imprimir va primero y destacado: en mostrador, con el cliente
-            delante, es lo siguiente que ocurre siempre.
+            EL COMPROBANTE REAL, no una nota interna disfrazada. Para factura y
+            boleta se muestra el FiscalDocument tal como está —tipo, serie y
+            correlativo, ambiente, estado— con el mismo panel que usa la ficha
+            del pedido: firmar, descargar XML/PDF y, para la factura, enviar.
+            La boleta se informa por el Resumen Diario, nunca sola. Nada aquí
+            afirma aceptación sin CDR: el estado lo pone el backend.
           */}
-          <div className="flex flex-wrap justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => void handlePrint("ticket")}
-              disabled={printing !== null || done.receipt_type !== "sales_note"}
-              className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {printing === "ticket" ? "Preparando…" : "Imprimir ticket"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void handlePrint("a4")}
-              disabled={printing !== null || done.receipt_type !== "sales_note"}
-              className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {printing === "a4" ? "Generando…" : "PDF A4"}
-            </button>
-          </div>
+          {isFiscalReceipt ? (
+            <div className="text-left">
+              <FiscalDocumentPanel
+                orderId={done.order_id}
+                isPaid
+                receiptType={done.receipt_type}
+                canIssue={canIssueFiscal}
+              />
+            </div>
+          ) : null}
+
+          {/*
+            Imprimir va primero y destacado: en mostrador, con el cliente
+            delante, es lo siguiente que ocurre siempre. Sólo para la nota
+            interna: un comprobante electrónico se imprime desde su panel, y
+            crear una nota interna para «imprimir» una factura sería crear un
+            segundo documento que nadie pidió.
+          */}
+          {done.receipt_type === "sales_note" ? (
+            <div className="flex flex-wrap justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => void handlePrint("ticket")}
+                disabled={printing !== null}
+                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {printing === "ticket" ? "Preparando…" : "Imprimir ticket"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handlePrint("a4")}
+                disabled={printing !== null}
+                className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {printing === "a4" ? "Generando…" : "PDF A4"}
+              </button>
+            </div>
+          ) : null}
 
           <div className="flex flex-wrap justify-center gap-3">
             <button
