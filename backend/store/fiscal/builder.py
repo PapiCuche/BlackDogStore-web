@@ -24,6 +24,23 @@ Contado/Crédito.
 Esto costó tres envíos a BETA moviendo un nodo que no intervenía en la regla.
 Está escrito aquí para que a nadie le vuelva a costar: la fuente es la hoja
 `Factura2_0` del archivo oficial «Reglas de validación», líneas 174-177.
+
+LOS DESCUENTOS SE DECLARAN, NO SE ESCONDEN (ERP-FISCAL-6)
+---------------------------------------------------------
+Un descuento va en `cac:AllowanceCharge` con `ChargeIndicator=false`: en la
+línea que lo recibió (`00`) o en el documento (`02`), según el Catálogo N.º 53
+vigente. Lo que NO se emite, y por qué, según la hoja `Factura2_0` (21.04.2025):
+
+- `cbc:AllowanceTotalAmount` NO lleva estos descuentos. SUNAT lo define como
+  «Sumatoria otros descuentos (que NO afectan la base imponible)» y lo valida
+  contra los códigos `01`/`03` (regla 3300); además lo RESTA del total en la
+  regla 3280 (`PayableAmount = TaxInclusiveAmount + cargos − AllowanceTotal…`).
+  Ponerlo aquí declararía el descuento dos veces y el importe a pagar saldría
+  rebajado por segunda vez. Como esta fase sólo declara descuentos que sí
+  afectan a la base, el nodo se omite: la base ya viene rebajada.
+- `LegalMonetaryTotal/cbc:LineExtensionAmount` («Total valor de venta») es la
+  suma de las líneas MENOS los descuentos globales `02` (regla 3278): es decir,
+  la base imponible. Sigue saliendo de `taxable_amount`.
 """
 
 from __future__ import annotations
@@ -130,6 +147,33 @@ def _tax_block(parent, *, taxable: Decimal, tax: Decimal, currency: str,
     return total
 
 
+def _factor(value: Decimal) -> str:
+    """`cbc:MultiplierFactorNumeric`, n(3,5): 5 % es `0.05`, sin ceros de más."""
+    text = format(value.quantize(Decimal('0.00001'), rounding=ROUND_HALF_UP), 'f')
+    integer, fraction = text.split('.')
+    fraction = fraction.rstrip('0') or '0'
+    return f'{integer}.{fraction}'
+
+
+def _allowance_charge(parent, allowance, currency: str):
+    """
+    Un descuento declarado, idéntico en el documento y en la línea.
+
+    Siempre `ChargeIndicator=false`: esta fase no declara cargos. El orden de
+    los hijos lo fija el XSD (`AllowanceChargeType`): indicador, motivo, factor,
+    importe, base. El factor sólo si viene; es opcional en el esquema y en las
+    reglas, y derivarlo aquí sería inventar un porcentaje.
+    """
+    node = _el(parent, 'cac:AllowanceCharge')
+    _el(node, 'cbc:ChargeIndicator', 'false')
+    _el(node, 'cbc:AllowanceChargeReasonCode', allowance.reason_code)
+    if allowance.multiplier is not None:
+        _el(node, 'cbc:MultiplierFactorNumeric', _factor(allowance.multiplier))
+    _el(node, 'cbc:Amount', _money(allowance.amount), currencyID=currency)
+    _el(node, 'cbc:BaseAmount', _money(allowance.base_amount), currencyID=currency)
+    return node
+
+
 def _party(parent, tag: str, party, *, with_address: bool):
     """Emisor o receptor. La dirección sólo la lleva el emisor."""
     holder = _el(parent, tag)
@@ -173,11 +217,20 @@ def _line(parent, index: int, line: Line, currency: str, *,
     _el(node, 'cbc:LineExtensionAmount', _money(line.line_amount), currencyID=currency)
 
     # El precio que ve el cliente, con impuesto incluido. Va aparte del valor
-    # unitario porque son dos cifras distintas y SUNAT pide las dos.
+    # unitario porque son dos cifras distintas y SUNAT pide las dos. Es n(12,10)
+    # (regla 33): en una línea con descuento es lo que el cliente PAGÓ por unidad
+    # —(valor de venta + impuesto) / cantidad, regla 3270—, y eso no siempre
+    # cabe en dos decimales. Sin descuento es el precio de catálogo, y el texto
+    # que sale es el mismo de siempre.
     pricing = _el(node, 'cac:PricingReference')
     alt = _el(pricing, 'cac:AlternativeConditionPrice')
-    _el(alt, 'cbc:PriceAmount', _money(line.unit_price_with_tax), currencyID=currency)
+    _el(alt, 'cbc:PriceAmount', _unit_value(line.unit_price_with_tax), currencyID=currency)
     _el(alt, 'cbc:PriceTypeCode', PRICE_TYPE_WITH_TAX)
+
+    # El descuento de ESTA línea, antes de su impuesto: así lo ordena el XSD
+    # (`PricingReference` → `AllowanceCharge` → `TaxTotal`).
+    for allowance in line.allowances:
+        _allowance_charge(node, allowance, currency)
 
     _tax_block(node, taxable=line.line_amount, tax=line.tax_amount,
                currency=currency, percent=line.tax_percent,
@@ -228,6 +281,11 @@ def _monetary_total(root, *, taxable: Decimal, total: Decimal, currency: str,
     El total monetario. Factura/boleta y Nota de Crédito usan
     `cac:LegalMonetaryTotal`; la Nota de Débito usa `cac:RequestedMonetaryTotal`
     (así lo exige su XSD). Los renglones internos son los mismos.
+
+    `LineExtensionAmount` es la base imponible también cuando hay descuentos:
+    SUNAT lo define como Σ líneas − descuentos globales `02` (regla 3278), y las
+    líneas ya descuentan lo suyo. `AllowanceTotalAmount` se omite a propósito:
+    ver la cabecera del módulo (reglas 3300 y 3280).
     """
     totals = _el(root, tag)
     _el(totals, 'cbc:LineExtensionAmount', _money(taxable), currencyID=currency)
@@ -276,6 +334,12 @@ def build_invoice_xml(data: InvoiceData) -> bytes:
     terms = _el(root, 'cac:PaymentTerms')
     _el(terms, 'cbc:ID', PAYMENT_TERMS_ID)
     _el(terms, 'cbc:PaymentMeansID', PAYMENT_CASH)
+
+    # Los descuentos globales van entre la forma de pago y el impuesto: es su
+    # sitio en la secuencia del XSD (`…PaymentTerms → PrepaidPayment →
+    # AllowanceCharge → … → TaxTotal → LegalMonetaryTotal → InvoiceLine`).
+    for allowance in data.allowances:
+        _allowance_charge(root, allowance, data.currency)
 
     _tax_block(root, taxable=data.taxable_amount, tax=data.tax_amount,
                currency=data.currency)

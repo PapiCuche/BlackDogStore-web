@@ -24,6 +24,15 @@ EL DINERO VIENE DE C2.1
 `Order.taxable_amount`, `tax_amount`, `tax_rate` y `total` son el snapshot que la
 venta congeló. Aquí se COPIAN. No se recalcula nada, y menos aún se vuelve a
 dividir entre 1,18.
+
+UN DESCUENTO SE DECLARA CON LO QUE LA VENTA CONGELÓ (ERP-FISCAL-6)
+------------------------------------------------------------------
+La venta ya rebajada tiene su desglose; lo que el comprobante necesita además es
+el estado de ANTES de rebajar, y sale de `subtotal_amount` con la misma
+autoridad de cálculo que hizo el resto del snapshot. Cupón y descuento manual se
+declaran como un descuento GLOBAL; una promoción automática, en las líneas que
+la recibieron, con la atribución que `promotion_services` congeló en la venta.
+Nada de esto cambia un céntimo de lo cobrado: representa; no recalcula.
 """
 
 from __future__ import annotations
@@ -37,11 +46,15 @@ from django.utils import timezone
 from lxml import etree
 
 from .fiscal import builder, packaging, rules, schema, signing
-from .fiscal.data import InvoiceData, Line, Party
+from .fiscal.data import (
+    ALLOWANCE_GLOBAL_TAXABLE, ALLOWANCE_LINE_TAXABLE, Allowance, InvoiceData, Line,
+    Party,
+)
 from .fiscal.provider import ProviderOutcome
 from .models import (
-    FISCAL_NOTE_TYPES, FISCAL_ORIGINAL_TYPES, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType,
-    FiscalSeries, FiscalSubmissionAttempt, Order,
+    FISCAL_NOTE_TYPES, FISCAL_ORIGINAL_TYPES, AppliedPromotion, DiscountSource,
+    FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalSeries,
+    FiscalSubmissionAttempt, Order,
 )
 
 #: Los estados de `ProviderOutcome` traducidos al dominio. Se escribe el mapa en
@@ -237,32 +250,114 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
     # construcción). El valor unitario sin impuesto se deriva de la base
     # reconciliada, a 10 decimales, para que cantidad×unitario devuelva la línea.
     from .fiscal.rounding import (
-        ReconciliationError, allocate_line_bases, money, unit_value,
+        ReconciliationError, allocate_line_bases, allocate_proportionally, money,
+        unit_value,
     )
 
     items = list(order.items.select_related('product').order_by('pk'))
     grosses = [money(Decimal(str(item.price)) * item.quantity) for item in items]
+    discount = money(order.discount_amount or Decimal('0'))
+
+    # ERP-FISCAL-6. Con descuento hay DOS estados que declarar: el de antes de
+    # rebajar y el de después. La venta congeló el de después; el de antes sale
+    # de `subtotal_amount` con la misma autoridad de cálculo y la misma tasa.
+    #
+    #   global (cupón, manual): las líneas van SIN rebajar y suman la base
+    #       previa; un `AllowanceCharge` `02` en el documento, con el descuento
+    #       NETO (base previa − base de la venta) y la base previa como base.
+    #   línea (promoción): cada línea que la promoción rebajó lleva su
+    #       `AllowanceCharge` `00`. Las bases se reconcilian una sola vez contra
+    #       la base de la venta, sobre los brutos ya rebajados; el descuento
+    #       neto del documento se reparte entre esas líneas en proporción a su
+    #       rebaja bruta, y la base «de antes» de cada línea es base + reparto.
+    #       Dos reconciliaciones independientes (antes y después) no valdrían:
+    #       el desempate por mayor residuo puede mover un céntimo a una línea
+    #       sin descuento y declararle una rebaja de 0,01 —o una negativa—.
+    global_allowances: tuple[Allowance, ...] = ()
+    line_gross_discounts = [Decimal('0.00')] * len(items)
+    line_net_allowances = [Decimal('0.00')] * len(items)
+    target_taxable = order.taxable_amount
+    if discount > 0:
+        subtotal = _pre_discount_subtotal(order, discount)
+        if sum(grosses, Decimal('0.00')) != subtotal:
+            raise FiscalError(
+                f'Las líneas congeladas suman {sum(grosses, Decimal("0.00"))} y el '
+                f'subtotal previo al descuento es {subtotal}. El snapshot de la '
+                f'venta es incoherente y no se corrige aquí.'
+            )
+        pre_taxable = _pre_discount_taxable(order, subtotal)
+        net = pre_taxable - order.taxable_amount
+        if net <= 0:
+            raise FiscalError(
+                f'El descuento de {discount} no llega a rebajar la base imponible '
+                f'({pre_taxable} antes, {order.taxable_amount} después): no hay '
+                f'importe que declarar y un descuento de 0,00 no es admisible '
+                f'(regla 2968).'
+            )
+        source = order.discount_source
+        if source in (DiscountSource.COUPON, DiscountSource.MANUAL):
+            global_allowances = (Allowance(
+                amount=net, base_amount=pre_taxable,
+                reason_code=ALLOWANCE_GLOBAL_TAXABLE,
+            ),)
+            target_taxable = pre_taxable
+        elif source == DiscountSource.PROMOTION:
+            line_gross_discounts = _promotion_line_discounts(order, items, grosses)
+            try:
+                line_net_allowances = allocate_proportionally(net, line_gross_discounts)
+            except ReconciliationError as exc:
+                raise FiscalError(str(exc)) from exc
+        else:
+            raise FiscalError(
+                f'Esta venta tiene un descuento de {discount} con origen '
+                f'«{source}», que esta versión no sabe declarar.'
+            )
+
+    gross_after = [g - d for g, d in zip(grosses, line_gross_discounts)]
     try:
         bases = allocate_line_bases(
-            grosses, taxable=order.taxable_amount, rate=order.tax_rate,
+            gross_after, taxable=target_taxable, rate=order.tax_rate,
         )
     except ReconciliationError as exc:
-        # Un descuadre que no es redondeo (descuento no declarado, caso no
-        # gravado) falla cerrado como error de dominio, nunca como 500.
+        # Un descuadre que no es redondeo (caso no gravado, snapshot
+        # incoherente) falla cerrado como error de dominio, nunca como 500.
         raise FiscalError(str(exc)) from exc
 
     percent = (order.tax_rate * 100).quantize(Decimal('0.01'))
     lines = []
-    for item, gross, base in zip(items, grosses, bases):
+    for item, gross_after_i, base, net_i, gross_discount_i in zip(
+            items, gross_after, bases, line_net_allowances, line_gross_discounts):
+        if gross_discount_i > 0 and base <= 0:
+            raise FiscalError(
+                f'La línea de «{item.product.name}» queda con valor de venta cero '
+                f'tras la promoción. Una entrega sin valor es una operación '
+                f'gratuita (Catálogo N.º 07, códigos 11-16), que esta fase no '
+                f'sabe declarar; SUNAT exige un valor de venta distinto de cero '
+                f'(regla 2370).'
+            )
+        before = base + net_i
+        allowances = ()
+        if net_i > 0:
+            allowances = (Allowance(
+                amount=net_i, base_amount=before, reason_code=ALLOWANCE_LINE_TAXABLE,
+            ),)
+        # Sin descuento en la línea, el precio que pagó el cliente ES el de
+        # catálogo, y el texto del XML no cambia. Con descuento, es lo que pagó
+        # por unidad: (valor de venta + impuesto) / cantidad (regla 3270).
+        price_with_tax = (
+            unit_value(gross_after_i, item.quantity) if gross_discount_i > 0
+            else Decimal(str(item.price))
+        )
         lines.append(Line(
             description=(item.product.name if item.product else 'PRODUCTO')[:250],
             quantity=Decimal(item.quantity),
             unit_code='NIU',
-            unit_price=unit_value(base, item.quantity),
-            unit_price_with_tax=Decimal(str(item.price)),
+            unit_price=unit_value(before, item.quantity),
+            unit_price_with_tax=price_with_tax,
             line_amount=base,
-            tax_amount=gross - base,
+            tax_amount=gross_after_i - base,
             tax_percent=percent,
+            allowances=allowances,
         ))
 
     issued = timezone.localtime(order.paid_at or timezone.now())
@@ -285,7 +380,163 @@ def _order_to_invoice_data(order: Order, series: FiscalSeries,
         tax_amount=order.tax_amount,
         total=order.total,
         amount_in_words=_amount_in_words(order.total, order.currency or 'PEN'),
+        allowances=global_allowances,
     )
+
+
+def _pre_discount_subtotal(order: Order, discount: Decimal) -> Decimal:
+    """
+    El subtotal previo al descuento, o por qué la venta no se puede declarar.
+
+    SE FALLA CERRADO ante lo que no cuadra, y no se «repara»: un descuento sin
+    origen, un subtotal que la venta no conserva o una resta que no da el total
+    son defectos del snapshot, y un comprobante legal no es el sitio donde
+    adivinarlos. En particular NO se reconstruye `subtotal = total + descuento`:
+    sería inventar el dato sobre el que se rebajó.
+    """
+    from .fiscal.rounding import money
+
+    if (order.discount_source or DiscountSource.NONE) == DiscountSource.NONE:
+        raise FiscalError(
+            f'Esta venta tiene un descuento de {discount} sin origen declarado '
+            f'(`discount_source` = «none»). Un descuento que nadie explica no se '
+            f'puede declarar ante SUNAT; se corrige en la venta, no en el '
+            f'comprobante.'
+        )
+    if order.subtotal_amount is None:
+        raise FiscalError(
+            f'Esta venta tiene un descuento de {discount} y no conserva el '
+            f'subtotal previo al descuento. Sin él no se puede declarar sobre qué '
+            f'valor se rebajó, y reconstruirlo sumando total y descuento sería '
+            f'inventar un dato para un documento legal.'
+        )
+    subtotal = money(order.subtotal_amount)
+    if discount > subtotal:
+        raise FiscalError(
+            f'El descuento ({discount}) supera el subtotal de la venta ({subtotal}).')
+    if subtotal - discount != money(order.total):
+        raise FiscalError(
+            f'El snapshot de la venta no cuadra: subtotal {subtotal} − descuento '
+            f'{discount} != total {order.total}.'
+        )
+    return subtotal
+
+
+def _pre_discount_taxable(order: Order, subtotal: Decimal) -> Decimal:
+    """
+    La base imponible que la venta habría tenido SIN el descuento.
+
+    Se obtiene con LA MISMA autoridad de cálculo que congeló el resto del
+    snapshot —`tax_services.breakdown_from_total`—, aplicada al subtotal previo
+    al descuento y a la tasa congelada. No es una segunda contabilidad: es la
+    misma cuenta, hecha sobre el importe de antes de rebajar. Nunca
+    `descuento / 1,18` por su cuenta.
+    """
+    from .tax_services import TaxTreatment, breakdown_from_total
+
+    return breakdown_from_total(
+        total=subtotal, tax_rate=order.tax_rate, currency=order.currency or 'PEN',
+        treatment=TaxTreatment.TAXED,
+    ).taxable_amount
+
+
+def _promotion_line_discounts(order: Order, items, grosses) -> list[Decimal]:
+    """
+    Cuánto rebajó la promoción a cada línea de la venta, en BRUTO (con IGV).
+
+    Sale del snapshot `AppliedPromotion` de ESTA venta y de ESTA empresa, y de
+    la atribución por componente que `promotion_services` congeló —o, para una
+    venta anterior a la atribución, reconstruye en memoria con la misma regla—.
+    Nunca de la `Promotion` viva: la promoción de marzo se editó en abril.
+
+    NO SE CONFÍA EN LOS IDS DEL JSON. Cada producto atribuido tiene que estar
+    entre las líneas de la venta, pertenecer a su empresa, no consumir más
+    unidades de las vendidas y haberse congelado al mismo precio que la línea.
+    Cualquier otra cosa es un snapshot que no describe esta venta, y se falla
+    cerrado sin corregir nada.
+    """
+    from .fiscal.rounding import money
+    from .promotion_services import PromotionAllocationError, frozen_component_discounts
+
+    applied = list(
+        AppliedPromotion.objects
+        .filter(company_id=order.company_id, order=order)
+        .select_related('promotion').order_by('pk')
+    )
+    if not applied:
+        raise FiscalError(
+            'La venta declara un descuento por promoción automática y no conserva '
+            'ninguna promoción aplicada. Sin ese snapshot no hay a qué atribuir '
+            'la rebaja.'
+        )
+    declared = sum((row.discount_amount for row in applied), Decimal('0.00'))
+    if declared != money(order.discount_amount):
+        raise FiscalError(
+            f'Las promociones aplicadas suman {declared} de descuento y la venta '
+            f'declara {money(order.discount_amount)}.'
+        )
+
+    by_product: dict[int, Decimal] = {}
+    units: dict[int, int] = {}
+    unit_prices: dict[int, set] = {}
+    for row in applied:
+        if row.promotion.company_id != order.company_id:
+            raise FiscalError(
+                f'La promoción «{row.promotion_name_snapshot}» no pertenece a la '
+                f'empresa de la venta.'
+            )
+        try:
+            components = frozen_component_discounts(
+                row.regular_amount, row.discount_amount,
+                (row.metadata or {}).get('components'),
+            )
+        except PromotionAllocationError as exc:
+            raise FiscalError(
+                f'La promoción «{row.promotion_name_snapshot}» de esta venta no se '
+                f'puede explicar componente a componente: {exc}'
+            ) from exc
+        for component in components:
+            pid = component['product_id']
+            by_product[pid] = by_product.get(pid, Decimal('0.00')) + component['discount_amount']
+            units[pid] = units.get(pid, 0) + component['quantity_used']
+            unit_prices.setdefault(pid, set()).add(Decimal(str(component['unit_price'])))
+
+    # Una línea por producto: lo garantiza `unique_order_line_per_product` en la
+    # base, así que el mapa no puede perder una posición.
+    positions = {item.product_id: index for index, item in enumerate(items)}
+
+    discounts = [Decimal('0.00')] * len(items)
+    for pid, amount in by_product.items():
+        index = positions.get(pid)
+        if index is None:
+            raise FiscalError(
+                f'La promoción rebaja el producto {pid}, que no está entre las '
+                f'líneas de esta venta.'
+            )
+        item = items[index]
+        if item.product is None or item.product.company_id != order.company_id:
+            raise FiscalError(
+                f'El producto {pid} de la promoción no pertenece a la empresa de '
+                f'la venta.'
+            )
+        if units[pid] > item.quantity:
+            raise FiscalError(
+                f'La promoción consume {units[pid]} unidad(es) del producto {pid} '
+                f'y la venta sólo tiene {item.quantity}.'
+            )
+        if unit_prices[pid] != {Decimal(str(item.price))}:
+            frozen = ', '.join(str(p) for p in sorted(unit_prices[pid]))
+            raise FiscalError(
+                f'La promoción congeló el producto {pid} a {frozen} y la línea de '
+                f'la venta lo vendió a {item.price}.'
+            )
+        if amount > grosses[index]:
+            raise FiscalError(
+                f'La promoción rebaja {amount} del producto {pid} y la línea sólo '
+                f'vale {grosses[index]}.'
+            )
+        discounts[index] = amount
+    return discounts
 
 
 def _reserve(series: FiscalSeries) -> int:
@@ -340,22 +591,11 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             f'electrónico que esta versión sepa emitir.'
         )
 
-    # SE FALLA CERRADO ANTE UN DESCUENTO, y es deliberado.
-    #
-    # C2.1 sabe vender con descuento; el generador fiscal todavía no sabe
-    # DECLARARLO. Un descuento se expresa en UBL con `cac:AllowanceCharge` y su
-    # `cbc:AllowanceTotalAmount`, no rebajando el importe de la línea: hacer eso
-    # produce un documento que dice «2 unidades a 100,00» con un total de línea
-    # de 184,75, donde la aritmética no cierra y la rebaja es invisible.
-    #
-    # Enviar eso a SUNAT sería declarar un precio unitario que nadie cobró.
-    # Negarse es peor experiencia y mejor comportamiento.
-    if order.discount_amount and order.discount_amount > 0:
-        raise FiscalError(
-            f'Esta venta tiene un descuento de {order.discount_amount} y la '
-            f'factura electrónica todavía no sabe declararlo. Emitirla ocultaría '
-            f'la rebaja y declararía un precio unitario que no se cobró.'
-        )
+    # UN DESCUENTO SE DECLARA, NO SE RECHAZA (ERP-FISCAL-6). Hasta esta fase
+    # cualquier venta con descuento fallaba cerrado aquí, porque el generador no
+    # sabía expresarlo en UBL. Ahora `_order_to_invoice_data` lo declara con
+    # `cac:AllowanceCharge` —global o de línea según su origen— y sigue fallando
+    # cerrado, con la causa, ante un descuento que el snapshot no explica.
 
     existing = original_fiscal_documents(order).order_by('-pk').first()
     if existing is not None and existing.status != FiscalDocumentStatus.REJECTED:

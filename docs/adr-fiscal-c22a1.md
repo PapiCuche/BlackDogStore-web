@@ -901,3 +901,141 @@ después de emitir. Una corrección posterior usa NC/ND o la baja, no una reescr
 (`ECOMMERCE_PORTAL`, `EMAIL`, `POS_PRINT`, `POS_ELECTRONIC`, `MANUAL`, `API`) para que
 esa fase encaje sin volver a tocar el modelo. NC/ND/RA/bajas quedan como flujos
 internos, nunca como acción directa del comprador.
+
+---
+
+## ADR-42 · Atribución determinista del descuento de una promoción a sus componentes
+
+**Contexto.** Una promoción automática (`BUNDLE_FIXED_PRICE`, `BUNDLE_PERCENT`) sólo
+sabía cuánto rebajaba al conjunto: `AppliedPromotion.regular_amount` y
+`discount_amount`. Eso basta para cobrar y no basta para declarar: un comprobante
+electrónico lleva el descuento en la línea que lo recibió (ADR-43) y una nota de
+crédito futura necesita saber qué se rebajó de qué. Sin una regla explícita, cada
+consumidor habría inventado la suya. Es una regla del motor SaaS, no del tenant
+piloto.
+
+**Decisión.** Una función PURA de dominio comercial,
+`promotion_services.allocate_component_discounts(regular_total, discount_total,
+components)`, reparte el descuento YA DECIDIDO entre los componentes consumidos:
+
+    component_regular_i = unit_price_i × quantity_used_i
+    ideal_i             = discount_total × component_regular_i / regular_total
+    piso_i              = ROUND_DOWN(ideal_i) a céntimos
+    los céntimos que falten van uno a uno a los mayores residuos;
+    a igualdad de residuo, `product_id` ascendente.
+
+Exige la forma de una venta congelada (`product_id`, `quantity_used`, `unit_price`),
+`product_id` único, `Σ component_regular == regular_total` y cierre EXACTO
+(`Σ atribuido == discount_total`, `0 ≤ atribuido_i ≤ regular_i`). Cualquier otra
+cosa levanta `PromotionAllocationError`; no hay tolerancias.
+
+`evaluate()` enriquece cada componente con `regular_amount` y `discount_amount` y
+`freeze()` los persiste en `AppliedPromotion.metadata["components"]` como texto
+(igual que `unit_price`). Las cifras son BRUTAS, con IGV: el dominio comercial
+trabaja con precios finales y no conoce el UBL.
+
+**El snapshot congelado es la autoridad histórica.** `frozen_component_discounts`
+lee una venta hecha: si todos los componentes traen atribución, la VALIDA y la
+devuelve tal cual —nunca la recalcula—; si ninguno la trae (venta anterior a este
+ADR), la reconstruye EN MEMORIA con la regla vigente y no escribe nada; si unos la
+traen y otros no, falla cerrado. El día que la regla cambie, una venta de hoy
+seguirá explicándose con la regla de hoy porque se leerá lo que se guardó.
+
+**Por qué así.** Proporcional al valor regular consumido es la única regla que no
+requiere una decisión de negocio adicional y que cualquier auditor puede rehacer a
+mano. El desempate por `product_id` —y no por el orden de la lista— es lo que hace
+que el mismo snapshot dé siempre la misma explicación: un queryset sin `order_by`
+puede devolver otro orden mañana. Se comprueba la unicidad del producto dentro de
+la función aunque `PromotionItem` la garantice, porque un JSON histórico no está
+protegido por esa constraint.
+
+**Descartado.** Recalcular siempre y comparar con lo guardado: no protege la
+historia, la reinterpreta con la regla vigente y sólo avisa cuando ya difieren.
+Rellenar los JSON antiguos con una migración: reescribiría filas históricas para
+obtener algo que se reconstruye determinísticamente en memoria. Repartir a partes
+iguales o por cantidad: ambas cargan al artículo barato una rebaja que el combo
+otorgó por el caro.
+
+**Lo que NO cambia.** `_bundle_amounts`, `_applications_possible`, prioridades,
+stacking, unidades consumidas, el descuento total, el precio cobrado, el stock ni
+los totales de la venta. La atribución explica; no reprecia.
+
+---
+
+## ADR-43 · Un descuento se declara donde nació, con el código de su nivel, y no se resta dos veces
+
+**Contexto.** Hasta esta fase toda venta con descuento fallaba cerrado en la emisión
+(ADR-15). El descuento se declara en UBL 2.1 con `cac:AllowanceCharge`
+(`ChargeIndicator=false`), y las cifras del comprobante tienen que cuadrar con las
+reglas que SUNAT aplica, no con las que parecen razonables. La fuente que fijó esta
+decisión es el archivo oficial «Reglas de validación de CPE» (hoja `Factura2_0`,
+hoja `Boleta2_0` y hoja `Catálogos`, edición 21.04.2025, descargado de
+`cpe.sunat.gob.pe`), contrastado con la Guía de elaboración XML UBL 2.1 de factura y
+boleta y con los Anexos N.º 8 de 2017.
+
+**Decisión.**
+
+1. **Catálogo N.º 53 vigente, código según el nivel.** Cupón y descuento manual se
+   declaran como UN descuento GLOBAL con código `02` («Descuentos globales que
+   afectan la base imponible del IGV/IVAP»). Una promoción se declara en CADA
+   LÍNEA afectada con código `00` («Descuentos que afectan la base imponible»,
+   nivel ítem). Los códigos no son intercambiables: `00` en el documento es la
+   observación 4291 y, sobre todo, las reglas de totales (3277, 3278, 3279, 3291)
+   sólo restan los globales `02`/`04` — SUNAT recalcularía el total SIN el
+   descuento. La versión de 2017 del catálogo (`00 OTROS DESCUENTOS`) que citaba la
+   guía ya no es la que aplican las reglas.
+2. **Todo en valor de venta, derivado del snapshot.** El estado de antes del
+   descuento sale de `Order.subtotal_amount` con la misma autoridad de cálculo que
+   congeló el resto (`tax_services.breakdown_from_total`) y la tasa congelada;
+   `Amount = base previa − Order.taxable_amount`, `BaseAmount = base previa`.
+   Nunca `descuento / 1,18` por su cuenta. `MultiplierFactorNumeric` se omite: es
+   opcional y sólo se informaría si el porcentaje hubiera quedado congelado como tal.
+3. **Totales como SUNAT los valida.** `LegalMonetaryTotal/LineExtensionAmount`
+   («Total valor de venta») = Σ líneas − descuentos globales `02` (regla 3278) =
+   la base imponible, también con descuento. `TaxInclusiveAmount = PayableAmount =
+   Order.total` (reglas 3279, 3280). **`AllowanceTotalAmount` se OMITE**: SUNAT lo
+   define como «Sumatoria otros descuentos (que NO afectan la base imponible)», lo
+   valida contra los códigos `01`/`03`/`63` (regla 3300) y lo RESTA del importe a
+   pagar (regla 3280). Escribir ahí nuestros descuentos declararía la rebaja dos
+   veces: es exactamente el doble descuento que esta fase existía para evitar.
+4. **Línea con promoción.** `InvoiceLine/LineExtensionAmount` es el valor DESPUÉS
+   del descuento; `cac:Price/PriceAmount` es el valor unitario SIN rebajar (regla
+   3271: cantidad × unitario − descuentos = valor de venta); el precio de venta
+   unitario (`PricingReference`, n(12,10)) es lo que el cliente pagó por unidad
+   (regla 3270). El descuento neto del documento se reparte entre las líneas
+   rebajadas en proporción a su rebaja bruta (`rounding.allocate_proportionally`,
+   misma disciplina de mayor residuo) y la base «de antes» de cada línea es
+   `base reconciliada + reparto`. Las bases se reconcilian UNA sola vez, contra
+   `Order.taxable_amount`, sobre los brutos ya rebajados.
+5. **Fallo cerrado, con causa.** Descuento sin origen (`discount_source = none`),
+   sin `subtotal_amount`, mayor que el subtotal, resta que no da el total, promoción
+   sin `AppliedPromotion`, suma de promociones distinta del descuento, componentes
+   vacíos o de forma desconocida, producto duplicado, importes manipulados,
+   snapshot congelado a medias, producto fuera de la venta o de otra empresa, más
+   unidades atribuidas que vendidas, precio congelado distinto del vendido y línea
+   rebajada al 100 % (operación gratuita: Catálogo 07 códigos 11-16, fuera de
+   alcance) levantan `FiscalError` y no gastan correlativo.
+
+**Por qué así.** Las tres desviaciones respecto del borrador de la fase —código `00`
+también para el global, «Total valor de venta» previo al descuento y
+`AllowanceTotalAmount = línea + global`— se descartaron porque una fuente de mayor
+autoridad las contradice de forma comprobable: con ellas SUNAT hubiera devuelto
+3277/3278/3279/3291 (factura: ERROR) o las observaciones equivalentes de boleta
+(4299/4309/4310/4290), y la regla 3280 hubiera exigido un `PayableAmount` rebajado
+por segunda vez. Dos reconciliaciones independientes (antes y después) se descartaron
+porque el desempate por mayor residuo puede mover un céntimo a una línea sin
+descuento y declararle una rebaja de 0,01 —o una negativa—.
+
+**Descartado.** Rebajar el importe de la línea sin `AllowanceCharge` (ADR-15: declara
+un precio unitario que nadie cobró). Repartir cupón o manual por líneas: nadie
+decidió ese reparto. Leer la `Promotion` viva para explicar una venta: se editó
+después. Tolerancias de céntimos en las identidades del documento: el snapshot las
+garantiza exactas y una diferencia es un defecto, no redondeo.
+
+**Consecuencia.** Factura (01) y boleta (03) comparten `build_invoice_xml`,
+`rules.validate` y `schema.validate_invoice`; las notas (07/08) no cambian y tienen
+regresión. El PDF/representación impresa todavía no muestra la línea «Cargos y/o
+descuentos globales» que el Anexo N.º 2 marca como requisito mínimo impreso: queda
+registrado como deuda FISCAL-PDF-01. La verificación contra SUNAT BETA de un
+comprobante con descuento sigue PENDIENTE DE VERIFICACIÓN DIRECTA; lo verificado
+localmente es XSD + reglas oficiales transcritas.

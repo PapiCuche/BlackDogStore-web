@@ -93,3 +93,46 @@ def allocate_line_bases(gross_line_totals, *, taxable, rate) -> list[Decimal]:
     order_idx = sorted(range(n), key=lambda k: (-remainders[k], k))
     boosted = set(order_idx[:cents])
     return [floors[k] + (CENT if k in boosted else Decimal('0.00')) for k in range(n)]
+
+
+def allocate_proportionally(total, weights) -> list[Decimal]:
+    """
+    Reparte `total` (2dp) entre posiciones en proporción a `weights`, cerrando
+    EXACTO: ROUND_DOWN por posición y los céntimos que falten a los mayores
+    restos, con desempate estable por índice.
+
+    Es la misma disciplina de `allocate_line_bases` aplicada a otra pregunta:
+    allí se reparte una base entre brutos; aquí, un descuento neto entre los
+    descuentos brutos de cada línea. Una posición con peso cero recibe cero,
+    siempre: los céntimos sobrantes son menos que las posiciones con resto
+    positivo, y sólo un peso positivo deja resto.
+
+    `total == 0` devuelve ceros. Todos los pesos a cero con `total > 0` no tiene
+    solución y levanta `ReconciliationError`.
+    """
+    weights = [Decimal(w) for w in weights]
+    total = Decimal(total)
+    n = len(weights)
+    if n == 0:
+        raise ReconciliationError('No hay posiciones entre las que repartir.')
+    if total < 0 or any(w < 0 for w in weights):
+        raise ReconciliationError('Un reparto proporcional no admite negativos.')
+    if total == 0:
+        return [Decimal('0.00')] * n
+    weight_sum = sum(weights, Decimal('0'))
+    if weight_sum == 0:
+        raise ReconciliationError(
+            f'No se puede repartir {total} entre posiciones que pesan cero.')
+
+    ideals = [total * w / weight_sum for w in weights]
+    floors = [i.quantize(CENT, rounding=ROUND_DOWN) for i in ideals]
+    remainders = [ideals[k] - floors[k] for k in range(n)]
+    deficit = total - sum(floors, Decimal('0.00'))
+    cents = int((deficit / CENT).to_integral_value(rounding=ROUND_HALF_UP))
+    if cents < 0 or cents > n:
+        raise ReconciliationError(
+            f'El reparto proporcional no cierra: faltan {deficit} sobre {n} '
+            f'posición(es).')
+    order_idx = sorted(range(n), key=lambda k: (-remainders[k], k))
+    boosted = set(order_idx[:cents])
+    return [floors[k] + (CENT if k in boosted else Decimal('0.00')) for k in range(n)]

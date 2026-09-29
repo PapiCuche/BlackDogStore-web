@@ -9,6 +9,41 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## 2026-09-29 — ERP-FISCAL-6 · Descuentos declarados en factura y boleta
+
+**IMPLEMENTADO en BETA; SUNAT producción PENDIENTE.**
+
+- Motor de promociones: `allocate_component_discounts` reparte el descuento ya
+  decidido entre los componentes consumidos (proporcional al valor regular,
+  ROUND_DOWN, mayor residuo, desempate por `product_id`); `evaluate()` lo devuelve y
+  `freeze()` lo congela como texto en `AppliedPromotion.metadata["components"]`.
+  `frozen_component_discounts` usa el snapshot congelado como autoridad, reconstruye
+  en memoria el legacy y falla cerrado ante un snapshot a medias. ADR-42.
+- Fiscal: `Allowance` en `fiscal/data.py`, `_allowance_charge` en el generador,
+  invariantes nuevas en `InvoiceData.check()` y `rules.validate`. Cupón y manual →
+  `cac:AllowanceCharge` global con código `02`; promoción → por línea con `00`
+  (Catálogo N.º 53 vigente). `LegalMonetaryTotal/LineExtensionAmount` es la base
+  imponible, `PayableAmount` es `Order.total`, `AllowanceTotalAmount` se omite
+  (reglas 3278/3280/3300). `PricingReference` pasa a n(12,10) para el precio pagado
+  por unidad en líneas rebajadas. ADR-43. Notas 07/08 sin cambios.
+- Fallo cerrado, sin gastar correlativo: descuento sin origen, sin subtotal, mayor
+  que el subtotal, snapshot que no cuadra, promoción sin filas, sumas distintas,
+  componentes vacíos/desconocidos/duplicados/manipulados/a medias, producto ajeno a
+  la venta o a la empresa, más unidades que las vendidas, precio distinto, línea al
+  100 %.
+- POS: contrato nuevo de `receipt_options` (`enabled`, `disabled_code`,
+  `disabled_reason`); `_DOCUMENT_NOUN` en `resolve_series`; selector que no permite
+  elegir una opción deshabilitada y muestra la causa; pantalla post-venta con el
+  `FiscalDocument` real. `seed_demo_users --fiscal-beta` (DEBUG + BETA, idempotente).
+- Bug corregido en `create_pos_sale`: el snapshot de promociones se escribía después
+  de preparar el comprobante fiscal, así que ninguna venta con promoción y boleta o
+  factura podía explicarse.
+- Deuda: FISCAL-PDF-01 (la representación impresa no muestra «Cargos y/o descuentos
+  globales»), verificación directa en SUNAT BETA de un comprobante con descuento,
+  Resumen Diario en la web, SUNAT producción, UI-01.
+
+---
+
 ## 2026-09-28 — Estabilización POS y recepción técnica
 
 **IMPLEMENTADO en el árbol de trabajo; fiscal limitado a BETA.**

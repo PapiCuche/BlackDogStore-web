@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
-from .data import InvoiceData
+from .data import ALLOWANCE_GLOBAL_TAXABLE, ALLOWANCE_LINE_TAXABLE, InvoiceData
 
 #: Catálogo N.º 01.
 INVOICE = '01'
@@ -133,7 +133,33 @@ def validate(data: InvoiceData) -> None:
         if not line.description.strip():
             _fail(f'Línea {i}: falta la descripción del ítem.')
 
-    # Las dos identidades que C2.1 garantiza en origen. Repetirlas no es
+    # CADA DESCUENTO LLEVA EL CÓDIGO DE SU NIVEL (Catálogo N.º 53 vigente).
+    #
+    # `00` es de ÍTEM y `02` es GLOBAL, y las reglas de SUNAT los tratan como
+    # cosas distintas: un `00` en el documento es la observación 4291 y, sobre
+    # todo, las reglas de totales (3277, 3278, 3279, 3291) sólo restan los
+    # globales `02`/`04`. Un código en el nivel equivocado deja un documento que
+    # aquí cuadra y que SUNAT recalcula sin el descuento. Esta fase sólo declara
+    # descuentos que afectan a la base —así los congela la venta—; cualquier
+    # otro código se rechaza antes de tocar la red.
+    for i, line in enumerate(data.lines, 1):
+        for allowance in line.allowances:
+            if allowance.reason_code != ALLOWANCE_LINE_TAXABLE:
+                _fail(f'Línea {i}: el descuento lleva el código '
+                      f'{allowance.reason_code!r}; a nivel de ítem esta fase sólo '
+                      f'declara «{ALLOWANCE_LINE_TAXABLE}» (Catálogo N.º 53, '
+                      f'descuento que afecta la base imponible).')
+            _check_multiplier(allowance, f'Línea {i}')
+    for allowance in data.allowances:
+        if allowance.reason_code != ALLOWANCE_GLOBAL_TAXABLE:
+            _fail(f'El descuento global lleva el código {allowance.reason_code!r}; '
+                  f'a nivel de documento esta fase sólo declara '
+                  f'«{ALLOWANCE_GLOBAL_TAXABLE}» (Catálogo N.º 53, descuento global '
+                  f'que afecta la base imponible). Un código de ítem en el '
+                  f'documento es la observación 4291 de SUNAT.')
+        _check_multiplier(allowance, 'El descuento global')
+
+    # Las identidades que C2.1 garantiza en origen. Repetirlas no es
     # desconfianza: este generador puede recibir datos de otra parte mañana, y
     # un comprobante que no cuadra no debe poder llegar a existir.
     #
@@ -156,31 +182,65 @@ def validate(data: InvoiceData) -> None:
             _fail(f'Línea {i}: el impuesto declarado ({line.tax_amount}) no '
                   f'corresponde al {line.tax_percent}% de {line.line_amount}.')
 
-    suma = sum((ln.tax_amount for ln in data.lines), Decimal('0.00'))
-    if abs(suma - data.tax_amount) > Decimal('0.01'):
-        _fail(f'Las líneas suman {suma} de impuesto y el documento declara '
-              f'{data.tax_amount}.')
+    # UNA SOLA TASA en todo el documento (regla 3462): sin ella no hay «el 18 %
+    # de la base» que comprobar.
+    tasas = {ln.tax_percent for ln in data.lines}
+    if len(tasas) != 1:
+        _fail(f'Todas las líneas deben llevar la misma tasa de IGV; llegaron '
+              f'{sorted(tasas)} (regla 3462).')
+    tasa = next(iter(tasas))
 
-    # LA ARITMÉTICA DE CADA LÍNEA TIENE QUE CERRAR.
+    # EL IMPUESTO DEL DOCUMENTO ES EL DE SU BASE (regla 3291): base imponible ×
+    # tasa, y la base ya tiene restados los descuentos globales. Sin descuento
+    # global, además, las líneas suman exactamente el impuesto del documento; con
+    # él NO: cada línea tributa sobre su valor sin rebajar y el documento sobre
+    # la base rebajada, y la diferencia es precisamente el IGV del descuento.
+    # Sumar líneas y exigir igualdad sería exigir que el descuento no existiera.
+    if not data.allowances:
+        suma = sum((ln.tax_amount for ln in data.lines), Decimal('0.00'))
+        if abs(suma - data.tax_amount) > Decimal('0.01'):
+            _fail(f'Las líneas suman {suma} de impuesto y el documento declara '
+                  f'{data.tax_amount}.')
+    esperado = data.taxable_amount * tasa / Decimal('100')
+    if abs(esperado - data.tax_amount) > Decimal('0.01'):
+        _fail(f'El impuesto declarado ({data.tax_amount}) no corresponde al '
+              f'{tasa}% de la base {data.taxable_amount} (regla 3291).')
+
+    # LA ARITMÉTICA DE CADA LÍNEA TIENE QUE CERRAR (regla 3271).
     #
-    # `cantidad × valor unitario` debe dar el importe de la línea. Parece obvio y
-    # no lo es: repartir un descuento global reduciendo sólo el importe deja un
-    # documento que declara «2 unidades a 100,00» con un total de línea de
-    # 184,75. El XSD lo acepta —no comprueba aritmética— y SUNAT lo rechaza, o
-    # peor, lo acepta con un precio unitario que nadie cobró.
+    # `cantidad × valor unitario − descuentos de la línea` debe dar el importe
+    # de la línea. Parece obvio y no lo es: repartir un descuento reduciendo
+    # sólo el importe deja un documento que declara «2 unidades a 100,00» con un
+    # total de línea de 184,75. El XSD lo acepta —no comprueba aritmética— y
+    # SUNAT lo rechaza, o peor, lo acepta con un precio unitario que nadie cobró.
     #
     # Un descuento se declara con `cac:AllowanceCharge`, no escondiéndolo en el
-    # importe. Mientras eso no esté implementado, esta regla impide emitir el
-    # documento incoherente.
+    # importe: el valor unitario sigue siendo el de antes de rebajar, y la
+    # rebaja aparece con su importe y su base.
     for i, line in enumerate(data.lines, 1):
-        esperado = (line.quantity * line.unit_price).quantize(Decimal('0.01'))
+        bruto = (line.quantity * line.unit_price).quantize(Decimal('0.01'))
+        rebaja = sum((a.amount for a in line.allowances), Decimal('0.00'))
+        esperado = bruto - rebaja
         if abs(esperado - line.line_amount) > Decimal('0.01'):
+            detalle = f' − {rebaja}' if rebaja else ''
             _fail(
-                f'Línea {i}: {line.quantity} × {line.unit_price} = {esperado}, '
-                f'pero el importe declarado es {line.line_amount}. Un descuento '
-                f'no puede esconderse en el importe de la línea: se declara con '
-                f'AllowanceCharge, y eso todavía no está implementado.'
+                f'Línea {i}: {line.quantity} × {line.unit_price}{detalle} = '
+                f'{esperado}, pero el importe declarado es {line.line_amount}. Un '
+                f'descuento no puede esconderse en el importe de la línea: se '
+                f'declara con AllowanceCharge, con su importe y su base.'
             )
+
+
+def _check_multiplier(allowance, where: str) -> None:
+    """Si se declara un factor, `base × factor` es el importe (reglas 3290/3307)."""
+    if allowance.multiplier is None:
+        return
+    if allowance.multiplier <= 0:
+        _fail(f'{where}: el factor del descuento debe ser mayor que cero.')
+    esperado = (allowance.base_amount * allowance.multiplier).quantize(Decimal('0.01'))
+    if abs(esperado - allowance.amount) > Decimal('0.01'):
+        _fail(f'{where}: {allowance.base_amount} × {allowance.multiplier} = '
+              f'{esperado}, pero el descuento declarado es {allowance.amount}.')
 
 
 def validate_note(data) -> None:

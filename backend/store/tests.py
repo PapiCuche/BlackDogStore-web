@@ -49368,7 +49368,7 @@ from .fiscal import packaging as _fp  # noqa: E402
 from .fiscal import rules as _fr  # noqa: E402
 from .fiscal import schema as _fs  # noqa: E402
 from .fiscal import signing as _fsign  # noqa: E402
-from .fiscal.data import InvoiceData, Line, Party  # noqa: E402
+from .fiscal.data import Allowance, InvoiceData, Line, Party  # noqa: E402
 from .fiscal.testing import minimal_invoice, self_signed_pem  # noqa: E402
 
 
@@ -51003,15 +51003,17 @@ class C22BSubmissionClaimTest(TestCase):
 
 class C22BDiscountFailsClosedTest(TestCase):
     """
-    §6 — una venta con descuento NO se emite todavía, y no en silencio.
+    §6 — un descuento que el snapshot NO EXPLICA no se emite, y no en silencio.
 
-    C2.1 sabe vender con descuento; el generador fiscal no sabe declararlo. Un
-    descuento se expresa en UBL con `cac:AllowanceCharge`, no rebajando el
-    importe de la línea. Hacer lo segundo producía un documento que decía
-    «2 unidades a 100,00» con un total de línea de 184,75: la aritmética no
-    cerraba y la rebaja era invisible.
+    Hasta ERP-FISCAL-6 esto rechazaba todo descuento: el generador no sabía
+    declararlo. Ahora lo declara con `cac:AllowanceCharge` (ver
+    `Fiscal6DiscountDeclarationTest`), y lo que sigue fallando cerrado es la
+    venta cuyo `discount_amount > 0` llega con `discount_source = none`: nadie
+    dijo de dónde salió la rebaja, y un comprobante legal no lo adivina.
 
-    Enviar eso a SUNAT es declarar un precio unitario que nadie cobró.
+    La regla de línea que hace imposible «esconder» un descuento rebajando el
+    importe sigue vigente: «2 unidades a 100,00» con un total de línea de 184,75
+    es un documento que declara un precio unitario que nadie cobró.
     """
 
     def setUp(self):
@@ -51050,10 +51052,12 @@ class C22BDiscountFailsClosedTest(TestCase):
         self.assertEqual(doc.total, Decimal('236.00'))
 
     def test_a_discounted_sale_is_refused_with_a_reason(self):
+        """`_order` deja `discount_source` en `none`: un descuento sin origen."""
         with self.assertRaises(FiscalError) as ctx:
             get_or_create_fiscal_document(self._order(descuento=Decimal('18.00')))
         mensaje = str(ctx.exception).lower()
         self.assertIn('descuento', mensaje)
+        self.assertIn('origen', mensaje)
         self.assertIn('18.00', str(ctx.exception))
 
     def test_refusing_does_not_burn_a_correlativo(self):
@@ -56819,14 +56823,22 @@ class C22DBoletaTest(TestCase):
 
     def _boleta(self, *, price='118.00', qty=1, total='118.00', taxable='100.00',
                 tax='18.00', doc_type='', doc_number='', name='',
-                treatment='taxed', discount='0.00', product=None):
+                treatment='taxed', discount='0.00', product=None, subtotal=None,
+                source=None):
+        """
+        `subtotal` es el importe ANTES del descuento. Sin descuento coincide con
+        el total; con descuento se pasa explícito, nunca se deriva aquí: derivarlo
+        escondería justo el dato que el test de descuento tiene que controlar.
+        """
         product = product or self.product
         order = Order.objects.create(
             company=self.company, customer_name=name,
             document_type=doc_type, document_number=doc_number,
             receipt_type=Order.ReceiptType.BOLETA,
             total=Decimal(total), discount_amount=Decimal(discount),
-            subtotal_amount=Decimal(total), taxable_amount=Decimal(taxable),
+            discount_source=source or DiscountSource.NONE,
+            subtotal_amount=Decimal(subtotal if subtotal is not None else total),
+            taxable_amount=Decimal(taxable),
             tax_amount=Decimal(tax), tax_rate=Decimal('0.18'),
             tax_treatment=treatment, currency='PEN',
             status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
@@ -56892,9 +56904,66 @@ class C22DBoletaTest(TestCase):
         self.assertEqual(doc.taxable_amount, Decimal('101.53'))
         self.assertEqual(doc.tax_amount, Decimal('18.27'))
 
-    def test_a_boleta_with_a_discount_fails_closed(self):
-        with self.assertRaises(FiscalError):
-            get_or_create_fiscal_document(self._boleta(discount='10.00'))
+    def test_a_boleta_with_an_unexplained_discount_fails_closed(self):
+        """
+        ERP-FISCAL-6 transformó este test. Antes, TODO descuento se rechazaba
+        porque el generador no sabía declararlo; ahora se declara (ver
+        `Fiscal6DiscountDeclarationTest`). Lo que sigue fallando cerrado es un
+        descuento SIN ORIGEN: `discount_amount > 0` con `discount_source = none`
+        es un snapshot que nadie explica, y un comprobante legal no lo adivina.
+        """
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(
+                self._boleta(discount='10.00', total='108.00', subtotal='118.00',
+                             taxable='91.53', tax='16.47'))
+        self.assertIn('origen', str(ctx.exception))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 1)
+
+    def test_a_boleta_with_a_coupon_declares_a_global_allowance(self):
+        """108,00 = 118,00 − 10,00 de cupón: base 91,53; antes, 100,00; neto 8,47."""
+        doc = self._issue(self._boleta(
+            discount='10.00', total='108.00', subtotal='118.00',
+            taxable='91.53', tax='16.47', source=DiscountSource.COUPON))
+        root = _LET.fromstring(doc.signed_xml.encode('utf-8'))
+        allowance = root.findall('cac:AllowanceCharge', _fb.NS)
+        self.assertEqual(len(allowance), 1)
+        self.assertEqual(
+            [allowance[0].findtext(tag, namespaces=_fb.NS)
+             for tag in ('cbc:ChargeIndicator', 'cbc:AllowanceChargeReasonCode',
+                         'cbc:Amount', 'cbc:BaseAmount')],
+            ['false', '02', '8.47', '100.00'])
+        totals = root.find('cac:LegalMonetaryTotal', _fb.NS)
+        self.assertEqual(totals.findtext('cbc:LineExtensionAmount', namespaces=_fb.NS), '91.53')
+        self.assertEqual(totals.findtext('cbc:PayableAmount', namespaces=_fb.NS), '108.00')
+        self.assertIsNone(totals.find('cbc:AllowanceTotalAmount', _fb.NS))
+        self.assertEqual(doc.document_type, FiscalDocumentType.RECEIPT)
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+
+    def test_a_boleta_with_a_manual_discount_declares_a_global_allowance(self):
+        doc = self._issue(self._boleta(
+            discount='10.00', total='108.00', subtotal='118.00',
+            taxable='91.53', tax='16.47', source=DiscountSource.MANUAL))
+        root = _LET.fromstring(doc.signed_xml.encode('utf-8'))
+        self.assertEqual(
+            root.findtext('cac:AllowanceCharge/cbc:AllowanceChargeReasonCode',
+                          namespaces=_fb.NS), '02')
+        self.assertEqual(root.findtext('cac:AllowanceCharge/cbc:Amount',
+                                       namespaces=_fb.NS), '8.47')
+        self.assertEqual(len(root.findall('.//cac:InvoiceLine/cac:AllowanceCharge',
+                                          _fb.NS)), 0)
+
+    def test_a_boleta_with_a_discount_and_no_subtotal_fails_closed_not_500(self):
+        """§44: sin subtotal previo no hay base que declarar. FiscalError, no TypeError."""
+        order = self._boleta(
+            discount='10.00', total='108.00', subtotal='118.00',
+            taxable='91.53', tax='16.47', source=DiscountSource.COUPON)
+        Order.objects.filter(pk=order.pk).update(subtotal_amount=None)
+        order.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(order)
+        self.assertIn('subtotal', str(ctx.exception))
         self.assertEqual(FiscalDocument.objects.count(), 0)
 
     def test_a_non_taxed_boleta_fails_closed(self):
@@ -56958,6 +57027,607 @@ class C22DBoletaTest(TestCase):
         order.save(update_fields=['paid_at'])
         doc, _ = get_or_create_fiscal_document(order)
         self.assertEqual(timezone.localtime(doc.issued_at).date(), paid.date())
+
+
+# ===========================================================================
+# ERP-FISCAL-6 — Descuentos declarados (cac:AllowanceCharge)
+# ===========================================================================
+
+@override_settings(FISCAL_ENABLED=True)
+class Fiscal6DiscountDeclarationTest(TestCase):
+    """
+    Una venta con descuento se emite, y el descuento se DECLARA donde nació.
+
+    Cupón y descuento manual son globales: un `cac:AllowanceCharge` en el
+    documento con código `02` (Catálogo N.º 53 vigente: descuento global que
+    afecta la base). Una promoción automática rebajó artículos concretos: cada
+    línea afectada lleva el suyo con código `00`. Las cifras salen del snapshot
+    de la venta y de la atribución que `promotion_services` congeló; nada se
+    recalcula, y el importe a pagar sigue siendo `Order.total`.
+
+    Las ventas se hacen por el camino REAL del mostrador (`create_pos_sale` con
+    `receipt_type`), y el XML se firma por el camino real (`sign_fiscal_document`
+    → reglas → firma → XSD). Las identidades que se comprueban son las que
+    SUNAT valida (hoja `Factura2_0`, reglas 3270, 3271, 3277, 3278, 3279, 3280,
+    3291, 3300), no las que aparecieron en una conversación.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'f6-desc', 'Empresa Descuentos', tax_id='20100066603',
+            legal_name='EMPRESA DESCUENTOS SAC')
+        self.branch = self.company.default_inventory_branch
+        self.factura_series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE, series='F001')
+        self.boleta_series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        self.phone = _c1_product(self.company, 'Teléfono F6', '3000.00')
+        self.case = _c1_product(self.company, 'Funda F6', '100.00')
+        self.glass = _c1_product(self.company, 'Vidrio F6', '50.00')
+        self.cable = _c1_product(self.company, 'Cable F6', '30.00')
+        for product in (self.phone, self.case, self.glass, self.cable):
+            _c1_stock(self.branch, product, 50)
+        self.seller, _ = _p2d_member(
+            self.company, 'f6_seller',
+            ['company.view', _C1_POS, _C12_DISCOUNT, 'sales.fiscal.issue'],
+        )
+        self.ruc_customer = Customer.objects.create(
+            company=self.company, customer_type=Customer.TYPE_BUSINESS,
+            business_name='CLIENTE F6 SAC', document_type=Order.DocumentType.RUC,
+            document_number='20000000001')
+        self.key_pem, self.cert_pem = self_signed_pem('20100066603')
+
+    # -- helpers -----------------------------------------------------------
+
+    def _sell(self, items, receipt_type=None, **kw):
+        if receipt_type == Order.ReceiptType.FACTURA:
+            kw.setdefault('customer', self.ruc_customer.pk)
+        order, _ = _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': p.pk, 'quantity': q} for p, q in items],
+            payment_method=PaymentMethod.CARD, receipt_type=receipt_type, **kw,
+        )
+        return order
+
+    def _issue(self, order):
+        doc, _ = get_or_create_fiscal_document(order)
+        return sign_fiscal_document(doc, key_pem=self.key_pem, cert_pem=self.cert_pem)
+
+    def _xml(self, doc):
+        return _LET.fromstring(doc.signed_xml.encode('utf-8'))
+
+    @staticmethod
+    def _text(node, path):
+        return node.findtext(path, namespaces=_fb.NS)
+
+    def _allowance(self, node):
+        """(motivo, importe, base) del `cac:AllowanceCharge` de `node`, o None."""
+        found = node.findall('cac:AllowanceCharge', _fb.NS)
+        if not found:
+            return None
+        self.assertEqual(len(found), 1)
+        a = found[0]
+        self.assertEqual(self._text(a, 'cbc:ChargeIndicator'), 'false')
+        self.assertIsNone(a.find('cbc:MultiplierFactorNumeric', _fb.NS))
+        return (self._text(a, 'cbc:AllowanceChargeReasonCode'),
+                self._text(a, 'cbc:Amount'), self._text(a, 'cbc:BaseAmount'))
+
+    def _lines(self, root):
+        return root.findall('cac:InvoiceLine', _fb.NS)
+
+    def _assert_totals_follow_the_sale(self, root, order):
+        """
+        Reglas 3278/3279/3280: Total valor de venta = base imponible;
+        TaxInclusiveAmount = PayableAmount = lo cobrado. Sin
+        `AllowanceTotalAmount`: nuestros descuentos afectan la base y SUNAT lo
+        restaría OTRA VEZ del total (regla 3280) — el doble descuento.
+        """
+        totals = root.find('cac:LegalMonetaryTotal', _fb.NS)
+        self.assertEqual(self._text(totals, 'cbc:LineExtensionAmount'), str(order.taxable_amount))
+        self.assertEqual(self._text(totals, 'cbc:TaxInclusiveAmount'), str(order.total))
+        self.assertEqual(self._text(totals, 'cbc:PayableAmount'), str(order.total))
+        self.assertIsNone(totals.find('cbc:AllowanceTotalAmount', _fb.NS))
+        self.assertEqual(self._text(root, 'cac:TaxTotal/cbc:TaxAmount'), str(order.tax_amount))
+        self.assertEqual(
+            self._text(root, 'cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount'),
+            str(order.taxable_amount))
+
+    def _assert_line_arithmetic(self, line):
+        """Regla 3271: cantidad × valor unitario − descuentos = valor de venta (±0,01)."""
+        qty = Decimal(self._text(line, 'cbc:InvoicedQuantity'))
+        unit = Decimal(self._text(line, 'cac:Price/cbc:PriceAmount'))
+        rebaja = sum((Decimal(a.findtext('cbc:Amount', namespaces=_fb.NS))
+                      for a in line.findall('cac:AllowanceCharge', _fb.NS)), Decimal('0'))
+        value = Decimal(self._text(line, 'cbc:LineExtensionAmount'))
+        self.assertLessEqual(abs((qty * unit).quantize(Decimal('0.01')) - rebaja - value),
+                             Decimal('0.01'))
+        # Regla 3270: precio de venta unitario = (valor + impuesto) / cantidad.
+        tax = Decimal(self._text(line, 'cac:TaxTotal/cbc:TaxAmount'))
+        price = Decimal(self._text(line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'))
+        self.assertLessEqual(abs((value + tax) / qty - price), Decimal('0.01'))
+
+    def _sum_line_allowances(self, root):
+        return sum((Decimal(a.findtext('cbc:Amount', namespaces=_fb.NS))
+                    for a in root.findall('cac:InvoiceLine/cac:AllowanceCharge', _fb.NS)),
+                   Decimal('0.00'))
+
+    def _gross_promotion_discount(self, order):
+        total = Decimal('0.00')
+        for row in AppliedPromotion.objects.filter(order=order):
+            total += sum((Decimal(c['discount_amount']) for c in row.metadata['components']),
+                         Decimal('0.00'))
+        return total
+
+    # -- global: cupón y manual ---------------------------------------------
+
+    def test_a_coupon_is_declared_as_one_global_allowance_on_a_factura(self):
+        """
+        150,00 − 10 % = 135,00. Base de la venta 114,41; base de antes 127,12;
+        descuento NETO 12,71 con código 02 y base 127,12. Las líneas van SIN
+        rebajar (84,75 + 42,37 = 127,12) y 127,12 − 12,71 = 114,41 (regla 3277).
+        """
+        _Coupon.objects.create(company=self.company, code='DIEZ', discount_percent=10)
+        order = self._sell([(self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.FACTURA, coupon_code='DIEZ')
+        self.assertEqual(order.discount_source, DiscountSource.COUPON)
+        self.assertEqual((order.discount_amount, order.total, order.taxable_amount),
+                         (Decimal('15.00'), Decimal('135.00'), Decimal('114.41')))
+
+        doc = self._issue(order)
+        root = self._xml(doc)
+        self.assertEqual(self._allowance(root), ('02', '12.71', '127.12'))
+        lines = self._lines(root)
+        self.assertEqual([self._text(ln, 'cbc:LineExtensionAmount') for ln in lines],
+                         ['84.75', '42.37'])
+        self.assertEqual([self._allowance(ln) for ln in lines], [None, None])
+        self.assertEqual(
+            [self._text(ln, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount')
+             for ln in lines], ['100.00', '50.00'])
+        for line in lines:
+            self._assert_line_arithmetic(line)
+        self._assert_totals_follow_the_sale(root, order)
+        self.assertEqual(doc.document_type, FiscalDocumentType.INVOICE)
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+        _fs.validate_invoice(doc.signed_xml.encode('utf-8'))
+
+    def test_a_manual_percentage_is_declared_globally_without_inventing_a_factor(self):
+        """5 % manual: 7,50 bruto; neto 127,12 − 120,76 = 6,36. Sin MultiplierFactorNumeric."""
+        order = self._sell(
+            [(self.case, 1), (self.glass, 1)], Order.ReceiptType.FACTURA,
+            may_apply_manual_discount=True, manual_discount_type='percent',
+            manual_discount_value='5', discount_reason='Cliente frecuente')
+        self.assertEqual((order.discount_source, order.discount_amount, order.total),
+                         (DiscountSource.MANUAL, Decimal('7.50'), Decimal('142.50')))
+        root = self._xml(self._issue(order))
+        self.assertEqual(self._allowance(root), ('02', '6.36', '127.12'))
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_manual_fixed_amount_is_declared_globally(self):
+        """20,00 de rebaja manual: neto 127,12 − 110,17 = 16,95."""
+        order = self._sell(
+            [(self.case, 1), (self.glass, 1)], Order.ReceiptType.BOLETA,
+            may_apply_manual_discount=True, manual_discount_type='amount',
+            manual_discount_value='20.00', discount_reason='Rayón en la caja')
+        self.assertEqual(order.total, Decimal('130.00'))
+        doc = self._issue(order)
+        root = self._xml(doc)
+        self.assertEqual(self._allowance(root), ('02', '16.95', '127.12'))
+        self.assertEqual(doc.document_type, FiscalDocumentType.RECEIPT)
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_coupon_on_a_boleta_uses_the_same_primitives(self):
+        _Coupon.objects.create(company=self.company, code='DIEZ', discount_percent=10)
+        order = self._sell([(self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.BOLETA, coupon_code='DIEZ')
+        doc = self._issue(order)
+        root = self._xml(doc)
+        self.assertEqual(self._text(root, 'cbc:InvoiceTypeCode'), '03')
+        self.assertEqual(self._allowance(root), ('02', '12.71', '127.12'))
+        self._assert_totals_follow_the_sale(root, order)
+
+    # -- línea: promociones ---------------------------------------------------
+
+    def test_a_fixed_combo_is_declared_line_by_line_on_a_boleta(self):
+        """
+        Funda 100 + vidrio 50 a 100: rebaja bruta 50 (33,33 / 16,67). La venta
+        vale 100 → base 84,75; de antes 127,12; neto 42,37 repartido 28,24 /
+        14,13. Cada línea: valor rebajado, valor unitario SIN rebajar, y el
+        precio que el cliente pagó por unidad.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        order = self._sell([(self.case, 1), (self.glass, 1)], Order.ReceiptType.BOLETA)
+        self.assertEqual((order.discount_source, order.discount_amount, order.total),
+                         (DiscountSource.PROMOTION, Decimal('50.00'), Decimal('100.00')))
+        self.assertEqual(order.taxable_amount, Decimal('84.75'))
+
+        doc = self._issue(order)
+        root = self._xml(doc)
+        self.assertIsNone(self._allowance(root))          # nada global
+        case_line, glass_line = self._lines(root)
+        self.assertEqual(self._text(case_line, 'cbc:LineExtensionAmount'), '56.50')
+        self.assertEqual(self._allowance(case_line), ('00', '28.24', '84.74'))
+        self.assertEqual(self._text(case_line, 'cac:Price/cbc:PriceAmount'), '84.74')
+        self.assertEqual(
+            self._text(case_line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'),
+            '66.67')
+        self.assertEqual(self._text(glass_line, 'cbc:LineExtensionAmount'), '28.25')
+        self.assertEqual(self._allowance(glass_line), ('00', '14.13', '42.38'))
+        self.assertEqual(
+            self._text(glass_line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'),
+            '33.33')
+        for line in (case_line, glass_line):
+            self._assert_line_arithmetic(line)
+        # Σ descuentos de línea (neto) == base de antes − base de la venta.
+        self.assertEqual(self._sum_line_allowances(root), Decimal('42.37'))
+        # Y la suma COMERCIAL bruta sigue siendo la de la venta.
+        self.assertEqual(self._gross_promotion_discount(order), order.discount_amount)
+        self._assert_totals_follow_the_sale(root, order)
+        _fs.validate_invoice(doc.signed_xml.encode('utf-8'))
+
+    def test_a_percentage_combo_is_declared_line_by_line_on_a_factura(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], percent='10.00')
+        order = self._sell([(self.case, 1), (self.glass, 1)], Order.ReceiptType.FACTURA)
+        self.assertEqual((order.discount_amount, order.total), (Decimal('15.00'), Decimal('135.00')))
+        root = self._xml(self._issue(order))
+        case_line, glass_line = self._lines(root)
+        self.assertEqual(self._allowance(case_line), ('00', '8.47', '84.74'))
+        self.assertEqual(self._allowance(glass_line), ('00', '4.24', '42.38'))
+        self.assertEqual([self._text(ln, 'cbc:LineExtensionAmount') for ln in (case_line, glass_line)],
+                         ['76.27', '38.14'])
+        self.assertEqual(self._sum_line_allowances(root), Decimal('12.71'))
+        self.assertIsNone(self._allowance(root))
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_multiple_applications_scale_the_line_allowances(self):
+        """Dos sets de (2 fundas + 1 vidrio) a 200: rebaja bruta 100; neto 84,75 → 67,80 / 16,95."""
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        order = self._sell([(self.case, 4), (self.glass, 2)], Order.ReceiptType.BOLETA)
+        self.assertEqual((order.discount_amount, order.total), (Decimal('100.00'), Decimal('400.00')))
+        root = self._xml(self._issue(order))
+        case_line, glass_line = self._lines(root)
+        self.assertEqual(self._text(case_line, 'cbc:InvoicedQuantity'), '4.00')
+        self.assertEqual(self._allowance(case_line)[:2], ('00', '67.80'))
+        self.assertEqual(self._allowance(glass_line)[:2], ('00', '16.95'))
+        for line in (case_line, glass_line):
+            self._assert_line_arithmetic(line)
+        self.assertEqual(self._sum_line_allowances(root), Decimal('84.75'))
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_multiple_promotions_each_explain_their_own_lines(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00', name='A')
+        _c13_combo(self.company, [(self.phone, 1)], percent='10.00', name='B')
+        order = self._sell([(self.phone, 1), (self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.FACTURA)
+        self.assertEqual((order.discount_amount, order.total), (Decimal('350.00'), Decimal('2800.00')))
+        self.assertEqual(AppliedPromotion.objects.filter(order=order).count(), 2)
+        root = self._xml(self._issue(order))
+        self.assertEqual(len(root.findall('cac:InvoiceLine/cac:AllowanceCharge', _fb.NS)), 3)
+        # 3150/1,18 = 2669,49; 2800/1,18 = 2372,88; neto 296,61.
+        self.assertEqual(self._sum_line_allowances(root), Decimal('296.61'))
+        self.assertEqual(self._gross_promotion_discount(order), Decimal('350.00'))
+        for line in self._lines(root):
+            self._assert_line_arithmetic(line)
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_partially_promoted_line_and_an_untouched_line(self):
+        """
+        Dos fundas (una en el combo), un vidrio y un cable que no entra en nada:
+        la funda declara su descuento sobre las DOS unidades vendidas; el cable
+        no lleva `AllowanceCharge` y su precio es el de catálogo.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        order = self._sell([(self.case, 2), (self.glass, 1), (self.cable, 1)],
+                           Order.ReceiptType.BOLETA)
+        self.assertEqual((order.discount_amount, order.total), (Decimal('50.00'), Decimal('230.00')))
+        root = self._xml(self._issue(order))
+        case_line, glass_line, cable_line = self._lines(root)
+        self.assertEqual(self._text(case_line, 'cbc:InvoicedQuantity'), '2.00')
+        self.assertIsNotNone(self._allowance(case_line))
+        self.assertIsNotNone(self._allowance(glass_line))
+        self.assertIsNone(self._allowance(cable_line))
+        self.assertEqual(
+            self._text(cable_line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'),
+            '30.00')
+        for line in (case_line, glass_line, cable_line):
+            self._assert_line_arithmetic(line)
+        # 280/1,18 = 237,29; 230/1,18 = 194,92; neto 42,37.
+        self.assertEqual(self._sum_line_allowances(root), Decimal('42.37'))
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_cent_remainders_close_exactly_across_three_lines(self):
+        """3 150 → 3 000: la rebaja bruta 150 se atribuye 142,86 / 4,76 / 2,38 y el neto 127,12 cierra."""
+        _c13_combo(self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+                   fixed_price='3000.00')
+        order = self._sell([(self.phone, 1), (self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.FACTURA)
+        self.assertEqual(order.total, Decimal('3000.00'))
+        root = self._xml(self._issue(order))
+        amounts = [Decimal(a.findtext('cbc:Amount', namespaces=_fb.NS))
+                   for a in root.findall('cac:InvoiceLine/cac:AllowanceCharge', _fb.NS)]
+        self.assertEqual(len(amounts), 3)
+        self.assertTrue(all(a > 0 for a in amounts))
+        self.assertEqual(sum(amounts), Decimal('127.12'))   # 2669,49 − 2542,37
+        self.assertEqual(self._gross_promotion_discount(order), Decimal('150.00'))
+        for line in self._lines(root):
+            self._assert_line_arithmetic(line)
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_legacy_promotion_snapshot_is_declared_from_its_rebuilt_attribution(self):
+        """
+        Una venta anterior a la atribución: sus componentes sólo tienen
+        `quantity_used` y `unit_price`. Se declara igual —reconstruyendo en
+        memoria con la regla vigente— y el JSON histórico NO cambia.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        order = self._sell([(self.case, 1), (self.glass, 1)])
+        row = AppliedPromotion.objects.get(order=order)
+        legacy = [{k: v for k, v in c.items() if k not in ('regular_amount', 'discount_amount')}
+                  for c in row.metadata['components']]
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': legacy})
+        Order.objects.filter(pk=order.pk).update(receipt_type=Order.ReceiptType.BOLETA)
+        order.refresh_from_db()
+
+        root = self._xml(self._issue(order))
+        case_line, glass_line = self._lines(root)
+        self.assertEqual(self._allowance(case_line), ('00', '28.24', '84.74'))
+        self.assertEqual(self._allowance(glass_line), ('00', '14.13', '42.38'))
+        row.refresh_from_db()
+        self.assertEqual(row.metadata['components'], legacy)
+
+    # -- regresión: sin descuento y sin doble descuento ---------------------
+
+    def test_a_sale_without_a_discount_emits_no_allowance_at_all(self):
+        order = self._sell([(self.case, 1)], Order.ReceiptType.FACTURA)
+        self.assertEqual((order.discount_source, order.discount_amount),
+                         (DiscountSource.NONE, Decimal('0.00')))
+        root = self._xml(self._issue(order))
+        self.assertEqual(len(root.findall('.//cac:AllowanceCharge', _fb.NS)), 0)
+        self.assertIsNone(root.find('cac:LegalMonetaryTotal/cbc:AllowanceTotalAmount', _fb.NS))
+        (line,) = self._lines(root)
+        self.assertEqual(self._text(line, 'cbc:LineExtensionAmount'), '84.75')
+        self.assertEqual(
+            self._text(line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'),
+            '100.00')
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_declared_allowance_never_subtracts_the_discount_twice(self):
+        """
+        DOUBLE DISCOUNT. El cupón ya está dentro de `taxable_amount`; declararlo
+        NO puede volver a restarlo. `PayableAmount` es lo cobrado, y una
+        `InvoiceData` que restara el descuento otra vez no puede ni construirse.
+        """
+        _Coupon.objects.create(company=self.company, code='DIEZ', discount_percent=10)
+        order = self._sell([(self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.FACTURA, coupon_code='DIEZ')
+        root = self._xml(self._issue(order))
+        totals = root.find('cac:LegalMonetaryTotal', _fb.NS)
+        self.assertEqual(self._text(totals, 'cbc:PayableAmount'), '135.00')
+        self.assertEqual(self._text(totals, 'cbc:TaxInclusiveAmount'), '135.00')
+        self.assertEqual(self._text(totals, 'cbc:LineExtensionAmount'), '114.41')
+        self.assertEqual(self._text(root, 'cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount'), '114.41')
+
+        # La versión «restada dos veces»: base 101,70 = 114,41 − 12,71 otra vez.
+        doble = minimal_invoice(
+            lines=(Line('FUNDA', Decimal('1'), 'NIU', Decimal('84.75'), Decimal('100.00'),
+                        Decimal('84.75'), Decimal('15.25'), Decimal('18.00')),
+                   Line('VIDRIO', Decimal('1'), 'NIU', Decimal('42.37'), Decimal('50.00'),
+                        Decimal('42.37'), Decimal('7.63'), Decimal('18.00'))),
+            allowances=(Allowance(Decimal('12.71'), Decimal('127.12'), '02'),),
+            taxable_amount=Decimal('101.70'), tax_amount=Decimal('18.31'),
+            total=Decimal('120.01'))
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(doble)
+        self.assertIn('descuento global', str(ctx.exception))
+
+    def test_line_and_global_allowances_add_up_and_keep_the_xsd_order(self):
+        """
+        §27, inspirado en la guía oficial: descuentos de línea + descuento
+        global = `allowance_total`. La estructura los admite juntos —2 unidades
+        a 100 con 20 de rebaja de línea, y 18 de rebaja global— y el XSD fija
+        dónde va cada uno. Ese total NO se escribe en `AllowanceTotalAmount`:
+        SUNAT reserva ese nodo a los descuentos que NO afectan la base y lo
+        resta del importe a pagar (reglas 3300 y 3280).
+        """
+        data = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('2'), 'NIU', Decimal('100.00'),
+                        Decimal('106.20'), Decimal('180.00'), Decimal('32.40'),
+                        Decimal('18.00'),
+                        allowances=(Allowance(Decimal('20.00'), Decimal('200.00'), '00'),)),),
+            allowances=(Allowance(Decimal('18.00'), Decimal('180.00'), '02'),),
+            taxable_amount=Decimal('162.00'), tax_amount=Decimal('29.16'),
+            total=Decimal('191.16'))
+        self.assertEqual(data.line_allowance_total, Decimal('20.00'))
+        self.assertEqual(data.global_allowance_total, Decimal('18.00'))
+        self.assertEqual(data.allowance_total, Decimal('38.00'))
+        _fr.validate(data)
+        signed = _fsign.sign_invoice(
+            _LET.fromstring(_fb.build_invoice_xml(data)),
+            key_pem=self.key_pem, cert_pem=self.cert_pem)
+        xml = _LET.tostring(signed, xml_declaration=True, encoding='UTF-8')
+        _fs.validate_invoice(xml)
+        root = _LET.fromstring(xml)
+        names = [_LET.QName(c).localname for c in root]
+        self.assertLess(names.index('PaymentTerms'), names.index('AllowanceCharge'))
+        self.assertLess(names.index('AllowanceCharge'), names.index('TaxTotal'))
+        self.assertLess(names.index('TaxTotal'), names.index('LegalMonetaryTotal'))
+        line = root.find('cac:InvoiceLine', _fb.NS)
+        line_names = [_LET.QName(c).localname for c in line]
+        self.assertEqual(
+            line_names,
+            ['ID', 'InvoicedQuantity', 'LineExtensionAmount', 'PricingReference',
+             'AllowanceCharge', 'TaxTotal', 'Item', 'Price'])
+        self.assertIsNone(root.find('cac:LegalMonetaryTotal/cbc:AllowanceTotalAmount', _fb.NS))
+
+    def test_the_wrong_catalogue_level_is_refused_before_the_network(self):
+        """`00` es de ítem y `02` es global (Catálogo N.º 53). Cruzarlos no sale del servidor."""
+        base = minimal_invoice(
+            lines=(Line('A', Decimal('1'), 'NIU', Decimal('100.00'), Decimal('118.00'),
+                        Decimal('100.00'), Decimal('18.00'), Decimal('18.00')),),
+            allowances=(Allowance(Decimal('10.00'), Decimal('100.00'), '00'),),
+            taxable_amount=Decimal('90.00'), tax_amount=Decimal('16.20'),
+            total=Decimal('106.20'))
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(base)
+        self.assertIn('4291', str(ctx.exception))
+        cruzada = minimal_invoice(
+            lines=(Line('A', Decimal('2'), 'NIU', Decimal('100.00'), Decimal('106.20'),
+                        Decimal('180.00'), Decimal('32.40'), Decimal('18.00'),
+                        allowances=(Allowance(Decimal('20.00'), Decimal('200.00'), '02'),)),),
+            taxable_amount=Decimal('180.00'), tax_amount=Decimal('32.40'),
+            total=Decimal('212.40'))
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(cruzada)
+        self.assertIn('nivel de ítem', str(ctx.exception))
+
+    # -- fail closed: lo que el snapshot no explica no se emite --------------
+
+    def _promo_sale_for_tampering(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        order = self._sell([(self.case, 1), (self.glass, 1)])
+        Order.objects.filter(pk=order.pk).update(receipt_type=Order.ReceiptType.BOLETA)
+        order.refresh_from_db()
+        return order, AppliedPromotion.objects.get(order=order)
+
+    def _assert_refused(self, order, *fragments):
+        before = self.boleta_series.next_number
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(order)
+        for fragment in fragments:
+            self.assertIn(fragment, str(ctx.exception))
+        self.assertEqual(FiscalDocument.objects.filter(order=order).count(), 0)
+        self.boleta_series.refresh_from_db()
+        self.assertEqual(self.boleta_series.next_number, before)   # no se quema
+        return ctx.exception
+
+    def test_a_discount_without_a_source_fails_closed(self):
+        order, _ = self._promo_sale_for_tampering()
+        Order.objects.filter(pk=order.pk).update(discount_source=DiscountSource.NONE)
+        order.refresh_from_db()
+        self._assert_refused(order, 'origen', '50.00')
+
+    def test_a_missing_subtotal_fails_closed_as_a_domain_error(self):
+        order, _ = self._promo_sale_for_tampering()
+        Order.objects.filter(pk=order.pk).update(subtotal_amount=None)
+        order.refresh_from_db()
+        exc = self._assert_refused(order, 'subtotal')
+        self.assertIsInstance(exc, FiscalError)          # ni TypeError ni 500
+
+    def test_a_discount_above_the_subtotal_fails_closed(self):
+        order, _ = self._promo_sale_for_tampering()
+        Order.objects.filter(pk=order.pk).update(discount_amount=Decimal('500.00'))
+        order.refresh_from_db()
+        self._assert_refused(order, 'supera el subtotal')
+
+    def test_a_snapshot_whose_subtraction_does_not_close_fails_closed(self):
+        order, _ = self._promo_sale_for_tampering()
+        Order.objects.filter(pk=order.pk).update(total=Decimal('99.00'))
+        order.refresh_from_db()
+        self._assert_refused(order, 'no cuadra')
+
+    def test_a_promotion_discount_without_applied_promotions_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        AppliedPromotion.objects.filter(pk=row.pk).delete()
+        self._assert_refused(order, 'ninguna promoción aplicada')
+
+    def test_applied_promotions_that_do_not_sum_the_discount_fail_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        AppliedPromotion.objects.filter(pk=row.pk).update(discount_amount=Decimal('40.00'))
+        self._assert_refused(order, 'suman 40.00')
+
+    def test_empty_components_fail_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': []})
+        self._assert_refused(order, 'no se puede explicar')
+
+    def test_the_catalogue_shape_in_metadata_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': [
+            {'product_id': self.case.pk, 'quantity': 1, 'price': '100.00', 'available': 3},
+            {'product_id': self.glass.pk, 'quantity': 1, 'price': '50.00', 'available': 3},
+        ]})
+        self._assert_refused(order, 'catálogo')
+
+    def test_a_duplicated_product_in_legacy_metadata_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        legacy = [{k: v for k, v in c.items() if k not in ('regular_amount', 'discount_amount')}
+                  for c in row.metadata['components']]
+        legacy[1]['product_id'] = self.case.pk
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': legacy})
+        self._assert_refused(order, 'dos veces')
+
+    def test_a_tampered_component_discount_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0]['discount_amount'] = '40.00'          # 40 + 16,67 ≠ 50
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': components})
+        self._assert_refused(order, 'congelados suman')
+
+    def test_a_tampered_component_regular_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0]['regular_amount'] = '90.00'           # 1 × 100,00 ≠ 90
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': components})
+        self._assert_refused(order, 'declara un valor regular')
+
+    def test_a_partially_frozen_snapshot_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[1] = {k: v for k, v in components[1].items()
+                         if k not in ('regular_amount', 'discount_amount')}
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': components})
+        self._assert_refused(order, 'congelado a medias')
+
+    def test_a_component_that_is_not_in_the_sale_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0]['product_id'] = self.cable.pk          # nunca se vendió
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': components})
+        self._assert_refused(order, 'no está entre las líneas')
+
+    def test_a_promotion_of_another_company_is_never_used(self):
+        """Multiempresa: el snapshot de la venta sólo se lee dentro de su empresa."""
+        order, row = self._promo_sale_for_tampering()
+        other = _p3_company('f6-ajena', 'Empresa Ajena', tax_id='20522222222')
+        other_case = _c1_product(other, 'Funda Ajena', '100.00')
+        other_glass = _c1_product(other, 'Vidrio Ajeno', '50.00')
+        foreign = _c13_combo(other, [(other_case, 1), (other_glass, 1)], fixed_price='100.00')
+        AppliedPromotion.objects.filter(pk=row.pk).update(promotion=foreign)
+        self._assert_refused(order, 'no pertenece a la empresa')
+        # Y desde la otra empresa la venta no tiene promociones que leer.
+        self.assertEqual(
+            AppliedPromotion.objects.filter(company=other, order=order).count(), 0)
+
+    def test_more_units_attributed_than_sold_fail_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0].update({'quantity_used': 3, 'regular_amount': '300.00',
+                              'discount_amount': '33.33'})
+        AppliedPromotion.objects.filter(pk=row.pk).update(
+            metadata={'components': components}, regular_amount=Decimal('350.00'))
+        self._assert_refused(order, 'unidad(es)')
+
+    def test_a_component_frozen_at_another_price_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0].update({'unit_price': '90.00', 'regular_amount': '90.00'})
+        AppliedPromotion.objects.filter(pk=row.pk).update(
+            metadata={'components': components}, regular_amount=Decimal('140.00'))
+        self._assert_refused(order, 'lo vendió a 100.00')
+
+    def test_a_line_discounted_to_zero_is_a_free_transfer_and_fails_closed(self):
+        """Una línea rebajada al 100 % es una operación gratuita (Catálogo 07, 11-16): fuera de alcance."""
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0]['discount_amount'] = '100.00'
+        components[1]['discount_amount'] = '0.00'
+        AppliedPromotion.objects.filter(pk=row.pk).update(
+            metadata={'components': components}, discount_amount=Decimal('100.00'))
+        Order.objects.filter(pk=order.pk).update(
+            discount_amount=Decimal('100.00'), total=Decimal('50.00'),
+            taxable_amount=Decimal('42.37'), tax_amount=Decimal('7.63'))
+        order.refresh_from_db()
+        self._assert_refused(order, 'gratuita')
 
 
 # ===========================================================================

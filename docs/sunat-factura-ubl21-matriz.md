@@ -12,6 +12,9 @@ Venta interna gravada · factura · PEN · una línea · 100,00 + 18,00 = 118,00
 Sin descuento, anticipo, percepción, detracción, ISC, gratuitas, exportación,
 exoneradas ni inafectas. Es deliberadamente el documento más pequeño posible.
 
+Los **descuentos** se declaran desde ERP-FISCAL-6 y tienen su propia sección más
+abajo («Descuentos declarados»); el caso mínimo sigue sin ellos a propósito.
+
 ## Abreviaturas de fuente
 
 | Clave | Documento |
@@ -21,6 +24,7 @@ exoneradas ni inafectas. Es deliberadamente el documento más pequeño posible.
 | A6 | Anexo N.º 6 — Aspectos técnicos SEE (R.S. 000048-2026, vigente 1.8.2026) |
 | A8 | Anexo N.º 8 — Catálogo de códigos |
 | RV | Reglas de validación, actualizado al 26.08.2026 (hoja `Factura2_0`) |
+| RV-2025 | «Reglas de validación de CPE», archivo oficial `AjustesValidacionesCPEv20250421.xlsx` (cpe.sunat.gob.pe), hojas `Factura2_0`, `Boleta2_0` y `Catálogos` — fuente de la sección de descuentos |
 | guía | Guía de Elaboración de Documentos XML — Factura, UBL 2.1 |
 
 Las URL y las fechas de consulta están en [sunat-cpe-requisitos.md](sunat-cpe-requisitos.md).
@@ -120,12 +124,76 @@ en otro orden son un documento inválido, y hay un test que lo comprueba.
 | 86 | `/Invoice/cac:InvoiceLine/cac:Price` | — | — | — | XSD | Campo del esquema; su presencia la impone el padre. |
 | 87 | `/Invoice/cac:InvoiceLine/cac:Price/cbc:PriceAmount` | — | 100.00 | `currencyID="PEN"` | XSD | Campo del esquema; su presencia la impone el padre. |
 
+## Descuentos declarados (ERP-FISCAL-6, ADR-43)
+
+Soporte real, en **BETA**, para factura (01) y boleta (03) con el mismo generador.
+Ningún importe se recalcula: el estado «después» es el snapshot de la venta y el
+estado «antes» sale de `Order.subtotal_amount` con la misma autoridad de cálculo.
+
+| Origen comercial (`Order.discount_source`) | Dónde se declara | Código Catálogo N.º 53 (RV-2025, hoja `Catálogos`) |
+|---|---|---|
+| `coupon`, `manual` | UN `/Invoice/cac:AllowanceCharge` global | `02` — Descuentos globales que afectan la base imponible del IGV/IVAP |
+| `promotion` | `/Invoice/cac:InvoiceLine/cac:AllowanceCharge` en cada línea rebajada | `00` — Descuentos que afectan la base imponible del IGV/IVAP (nivel ítem) |
+| `none` con `discount_amount > 0` | No se emite: `FiscalError` | — |
+
+Ejemplo real de los tests (`Fiscal6DiscountDeclarationTest`): funda 100,00 + vidrio
+50,00 con cupón del 10 % → total 135,00; y el mismo par en combo a 100,00 → total 100,00.
+
+| XPath | Card. | Global (cupón 10 %) | Línea (combo a 100) | Fuente | Por qué |
+|---|---|---|---|---|---|
+| `/Invoice/cac:AllowanceCharge` | 0..n | 1 | 0 | XSD; RV-2025 fila 50 | Va entre `cac:PaymentTerms` y `cac:TaxTotal`: es su sitio en la secuencia del XSD. |
+| `…/cac:AllowanceCharge/cbc:ChargeIndicator` | 1..1 | `false` | — | RV-2025 regla 3114 | Descuento. `false` es obligatorio para `02`/`00`. |
+| `…/cac:AllowanceCharge/cbc:AllowanceChargeReasonCode` | 0..1 | `02` | — | RV-2025 reglas 3071/3072/4291 | `00`/`01`/`47`/`48` a nivel global es la observación 4291. |
+| `…/cac:AllowanceCharge/cbc:Amount` | 1..1 | `12.71` | — | RV-2025 regla 2968 | Descuento NETO: base previa 127,12 − base 114,41. Positivo y distinto de cero. |
+| `…/cac:AllowanceCharge/cbc:BaseAmount` | 0..1 | `127.12` | — | RV-2025 regla 3016 | La base previa al descuento (Σ valor de venta de las líneas). |
+| `…/cac:AllowanceCharge/cbc:MultiplierFactorNumeric` | 0..1 | omitido | omitido | RV-2025 reglas 3290/3307 | Sólo si el porcentaje quedó congelado como tal; derivarlo inventaría un dato. |
+| `/Invoice/cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount` | 1..1 | `114.41` | `84.75` | RV-2025 regla 3277 | Σ líneas − globales `02` (+ cargos `49`). Es `Order.taxable_amount`. |
+| `/Invoice/cac:TaxTotal/cac:TaxSubtotal/cbc:TaxAmount` | 1..1 | `20.59` | `15.25` | RV-2025 regla 3291 | (Σ bases de línea − `02`) × tasa, ±1. Es `Order.tax_amount`. |
+| `/Invoice/cac:LegalMonetaryTotal/cbc:LineExtensionAmount` | 1..1 | `114.41` | `84.75` | RV-2025 regla 3278 | «Total valor de venta» = Σ líneas − globales `02`: la base imponible, también con descuento. |
+| `/Invoice/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount` | 1..1 | `135.00` | `100.00` | RV-2025 regla 3279 | Total valor de venta + tributos. Es `Order.total`. |
+| `/Invoice/cac:LegalMonetaryTotal/cbc:PayableAmount` | 1..1 | `135.00` | `100.00` | RV-2025 regla 3280 | Lo cobrado. `TaxInclusiveAmount` + cargos no afectos − `AllowanceTotalAmount` − anticipos. |
+| `/Invoice/cac:LegalMonetaryTotal/cbc:AllowanceTotalAmount` | 0..1 | **omitido** | **omitido** | RV-2025 fila 51, reglas 3300/3280 | «Sumatoria otros descuentos (que NO afectan la base)»: se valida contra `01`/`03`/`63` y se RESTA del importe a pagar. Escribir aquí nuestros descuentos los declararía dos veces. |
+| `/Invoice/cac:InvoiceLine/cbc:LineExtensionAmount` | 1..1 | `84.75` · `42.37` | `56.50` · `28.25` | RV-2025 regla 3271 | Cantidad × valor unitario − descuentos `00` de la línea (+ cargos `47`). Sin descuento de línea, es la base previa de la línea. |
+| `/Invoice/cac:InvoiceLine/cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount` | 1..1 | `100.00` · `50.00` | `66.67` · `33.33` | RV-2025 regla 3270; guía §38 | Precio de venta unitario, n(12,10): (valor de venta + tributos) / cantidad. Lo que el cliente pagó por unidad. |
+| `/Invoice/cac:InvoiceLine/cac:AllowanceCharge` | 0..n | 0 | 1 por línea rebajada | XSD; RV-2025 fila 39 | Entre `cac:PricingReference` y `cac:TaxTotal`. |
+| `…/cac:InvoiceLine/cac:AllowanceCharge/cbc:AllowanceChargeReasonCode` | 0..1 | — | `00` | RV-2025 reglas 2954/3073/4268 | Un código global en la línea es la observación 4268. |
+| `…/cac:InvoiceLine/cac:AllowanceCharge/cbc:Amount` | 1..1 | — | `28.24` · `14.13` | RV-2025 regla 2955 | Reparto del descuento neto del documento (42,37) entre las líneas, proporcional a su rebaja bruta (33,33 / 16,67), mayor residuo. |
+| `…/cac:InvoiceLine/cac:AllowanceCharge/cbc:BaseAmount` | 1..1 | — | `84.74` · `42.38` | RV-2025 regla 3053; guía §40 | Valor de la línea ANTES de la rebaja = valor de venta + descuento. |
+| `/Invoice/cac:InvoiceLine/cac:Price/cbc:PriceAmount` | 1..1 | `84.75` · `42.37` | `84.74` · `42.38` | RV-2025 fila 32 | Valor unitario SIN rebajar, n(12,10): la base previa de la línea / cantidad. |
+
+Identidades que `InvoiceData.check()` y `rules.validate` exigen antes de firmar
+(exactas salvo donde se indica ±0,01, que absorbe el valor unitario a 10 decimales):
+
+    Σ InvoiceLine.LineExtensionAmount − Σ global.Amount == taxable_amount        (exacta)
+    taxable_amount + tax_amount == total                                         (exacta)
+    cada descuento: 0 < Amount ≤ BaseAmount, BaseAmount == valor antes de rebajar (exacta)
+    cantidad × valor unitario − descuentos de línea == LineExtensionAmount       (±0,01)
+    tax_amount == taxable_amount × tasa                                          (±0,01)
+    código `02` sólo en el documento; código `00` sólo en la línea
+
+Lo que SUNAT no comprueba y aquí sí: que el descuento exista en la venta
+(`discount_source`), que el subtotal previo se conserve, que las promociones
+aplicadas sumen el descuento y que cada componente pertenezca a la venta y a la
+empresa. Todo eso falla cerrado en `fiscal_services._order_to_invoice_data`.
+
+Boleta (03): las mismas reglas existen en la hoja `Boleta2_0` como observaciones
+(4287, 4288, 4290, 4299, 4307, 4309, 4310, 4312) y los mismos errores de catálogo y
+formato (3071, 3072, 3114, 2968, 3016, 2065). El generador y el validador son los
+mismos. El envío individual de boletas sigue prohibido: van por el Resumen Diario.
+
+**Estado:** XSD y reglas locales PASAN para factura y boleta con descuento global y
+de línea (tests `Fiscal6DiscountDeclarationTest`). La aceptación en SUNAT BETA de un
+comprobante con descuento está **PENDIENTE DE VERIFICACIÓN DIRECTA**. Producción:
+no implementado.
+
 ## Lo que NO se emite, y por qué
 
 | Nodo | Motivo |
 |---|---|
 | `sac:AdditionalMonetaryTotal` | Sólo aplica a operaciones gratuitas, exoneradas, inafectas o con anticipos. Ninguna entra en el caso mínimo. |
-| `cac:AllowanceCharge` | No hay descuentos ni cargos. |
+| `cac:AllowanceCharge` (cargos) | No hay cargos. Los **descuentos** sí se emiten: ver «Descuentos declarados». |
+| `cbc:AllowanceTotalAmount` | Reservado por SUNAT a los descuentos que NO afectan la base (`01`/`03`), y restado del importe a pagar (reglas 3300/3280). Los nuestros afectan la base y ya están dentro de ella. |
+| `cbc:MultiplierFactorNumeric` | Opcional. Sólo si el porcentaje quedara congelado en la venta como tal. |
 | `cac:Delivery` | Ni detracción ni guía asociada. |
 | `cac:PrepaidPayment` | Sin anticipos. |
 | `cbc:DueDate` | Venta al contado; no hay vencimiento. |

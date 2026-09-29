@@ -169,6 +169,46 @@ La columna 5305 está marcada «Vigente para la versión UBL 2.1».
 
 **Catálogo 52** — leyendas: `1000` Monto en Letras.
 
+**Catálogo 53** — `cbc:AllowanceChargeReasonCode` (cargos o descuentos).
+Fuente: hoja `Catálogos` del archivo oficial «Reglas de validación de CPE»
+(`https://cpe.sunat.gob.pe/sites/default/files/inline-files/AjustesValidacionesCPEv20250421.xlsx`,
+consultado el 29.09.2026). **Atención a la versión:** los Anexos N.º 8 de 2017
+(R.S. 117-2017, 245-2017 y 318-2017) y la propia Guía XML UBL 2.1 traen un catálogo
+anterior con sólo `00 OTROS DESCUENTOS` / `50 OTROS CARGOS`; las reglas de validación
+vigentes aplican el catálogo granular de abajo, y sus fórmulas de totales (3277,
+3278, 3279, 3291) distinguen el nivel del código.
+
+| Código | Descripción | Nivel | ChargeIndicator |
+|---|---|---|---|
+| `00` | **Descuentos que afectan la base imponible del IGV/IVAP** ← promociones, en la línea | Ítem | `false` |
+| `01` | Descuentos que no afectan la base imponible del IGV/IVAP | Ítem | `false` |
+| `02` | **Descuentos globales que afectan la base imponible del IGV/IVAP** ← cupón y manual, en el documento | Global | `false` |
+| `03` | Descuentos globales que no afectan la base imponible del IGV/IVAP | Global | `false` |
+| `04` | Descuentos globales por anticipos gravados que afectan la base imponible del IGV/IVAP | Global | `false` |
+| `47` | Cargos que afectan la base imponible del IGV/IVAP | Ítem | `true` |
+| `48` | Cargos que no afectan la base imponible del IGV/IVAP | Ítem | `true` |
+| `49` | Cargos globales que afectan la base imponible del IGV/IVAP | Global | `true` |
+| `50` | Cargos globales que no afectan la base imponible del IGV/IVAP | Global | `true` |
+
+Reglas de validación literales que gobiernan los descuentos (hoja `Factura2_0`;
+la hoja `Boleta2_0` tiene las mismas como observaciones 4287–4312):
+
+| Regla | Campo | Condición (resumen literal) |
+|---|---|---|
+| 3114 | `ChargeIndicator` | `false` para `02`, `03`, `04`, `05`, `06`, `20` (global) y para `00`, `01` (ítem). |
+| 4291 (OBSERV) | `AllowanceChargeReasonCode` global | «El valor del tag es igual a '00', '01', '47' o '48'» → no válido a nivel global. |
+| 4268 (OBSERV) | `AllowanceChargeReasonCode` ítem | «El valor del tag es diferente de '00', '01', '47' y '48'» → no válido a nivel de ítem. |
+| 3271 | `InvoiceLine/LineExtensionAmount` | Valor unitario × cantidad − descuentos `00` + cargos `47`, ±1. |
+| 3270 | `PricingReference/…/PriceAmount` | (valor de venta + tributos del ítem − descuentos `01` + cargos `48`) / cantidad, ±1. |
+| 3277 | `TaxSubtotal/TaxableAmount` (1000) | Σ valor de venta por ítem gravado − descuentos globales `02`/`04` + cargos globales `49`, ±1. |
+| 3291 | `TaxSubtotal/TaxAmount` (1000) | (Σ bases de línea − `02`/`04` + `49`) × tasa vigente, ±1. |
+| 3278 | `LegalMonetaryTotal/LineExtensionAmount` | Σ valor de venta por ítem − descuentos globales `02` + cargos globales `49`, ±1. |
+| 3279 | `LegalMonetaryTotal/TaxInclusiveAmount` | Total valor de venta + ISC + otros + (Σ bases − `02` + `49`) × tasa, ±1. |
+| 3300 | `LegalMonetaryTotal/AllowanceTotalAmount` | Σ descuentos de línea `01` + globales `03`/`63`, ±1 (los que NO afectan la base). |
+| 3280 | `LegalMonetaryTotal/PayableAmount` | Total precio de venta + otros cargos no afectos − `AllowanceTotalAmount` − anticipos + redondeo, ±1. |
+| 2968 / 2955 | `Amount` global / ítem | Decimal positivo de 12 enteros y 2 decimales, **distinto de cero**. |
+| 3290 / 3307 | `Amount` con factor | Si existe `MultiplierFactorNumeric`, `BaseAmount × factor`, ±1. |
+
 ---
 
 ## 5. Firma digital
