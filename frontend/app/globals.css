@@ -32,8 +32,11 @@
      for "the slightly lighter panel" is a field nobody fills correctly. */
   --surface-2: color-mix(in srgb, var(--surface) 88%, var(--foreground));
   --border: var(--brand-border, #262626);
-  --muted: var(--brand-accent, #a1a1aa);
+  --muted: color-mix(in srgb, var(--foreground) 55%, var(--background));
+  --muted-foreground: color-mix(in srgb, var(--foreground) 58%, var(--background));
+  --accent: var(--brand-accent, #a1a1aa);
   --primary: var(--brand-primary, #ffffff);
+  --surface-elevated: color-mix(in srgb, var(--surface) 90%, var(--foreground));
 }
 
 @theme inline {
@@ -43,7 +46,10 @@
   --color-surface-2: var(--surface-2);
   --color-bd-border: var(--border);
   --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
   --color-primary: var(--primary);
+  --color-surface-elevated: var(--surface-elevated);
   --font-sans: var(--font-body);
   --font-display: var(--font-display);
 }
@@ -113,4 +119,15 @@ img { display: block; max-width: 100%; }
 /* Smooth transitions globally */
 *, *::before, *::after {
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+
+/* Accessible motion baseline — decorative motion must never be required. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
