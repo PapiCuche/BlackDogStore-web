@@ -85,13 +85,13 @@ export function ProductForm({ product, categories, onSaved }: Props) {
   }
 
   const inputCls =
-    "w-full bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-white/30 disabled:opacity-50";
+    "w-full rounded-lg border border-bd-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-foreground/30 focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-50";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <div>
-          <label className="block text-xs text-zinc-400 mb-1.5">
+          <label className="block text-xs text-muted-foreground mb-1.5">
             Nombre <span className="text-red-400">*</span>
           </label>
           <input
@@ -104,7 +104,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           />
         </div>
         <div>
-          <label className="block text-xs text-zinc-400 mb-1.5">
+          <label className="block text-xs text-muted-foreground mb-1.5">
             Slug (opcional — se genera automáticamente)
           </label>
           <input
@@ -116,7 +116,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           />
         </div>
         <div>
-          <label className="block text-xs text-zinc-400 mb-1.5">
+          <label className="block text-xs text-muted-foreground mb-1.5">
             Precio (S/) <span className="text-red-400">*</span>
           </label>
           <input
@@ -131,17 +131,17 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           />
         </div>
         <div>
-          <label className="block text-xs text-zinc-400 mb-1.5">
+          <label className="block text-xs text-muted-foreground mb-1.5">
             {product ? "Stock" : "Stock inicial"}
           </label>
           {product ? (
             <div className="flex items-center gap-3">
-              <span className="text-sm tabular-nums text-zinc-300">
+              <span className="text-sm tabular-nums text-foreground">
                 {product.inventory} u.
               </span>
               <Link
                 href={`/admin/products/${product.id}/stock-card`}
-                className="text-xs text-zinc-500 underline underline-offset-4 transition hover:text-white"
+                className="text-xs text-muted-foreground underline underline-offset-4 transition hover:text-foreground"
               >
                 Ver Kardex
               </Link>
@@ -156,14 +156,14 @@ export function ProductForm({ product, categories, onSaved }: Props) {
               className={inputCls}
             />
           )}
-          <p className="mt-1.5 text-[11px] text-zinc-600">
+          <p className="mt-1.5 text-[11px] text-muted-foreground">
             {product
               ? "El stock se mueve desde Inventario, con sucursal y motivo."
               : "Se registrará como stock inicial en tu sucursal, con su línea en el Kardex."}
           </p>
         </div>
         <div>
-          <label className="block text-xs text-zinc-400 mb-1.5">Categoría</label>
+          <label className="block text-xs text-muted-foreground mb-1.5">Categoría</label>
           <select
             value={form.category}
             onChange={(e) => set("category", e.target.value)}
@@ -179,7 +179,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           </select>
         </div>
         <div>
-          <label className="block text-xs text-zinc-400 mb-1.5">URL de imagen</label>
+          <label className="block text-xs text-muted-foreground mb-1.5">URL de imagen</label>
           <input
             type="url"
             value={form.image_url}
@@ -190,7 +190,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
         </div>
       </div>
       <div>
-        <label className="block text-xs text-zinc-400 mb-1.5">Descripción</label>
+        <label className="block text-xs text-muted-foreground mb-1.5">Descripción</label>
         <textarea
           value={form.description}
           onChange={(e) => set("description", e.target.value)}
@@ -206,9 +206,9 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           checked={form.is_active}
           onChange={(e) => set("is_active", e.target.checked)}
           disabled={saving}
-          className="accent-white"
+          className="accent-accent"
         />
-        <label htmlFor="is_active" className="text-sm text-zinc-300">
+        <label htmlFor="is_active" className="text-sm text-foreground">
           Producto activo (visible en catálogo y disponible en checkout)
         </label>
       </div>
@@ -218,7 +218,7 @@ export function ProductForm({ product, categories, onSaved }: Props) {
       <button
         type="submit"
         disabled={saving}
-        className="px-5 py-2 bg-white text-black text-sm font-medium rounded hover:bg-zinc-200 disabled:opacity-50 transition-colors"
+        className="rounded-lg border border-primary bg-primary px-5 py-2.5 text-sm font-semibold text-background transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
       >
         {saving ? "Guardando…" : product ? "Guardar cambios" : "Crear producto"}
       </button>
