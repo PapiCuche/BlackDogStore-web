@@ -32,6 +32,7 @@ export default function OrdersPage() {
   const whatsappLink = useStorefront().contact.whatsapp_link;
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
   const router = useRouter();
 
@@ -44,10 +45,13 @@ export default function OrdersPage() {
       }
       try {
         const res = await fetchWithAuth(`${API_BASE}/orders/`);
+        if (!res.ok) throw new Error("No se pudieron cargar tus pedidos.");
         const data = await res.json();
         setOrders(Array.isArray(data) ? data : []);
-      } catch {
+        setError(null);
+      } catch (err) {
         setOrders([]);
+        setError(err instanceof Error ? err.message : "No se pudieron cargar tus pedidos.");
       } finally {
         setLoading(false);
       }
@@ -60,123 +64,171 @@ export default function OrdersPage() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 px-6 py-12">
-      <div className="mx-auto max-w-4xl">
+    <div className="min-h-screen bg-background px-6 py-12 text-foreground">
+      <div className="mx-auto max-w-5xl">
         <div className="mb-8">
-          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-emerald-400/60">Cuenta</p>
-          <h1 className="mt-1 text-4xl font-bold text-white">Mis pedidos</h1>
+          <span className="section-label">Cuenta</span>
+          <h1 className="mt-2 font-display text-4xl font-black uppercase tracking-tight text-foreground sm:text-5xl">
+            Mis pedidos
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Consulta el importe, el estado de pago y los productos de cada pedido.
+          </p>
         </div>
 
-        {loading ? (
-          <div className="space-y-3">
-            {[1, 2, 3].map((i) => <div key={i} className="h-20 animate-pulse rounded-2xl bg-white/5" />)}
+        {error ? (
+          <div className="mb-6 rounded-xl border border-red-500/25 bg-red-500/[0.07] p-4 text-sm text-red-300">
+            {error}
           </div>
-        ) : orders.length === 0 ? (
-          <div className="flex flex-col items-center gap-6 rounded-3xl border border-dashed border-white/10 p-16 text-center">
-            <svg className="h-16 w-16 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>
-            <div>
-              <p className="text-lg font-semibold text-white">No tienes pedidos aún</p>
-              <p className="mt-1 text-sm text-slate-400">Tus compras aparecerán aquí.</p>
+        ) : null}
+
+        {loading ? (
+          <div className="space-y-3" aria-busy="true">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-24 animate-pulse rounded-xl bg-surface" />
+            ))}
+          </div>
+        ) : !error && orders.length === 0 ? (
+          <div className="flex flex-col items-center gap-6 rounded-2xl border border-dashed border-bd-border p-10 text-center sm:p-16">
+            <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-bd-border bg-surface text-muted-foreground" aria-hidden="true">
+              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.4} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
             </div>
-            <Link href="/product" className="rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600">
+            <div>
+              <p className="font-display text-xl font-black uppercase text-foreground">Aún no hay pedidos</p>
+              <p className="mt-1 text-sm text-muted-foreground">Las compras asociadas a tu cuenta aparecerán aquí.</p>
+            </div>
+            <Link
+              href="/product"
+              className="rounded-xl bg-primary px-6 py-3 text-xs font-black uppercase tracking-[0.12em] text-background transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
               Explorar catálogo
             </Link>
           </div>
-        ) : (
+        ) : !error ? (
           <div className="space-y-4">
             {orders.map((order) => {
               const isExpanded = expandedOrder === order.id;
               const hasDiscount = Number(order.discount_amount) > 0;
               return (
-                <div key={order.id} className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
+                <article key={order.id} className="overflow-hidden rounded-xl border border-bd-border bg-surface">
                   <button
+                    type="button"
                     onClick={() => toggleOrder(order.id)}
-                    className="w-full text-left px-6 py-5 transition hover:bg-white/5"
+                    aria-expanded={isExpanded}
+                    className="w-full px-5 py-5 text-left transition hover:bg-surface-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent sm:px-6"
                   >
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${order.paid ? "border-emerald-500/40 bg-emerald-500/10" : "border-slate-600 bg-slate-800"}`}>
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex min-w-0 items-center gap-4">
+                        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border ${
+                          order.paid
+                            ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                            : "border-amber-400/30 bg-amber-400/10 text-amber-300"
+                        }`} aria-hidden="true">
                           {order.paid ? (
-                            <svg className="h-5 w-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                             </svg>
                           ) : (
-                            <svg className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                             </svg>
                           )}
                         </div>
-                        <div>
-                          <p className="font-semibold text-white">Pedido #{order.id}</p>
-                          <p className="text-xs text-slate-500">
-                            {new Date(order.created_at).toLocaleDateString("es-PE", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        <div className="min-w-0">
+                          <p className="font-display font-black uppercase text-foreground">Pedido #{order.id}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {new Date(order.created_at).toLocaleDateString("es-PE", {
+                              year: "numeric",
+                              month: "long",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
                           </p>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-6">
-                        <div className="text-right">
-                          <p className="font-bold text-white">S/ {formatMoney(order.total)}</p>
-                          {hasDiscount && (
-                            <p className="text-xs text-emerald-400">Ahorraste S/ {formatMoney(order.discount_amount)}</p>
-                          )}
+                      <div className="flex flex-wrap items-center gap-3 sm:justify-end">
+                        <div className="mr-2 text-right">
+                          <p className="font-display font-black text-foreground">S/ {formatMoney(order.total)}</p>
+                          {hasDiscount ? (
+                            <p className="text-xs text-muted-foreground">
+                              Descuento S/ {formatMoney(order.discount_amount)}
+                            </p>
+                          ) : null}
                         </div>
-                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${order.paid ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"}`}>
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                          order.paid
+                            ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                            : "border-amber-400/30 bg-amber-400/10 text-amber-300"
+                        }`}>
                           {order.paid ? "Pagado" : "Pendiente"}
                         </span>
-                        <svg className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <svg className={`h-4 w-4 text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                         </svg>
                       </div>
                     </div>
                   </button>
 
-                  {isExpanded && (
-                    <div className="border-t border-white/5 px-6 pb-5 pt-4">
-                      {order.coupon_code && (
-                        <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 text-xs font-medium text-emerald-400">
-                          🏷️ Cupón: {order.coupon_code} (−{formatMoney(order.discount_amount)} S/)
+                  {isExpanded ? (
+                    <div className="border-t border-bd-border bg-background/40 px-5 pb-5 pt-4 sm:px-6">
+                      {order.coupon_code ? (
+                        <div className="mb-4 inline-flex rounded-lg border border-bd-border bg-surface px-3 py-2 text-xs text-muted-foreground">
+                          Cupón {order.coupon_code} · −S/ {formatMoney(order.discount_amount)}
                         </div>
-                      )}
-                      <div className="space-y-3">
+                      ) : null}
+
+                      <div className="space-y-4">
                         {order.items.map((item) => (
                           <div key={item.id} className="flex items-center justify-between gap-4">
-                            <div className="flex items-center gap-3">
-                              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-600">
-                                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                </svg>
-                              </div>
-                              <div>
-                                <Link href={`/product/${item.product.slug}`} className="text-sm font-medium text-white hover:text-emerald-400 transition">
-                                  {item.product.name}
-                                </Link>
-                                <p className="text-xs text-slate-500">Cant.: {item.quantity} × S/ {formatMoney(item.price)}</p>
-                              </div>
+                            <div className="min-w-0">
+                              <Link
+                                href={`/product/${item.product.slug}`}
+                                className="line-clamp-1 text-sm font-medium text-foreground transition hover:text-accent"
+                              >
+                                {item.product.name}
+                              </Link>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {item.quantity} × S/ {formatMoney(item.price)}
+                              </p>
                             </div>
-                            <span className="text-sm font-semibold text-white">S/ {formatMoney(Number(item.price) * item.quantity)}</span>
+                            <span className="shrink-0 text-sm font-semibold text-foreground">
+                              S/ {formatMoney(Number(item.price) * item.quantity)}
+                            </span>
                           </div>
                         ))}
                       </div>
 
-                      {!order.paid && (
-                        <div className="mt-4 rounded-xl border border-yellow-500/20 bg-yellow-500/10 p-3 text-xs text-yellow-300">
-                          Este pedido está pendiente de pago. Si tienes dudas, contáctanos por WhatsApp.
+                      {!order.paid ? (
+                        <div className="mt-5 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-3 text-xs leading-5 text-amber-200">
+                          Este pedido todavía figura como pendiente de pago.
                         </div>
-                      )}
+                      ) : null}
                     </div>
-                  )}
-                </div>
+                  ) : null}
+                </article>
               );
             })}
           </div>
-        )}
+        ) : null}
 
-        <div className="mt-8 flex gap-4">
-          <Link href="/product" className="text-sm text-slate-400 hover:text-white transition">← Seguir comprando</Link>
-          <a href={whatsappLink || "#"} className="text-sm text-emerald-400 hover:text-emerald-300 transition">¿Problemas con tu pedido? WhatsApp →</a>
+        <div className="mt-8 flex flex-wrap gap-x-6 gap-y-3">
+          <Link href="/product" className="text-sm text-muted-foreground transition hover:text-foreground">
+            ← Seguir comprando
+          </Link>
+          {whatsappLink ? (
+            <a
+              href={whatsappLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-muted-foreground transition hover:text-foreground"
+            >
+              Consultar con la tienda →
+            </a>
+          ) : null}
         </div>
       </div>
     </div>
