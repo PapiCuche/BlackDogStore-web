@@ -530,6 +530,15 @@ class AdminProductListView(APIView):
         opening_stock = ser.validated_data.pop('inventory', 0) or 0
         branch = None
         if opening_stock > 0:
+            # F2 · F-CAP-01. products.manage governs the catalogue; opening a
+            # balance moves stock, so it needs the same authority as the direct
+            # adjustment — decided the same way, legacy bridge included, and
+            # BEFORE anything is written.
+            _company, stock_error = _company_context(
+                request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES,
+            )
+            if stock_error:
+                return stock_error
             try:
                 branch = resolve_branch_for_user(request.user, company, None)
             except (NoBranchError, BranchAccessError):

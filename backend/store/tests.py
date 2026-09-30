@@ -13086,9 +13086,12 @@ class Phase2dConsistencyTest(TestCase):
         provision_company_access_defaults(bare)
         Branch.objects.filter(company=bare).delete()
 
+        # `inventory.adjust` is scaffolding, added by F-CAP-01: opening stock
+        # now needs it, and without it the refusal would be about authority
+        # (403) instead of the missing branch this test is about.
         admin, _m = _p2d_member(
             bare, 'p2d_bare_admin',
-            ['company.view', 'products.view', 'products.manage'],
+            ['company.view', 'products.view', 'products.manage', 'inventory.adjust'],
         )
         client = APIClient()
         client.force_authenticate(user=admin)
@@ -60614,3 +60617,105 @@ class F2SequenceBranchScopeTest(TestCase):
             f'/api/admin/sequences/{self.seq_b2.pk}/', {'prefix': 'B2-'}, format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · F-CAP-01 — opening stock needs the inventory capability
+# ---------------------------------------------------------------------------
+
+class F2ProductInitialInventoryCapabilityTest(TestCase):
+    """
+    `products.manage` is authority over the CATALOGUE; `inventory.adjust` is
+    authority over STOCK. Creating a product with `inventory > 0` opens a
+    balance with an `initial_stock` Kardex line, so it needs both. Without the
+    second it used to succeed while the direct adjustment answered 403.
+    """
+
+    CATALOG = ['company.view', 'products.view', 'products.manage']
+    STOCK = ['inventory.view', 'inventory.adjust']
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('f2-cap')
+        self.b1 = _p2d_branch(self.company, 'F2C B1')
+        self.b2 = _p2d_branch(self.company, 'F2C B2')
+        self.other = _p2d_company('f2-cap-other')
+        _p2d_branch(self.other, 'F2C Ajena')
+        self.catalog_only, _ = _p2d_member(self.company, 'f2c_catalog', self.CATALOG)
+        self.both, _ = _p2d_member(self.company, 'f2c_both', self.CATALOG + self.STOCK)
+        self.stock_only, _ = _p2d_member(self.company, 'f2c_stock', ['company.view'] + self.STOCK)
+        self.selected_b2, _ = _p2d_member(
+            self.company, 'f2c_selected', self.CATALOG + self.STOCK, branches=[self.b2],
+        )
+        cache.clear()
+
+    def _post(self, user, company=None, **payload):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        body = {'name': 'Producto F2C', 'price': '10.00'}
+        body.update(payload)
+        company = company or self.company
+        return client.post(
+            f'/api/admin/products/?company={company.pk}', body, format='json',
+        )
+
+    def _footprint(self):
+        return (
+            Product.objects.filter(name='Producto F2C').count(),
+            StockMovement.objects.filter(product__name='Producto F2C').count(),
+            BranchStock.objects.filter(product__name='Producto F2C').count(),
+            AdminAuditLog.objects.filter(
+                action__in=['product_created', 'stock_initial_recorded'],
+            ).count(),
+        )
+
+    def test_catalog_only_may_create_with_zero_inventory(self):
+        res = self._post(self.catalog_only, inventory=0)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['inventory'], 0)
+        self.assertFalse(StockMovement.objects.filter(product_id=res.data['id']).exists())
+
+    def test_catalog_only_may_create_without_inventory(self):
+        res = self._post(self.catalog_only)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['inventory'], 0)
+        self.assertFalse(StockMovement.objects.filter(product_id=res.data['id']).exists())
+
+    def test_catalog_only_cannot_open_stock(self):
+        res = self._post(self.catalog_only, inventory=7)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_refused_opening_leaves_no_trace(self):
+        before = self._footprint()
+        self._post(self.catalog_only, inventory=7)
+        self.assertEqual(self._footprint(), before)
+        self.assertEqual(before[:3], (0, 0, 0))
+
+    def test_both_capabilities_open_stock_with_a_kardex_line(self):
+        res = self._post(self.both, inventory=7)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['inventory'], 7)
+        movements = StockMovement.objects.filter(product_id=res.data['id'])
+        self.assertEqual(movements.count(), 1)
+        self.assertEqual(movements.get().movement_type, StockMovement.INITIAL_STOCK)
+        self.assertEqual(movements.get().quantity, 7)
+
+    def test_inventory_adjust_alone_does_not_grant_the_catalogue(self):
+        before = self._footprint()
+        res = self._post(self.stock_only, inventory=7)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._footprint(), before)
+
+    def test_another_tenant_cannot_be_targeted(self):
+        before = self._footprint()
+        res = self._post(self.both, company=self.other, inventory=7)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._footprint(), before)
+        self.assertFalse(Product.objects.filter(company=self.other).exists())
+
+    def test_a_selected_member_opens_stock_only_in_a_reached_branch(self):
+        """The payload cannot name a branch; the server picks one the caller reaches."""
+        res = self._post(self.selected_b2, inventory=4, branch=self.b1.pk)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        stock = BranchStock.objects.get(product_id=res.data['id'])
+        self.assertEqual((stock.branch_id, stock.quantity), (self.b2.pk, 4))
