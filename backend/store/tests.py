@@ -60153,3 +60153,254 @@ class Fiscal5bVoidApiTest(TestCase):
         self.assertTrue(res.data['can_recover'])
         self.assertFalse(res.data['can_submit'],
                          'un envío incierto no se reenvía a ciegas')
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · F-BRANCH-01 — delegation on the WHERE axis
+# ---------------------------------------------------------------------------
+
+class F2BranchDelegationTest(TestCase):
+    """
+    NOBODY GRANTS A BRANCH THEY CANNOT REACH.
+
+    The WHAT axis has had this rule since G3 (`can_delegate_capabilities`). The
+    WHERE axis had none: a member restricted to B1 holding `memberships.manage`
+    could widen their own grant to B2, switch themselves to ALL, or hand B2 to
+    someone else. Every path that writes a branch scope — membership create,
+    membership update, staff invitation — now asks the same question.
+    """
+
+    ADMIN_CAPS = [
+        'company.view', 'memberships.view', 'memberships.manage',
+        'products.view', 'reports.view',
+        'inventory.view', 'inventory.adjust', 'inventory.reports',
+    ]
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('f2-deleg')
+        self.b1 = _p2d_branch(self.company, 'F2 B1')
+        self.b2 = _p2d_branch(self.company, 'F2 B2')
+        self.other = _p2d_company('f2-deleg-other')
+        self.foreign = _p2d_branch(self.other, 'F2 Ajena')
+
+        self.actor, self.actor_m = _p2d_member(
+            self.company, 'f2_selected_admin', self.ADMIN_CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2_wide_admin', self.ADMIN_CAPS)
+        self.target = User.objects.create_user(username='f2_target', password='x')
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _membership_for_target(self, *, mode, branches=()):
+        membership = Membership.objects.create(
+            user=self.target, company=self.company, role='inventory',
+            branch_access_mode=mode,
+        )
+        for branch in branches:
+            MembershipBranchAccess.objects.create(membership=membership, branch=branch)
+        return membership
+
+    def _grants(self, membership):
+        return sorted(
+            membership.branch_access.filter(is_active=True)
+            .values_list('branch_id', flat=True)
+        )
+
+    # -- self-escalation -----------------------------------------------------
+
+    def test_a_selected_member_cannot_widen_their_own_grants(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{self.actor_m.pk}/',
+            {'branch_access': [self.b1.pk, self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._grants(self.actor_m), [self.b1.pk])
+        self.assertFalse(has_branch_access(self.actor, self.b2))
+
+    def test_a_selected_member_cannot_switch_themselves_to_all(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{self.actor_m.pk}/',
+            {'branch_access_mode': 'all'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.actor_m.refresh_from_db()
+        self.assertEqual(self.actor_m.branch_access_mode, 'selected')
+        self.assertFalse(has_branch_access(self.actor, self.b2))
+
+    def test_a_selected_member_may_narrow_their_own_grants(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{self.actor_m.pk}/',
+            {'branch_access': []}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._grants(self.actor_m), [])
+
+    # -- granting to others --------------------------------------------------
+
+    def test_a_selected_member_cannot_grant_an_unreached_branch(self):
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access': [self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._grants(target_m), [self.b1.pk])
+
+    def test_a_selected_member_cannot_move_someone_to_all(self):
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access_mode': 'all'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        target_m.refresh_from_db()
+        self.assertEqual(target_m.branch_access_mode, 'selected')
+
+    def test_a_selected_member_cannot_revoke_a_branch_they_do_not_reach(self):
+        """Taking B2 away from someone is operating B2 just as much as giving it."""
+        target_m = self._membership_for_target(
+            mode='selected', branches=[self.b1, self.b2],
+        )
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access': [self.b1.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._grants(target_m), [self.b1.pk, self.b2.pk])
+
+    def test_a_selected_member_cannot_narrow_a_company_wide_member(self):
+        target_m = self._membership_for_target(mode='all')
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access_mode': 'selected', 'branch_access': [self.b1.pk]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        target_m.refresh_from_db()
+        self.assertEqual(target_m.branch_access_mode, 'all')
+
+    def test_a_selected_member_may_manage_grants_inside_their_reach(self):
+        target_m = self._membership_for_target(mode='selected', branches=[])
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access': [self.b1.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._grants(target_m), [self.b1.pk])
+
+    def test_a_refused_scope_change_does_not_keep_the_other_fields(self):
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'is_active': False, 'branch_access': [self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        target_m.refresh_from_db()
+        self.assertTrue(target_m.is_active)
+
+    def test_unreached_foreign_and_missing_ids_answer_alike(self):
+        """No existence oracle: B2, another tenant's branch and a free pk look the same."""
+        target_m = self._membership_for_target(mode='selected', branches=[])
+        answers = set()
+        for branch_id in (self.b2.pk, self.foreign.pk, 987654):
+            res = self._as(self.actor).patch(
+                f'/api/admin/memberships/{target_m.pk}/',
+                {'branch_access': [branch_id]}, format='json',
+            )
+            answers.add((res.status_code, str(res.data.get('detail'))))
+        self.assertEqual(len(answers), 1, answers)
+
+    # -- creating memberships ------------------------------------------------
+
+    def test_a_selected_member_cannot_create_a_company_wide_membership(self):
+        res = self._as(self.actor).post('/api/admin/memberships/', {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'inventory',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Membership.objects.filter(user=self.target).exists())
+
+    def test_a_selected_member_cannot_create_a_membership_on_an_unreached_branch(self):
+        res = self._as(self.actor).post('/api/admin/memberships/', {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'inventory',
+            'branch_access_mode': 'selected', 'branch_access': [self.b2.pk],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Membership.objects.filter(user=self.target).exists())
+
+    def test_a_selected_member_may_create_a_membership_inside_their_reach(self):
+        res = self._as(self.actor).post('/api/admin/memberships/', {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'inventory',
+            'branch_access_mode': 'selected', 'branch_access': [self.b1.pk],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual([b['id'] for b in res.data['branch_access']], [self.b1.pk])
+
+    # -- staff invitations ---------------------------------------------------
+
+    def _invite(self, user, **overrides):
+        # Only a role whose capabilities the actor holds can be delegated (G3);
+        # the actor's own role keeps this test about the WHERE axis.
+        role = self.actor_m.role_assignments.first().role
+        payload = {
+            'company': self.company.pk, 'email': 'f2@correo.test',
+            'first_name': 'F2', 'last_name': 'Invitada', 'role': role.pk,
+            'branch_access_mode': 'all',
+        }
+        payload.update(overrides)
+        return self._as(user).post('/api/admin/staff/invitations/', payload, format='json')
+
+    def test_a_selected_member_cannot_invite_someone_company_wide(self):
+        res = self._invite(self.actor)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(StaffInvitation.objects.filter(company=self.company).exists())
+
+    def test_a_selected_member_cannot_invite_someone_to_an_unreached_branch(self):
+        res = self._invite(
+            self.actor, branch_access_mode='selected', branch_ids=[self.b2.pk],
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(StaffInvitation.objects.filter(company=self.company).exists())
+
+    def test_a_selected_member_may_invite_someone_inside_their_reach(self):
+        res = self._invite(
+            self.actor, branch_access_mode='selected', branch_ids=[self.b1.pk],
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_a_rejected_grant_list_rolls_the_whole_update_back(self):
+        """
+        `_apply_branch_access` answers 404 for an id outside the company, but the
+        membership row used to be saved BEFORE it ran: the 404 left the other
+        fields written. The update is one unit now.
+        """
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        res = self._as(self.wide).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'is_active': False, 'branch_access': [self.foreign.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        target_m.refresh_from_db()
+        self.assertTrue(target_m.is_active)
+        self.assertEqual(self._grants(target_m), [self.b1.pk])
+
+    # -- company-wide authority is unchanged ---------------------------------
+
+    def test_a_company_wide_admin_still_grants_any_branch_and_all(self):
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        client = self._as(self.wide)
+        res = client.patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access': [self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        res = client.patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access_mode': 'all'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._invite(self.wide).status_code, status.HTTP_201_CREATED)

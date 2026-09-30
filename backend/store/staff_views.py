@@ -27,7 +27,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .access_views import _company_or_none, _deny_authority, _deny_not_found
-from .tenancy import can_delegate_capabilities, has_capability
+from .tenancy import (
+    BRANCH_SCOPE_NOT_GRANTABLE, can_delegate_branch_scope, can_delegate_capabilities, has_capability,
+)
 from .models import AdminAuditLog, StaffInvitation
 from .permissions import HasCompanyMembership
 from .staff_services import (
@@ -161,6 +163,20 @@ class AdminStaffInvitationListView(APIView):
             )
 
         data = request.data
+
+        # NI LO QUE NO SE ALCANZA (F2 · F-BRANCH-01). El mismo guardián que el
+        # alta directa de membresías: quien sólo opera la sucursal 1 no invita a
+        # nadie a la 2, ni a «todas».
+        if not can_delegate_branch_scope(
+            request.user, company,
+            mode=data.get('branch_access_mode', 'all'),
+            branch_ids=data.get('branch_ids') or [],
+        ):
+            return Response(
+                {'detail': BRANCH_SCOPE_NOT_GRANTABLE},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         try:
             invitation, raw, created = create_invitation(
                 company=company,

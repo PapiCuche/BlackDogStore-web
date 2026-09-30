@@ -39,9 +39,11 @@ from .serializers import (
     MembershipWriteSerializer,
 )
 from .tenancy import (
+    BRANCH_SCOPE_NOT_GRANTABLE,
     CrossTenantError,
     active_memberships,
     assert_branch_in_company,
+    can_delegate_branch_scope,
     can_grant_company_role,
     can_manage_company,
     can_manage_company_memberships,
@@ -541,6 +543,21 @@ class AdminMembershipListView(APIView):
                 {'detail': _ROLE_NOT_GRANTABLE}, status=status.HTTP_403_FORBIDDEN
             )
 
+        # Phase 2D. Default ALL, matching what a membership meant before this
+        # phase: nothing restricted these people by branch, and creating them
+        # restricted by surprise would be a silent narrowing.
+        access_mode = data.get('branch_access_mode', Membership.ACCESS_MODE_ALL)
+
+        # F2 · F-BRANCH-01. Nobody grants a branch they cannot reach — and the
+        # ALL default is itself a grant a branch-restricted admin cannot make.
+        if not can_delegate_branch_scope(
+            request.user, company,
+            mode=access_mode, branch_ids=data.get('branch_access', []),
+        ):
+            return Response(
+                {'detail': BRANCH_SCOPE_NOT_GRANTABLE}, status=status.HTTP_403_FORBIDDEN
+            )
+
         branch = None
         if data.get('branch'):
             branch = Branch.objects.filter(pk=data['branch']).first()
@@ -562,11 +579,6 @@ class AdminMembershipListView(APIView):
             return Response(
                 {'detail': _TARGET_USER_UNAVAILABLE}, status=status.HTTP_400_BAD_REQUEST
             )
-
-        # Phase 2D. Default ALL, matching what a membership meant before this
-        # phase: nothing restricted these people by branch, and creating them
-        # restricted by surprise would be a silent narrowing.
-        access_mode = data.get('branch_access_mode', Membership.ACCESS_MODE_ALL)
 
         membership = Membership.objects.create(
             user=target_user,
@@ -669,6 +681,25 @@ class AdminMembershipDetailView(APIView):
                 {'detail': _ROLE_NOT_GRANTABLE}, status=status.HTTP_403_FORBIDDEN
             )
 
+        # F2 · F-BRANCH-01. Checked before anything is written: a refused
+        # scope change must not leave the rest of the request applied.
+        if 'branch_access_mode' in data or 'branch_access' in data:
+            if 'branch_access' in data:
+                wanted_ids = data['branch_access']
+            else:
+                wanted_ids = list(membership.branch_access.filter(
+                    is_active=True,
+                ).values_list('branch_id', flat=True))
+            if not can_delegate_branch_scope(
+                request.user, membership.company,
+                mode=data.get('branch_access_mode', membership.branch_access_mode),
+                branch_ids=wanted_ids, target=membership,
+            ):
+                return Response(
+                    {'detail': BRANCH_SCOPE_NOT_GRANTABLE},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         if 'branch' in data:
             if data['branch'] is None:
                 membership.branch = None
@@ -692,25 +723,29 @@ class AdminMembershipDetailView(APIView):
         if 'branch_access_mode' in data:
             membership.branch_access_mode = data['branch_access_mode']
 
-        membership.save()
+        # One unit: a grant list refused by _apply_branch_access must not leave
+        # the fields saved above it written (F2).
+        with transaction.atomic():
+            membership.save()
 
-        if data.get('is_active') is False:
-            # ERP-1 · STAFF-01. Same rule as the staff toggle: deactivating a
-            # membership retires its role assignments, so reactivating it later
-            # does not silently restore authority no one re-granted.
-            membership.role_assignments.filter(is_active=True).update(is_active=False)
+            if data.get('is_active') is False:
+                # ERP-1 · STAFF-01. Same rule as the staff toggle: deactivating a
+                # membership retires its role assignments, so reactivating it later
+                # does not silently restore authority no one re-granted.
+                membership.role_assignments.filter(is_active=True).update(is_active=False)
 
-        # Grants are applied AFTER the mode, so a single request can switch
-        # somebody to SELECTED and name their branches at the same time.
-        granted = None
-        if 'branch_access' in data:
-            granted, access_error = _apply_branch_access(
-                membership, data['branch_access'], request.user,
-            )
-            if access_error:
-                return access_error
+            # Grants are applied AFTER the mode, so a single request can switch
+            # somebody to SELECTED and name their branches at the same time.
+            granted = None
+            if 'branch_access' in data:
+                granted, access_error = _apply_branch_access(
+                    membership, data['branch_access'], request.user,
+                )
+                if access_error:
+                    transaction.set_rollback(True)
+                    return access_error
 
-        _validate_default_branch(membership)
+            _validate_default_branch(membership)
 
         AdminAuditLog.log(
             actor=request.user,

@@ -515,6 +515,55 @@ def can_delegate_capabilities(user, company, codes) -> bool:
     return set(codes) <= set(resolve_capabilities(user, company))
 
 
+# Same answer for a branch outside the caller's reach, another tenant's branch
+# and one that does not exist: none of them is theirs to grant.
+BRANCH_SCOPE_NOT_GRANTABLE = (
+    'No puedes conceder ni retirar acceso a sucursales que tú mismo no alcanzas.'
+)
+
+
+def can_delegate_branch_scope(user, company, *, mode, branch_ids, target=None) -> bool:
+    """
+    Whether the caller may give a membership of `company` the branch scope
+    `mode` + `branch_ids`. The WHERE-axis twin of can_delegate_capabilities().
+
+    Anti-escalation rule: nobody grants a branch they cannot reach. Company-wide
+    authority (platform master, mode ALL, legacy bridge) may grant anything. A
+    SELECTED member may only grant a subset of their own visible branches, and
+    never ALL — ALL includes branches opened tomorrow that they will not reach.
+
+    `target` is the membership being edited, if any. Taking a branch away is
+    operating that branch as much as giving it, so a SELECTED member may not
+    touch the scope of someone who reaches further than they do.
+    """
+    from .models import Membership
+
+    scope, _ = _branch_authority(user, company)
+    if scope == _SCOPE_COMPANY:
+        return True
+    if scope != _SCOPE_SELECTED:
+        return False
+
+    reachable = set(visible_branch_ids(user, company))
+    if target is not None:
+        if target.branch_access_mode == Membership.ACCESS_MODE_ALL:
+            return False
+        current = set(
+            target.branch_access.filter(is_active=True, branch__is_active=True)
+            .values_list('branch_id', flat=True)
+        )
+        if not current <= reachable:
+            return False
+
+    if mode == Membership.ACCESS_MODE_ALL:
+        return False
+    try:
+        wanted = {int(b) for b in branch_ids or []}
+    except (TypeError, ValueError):
+        return False
+    return wanted <= reachable
+
+
 # ---------------------------------------------------------------------------
 # Company context
 # ---------------------------------------------------------------------------
