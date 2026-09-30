@@ -1,11 +1,21 @@
 "use client";
 
-/** Shared chrome for the service console. Presentation only — no rules here. */
-
 import { useState } from "react";
+import {
+  Button,
+  ErrorNote,
+  Field,
+  Panel as BasePanel,
+  Pill,
+} from "../../components/internal-ui";
+
+export { Button, ErrorNote, Field, Pill };
 
 export function Panel({
-  title, subtitle, children, actions,
+  title,
+  subtitle,
+  children,
+  actions,
 }: {
   title?: string;
   subtitle?: string;
@@ -13,118 +23,24 @@ export function Panel({
   actions?: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-6">
-      {title ? (
-        <header className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-white/70">
-              {title}
-            </h2>
-            {subtitle ? (
-              <p className="mt-1 text-xs text-white/40">{subtitle}</p>
-            ) : null}
-          </div>
-          {actions}
-        </header>
-      ) : null}
+    <BasePanel title={title} description={subtitle} action={actions}>
       {children}
-    </section>
-  );
-}
-
-export function Field({
-  label, value, onChange, placeholder, textarea, type = "text",
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  textarea?: boolean;
-  type?: string;
-}) {
-  const cls =
-    "mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/25";
-  return (
-    <label className="block text-xs text-white/50">
-      {label}
-      {textarea ? (
-        <textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          rows={3}
-          className={cls}
-        />
-      ) : (
-        <input
-          type={type}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          className={cls}
-        />
-      )}
-    </label>
-  );
-}
-
-export function Button({
-  children, onClick, disabled, tone = "default",
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  disabled?: boolean;
-  tone?: "default" | "primary" | "danger";
-}) {
-  const tones = {
-    default: "border-white/[0.12] text-white/80 hover:border-white/30",
-    primary: "border-emerald-400/40 bg-emerald-400/10 text-emerald-200 hover:border-emerald-400/70",
-    danger: "border-rose-400/40 text-rose-200 hover:border-rose-400/70",
-  } as const;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`rounded-lg border px-3 py-1.5 text-xs transition disabled:opacity-30 ${tones[tone]}`}
-    >
-      {children}
-    </button>
-  );
-}
-
-export function Pill({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "good" | "warn" | "bad" }) {
-  const tones = {
-    neutral: "border-white/[0.12] text-white/70",
-    good: "border-emerald-400/40 text-emerald-200",
-    warn: "border-amber-400/40 text-amber-200",
-    bad: "border-rose-400/40 text-rose-200",
-  } as const;
-  return (
-    <span className={`rounded-full border px-2.5 py-1 text-[11px] ${tones[tone]}`}>
-      {label}
-    </span>
-  );
-}
-
-export function ErrorNote({ error }: { error: unknown }) {
-  if (!error) return null;
-  return (
-    <p className="mt-3 rounded-lg border border-rose-400/30 bg-rose-400/5 px-3 py-2 text-xs text-rose-200">
-      {error instanceof Error ? error.message : String(error)}
-    </p>
+    </BasePanel>
   );
 }
 
 /**
  * A destructive or physical action, behind one deliberate click.
  *
- * Consuming a part and passing a quality check both change something outside
- * this screen — a shelf, a customer's expectation — so neither happens on a
- * stray click.
+ * Presentation is shared with the rest of internal control; the confirmation
+ * behavior remains specific to this service-console helper.
  */
 export function Confirm({
-  label, question, onConfirm, disabled, tone = "default",
+  label,
+  question,
+  onConfirm,
+  disabled,
+  tone = "default",
 }: {
   label: string;
   question: string;
@@ -133,13 +49,27 @@ export function Confirm({
   tone?: "default" | "primary" | "danger";
 }) {
   const [asking, setAsking] = useState(false);
+
   if (!asking) {
-    return <Button onClick={() => setAsking(true)} disabled={disabled} tone={tone}>{label}</Button>;
+    return (
+      <Button onClick={() => setAsking(true)} disabled={disabled} tone={tone}>
+        {label}
+      </Button>
+    );
   }
+
   return (
-    <span className="inline-flex items-center gap-2 rounded-lg border border-white/[0.12] px-2 py-1">
-      <span className="text-[11px] text-white/60">{question}</span>
-      <Button onClick={() => { setAsking(false); onConfirm(); }} tone={tone}>Sí</Button>
+    <span className="inline-flex flex-wrap items-center gap-2 rounded-lg border border-bd-border bg-background px-2 py-1.5">
+      <span className="text-[11px] text-muted-foreground">{question}</span>
+      <Button
+        onClick={() => {
+          setAsking(false);
+          onConfirm();
+        }}
+        tone={tone}
+      >
+        Sí
+      </Button>
       <Button onClick={() => setAsking(false)}>No</Button>
     </span>
   );
