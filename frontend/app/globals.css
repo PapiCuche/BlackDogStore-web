@@ -50,19 +50,25 @@
   --color-accent: var(--accent);
   --color-primary: var(--primary);
   --color-surface-elevated: var(--surface-elevated);
-  --font-sans: var(--font-body);
-  --font-display: var(--font-display);
+  --font-sans: var(--font-montserrat);
+  --font-display: var(--font-montserrat);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-body), Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-family: var(--font-montserrat), Montserrat, ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
-/* Display headings use the condensed bold font */
+/* Product display hierarchy. Campaign italics are opt-in so the SaaS stays operational. */
 .font-display {
-  font-family: var(--font-display), 'Barlow Condensed', 'Oswald', Impact, sans-serif;
+  font-family: var(--font-montserrat), Montserrat, ui-sans-serif, system-ui, sans-serif;
+}
+
+.font-brand-display {
+  font-family: var(--font-montserrat), Montserrat, ui-sans-serif, system-ui, sans-serif;
+  font-style: italic;
+  font-weight: 900;
 }
 
 /* Dot grid pattern — used as decorative corner elements */
