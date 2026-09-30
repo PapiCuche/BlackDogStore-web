@@ -1,15 +1,10 @@
 "use client";
 
 /**
- * Company selector for the internal control topbar.
+ * Company selector for internal control.
  *
- * The list comes from the backend (`available_companies`), which only ever
- * returns companies the caller can actually open. Choosing one re-requests the
- * dashboard with `?company=`, and the backend re-validates that id against the
- * caller's own memberships — the selection is a HINT, never authority.
- *
- * Nothing is persisted: no localStorage, no cookie. Authority must not be
- * cacheable on the client, and a stale selection is worse than re-resolving.
+ * The available list is server-filtered and selecting a company is only a UX
+ * hint: every subsequent request is re-authorized by the backend.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -28,12 +23,14 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
 
   useEffect(() => {
     if (!open) return;
+
     function onDocumentClick(event: MouseEvent) {
       if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
     }
     function onEscape(event: KeyboardEvent) {
       if (event.key === "Escape") setOpen(false);
     }
+
     document.addEventListener("mousedown", onDocumentClick);
     document.addEventListener("keydown", onEscape);
     return () => {
@@ -42,12 +39,11 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
     };
   }, [open]);
 
-  // One company: a dropdown with a single option is noise, not a choice.
   if (available.length <= 1 && current) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2">
-        <IconStore className="h-4 w-4 text-zinc-500" />
-        <span className="truncate text-sm font-medium text-zinc-200">
+      <div className="hidden items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 sm:flex">
+        <IconStore className="h-4 w-4 text-muted-foreground" />
+        <span className="max-w-40 truncate text-sm font-medium text-foreground">
           {current.name}
         </span>
       </div>
@@ -58,22 +54,25 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
     <div ref={containerRef} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen((value) => !value)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-sm transition hover:border-white/20"
+        className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm transition hover:border-foreground/20 hover:bg-surface-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
-        <IconStore className="h-4 w-4 text-zinc-500" />
-        <span className="max-w-[10rem] truncate font-medium text-zinc-200">
+        <IconStore className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="max-w-[8rem] truncate font-medium text-foreground sm:max-w-[11rem]">
           {current ? current.name : "Selecciona una empresa"}
         </span>
-        <IconChevronDown className="h-4 w-4 text-zinc-500" />
+        <IconChevronDown
+          className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`}
+        />
       </button>
 
-      {open && (
+      {open ? (
         <ul
           role="listbox"
-          className="absolute right-0 z-50 mt-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-white/10 bg-[#0b0b0b] p-1.5 shadow-2xl"
+          aria-label="Empresas disponibles"
+          className="absolute right-0 z-50 mt-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-bd-border bg-surface p-1.5 shadow-2xl shadow-black/30"
         >
           {available.map((company) => {
             const isCurrent = current?.id === company.id;
@@ -85,29 +84,33 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
                     setOpen(false);
                     onSelect(company.id);
                   }}
-                  className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition ${
+                  className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent ${
                     isCurrent
-                      ? "bg-white/[0.08] text-white"
-                      : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"
+                      ? "bg-surface-elevated text-foreground"
+                      : "text-muted-foreground hover:bg-background hover:text-foreground"
                   }`}
                 >
                   <span className="min-w-0">
-                    <span className="block truncate">{company.name}</span>
-                    <span className="block truncate font-mono text-[11px] text-zinc-600">
+                    <span className="block truncate font-medium">{company.name}</span>
+                    <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
                       {company.slug}
                     </span>
                   </span>
-                  {!company.is_active && (
-                    <span className="shrink-0 rounded border border-white/15 px-1.5 py-0.5 text-[10px] text-zinc-500">
+                  {!company.is_active ? (
+                    <span className="shrink-0 rounded-md border border-bd-border px-1.5 py-0.5 text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
                       inactiva
                     </span>
-                  )}
+                  ) : isCurrent ? (
+                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                      actual
+                    </span>
+                  ) : null}
                 </button>
               </li>
             );
           })}
         </ul>
-      )}
+      ) : null}
     </div>
   );
 }
