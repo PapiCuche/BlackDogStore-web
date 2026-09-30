@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-09-29 — ERP-FISCAL-6 cerrado · auditoría integral abierta
+
+ERP-FISCAL-6 queda cerrado en `erp/sales-fiscal-ui` con cuatro commits: `97043d6`
+(capa comercial), `c9e64b9` (POS: orden del snapshot y caja BETA), `fabfa38` (tests de
+promociones) y `9525b08` (fiscal); la rama está empujada a `origin` con ese HEAD. La
+auditoría integral se abre en `audit/full-system-2026-09`, creada desde `9525b08` e
+integrando `origin/master` `2dca0a3` (dos commits, sólo `docs/internal-parity-matrix.md`,
+merge limpio `65aa8c1`). **Baseline oficial medido sobre `65aa8c1`**, árbol limpio:
+backend PostgreSQL 14 · Python 3.14.6 · Django 5.2.17 · DRF 3.17.1 — 4489 pruebas, OK
+(3 omitidas), 1477,8 s; `check` sin problemas; migraciones 105 aplicadas / 0 pendientes /
+0 por generar. Frontend Node 24.16.0 · Next 16.3.4 · React 19.2.4 · TypeScript 5.9.3 —
+357 pruebas en 33 suites OK, typecheck OK, lint 0 errores / 33 advertencias, build OK
+(44 páginas). Playwright 118 pruebas: 113 pasan, 1 falla preexistente (E2E-01:
+`fiscal-invoice.spec.ts` espera «Emitir factura» y el panel dice «Preparar factura»
+desde `b3b1cfc`), 4 no ejecutadas por modo serie tras ese fallo. `npm audit`
+(producción): 0 vulnerabilidades. Sin CI propio (CI-01, MEDIUM): no hay
+`.github/workflows`, cero check-runs; `dynamic/dependabot/update-graph` es el grafo de
+dependencias de GitHub. Este documento y `07_CHANGELOG.md` se actualizan en un commit
+posterior al SHA medido, que sólo toca `.md`.
+
 ## 2026-09-29 — ERP-FISCAL-6: descuentos declarados
 
 Una venta con descuento ya se emite como factura (01) o boleta (03) en BETA. El

@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-09-29 — Cierre de ERP-FISCAL-6 y apertura de la auditoría integral
+
+Commits de cierre en `erp/sales-fiscal-ui`: `97043d6`, `c9e64b9`, `fabfa38`, `9525b08`
+(HEAD empujado). Rama `audit/full-system-2026-09` desde `9525b08` con `origin/master`
+`2dca0a3` integrado (`65aa8c1`, merge limpio, sólo documentación). Baseline medido sobre
+`65aa8c1`: backend 4489 pruebas OK (3 omitidas) en PostgreSQL; frontend 357 pruebas OK,
+typecheck, lint 0/33 y build OK; Playwright 113/118 con un fallo preexistente (E2E-01) y
+4 pruebas no ejecutadas por él. Hallazgo CI-01 confirmado: sin integración continua
+propia. La remediación de hallazgos no comienza hasta fijar el baseline.
+
 ## 2026-09-29 — ERP-FISCAL-6 · Descuentos declarados
 
 Promociones: atribución determinista del descuento a cada componente (proporcional
