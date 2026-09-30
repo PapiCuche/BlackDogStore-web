@@ -39,6 +39,8 @@ function CatalogContent() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [categoriesError, setCategoriesError] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
 
   const selectedCategory = searchParams.get("category") ?? "";
   const search = searchParams.get("search") ?? "";
@@ -53,7 +55,8 @@ function CatalogContent() {
       } else {
         params.delete(key);
       }
-      router.push(`${pathname}?${params.toString()}`, { scroll: false });
+      const nextQuery = params.toString();
+      router.push(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false });
     },
     [router, pathname, searchParams],
   );
@@ -63,8 +66,26 @@ function CatalogContent() {
   }, [router, pathname]);
 
   useEffect(() => {
-    fetcher<Category[]>(apiUrl("/categories")).then(setCategories).catch(() => {});
+    fetcher<Category[]>(apiUrl("/categories"))
+      .then((next) => {
+        setCategories(next);
+        setCategoriesError(false);
+      })
+      .catch(() => {
+        setCategories([]);
+        setCategoriesError(true);
+      });
   }, []);
+
+  useEffect(() => {
+    setSearchInput(search);
+  }, [search]);
+
+  useEffect(() => {
+    if (searchInput === search) return;
+    const timer = window.setTimeout(() => updateParam("search", searchInput), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput, search, updateParam]);
 
   useEffect(() => {
     setLoading(true);
@@ -84,19 +105,19 @@ function CatalogContent() {
   const hasActiveFilters = Boolean(selectedCategory || search || inStock || ordering);
 
   return (
-    <div className="min-h-screen bg-[#080808] text-white">
+    <div className="min-h-screen bg-background text-foreground">
 
       {/* Page header */}
-      <section className="relative overflow-hidden border-b border-white/[0.06]">
-        <div className="topo-bg absolute inset-0 pointer-events-none" />
-        <div className="dot-grid absolute right-0 top-0 h-64 w-64 opacity-30 pointer-events-none" />
-        <div className="relative mx-auto max-w-7xl px-6 py-16 lg:px-8 lg:py-20">
-          <span className="section-label">Tienda</span>
-          <h1 className="font-display mt-3 text-6xl font-black uppercase leading-[0.9] tracking-tight text-white sm:text-7xl">
-            Catálogo<br />de Productos
+      <section className="relative overflow-hidden border-b border-bd-border">
+        <div className="topo-bg pointer-events-none absolute inset-0" />
+        <div className="absolute left-0 top-0 h-px w-28 bg-accent" aria-hidden="true" />
+        <div className="relative mx-auto max-w-7xl px-6 py-14 lg:px-8 lg:py-18">
+          <span className="section-label">Catálogo</span>
+          <h1 className="font-display mt-3 max-w-3xl text-5xl font-black uppercase leading-[0.92] tracking-tight text-foreground sm:text-6xl">
+            Encuentra lo que necesitas.
           </h1>
-          <p className="mt-4 max-w-lg text-base text-zinc-500">
-            Equipos Apple originales, accesorios y repuestos con garantía. Envío a todo el Perú.
+          <p className="mt-4 max-w-xl text-base leading-7 text-muted-foreground">
+            Filtra por categoría, disponibilidad o precio. Cada producto muestra su estado antes de abrir el detalle.
           </p>
         </div>
       </section>
@@ -112,8 +133,8 @@ function CatalogContent() {
               onClick={() => updateParam("category", "")}
               className={`rounded-full px-4 py-2 text-xs font-bold uppercase tracking-widest transition ${
                 !selectedCategory
-                  ? "bg-white text-[#080808]"
-                  : "border border-white/10 bg-white/[0.04] text-zinc-400 hover:border-white/25 hover:text-white"
+                  ? "bg-primary text-background"
+                  : "border border-bd-border bg-surface text-muted-foreground hover:border-accent/60 hover:text-foreground"
               }`}
             >
               Todos
@@ -124,8 +145,8 @@ function CatalogContent() {
                 onClick={() => updateParam("category", selectedCategory === cat.slug ? "" : cat.slug)}
                 className={`rounded-full px-4 py-2 text-xs font-bold uppercase tracking-widest transition ${
                   selectedCategory === cat.slug
-                    ? "bg-white text-[#080808]"
-                    : "border border-white/10 bg-white/[0.04] text-zinc-400 hover:border-white/25 hover:text-white"
+                    ? "bg-primary text-background"
+                    : "border border-bd-border bg-surface text-muted-foreground hover:border-accent/60 hover:text-foreground"
                 }`}
               >
                 {cat.name}
@@ -138,15 +159,15 @@ function CatalogContent() {
 
             {/* Search */}
             <div className="relative flex-1 min-w-48">
-              <svg className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
               <input
                 type="search"
                 placeholder="Buscar productos..."
-                value={search}
-                onChange={(e) => updateParam("search", e.target.value)}
-                className="w-full rounded-full border border-white/10 bg-white/[0.04] py-2.5 pl-10 pr-4 text-sm text-white placeholder-zinc-600 focus:border-white/25 focus:outline-none"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                className="w-full rounded-xl border border-bd-border bg-surface py-2.5 pl-10 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/20"
               />
             </div>
 
@@ -155,8 +176,8 @@ function CatalogContent() {
               onClick={() => updateParam("in_stock", inStock ? "" : "true")}
               className={`rounded-full px-4 py-2.5 text-xs font-bold uppercase tracking-widest transition ${
                 inStock
-                  ? "bg-white text-[#080808]"
-                  : "border border-white/10 bg-white/[0.04] text-zinc-400 hover:border-white/25 hover:text-white"
+                  ? "bg-primary text-background"
+                  : "border border-bd-border bg-surface text-muted-foreground hover:border-accent/60 hover:text-foreground"
               }`}
             >
               Solo en stock
@@ -166,7 +187,7 @@ function CatalogContent() {
             <select
               value={ordering}
               onChange={(e) => updateParam("ordering", e.target.value)}
-              className="rounded-full border border-white/10 bg-[#111] py-2.5 pl-4 pr-8 text-xs font-bold uppercase tracking-widest text-zinc-400 focus:border-white/25 focus:outline-none"
+              className="rounded-xl border border-bd-border bg-surface py-2.5 pl-4 pr-8 text-xs font-bold uppercase tracking-widest text-muted-foreground focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/20"
             >
               {ORDERING_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -179,7 +200,7 @@ function CatalogContent() {
             {hasActiveFilters && (
               <button
                 onClick={clearFilters}
-                className="text-xs font-bold uppercase tracking-widest text-zinc-600 transition hover:text-white"
+                className="text-xs font-bold uppercase tracking-widest text-muted-foreground transition hover:text-foreground"
               >
                 × Limpiar
               </button>
@@ -187,9 +208,15 @@ function CatalogContent() {
           </div>
         </div>
 
+        {categoriesError ? (
+          <p className="mb-6 text-xs text-amber-300">
+            No pudimos cargar las categorías. El catálogo sigue disponible.
+          </p>
+        ) : null}
+
         {/* Count */}
         {!loading && !error && (
-          <p className="mb-8 text-xs uppercase tracking-widest text-zinc-600">
+          <p className="mb-8 text-xs uppercase tracking-widest text-muted-foreground">
             {products.length} {products.length === 1 ? "producto" : "productos"}
             {hasActiveFilters ? " encontrados" : " en catálogo"}
           </p>
@@ -203,28 +230,33 @@ function CatalogContent() {
         ) : loading ? (
           <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
             {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div key={i} className="h-72 animate-pulse rounded-2xl bg-white/[0.04]" />
+              <div key={i} className="h-72 animate-pulse rounded-xl bg-surface" />
             ))}
           </div>
         ) : products.length === 0 ? (
-          <div className="flex flex-col items-center gap-6 rounded-3xl border border-dashed border-white/10 p-16 text-center">
-            <img src="/assets/branding/logo-icon.png" alt="" className="h-14 w-14 opacity-[0.06] invert" />
+          <div className="flex flex-col items-center gap-6 rounded-2xl border border-dashed border-bd-border p-10 text-center sm:p-16">
+            <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-bd-border bg-surface text-muted-foreground" aria-hidden="true">
+              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-5.2-5.2m2.2-5.3a7.5 7.5 0 11-15 0 7.5 7.5 0 0115 0z" />
+              </svg>
+            </div>
             <div>
-              <p className="font-display text-2xl font-black uppercase text-zinc-700">Sin resultados</p>
-              <p className="mt-1 text-sm text-zinc-700">
+              <p className="font-display text-2xl font-black uppercase text-muted-foreground">Sin resultados</p>
+              <p className="mt-1 text-sm text-muted-foreground">
                 {search
                   ? `No hay productos para "${search}"`
                   : "No hay productos en esta categoría."}
               </p>
             </div>
-            {hasActiveFilters && (
+            {hasActiveFilters ? (
               <button
+                type="button"
                 onClick={clearFilters}
-                className="rounded-full border border-white/10 px-5 py-2 text-xs font-bold uppercase tracking-widest text-zinc-500 transition hover:border-white/25 hover:text-white"
+                className="rounded-xl border border-bd-border bg-surface px-5 py-2.5 text-xs font-bold uppercase tracking-[0.12em] text-muted-foreground transition hover:border-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
                 Limpiar filtros
               </button>
-            )}
+            ) : null}
           </div>
         ) : (
           <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
@@ -234,24 +266,26 @@ function CatalogContent() {
           </div>
         )}
 
-        {/* CTA */}
-        <div className="mt-16 overflow-hidden rounded-3xl border border-white/[0.08] bg-[#111]">
-          <div className="flex flex-col items-center gap-4 px-8 py-12 text-center sm:px-12">
-            <p className="font-display text-3xl font-black uppercase text-white sm:text-4xl">
-              ¿No encuentras lo que buscas?
-            </p>
-            <p className="text-sm text-zinc-500">Escríbenos y te ayudamos a conseguirlo.</p>
-            <a
-              href={whatsappLink || "#"}
-              className="mt-2 inline-flex items-center gap-2.5 rounded-full bg-white px-7 py-3.5 text-xs font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
-            >
-              <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-              </svg>
-              Consultar por WhatsApp
-            </a>
+        {whatsappLink ? (
+          <div className="mt-16 overflow-hidden rounded-2xl border border-bd-border bg-surface">
+            <div className="flex flex-col items-center gap-4 px-8 py-10 text-center sm:px-12">
+              <p className="font-display text-3xl font-black uppercase text-foreground sm:text-4xl">
+                ¿No encuentras lo que buscas?
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Consulta disponibilidad directamente con la tienda.
+              </p>
+              <a
+                href={whatsappLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 inline-flex min-h-12 items-center rounded-xl bg-primary px-6 py-3 text-xs font-black uppercase tracking-[0.12em] text-background transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Consultar por WhatsApp
+              </a>
+            </div>
           </div>
-        </div>
+        ) : null}
 
       </main>
     </div>
@@ -261,11 +295,11 @@ function CatalogContent() {
 export default function CatalogPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-[#080808]">
+      <div className="min-h-screen bg-background">
         <div className="mx-auto max-w-7xl px-6 py-12 lg:px-8">
           <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
             {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div key={i} className="h-72 animate-pulse rounded-2xl bg-white/[0.04]" />
+              <div key={i} className="h-72 animate-pulse rounded-xl bg-surface" />
             ))}
           </div>
         </div>
