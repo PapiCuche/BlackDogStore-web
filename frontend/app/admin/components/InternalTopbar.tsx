@@ -1,19 +1,10 @@
 "use client";
 
 /**
- * Internal control topbar — Phase 2A.2.
+ * Internal control topbar.
  *
- * Shows the tenant context the operator is acting in: company, branch scope,
- * their own roles, and the MASTER badge when it applies.
- *
- * Phase 2D: the branch line is the operator's real SCOPE — their default branch,
- * or how many they can reach. Choosing which one to act on happens on the
- * screens that act on one, not here: a global selector would look like authority
- * and would have to be re-validated on every request anyway.
- *
- * The MASTER badge comes from `access.is_platform_admin`, which the backend
- * derives from `User.is_superuser` alone — never from a role string called
- * "superadmin", which is a company-scoped legacy value.
+ * The company, branch scope and platform-admin markers are presentation of
+ * backend-resolved context. Nothing in this component grants authority.
  */
 
 import Link from "next/link";
@@ -39,12 +30,6 @@ export function InternalTopbar({
   const isMaster = Boolean(access?.is_platform_admin);
   const branch = dashboard?.membership?.branch ?? null;
   const hasCompany = Boolean(dashboard?.company);
-  // Phase 2D: the topbar states the BRANCH SCOPE, which is now a real rule
-  // rather than a placeholder. `Membership.branch` is the default branch — where
-  // the internal control opens — and `inventory.branches` is what the person can
-  // actually reach. There is no branch SELECTOR here on purpose: the choice
-  // belongs to the screens that act on one, and a global selector would imply an
-  // authority the topbar does not have.
   const reachable = dashboard?.inventory?.branches ?? [];
   const scopeLabel = branch
     ? branch.name
@@ -55,14 +40,14 @@ export function InternalTopbar({
         : `${reachable.length} sucursales`;
 
   return (
-    <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#0a0a0a]/95 backdrop-blur">
-      <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
+    <header className="sticky top-0 z-40 border-b border-bd-border bg-background/95 backdrop-blur-xl">
+      <div className="flex min-h-[64px] items-center justify-between gap-3 px-4 sm:px-6 xl:px-8">
         <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
             onClick={onOpenMenu}
             aria-label="Abrir menú de módulos"
-            className="rounded-lg p-2 text-zinc-400 transition hover:bg-white/5 hover:text-white lg:hidden"
+            className="rounded-lg p-2.5 text-muted-foreground transition hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:hidden"
           >
             <IconMenu />
           </button>
@@ -70,15 +55,15 @@ export function InternalTopbar({
           <div className="min-w-0">
             {hasCompany ? (
               <>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-zinc-600">
-                  Empresa
+                <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  Contexto activo
                 </p>
-                <div className="flex items-center gap-2">
-                  <p className="truncate text-sm font-medium text-zinc-200">
+                <div className="mt-0.5 flex min-w-0 items-center gap-2">
+                  <p className="truncate text-sm font-semibold text-foreground">
                     {dashboard?.company?.name}
                   </p>
                   <span
-                    className="hidden items-center gap-1 text-xs text-zinc-500 sm:flex"
+                    className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex"
                     title={
                       reachable.length > 0
                         ? reachable.map((b) => b.name).join(" · ")
@@ -91,35 +76,42 @@ export function InternalTopbar({
                 </div>
               </>
             ) : (
-              <p className="text-sm text-zinc-400">Panel administrativo</p>
+              <>
+                <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  Control interno
+                </p>
+                <p className="mt-0.5 text-sm font-semibold text-foreground">
+                  Panel administrativo
+                </p>
+              </>
             )}
           </div>
         </div>
 
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-          {isMaster && (
+          {isMaster ? (
             <span
               title="Administrador de plataforma (User.is_superuser)"
-              className="hidden items-center gap-1.5 rounded-lg border border-white/25 bg-white/[0.08] px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-white sm:flex"
+              className="hidden items-center gap-1.5 rounded-lg border border-foreground/20 bg-foreground/[0.06] px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground sm:flex"
             >
               <IconShield className="h-3.5 w-3.5" />
               Master
             </span>
-          )}
+          ) : null}
 
-          {dashboard && dashboard.available_companies.length > 0 && (
+          {dashboard && dashboard.available_companies.length > 0 ? (
             <CompanySwitcher
               current={dashboard.company}
               available={dashboard.available_companies}
               onSelect={onSelectCompany}
             />
-          )}
+          ) : null}
 
-          <div className="hidden text-right md:block">
-            <p className="truncate text-sm text-zinc-300">
+          <div className="hidden max-w-48 text-right md:block">
+            <p className="truncate text-sm font-medium text-foreground">
               {user.first_name || user.username}
             </p>
-            <p className="truncate text-[11px] text-zinc-600">
+            <p className="truncate text-[11px] text-muted-foreground">
               {access?.roles.length
                 ? access.roles.map((r) => r.name).join(" · ")
                 : roleLabel(access?.legacy_role ?? user.role)}
@@ -128,9 +120,9 @@ export function InternalTopbar({
 
           <Link
             href="/"
-            className="hidden rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-400 transition hover:border-white/20 hover:text-white sm:block"
+            className="hidden rounded-lg border border-bd-border bg-surface px-3 py-2 text-xs font-medium text-muted-foreground transition hover:border-foreground/20 hover:bg-surface-elevated hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:inline-flex"
           >
-            Volver a la tienda
+            Tienda ↗
           </Link>
         </div>
       </div>
