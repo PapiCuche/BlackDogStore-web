@@ -60719,3 +60719,146 @@ class F2ProductInitialInventoryCapabilityTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         stock = BranchStock.objects.get(product_id=res.data['id'])
         self.assertEqual((stock.branch_id, stock.quantity), (self.b2.pk, 4))
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · RBAC-01 — belonging to a company is not permission to read it
+# ---------------------------------------------------------------------------
+
+class F2TenantReadAuthorizationTest(TestCase):
+    """
+    The company record and its branch roster were readable by ANY active member,
+    zero capabilities included — the Phase 1 gate (`HasCompanyMembership`) that
+    M11 already replaced for memberships, roles and areas. They now need a read
+    capability; without one the lists are empty and the details answer 404, as
+    M11 chose so ids stay secret.
+
+    The branch roster is COMPANY-level configuration (inactive branches included,
+    so they can be reactivated): a SELECTED member who may read it sees all of
+    it. It is also readable with `memberships.view/manage`, because granting
+    branch access needs the roster as a picker — the same reason READ_AREAS
+    includes them.
+    """
+
+    def setUp(self):
+        from .models import Membership
+
+        cache.clear()
+        self.a = _p2d_company('f2-read-a')
+        self.b = _p2d_company('f2-read-b')
+        self.a1 = _p2d_branch(self.a, 'F2R A1')
+        self.a2 = _p2d_branch(self.a, 'F2R A2')
+        self.a2.is_active = False
+        self.a2.save(update_fields=['is_active'])
+        self.b1 = _p2d_branch(self.b, 'F2R B1')
+
+        # Invitation-style membership: no role assignment, zero capabilities.
+        self.nobody = User.objects.create_user(username='f2r_nobody', password='x')
+        Membership.objects.create(user=self.nobody, company=self.a, role='customer')
+        self.tech, _ = _p2d_member(self.a, 'f2r_tech', ['sales.orders.view'])
+        self.viewer, _ = _p2d_member(self.a, 'f2r_viewer', ['company.view'])
+        self.selected, _ = _p2d_member(
+            self.a, 'f2r_selected', ['company.view'], branches=[self.a1],
+        )
+        self.staffer, _ = _p2d_member(self.a, 'f2r_staffer', ['memberships.manage'])
+        self.master = User.objects.create_superuser(
+            username='f2r_master', password='x', email='m@f2r.test',
+        )
+        self.outsider = User.objects.create_user(username='f2r_outsider', password='x')
+        cache.clear()
+
+    def _get(self, user, url):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client.get(url)
+
+    def _roster_a(self):
+        # Every branch of A, provisioning's default one and the inactive A2 included.
+        return sorted(Branch.objects.filter(company=self.a).values_list('pk', flat=True))
+
+    def _ids(self, res):
+        return sorted(row['id'] for row in res.data['results'])
+
+    # -- no read capability ----------------------------------------------------
+
+    def test_a_member_without_capabilities_reads_no_company(self):
+        for user in (self.nobody, self.tech):
+            res = self._get(user, '/api/admin/companies/')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            self.assertEqual(res.data['results'], [], user.username)
+            res = self._get(user, f'/api/admin/companies/{self.a.pk}/')
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, user.username)
+
+    def test_a_member_without_capabilities_reads_no_branch(self):
+        for user in (self.nobody, self.tech):
+            res = self._get(user, '/api/admin/branches/')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            self.assertEqual(res.data['results'], [], user.username)
+            res = self._get(user, f'/api/admin/branches/{self.a1.pk}/')
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, user.username)
+
+    def test_a_hidden_company_answers_like_a_missing_one(self):
+        hidden = self._get(self.nobody, f'/api/admin/companies/{self.a.pk}/')
+        foreign = self._get(self.nobody, f'/api/admin/companies/{self.b.pk}/')
+        missing = self._get(self.nobody, '/api/admin/companies/987654/')
+        self.assertEqual(
+            {(r.status_code, str(r.data)) for r in (hidden, foreign, missing)},
+            {(missing.status_code, str(missing.data))},
+        )
+
+    def test_a_hidden_branch_answers_like_a_missing_one(self):
+        hidden = self._get(self.nobody, f'/api/admin/branches/{self.a1.pk}/')
+        foreign = self._get(self.nobody, f'/api/admin/branches/{self.b1.pk}/')
+        missing = self._get(self.nobody, '/api/admin/branches/987654/')
+        self.assertEqual(
+            {(r.status_code, str(r.data)) for r in (hidden, foreign, missing)},
+            {(missing.status_code, str(missing.data))},
+        )
+
+    # -- with a read capability --------------------------------------------------
+
+    def test_company_view_reads_its_own_company_only(self):
+        res = self._get(self.viewer, '/api/admin/companies/')
+        self.assertEqual(self._ids(res), [self.a.pk])
+        self.assertEqual(
+            self._get(self.viewer, f'/api/admin/companies/{self.a.pk}/').status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._get(self.viewer, f'/api/admin/companies/{self.b.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_company_view_reads_the_whole_roster_of_its_company_only(self):
+        res = self._get(self.viewer, '/api/admin/branches/')
+        self.assertEqual(self._ids(res), self._roster_a())
+        self.assertEqual(
+            self._get(self.viewer, f'/api/admin/branches/{self.b1.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_the_roster_is_company_level_for_a_selected_member(self):
+        res = self._get(self.selected, '/api/admin/branches/')
+        self.assertEqual(self._ids(res), self._roster_a())
+
+    def test_memberships_manage_reads_the_roster_but_not_the_company(self):
+        res = self._get(self.staffer, '/api/admin/branches/')
+        self.assertEqual(self._ids(res), self._roster_a())
+        self.assertEqual(
+            self._get(self.staffer, f'/api/admin/companies/{self.a.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    # -- unchanged paths -----------------------------------------------------------
+
+    def test_the_platform_master_keeps_global_scope(self):
+        res = self._get(self.master, '/api/admin/companies/')
+        self.assertTrue({self.a.pk, self.b.pk} <= set(self._ids(res)))
+        res = self._get(self.master, '/api/admin/branches/')
+        self.assertTrue({self.a1.pk, self.a2.pk, self.b1.pk} <= set(self._ids(res)))
+
+    def test_a_non_member_is_still_refused_at_the_door(self):
+        for url in ('/api/admin/companies/', '/api/admin/branches/'):
+            self.assertEqual(
+                self._get(self.outsider, url).status_code, status.HTTP_403_FORBIDDEN,
+            )

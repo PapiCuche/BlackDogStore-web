@@ -53,6 +53,7 @@ from .tenancy import (
     visible_companies,
 )
 from .throttles import AdminUsersThrottle
+from .access_views import _scope_readable
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -141,6 +142,16 @@ def _validate_default_branch(membership):
         membership.save(update_fields=['branch', 'updated_at'])
 
 
+# F2 · RBAC-01. Belonging to a company is not permission to read it: the
+# company record and its branch roster need a read capability, exactly as M11
+# decided for memberships, roles and areas. Without one, lists come back empty
+# and details answer 404, so ids stay secret. The roster is also readable with
+# the membership capabilities because granting branch access needs it as a
+# picker — the same reason READ_AREAS includes them.
+READ_COMPANY = ('company.view', 'company.manage')
+READ_BRANCHES = (*READ_COMPANY, 'memberships.view', 'memberships.manage')
+
+
 class AdminCompanyListView(APIView):
     """
     GET  /api/admin/companies/  — companies the caller may see.
@@ -156,7 +167,10 @@ class AdminCompanyListView(APIView):
 
     def get(self, request):
         qs = (
-            visible_companies(request.user)
+            _scope_readable(
+                visible_companies(request.user), request.user, READ_COMPANY,
+                company_field='pk',
+            )
             .annotate(
                 branch_count=Count('branches', distinct=True),
                 membership_count=Count('memberships', distinct=True),
@@ -222,7 +236,10 @@ class AdminCompanyDetailView(APIView):
         return [permissions.IsAuthenticated(), HasCompanyMembership()]
 
     def _visible_or_none(self, request, pk):
-        return visible_companies(request.user).filter(pk=pk).first()
+        return _scope_readable(
+            visible_companies(request.user), request.user, READ_COMPANY,
+            company_field='pk',
+        ).filter(pk=pk).first()
 
     def get(self, request, pk):
         company = self._visible_or_none(request, pk)
@@ -339,8 +356,9 @@ class AdminBranchListView(APIView):
     throttle_classes = [AdminUsersThrottle]
 
     def get(self, request):
-        qs = scope_queryset(
-            Branch.objects.select_related('company'), request.user,
+        qs = _scope_readable(
+            scope_queryset(Branch.objects.select_related('company'), request.user),
+            request.user, READ_BRANCHES,
         ).order_by('company__name', 'name')
 
         company_id = request.query_params.get('company')
@@ -402,8 +420,9 @@ class AdminBranchDetailView(APIView):
     _WRITABLE = ('name', 'address', 'phone', 'email', 'is_active')
 
     def _scoped(self, request, pk):
-        return scope_queryset(
-            Branch.objects.select_related('company'), request.user,
+        return _scope_readable(
+            scope_queryset(Branch.objects.select_related('company'), request.user),
+            request.user, READ_BRANCHES,
         ).filter(pk=pk).first()
 
     def get(self, request, pk):
