@@ -8,37 +8,31 @@ import { apiUrl } from "../lib/api";
 import { useStorefront } from "./StorefrontProvider";
 
 const CART_ICON = (
-  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13l-1.4 7h12.8M17 21a1 1 0 100-2 1 1 0 000 2zM9 21a1 1 0 100-2 1 1 0 000 2z" />
   </svg>
 );
 
-const CATEGORY_LINKS = [
-  { href: "/product?category=iphone", label: "iPhone" },
-  { href: "/product?category=apple-watch", label: "Watch" },
-  { href: "/product?category=ipad", label: "iPad" },
-  { href: "/product?category=mac", label: "Mac" },
-  { href: "/product?category=accesorios", label: "Accesorios" },
-  { href: "/product?category=audifonos", label: "Audífonos" },
-];
+const navLinkClass =
+  "rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 export function Header() {
-  // Phase 3: the shop's own name and logo, from the tenant that owns this host.
   const { company, branding, contact } = useStorefront();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [catalogOpen, setCatalogOpen] = useState(false);
   const userLoggedIn = Boolean(user);
 
   async function fetchCartCount() {
     try {
       const sessionKey = getSessionKey();
-      const res = await fetch(apiUrl(`/cart?session_key=${sessionKey}`));
+      const res = await fetch(apiUrl("/cart?session_key=" + sessionKey));
       if (!res.ok) return;
       const data = await res.json();
       setCartCount(Array.isArray(data) ? data.length : 0);
-    } catch {}
+    } catch {
+      // The header stays usable when the cart badge cannot be refreshed.
+    }
   }
 
   useEffect(() => {
@@ -61,113 +55,68 @@ export function Header() {
     });
   }
 
-  return (
-    <header className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#080808]/95 backdrop-blur-md">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3">
+  const cartLabel = "Carrito" + (cartCount > 0 ? " (" + cartCount + ")" : "");
 
-        {/* Logo — the tenant's, or its name in type when it has no logo yet.
-            Never a placeholder image belonging to another business. */}
-        <Link href="/" className="group flex items-center gap-3 shrink-0">
+  return (
+    <header className="sticky top-0 z-50 border-b border-bd-border bg-background/95 backdrop-blur-xl">
+      <div className="mx-auto flex min-h-16 max-w-7xl items-center justify-between gap-5 px-5 sm:px-6 lg:px-8">
+        <Link
+          href="/"
+          className="group flex min-w-0 shrink-0 items-center gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          aria-label={company.name ? "Inicio · " + company.name : "Inicio"}
+        >
           {branding.logo_url ? (
-            <div className="relative h-10 shrink-0">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={branding.logo_url}
-                alt={company.name}
-                className="h-full w-auto object-contain transition-opacity group-hover:opacity-75"
-              />
-            </div>
+            <img
+              src={branding.logo_url}
+              alt=""
+              className="h-8 w-auto max-w-36 object-contain transition-opacity group-hover:opacity-80 sm:h-9"
+            />
           ) : null}
-          <div className="leading-none">
-            <span className="block font-display text-base font-black uppercase tracking-tight text-white">
-              {company.name}
+          <div className="min-w-0 leading-none">
+            <span className="block max-w-44 truncate font-display text-sm font-black uppercase tracking-tight text-foreground sm:max-w-56 sm:text-base">
+              {company.name || "Tienda"}
             </span>
             {contact.city ? (
-              <span className="block text-[9px] font-semibold uppercase tracking-[0.3em] text-zinc-500">
+              <span className="mt-1 block max-w-44 truncate text-[9px] font-semibold uppercase tracking-[0.24em] text-muted-foreground sm:max-w-56">
                 {contact.city}
               </span>
             ) : null}
           </div>
         </Link>
 
-        {/* Desktop nav */}
-        <nav className="hidden items-center gap-0.5 text-sm font-medium text-zinc-400 sm:flex">
-
-          {/* Catalog with dropdown */}
-          <div
-            className="relative"
-            onMouseEnter={() => setCatalogOpen(true)}
-            onMouseLeave={() => setCatalogOpen(false)}
-          >
-            <Link
-              href="/product"
-              className="flex items-center gap-1 rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white"
-            >
-              Catálogo
-              <svg className="h-3 w-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
-              </svg>
-            </Link>
-
-            {catalogOpen && (
-              <div className="absolute left-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111] py-2 shadow-2xl">
-                <div className="px-3 pb-2 pt-1">
-                  <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-zinc-700">Categorías</p>
-                </div>
-                {CATEGORY_LINKS.map((item) => (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    onClick={() => setCatalogOpen(false)}
-                    className="block px-4 py-2 text-sm text-zinc-400 transition hover:bg-white/[0.04] hover:text-white"
-                  >
-                    {item.label}
-                  </Link>
-                ))}
-                <div className="mt-1 border-t border-white/[0.06] px-4 pt-2 pb-1">
-                  <Link
-                    href="/product"
-                    onClick={() => setCatalogOpen(false)}
-                    className="text-xs font-bold uppercase tracking-widest text-zinc-600 transition hover:text-white"
-                  >
-                    Ver todo →
-                  </Link>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <Link href="/services" className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
+        <nav className="hidden items-center gap-1 sm:flex" aria-label="Navegación principal">
+          <Link href="/product" className={navLinkClass}>
+            Catálogo
+          </Link>
+          <Link href="/services" className={navLinkClass}>
             Servicios
           </Link>
-
-          {/* Cart */}
-          <Link href="/cart" className="relative rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
-            <span className="flex items-center gap-1.5">
+          <Link href="/cart" className={navLinkClass + " relative"}>
+            <span className="flex items-center gap-2">
               {CART_ICON}
               <span>Carrito</span>
             </span>
-            {cartCount > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-white text-[9px] font-black text-[#080808]">
+            {cartCount > 0 ? (
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-black text-background">
                 {cartCount > 9 ? "9+" : cartCount}
               </span>
-            )}
+            ) : null}
           </Link>
 
-          {/* Auth */}
           {userLoggedIn ? (
             <>
-              <Link href="/orders" className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
+              <Link href="/orders" className={navLinkClass}>
                 Pedidos
               </Link>
-              {isAdminRole(user) && (
-                <Link href="/admin" className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
+              {isAdminRole(user) ? (
+                <Link href="/admin" className={navLinkClass}>
                   Admin
                 </Link>
-              )}
+              ) : null}
               <button
+                type="button"
                 onClick={handleLogout}
-                className="ml-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-zinc-400 transition hover:border-white/25 hover:text-white"
+                className="ml-2 rounded-lg border border-bd-border bg-surface px-4 py-2 text-xs font-semibold text-muted-foreground transition hover:bg-surface-elevated hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
                 Salir
               </button>
@@ -175,97 +124,85 @@ export function Header() {
           ) : (
             <Link
               href="/auth"
-              className="ml-3 rounded-full bg-white px-5 py-2 text-xs font-bold uppercase tracking-wider text-[#080808] transition hover:bg-zinc-200"
+              className="ml-2 rounded-lg bg-primary px-5 py-2.5 text-xs font-bold uppercase tracking-[0.12em] text-background transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               Ingresar
             </Link>
           )}
         </nav>
 
-        {/* Mobile: cart + hamburger */}
-        <div className="flex items-center gap-2 sm:hidden">
-          <Link href="/cart" className="relative rounded-lg p-2 text-zinc-400 transition hover:text-white">
+        <div className="flex items-center gap-1 sm:hidden">
+          <Link
+            href="/cart"
+            className="relative rounded-lg p-2.5 text-muted-foreground transition hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            aria-label={cartLabel}
+          >
             {CART_ICON}
-            {cartCount > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-white text-[9px] font-black text-[#080808]">
+            {cartCount > 0 ? (
+              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-0.5 text-[8px] font-black text-background">
                 {cartCount > 9 ? "9+" : cartCount}
               </span>
-            )}
+            ) : null}
           </Link>
           <button
-            onClick={() => setMenuOpen(!menuOpen)}
-            className="rounded-lg p-2 text-zinc-400 transition hover:bg-white/5 hover:text-white"
-            aria-label="Abrir menú"
+            type="button"
+            onClick={() => setMenuOpen((open) => !open)}
+            className="rounded-lg p-2.5 text-muted-foreground transition hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            aria-label={menuOpen ? "Cerrar menú" : "Abrir menú"}
+            aria-expanded={menuOpen}
+            aria-controls="mobile-storefront-menu"
           >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              {menuOpen
-                ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              }
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              {menuOpen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              )}
             </svg>
           </button>
         </div>
       </div>
 
-      {/* Mobile menu */}
-      {menuOpen && (
-        <div className="border-t border-white/[0.06] bg-[#080808] px-5 pb-5 pt-3 sm:hidden">
-          <nav className="flex flex-col gap-1 text-sm font-medium">
-            <p className="px-3 pt-1 pb-1 text-[9px] font-bold uppercase tracking-[0.25em] text-zinc-700">Categorías</p>
-            {CATEGORY_LINKS.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setMenuOpen(false)}
-                className="rounded-lg px-3 py-2 text-zinc-500 transition hover:bg-white/5 hover:text-white"
-              >
-                {item.label}
-              </Link>
-            ))}
-            <Link
-              href="/product"
-              onClick={() => setMenuOpen(false)}
-              className="rounded-lg px-3 py-2 text-zinc-400 transition hover:bg-white/5 hover:text-white"
-            >
-              Todo el catálogo →
-            </Link>
-
-            <div className="my-2 border-t border-white/[0.06]" />
-
+      {menuOpen ? (
+        <div id="mobile-storefront-menu" className="border-t border-bd-border bg-background px-5 pb-5 pt-3 sm:hidden">
+          <nav className="flex flex-col gap-1" aria-label="Navegación móvil">
             {[
+              { href: "/product", label: "Catálogo" },
               { href: "/services", label: "Servicios" },
-              { href: "/cart", label: `Carrito${cartCount > 0 ? ` (${cartCount})` : ""}` },
+              { href: "/cart", label: cartLabel },
             ].map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
                 onClick={() => setMenuOpen(false)}
-                className="rounded-lg px-3 py-2.5 text-zinc-400 transition hover:bg-white/5 hover:text-white"
+                className="rounded-lg px-3 py-3 text-sm font-medium text-muted-foreground transition hover:bg-surface hover:text-foreground"
               >
                 {item.label}
               </Link>
             ))}
+
             {userLoggedIn ? (
               <>
                 <Link
                   href="/orders"
                   onClick={() => setMenuOpen(false)}
-                  className="rounded-lg px-3 py-2.5 text-zinc-400 hover:bg-white/5 hover:text-white"
+                  className="rounded-lg px-3 py-3 text-sm font-medium text-muted-foreground transition hover:bg-surface hover:text-foreground"
                 >
                   Mis pedidos
                 </Link>
-                {isAdminRole(user) && (
+                {isAdminRole(user) ? (
                   <Link
                     href="/admin"
                     onClick={() => setMenuOpen(false)}
-                    className="rounded-lg px-3 py-2.5 text-zinc-400 hover:bg-white/5 hover:text-white"
+                    className="rounded-lg px-3 py-3 text-sm font-medium text-muted-foreground transition hover:bg-surface hover:text-foreground"
                   >
                     Admin
                   </Link>
-                )}
+                ) : null}
                 <button
+                  type="button"
                   onClick={handleLogout}
-                  className="mt-2 w-full rounded-full border border-white/10 py-2.5 text-xs font-semibold text-zinc-400"
+                  className="mt-3 rounded-lg border border-bd-border bg-surface px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground"
                 >
                   Cerrar sesión
                 </button>
@@ -274,14 +211,14 @@ export function Header() {
               <Link
                 href="/auth"
                 onClick={() => setMenuOpen(false)}
-                className="mt-3 block rounded-full bg-white px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-[#080808]"
+                className="mt-3 rounded-lg bg-primary px-4 py-3 text-center text-xs font-bold uppercase tracking-[0.12em] text-background"
               >
                 Ingresar
               </Link>
             )}
           </nav>
         </div>
-      )}
+      ) : null}
     </header>
   );
 }
