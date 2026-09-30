@@ -7411,7 +7411,8 @@ class SaasIsolationApiTest(TestCase):
             'role': 'sales',
             'branch': self.branch_b.pk,
         }, format='json')
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        # RBAC-02: another tenant's branch answers like one that does not exist.
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_membership_creation_is_audited_with_company(self):
         self._as(self.admin_a).post('/api/admin/memberships/', {
@@ -60862,3 +60863,125 @@ class F2TenantReadAuthorizationTest(TestCase):
             self.assertEqual(
                 self._get(self.outsider, url).status_code, status.HTTP_403_FORBIDDEN,
             )
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · RBAC-02 — a membership's default branch is no existence oracle
+# ---------------------------------------------------------------------------
+
+class F2MembershipBranchOracleTest(TestCase):
+    """
+    The default `branch` of a membership was looked up platform-wide and only
+    then checked against the company: a missing id answered 404, another
+    tenant's id 400 with a different message, and a branch of the same company
+    the caller does not reach was accepted. The field now resolves like its
+    sibling `branch_access`: inside what the caller may grant, one 404 for
+    everything else, nothing written.
+    """
+
+    ADMIN_CAPS = F2BranchDelegationTest.ADMIN_CAPS
+    MISSING = 987654
+
+    def setUp(self):
+        from .models import Membership
+
+        cache.clear()
+        self.company = _p2d_company('f2-oracle')
+        self.b1 = _p2d_branch(self.company, 'F2O B1')
+        self.b2 = _p2d_branch(self.company, 'F2O B2')
+        self.other = _p2d_company('f2-oracle-other')
+        self.foreign = _p2d_branch(self.other, 'F2O Ajena')
+        self.wide, _ = _p2d_member(self.company, 'f2o_wide', self.ADMIN_CAPS)
+        self.selected, _ = _p2d_member(
+            self.company, 'f2o_selected', self.ADMIN_CAPS, branches=[self.b1],
+        )
+        self.target = User.objects.create_user(username='f2o_target', password='x')
+        self.target_m = Membership.objects.create(
+            user=self.target, company=self.company, role='inventory',
+            branch_access_mode='selected', branch=self.b1,
+        )
+        MembershipBranchAccess.objects.create(membership=self.target_m, branch=self.b1)
+        self.newcomer = User.objects.create_user(username='f2o_new', password='x')
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _post(self, actor, branch_id):
+        return self._as(actor).post('/api/admin/memberships/', {
+            'user': self.newcomer.pk, 'company': self.company.pk, 'role': 'inventory',
+            'branch_access_mode': 'selected', 'branch_access': [self.b1.pk],
+            'branch': branch_id,
+        }, format='json')
+
+    def _patch(self, actor, branch_id, **extra):
+        return self._as(actor).patch(
+            f'/api/admin/memberships/{self.target_m.pk}/',
+            {'branch': branch_id, **extra}, format='json',
+        )
+
+    @staticmethod
+    def _answer(res):
+        return res.status_code, str(res.data)
+
+    def test_create_missing_and_foreign_branch_answer_alike(self):
+        missing = self._post(self.wide, self.MISSING)
+        foreign = self._post(self.wide, self.foreign.pk)
+        self.assertEqual(self._answer(foreign), self._answer(missing))
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(Membership.objects.filter(user=self.newcomer).exists())
+
+    def test_update_missing_and_foreign_branch_answer_alike(self):
+        missing = self._patch(self.wide, self.MISSING)
+        foreign = self._patch(self.wide, self.foreign.pk)
+        self.assertEqual(self._answer(foreign), self._answer(missing))
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_an_unreached_branch_answers_like_a_missing_one_on_create(self):
+        unreached = self._post(self.selected, self.b2.pk)
+        missing = self._post(self.selected, self.MISSING)
+        foreign = self._post(self.selected, self.foreign.pk)
+        self.assertEqual(
+            {self._answer(r) for r in (unreached, foreign)}, {self._answer(missing)},
+        )
+        self.assertFalse(Membership.objects.filter(user=self.newcomer).exists())
+
+    def test_an_unreached_branch_answers_like_a_missing_one_on_update(self):
+        unreached = self._patch(self.selected, self.b2.pk)
+        missing = self._patch(self.selected, self.MISSING)
+        foreign = self._patch(self.selected, self.foreign.pk)
+        self.assertEqual(
+            {self._answer(r) for r in (unreached, foreign)}, {self._answer(missing)},
+        )
+        self.target_m.refresh_from_db()
+        self.assertEqual(self.target_m.branch_id, self.b1.pk)
+
+    def test_a_refused_branch_writes_nothing_else(self):
+        res = self._patch(
+            self.wide, self.foreign.pk, is_active=False, branch_access_mode='all',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.target_m.refresh_from_db()
+        self.assertEqual(
+            (self.target_m.is_active, self.target_m.branch_access_mode,
+             self.target_m.branch_id),
+            (True, 'selected', self.b1.pk),
+        )
+
+    def test_a_reached_branch_still_works(self):
+        self.assertEqual(
+            self._patch(self.selected, self.b1.pk).status_code, status.HTTP_200_OK,
+        )
+        res = self._post(self.selected, self.b1.pk)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['branch'], self.b1.pk)
+
+    def test_a_company_wide_admin_still_sets_any_branch_of_the_company(self):
+        from .models import MembershipBranchAccess as Grant
+
+        Grant.objects.create(membership=self.target_m, branch=self.b2)
+        res = self._patch(self.wide, self.b2.pk)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['branch'], self.b2.pk)

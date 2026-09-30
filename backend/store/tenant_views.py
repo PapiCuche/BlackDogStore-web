@@ -40,9 +40,7 @@ from .serializers import (
 )
 from .tenancy import (
     BRANCH_SCOPE_NOT_GRANTABLE,
-    CrossTenantError,
     active_memberships,
-    assert_branch_in_company,
     can_delegate_branch_scope,
     can_grant_company_role,
     can_manage_company,
@@ -90,6 +88,28 @@ _ROLE_NOT_GRANTABLE = (
 # tenant is not rejected by a check that could be forgotten — it is simply not
 # in the set being searched.
 
+# One answer for a branch id that does not exist, belongs to another tenant or
+# lies outside what the caller may grant (RBAC-02): none of them is theirs.
+_BRANCH_NOT_FOUND = 'Sucursal no encontrada o sin acceso.'
+
+
+def _grantable_branch(actor, company, branch_id):
+    """
+    The branch of `company` named by `branch_id`, if the caller may point a
+    membership at it; otherwise None.
+
+    Looked up INSIDE the company rather than checked afterwards, so a foreign id
+    is simply not in the set being searched; and filtered by the WHERE-axis rule
+    of F-BRANCH-01, so a branch-restricted admin cannot name one they do not
+    reach. Every refusal is the same None, and the caller answers one 404.
+    """
+    if not can_delegate_branch_scope(
+        actor, company, mode=Membership.ACCESS_MODE_SELECTED, branch_ids=[branch_id],
+    ):
+        return None
+    return Branch.objects.filter(company=company, pk=branch_id).first()
+
+
 def _apply_branch_access(membership, branch_ids, actor):
     """
     Replace a membership's branch grants with `branch_ids`.
@@ -108,7 +128,7 @@ def _apply_branch_access(membership, branch_ids, actor):
     missing = [i for i in branch_ids if i not in found]
     if missing:
         return None, Response(
-            {'detail': 'Sucursal no encontrada o sin acceso.'},
+            {'detail': _BRANCH_NOT_FOUND},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -579,15 +599,11 @@ class AdminMembershipListView(APIView):
 
         branch = None
         if data.get('branch'):
-            branch = Branch.objects.filter(pk=data['branch']).first()
-            if not branch:
+            branch = _grantable_branch(request.user, company, data['branch'])
+            if branch is None:
                 return Response(
-                    {'detail': 'Sucursal no encontrada.'}, status=status.HTTP_404_NOT_FOUND
+                    {'detail': _BRANCH_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND
                 )
-            try:
-                assert_branch_in_company(branch, company)
-            except CrossTenantError as exc:
-                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         # One response for every reason the target cannot be used, so the
         # endpoint is not a platform-wide user-id oracle.
@@ -722,16 +738,13 @@ class AdminMembershipDetailView(APIView):
             if data['branch'] is None:
                 membership.branch = None
             else:
-                branch = Branch.objects.filter(pk=data['branch']).first()
-                if not branch:
+                branch = _grantable_branch(
+                    request.user, membership.company, data['branch'],
+                )
+                if branch is None:
                     return Response(
-                        {'detail': 'Sucursal no encontrada.'},
-                        status=status.HTTP_404_NOT_FOUND,
+                        {'detail': _BRANCH_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND,
                     )
-                try:
-                    assert_branch_in_company(branch, membership.company)
-                except CrossTenantError as exc:
-                    return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
                 membership.branch = branch
 
         if 'role' in data:
