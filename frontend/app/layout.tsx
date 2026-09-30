@@ -1,20 +1,15 @@
 import type { Metadata } from "next";
-import { Inter, Unbounded } from "next/font/google";
+import { Montserrat } from "next/font/google";
 import "./globals.css";
 import { Header } from "./components/Header";
 import { Footer } from "./components/Footer";
 import { StorefrontProvider } from "./components/StorefrontProvider";
 import { brandingStyle, fetchStorefrontConfig } from "./lib/storefront";
 
-const inter = Inter({
-  variable: "--font-body",
-  subsets: ["latin"],
-  display: "swap",
-});
-
-const unbounded = Unbounded({
-  variable: "--font-display",
-  weight: ["400", "700", "800", "900"],
+const montserrat = Montserrat({
+  variable: "--font-montserrat",
+  weight: ["400", "500", "600", "700", "900"],
+  style: ["normal", "italic"],
   subsets: ["latin"],
   display: "swap",
 });
@@ -76,7 +71,7 @@ export default async function RootLayout({
   return (
     <html
       lang="es"
-      className={`${inter.variable} ${unbounded.variable} h-full antialiased`}
+      className={`${montserrat.variable} h-full antialiased`}
       style={theme}
     >
       <body className="min-h-full bg-background text-foreground font-sans">
