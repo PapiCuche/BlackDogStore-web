@@ -49,11 +49,22 @@ export default async function ProductPage({ params }: Props) {
 
   if (!product) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-zinc-950">
-        <p className="text-lg text-slate-400">Producto no encontrado.</p>
-        <Link href="/product" className="text-sm text-zinc-400 hover:text-white underline transition">
-          Ver catálogo completo
-        </Link>
+      <div className="flex min-h-screen items-center justify-center bg-background px-6 text-foreground">
+        <div className="w-full max-w-lg rounded-2xl border border-bd-border bg-surface p-8 text-center">
+          <span className="section-label">Catálogo</span>
+          <h1 className="mt-2 font-display text-3xl font-black uppercase text-foreground">
+            Producto no encontrado.
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">
+            El producto puede no estar disponible o el enlace puede haber cambiado.
+          </p>
+          <Link
+            href="/product"
+            className="mt-7 inline-flex min-h-12 items-center rounded-xl bg-primary px-6 py-3 text-sm font-bold text-background transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            Ver catálogo
+          </Link>
+        </div>
       </div>
     );
   }
