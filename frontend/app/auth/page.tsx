@@ -61,12 +61,12 @@ export default function AuthPage() {
   }
 
   const inputClass =
-    "mt-2 w-full rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white placeholder-zinc-700 focus:border-white/25 focus:outline-none";
-  const labelClass = "block text-xs font-bold uppercase tracking-widest text-zinc-500";
+    "mt-2 w-full rounded-xl border border-bd-border bg-surface px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/20";
+  const labelClass = "block text-xs font-bold uppercase tracking-[0.14em] text-muted-foreground";
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#080808]">
+      <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent" />
       </div>
     );
@@ -74,18 +74,18 @@ export default function AuthPage() {
 
   if (user) {
     return (
-      <div className="min-h-screen bg-[#080808] px-6 py-12">
+      <div className="min-h-screen bg-background px-6 py-12">
         <div className="mx-auto max-w-xl">
-          <div className="rounded-2xl border border-white/[0.08] bg-[#111] p-8">
+          <div className="rounded-2xl border border-bd-border bg-surface p-8">
             <div className="flex items-start justify-between">
               <div>
                 <span className="section-label">Cuenta</span>
-                <h1 className="font-display mt-2 text-4xl font-black uppercase text-white">Mi perfil</h1>
+                <h1 className="font-display mt-2 text-4xl font-black uppercase text-foreground">Mi perfil</h1>
               </div>
               <button
                 type="button"
                 onClick={handleLogout}
-                className="rounded-full border border-white/10 bg-white/[0.04] px-5 py-2.5 text-xs font-bold uppercase tracking-widest text-zinc-400 transition hover:border-white/25 hover:text-white"
+                className="rounded-xl border border-bd-border bg-surface px-5 py-2.5 text-xs font-bold uppercase tracking-[0.12em] text-muted-foreground transition hover:border-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
                 Cerrar sesión
               </button>
@@ -98,9 +98,9 @@ export default function AuthPage() {
                 { label: "Nombre", value: user.first_name || "—" },
                 { label: "Apellido", value: user.last_name || "—" },
               ].map((field) => (
-                <div key={field.label} className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-700">{field.label}</span>
-                  <p className="mt-0.5 text-sm font-medium text-white">{field.value}</p>
+                <div key={field.label} className="rounded-xl border border-white/[0.06] bg-background px-4 py-3">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{field.label}</span>
+                  <p className="mt-0.5 text-sm font-medium text-foreground">{field.value}</p>
                 </div>
               ))}
             </div>
@@ -111,13 +111,12 @@ export default function AuthPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#080808]">
+    <div className="min-h-screen bg-background">
       <div className="grid min-h-screen lg:grid-cols-2">
 
         {/* Left — brand panel */}
-        <div className="relative hidden overflow-hidden border-r border-white/[0.06] bg-[#080808] lg:flex lg:flex-col lg:justify-between lg:p-12">
+        <div className="relative hidden overflow-hidden border-r border-bd-border bg-background lg:flex lg:flex-col lg:justify-between lg:p-12">
           <div className="topo-bg absolute inset-0 pointer-events-none" />
-          <div className="dot-grid absolute right-0 top-0 h-64 w-64 opacity-20 pointer-events-none" />
 
           {/* Logo — this storefront's, resolved from the host. The login page
               belongs to the shop the customer came to, even though the ACCOUNT
@@ -133,11 +132,11 @@ export default function AuthPage() {
               />
             ) : null}
             <div>
-              <span className="block font-display text-lg font-black uppercase tracking-tight text-white">
+              <span className="block font-display text-lg font-black uppercase tracking-tight text-foreground">
                 {company.name}
               </span>
               {contact.city ? (
-                <span className="block text-[9px] font-semibold uppercase tracking-[0.3em] text-zinc-600">
+                <span className="block text-[9px] font-semibold uppercase tracking-[0.3em] text-muted-foreground">
                   {contact.city}
                 </span>
               ) : null}
@@ -146,20 +145,26 @@ export default function AuthPage() {
 
           {/* Main copy */}
           <div className="relative">
-            <span className="section-label">{contact.city}</span>
-            <h2 className="font-display mt-3 text-6xl font-black uppercase leading-none tracking-tight text-white">
-              Equipos<br />Apple<br />Originales
+            <span className="section-label">{contact.city || "Cuenta"}</span>
+            <h2 className="font-display mt-3 text-5xl font-black uppercase leading-none tracking-tight text-foreground sm:text-6xl">
+              Tu cuenta,<br />tus compras,<br />tu seguimiento.
             </h2>
-            <p className="mt-5 max-w-sm text-sm leading-7 text-zinc-500">
-              Accede a tu cuenta para ver el estado de tus pedidos, guardar tu carrito y gestionar tu perfil.
+            <p className="mt-5 max-w-sm text-sm leading-7 text-muted-foreground">
+              Inicia sesión para consultar pedidos y mantener tu información de cuenta en un solo lugar.
             </p>
           </div>
 
-          {/* Trust row */}
-          <div className="relative flex flex-wrap gap-6 text-xs text-zinc-700">
-            <span>✓ Garantía 6 meses</span>
-            <span>✓ Envío a todo Perú</span>
-            <span>✓ Repuestos originales</span>
+          <div className="relative grid grid-cols-3 gap-px overflow-hidden rounded-xl border border-bd-border bg-bd-border text-center">
+            {[
+              ["01", "Pedidos"],
+              ["02", "Cuenta"],
+              ["03", "Seguimiento"],
+            ].map(([num, label]) => (
+              <div key={num} className="bg-background px-3 py-4">
+                <span className="block text-[9px] font-bold uppercase tracking-[0.18em] text-accent">{num}</span>
+                <span className="mt-1 block text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</span>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -177,14 +182,14 @@ export default function AuthPage() {
                   className="h-8 w-auto object-contain"
                 />
               ) : null}
-              <span className="font-display text-base font-black uppercase tracking-tight text-white">
+              <span className="font-display text-base font-black uppercase tracking-tight text-foreground">
                 {company.name}
               </span>
             </div>
 
             <div className="mb-8">
               <span className="section-label">{isLogin ? "Bienvenido" : "Nuevo usuario"}</span>
-              <h1 className="font-display mt-2 text-4xl font-black uppercase text-white">
+              <h1 className="font-display mt-2 text-4xl font-black uppercase text-foreground">
                 {isLogin ? "Iniciar sesión" : "Crear cuenta"}
               </h1>
             </div>
@@ -195,7 +200,7 @@ export default function AuthPage() {
               </div>
             )}
             {success && (
-              <div className="mb-5 rounded-xl border border-white/10 bg-white/[0.04] p-4 text-sm text-zinc-200">
+              <div className="mb-5 rounded-xl border border-bd-border bg-surface p-4 text-sm text-zinc-200">
                 {success}
               </div>
             )}
@@ -256,25 +261,25 @@ export default function AuthPage() {
                 </div>
               )}
 
-              <button className="mt-2 w-full rounded-full bg-white px-6 py-3.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200">
+              <button className="mt-2 w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-black uppercase tracking-[0.12em] text-background transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
                 {isLogin ? "Iniciar sesión" : "Registrarme"}
               </button>
             </form>
 
-            <div className="mt-6 space-y-3 text-center text-sm text-zinc-600">
+            <div className="mt-6 space-y-3 text-center text-sm text-muted-foreground">
               <div>
                 {isLogin ? "¿No tienes cuenta?" : "¿Ya tienes cuenta?"}{" "}
                 <button
                   type="button"
                   onClick={() => { setError(null); setSuccess(null); setIsLogin(!isLogin); }}
-                  className="font-bold text-white transition hover:text-zinc-300"
+                  className="font-bold text-foreground transition hover:text-zinc-300"
                 >
                   {isLogin ? "Crear una ahora" : "Iniciar sesión"}
                 </button>
               </div>
               {isLogin && (
                 <div>
-                  <a href="/auth/forgot-password" className="text-zinc-600 transition hover:text-white">
+                  <a href="/auth/forgot-password" className="text-muted-foreground transition hover:text-foreground">
                     ¿Olvidaste tu contraseña?
                   </a>
                 </div>
