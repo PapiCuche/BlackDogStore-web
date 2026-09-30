@@ -37,7 +37,7 @@ function StarDisplay({ rating, size = "sm" }: { rating: number; size?: "sm" | "m
   return (
     <span className={`${sz} tracking-tight`}>
       {[1, 2, 3, 4, 5].map((n) => (
-        <span key={n} className={n <= rating ? "text-white" : "text-zinc-700"}>★</span>
+        <span key={n} className={n <= rating ? "text-accent" : "text-muted-foreground/30"}>★</span>
       ))}
     </span>
   );
@@ -54,9 +54,10 @@ function StarPicker({ rating, onChange }: { rating: number; onChange: (r: number
           onMouseEnter={() => setHover(n)}
           onMouseLeave={() => setHover(0)}
           onClick={() => onChange(n)}
-          className="text-2xl leading-none transition"
+          className="text-2xl leading-none transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          aria-label={`${n} de 5 estrellas`}
         >
-          <span className={(hover || rating) >= n ? "text-white" : "text-zinc-700"}>★</span>
+          <span className={(hover || rating) >= n ? "text-accent" : "text-muted-foreground/30"}>★</span>
         </button>
       ))}
     </div>
@@ -160,120 +161,125 @@ export default function ProductDetail({ product }: { product: Product }) {
   const lowStock = product.inventory > 0 && product.inventory <= 3;
 
   return (
-    <div className="min-h-screen bg-[#080808] text-white">
-      <div className="mx-auto max-w-6xl px-6 py-12 lg:px-8">
-
-        {/* Breadcrumb */}
-        <nav className="mb-8 flex items-center gap-2 text-sm text-zinc-600">
-          <Link href="/" className="transition hover:text-white">Inicio</Link>
-          <span>/</span>
-          <Link href="/product" className="transition hover:text-white">Catálogo</Link>
-          {product.category && (
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="mx-auto max-w-7xl px-6 py-10 lg:px-8 lg:py-12">
+        <nav className="mb-8 flex flex-wrap items-center gap-2 text-xs text-muted-foreground" aria-label="Migas de pan">
+          <Link href="/" className="transition hover:text-foreground">Inicio</Link>
+          <span aria-hidden="true">/</span>
+          <Link href="/product" className="transition hover:text-foreground">Catálogo</Link>
+          {product.category ? (
             <>
-              <span>/</span>
-              <Link href={`/product?category=${product.category.slug}`} className="transition hover:text-white">
+              <span aria-hidden="true">/</span>
+              <Link
+                href={`/product?category=${product.category.slug}`}
+                className="transition hover:text-foreground"
+              >
                 {product.category.name}
               </Link>
             </>
-          )}
-          <span>/</span>
-          <span className="text-zinc-400">{product.name}</span>
+          ) : null}
+          <span aria-hidden="true">/</span>
+          <span className="max-w-64 truncate text-foreground">{product.name}</span>
         </nav>
 
-        {/* Main grid */}
-        <div className="grid gap-10 lg:grid-cols-[1.5fr_1fr]">
-
-          {/* Image */}
-          <div className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111]">
+        <div className="grid gap-10 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)] lg:gap-12">
+          <div className="relative overflow-hidden rounded-2xl border border-bd-border bg-surface">
+            <div className="absolute left-0 top-0 z-10 h-px w-24 bg-accent" aria-hidden="true" />
             {product.image_url ? (
-              <div className="relative h-80 lg:h-[480px]">
+              <div className="relative aspect-[4/3] min-h-80">
                 <Image
                   src={product.image_url}
                   alt={product.name}
                   fill
-                  className="object-contain p-6"
-                  sizes="(max-width: 1024px) 100vw, 60vw"
+                  className="object-contain p-6 sm:p-10"
+                  sizes="(max-width: 1024px) 100vw, 62vw"
                   priority
                 />
               </div>
             ) : (
-              <div className="flex h-80 items-center justify-center lg:h-[480px]">
-                <img
-                  src="/assets/branding/logo-icon.png"
-                  alt=""
-                  className="h-20 w-20 object-contain opacity-[0.06] invert"
-                />
+              <div className="flex aspect-[4/3] min-h-80 items-center justify-center text-muted-foreground" aria-hidden="true">
+                <svg className="h-14 w-14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.3} d="M20 7l-8-4-8 4m16 0-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                </svg>
               </div>
             )}
           </div>
 
-          {/* Details */}
-          <div className="flex flex-col gap-5">
-            {product.category && (
+          <div className="flex flex-col">
+            {product.category ? (
               <Link
                 href={`/product?category=${product.category.slug}`}
-                className="inline-flex w-fit rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-xs font-bold uppercase tracking-widest text-zinc-400 transition hover:border-white/25 hover:text-white"
+                className="w-fit text-[10px] font-bold uppercase tracking-[0.2em] text-accent transition hover:text-foreground"
               >
                 {product.category.name}
               </Link>
-            )}
+            ) : null}
 
-            <h1 className="font-display text-4xl font-black uppercase leading-tight text-white lg:text-5xl">
+            <h1 className="mt-3 font-display text-4xl font-black uppercase leading-[0.96] tracking-tight text-foreground sm:text-5xl">
               {product.name}
             </h1>
 
             {product.average_rating !== null && product.average_rating !== undefined ? (
-              <div className="flex items-center gap-3">
+              <div className="mt-4 flex flex-wrap items-center gap-3">
                 <StarDisplay rating={Math.round(product.average_rating)} size="md" />
-                <span className="text-sm text-zinc-500">
-                  {product.average_rating.toFixed(1)} — {product.review_count} reseña{product.review_count !== 1 ? "s" : ""}
+                <span className="text-sm text-muted-foreground">
+                  {product.average_rating.toFixed(1)} · {product.review_count || 0} reseña{product.review_count !== 1 ? "s" : ""}
                 </span>
               </div>
             ) : null}
 
-            <p className="text-sm leading-7 text-zinc-400">
-              {product.description || "Producto de calidad premium para tu dispositivo Apple."}
+            <p className="mt-6 text-sm leading-7 text-muted-foreground">
+              {product.description || "Consulta características, disponibilidad y condiciones de este producto."}
             </p>
 
-            {/* Stock status */}
-            <div className="flex items-center gap-2 text-sm">
-              <span className={`h-2 w-2 rounded-full ${inStock ? "bg-white" : "bg-zinc-700"}`} />
-              <span className={inStock ? "text-white" : "text-zinc-600"}>
+            <div className="mt-6 flex items-center gap-2 text-sm">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  !inStock ? "bg-red-400" : lowStock ? "bg-amber-300" : "bg-foreground"
+                }`}
+                aria-hidden="true"
+              />
+              <span className={!inStock ? "text-red-300" : lowStock ? "text-amber-200" : "text-foreground"}>
                 {!inStock
                   ? "Sin stock"
                   : lowStock
-                  ? `Últimas ${product.inventory} unidades`
-                  : "En stock — envío a todo Perú"}
+                    ? `Últimas ${product.inventory} unidades`
+                    : "En stock"}
               </span>
             </div>
 
-            {/* Buy box */}
-            <div className="rounded-2xl border border-white/[0.08] bg-[#111] p-6">
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs font-bold uppercase tracking-widest text-zinc-600">S/</span>
-                <span className="font-display text-5xl font-black text-white">{formatMoney(product.price)}</span>
+            <div className="mt-7 rounded-2xl border border-bd-border bg-surface p-6">
+              <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                Precio
+              </span>
+              <div className="mt-1 font-display text-4xl font-black text-foreground sm:text-5xl">
+                S/ {formatMoney(product.price)}
               </div>
-              <p className="mt-1 text-[10px] uppercase tracking-widest text-zinc-700">Precio incluye IGV</p>
+              <p className="mt-1 text-xs text-muted-foreground">El importe final y la entrega se confirman en checkout.</p>
 
-              <div className="mt-5 flex items-center gap-3">
-                <label className="text-sm font-medium text-zinc-400">Cantidad</label>
-                <div className="flex items-center">
+              <div className="mt-6 flex items-center justify-between gap-4 border-t border-bd-border pt-5">
+                <span className="text-xs font-bold uppercase tracking-[0.12em] text-muted-foreground">
+                  Cantidad
+                </span>
+                <div className="flex items-center overflow-hidden rounded-lg border border-bd-border bg-background">
                   <button
                     type="button"
                     onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                    disabled={!inStock}
-                    className="flex h-9 w-9 items-center justify-center rounded-l-xl border border-white/10 bg-white/[0.04] text-white transition hover:bg-white/[0.08] disabled:opacity-40"
+                    disabled={!inStock || quantity <= 1}
+                    className="flex h-10 w-10 items-center justify-center text-foreground transition hover:bg-surface-elevated disabled:opacity-30"
+                    aria-label="Reducir cantidad"
                   >
                     −
                   </button>
-                  <span className="flex h-9 w-12 items-center justify-center border-y border-white/10 bg-white/[0.04] text-sm font-bold text-white">
+                  <span className="flex h-10 w-12 items-center justify-center border-x border-bd-border text-sm font-bold text-foreground">
                     {quantity}
                   </span>
                   <button
                     type="button"
                     onClick={() => setQuantity(Math.min(product.inventory, quantity + 1))}
                     disabled={!inStock || quantity >= product.inventory}
-                    className="flex h-9 w-9 items-center justify-center rounded-r-xl border border-white/10 bg-white/[0.04] text-white transition hover:bg-white/[0.08] disabled:opacity-40"
+                    className="flex h-10 w-10 items-center justify-center text-foreground transition hover:bg-surface-elevated disabled:opacity-30"
+                    aria-label="Aumentar cantidad"
                   >
                     +
                   </button>
@@ -284,64 +290,63 @@ export default function ProductDetail({ product }: { product: Product }) {
                 type="button"
                 onClick={handleAddToCart}
                 disabled={loading || !inStock}
-                className="mt-5 w-full rounded-full bg-white px-4 py-3.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                className="mt-5 w-full rounded-xl bg-primary px-4 py-3.5 text-sm font-black uppercase tracking-[0.12em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
-                {loading ? "Agregando..." : !inStock ? "Sin stock" : "Agregar al carrito"}
+                {loading ? "Agregando…" : !inStock ? "Sin stock" : "Agregar al carrito"}
               </button>
 
               <Link
                 href="/cart"
-                className="mt-3 block w-full rounded-full border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-sm font-bold uppercase tracking-widest text-white transition hover:border-white/20 hover:bg-white/[0.08]"
+                className="mt-3 block w-full rounded-xl border border-bd-border bg-background px-4 py-3 text-center text-xs font-bold uppercase tracking-[0.12em] text-muted-foreground transition hover:border-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
                 Ver carrito
               </Link>
 
-              {status && (
+              {status ? (
                 <div
+                  role="status"
                   className={`mt-4 rounded-xl border p-3 text-sm ${
                     statusType === "success"
-                      ? "border-white/10 bg-white/[0.04] text-zinc-200"
+                      ? "border-bd-border bg-background text-foreground"
                       : "border-red-500/30 bg-red-500/10 text-red-300"
                   }`}
                 >
                   {status}
                 </div>
-              )}
+              ) : null}
             </div>
 
-            {/* Trust badges */}
-            <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-zinc-600">
-              <span>✓ Repuesto original Apple</span>
-              <span>✓ Garantía de 6 meses</span>
-              <span>✓ Envío a todo Perú</span>
-              <span>✓ Pago seguro</span>
+            <div className="mt-5 border-l border-accent/60 pl-4 text-xs leading-5 text-muted-foreground">
+              Disponibilidad, entrega y políticas aplicables se muestran o confirman durante el proceso de compra.
             </div>
           </div>
         </div>
 
-        {/* Reviews */}
-        <section className="mt-16">
-          <div className="flex items-center gap-3">
-            <h2 className="font-display text-3xl font-black uppercase text-white">Reseñas</h2>
-            {reviews.length > 0 && (
-              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-0.5 text-xs font-bold text-zinc-500">
+        <section className="mt-16 border-t border-bd-border pt-12">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <span className="section-label">Opiniones</span>
+              <h2 className="mt-2 font-display text-3xl font-black uppercase text-foreground">Reseñas</h2>
+            </div>
+            {reviews.length > 0 ? (
+              <span className="rounded-full border border-bd-border bg-surface px-3 py-1 text-xs font-bold text-muted-foreground">
                 {reviews.length}
               </span>
-            )}
+            ) : null}
           </div>
 
           {reviews.length === 0 ? (
-            <p className="mt-4 text-sm text-zinc-600">Sé el primero en reseñar este producto.</p>
+            <p className="mt-5 text-sm text-muted-foreground">Todavía no hay reseñas publicadas.</p>
           ) : (
-            <div className="mt-6 space-y-4">
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
               {reviews.map((review) => (
-                <div key={review.id} className="rounded-2xl border border-white/[0.08] bg-[#111] p-5">
+                <article key={review.id} className="rounded-xl border border-bd-border bg-surface p-5">
                   <div className="flex items-start justify-between gap-4">
                     <div>
-                      <p className="font-bold text-white">{review.author_name || "Cliente verificado"}</p>
+                      <p className="font-bold text-foreground">{review.author_name || "Cliente"}</p>
                       <StarDisplay rating={review.rating} size="sm" />
                     </div>
-                    <span className="shrink-0 text-xs text-zinc-600">
+                    <span className="shrink-0 text-xs text-muted-foreground">
                       {new Date(review.created_at).toLocaleDateString("es-PE", {
                         year: "numeric",
                         month: "short",
@@ -349,66 +354,62 @@ export default function ProductDetail({ product }: { product: Product }) {
                       })}
                     </span>
                   </div>
-                  {review.comment && (
-                    <p className="mt-3 text-sm leading-6 text-zinc-400">{review.comment}</p>
-                  )}
-                </div>
+                  {review.comment ? (
+                    <p className="mt-3 text-sm leading-6 text-muted-foreground">{review.comment}</p>
+                  ) : null}
+                </article>
               ))}
             </div>
           )}
 
-          {/* Review form */}
-          <div className="mt-8 rounded-2xl border border-white/[0.08] bg-[#111] p-6">
-            <h3 className="font-display mb-4 text-xl font-black uppercase text-white">Deja tu reseña</h3>
+          <div className="mt-8 rounded-xl border border-bd-border bg-surface p-6">
+            <h3 className="font-display text-xl font-black uppercase text-foreground">Deja tu reseña</h3>
             {reviewSuccess ? (
-              <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4 text-sm text-zinc-200">
-                ¡Gracias por tu reseña! Ya está publicada.
+              <div className="mt-4 rounded-xl border border-bd-border bg-background p-4 text-sm text-foreground" role="status">
+                Gracias. Tu reseña ya está publicada.
               </div>
             ) : (
-              <form onSubmit={handleReviewSubmit} className="space-y-4">
+              <form onSubmit={handleReviewSubmit} className="mt-5 space-y-4">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-zinc-400">Calificación</label>
+                  <label className="mb-2 block text-sm font-medium text-muted-foreground">Calificación</label>
                   <StarPicker rating={reviewRating} onChange={setReviewRating} />
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-zinc-400">Comentario (opcional)</label>
+                  <label className="mb-1 block text-sm font-medium text-muted-foreground">Comentario (opcional)</label>
                   <textarea
                     value={reviewComment}
                     onChange={(e) => setReviewComment(e.target.value)}
-                    placeholder="¿Qué te pareció el producto?"
+                    placeholder="Cuéntanos tu experiencia con el producto"
                     rows={3}
-                    className="w-full resize-none rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white placeholder-zinc-700 focus:border-white/25 focus:outline-none"
+                    className="w-full resize-none rounded-xl border border-bd-border bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/20"
                   />
                 </div>
-                {reviewError && (
-                  <p className="text-sm text-rose-300">{reviewError}</p>
-                )}
+                {reviewError ? <p className="text-sm text-red-300">{reviewError}</p> : null}
                 <button
                   type="submit"
                   disabled={reviewSubmitting}
-                  className="rounded-full bg-white px-6 py-2.5 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200 disabled:opacity-50"
+                  className="rounded-xl bg-primary px-6 py-3 text-sm font-black uppercase tracking-[0.12em] text-background transition hover:opacity-90 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 >
-                  {reviewSubmitting ? "Enviando..." : "Publicar reseña"}
+                  {reviewSubmitting ? "Enviando…" : "Publicar reseña"}
                 </button>
               </form>
             )}
           </div>
         </section>
 
-        {/* Related products */}
-        {relatedProducts.length > 0 && (
-          <section className="mb-8 mt-16">
-            <h2 className="font-display mb-6 text-3xl font-black uppercase text-white">
+        {relatedProducts.length > 0 ? (
+          <section className="mb-8 mt-16 border-t border-bd-border pt-12">
+            <span className="section-label">También puedes revisar</span>
+            <h2 className="mt-2 font-display text-3xl font-black uppercase text-foreground">
               Productos relacionados
             </h2>
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
               {relatedProducts.map((p) => (
                 <ProductCard key={p.id} {...p} />
               ))}
             </div>
           </section>
-        )}
-
+        ) : null}
       </div>
     </div>
   );
