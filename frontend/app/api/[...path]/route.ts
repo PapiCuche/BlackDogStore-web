@@ -76,9 +76,48 @@ const CLIENT_IDENTITY_HEADERS = new Set([
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
+/**
+ * A SEGMENT IS ONE SEGMENT — FE-AUTH-01.
+ *
+ * Next hands this handler the catch-all already SPLIT and then DECODED piece by
+ * piece (`route-matcher`: `match.split('/').map(decode)`). So a `%2f` the
+ * browser sent survives as a real slash INSIDE one segment, and `%2e%2e`
+ * arrives as `..`. Joining those back together and handing the string to
+ * `fetch` let WHATWG resolve the dot segments, and the destination left the
+ * prefix this file exists to serve:
+ *
+ *     GET /api/..%2fadmin/login/   →  http://127.0.0.1:8000/admin/login/
+ *     GET /api/..%2fstatic/…       →  the backend's static files
+ *
+ * both answered 200 through the storefront origin, with the visitor's cookies
+ * forwarded and Django's csrftoken set on it. The backend may be reachable only
+ * through here — that is why this handler strips network-identity headers at
+ * all — so the escape published routes nobody published.
+ *
+ * The check is on the DECODED segment, which is the only place the separator is
+ * visible, and it refuses rather than sanitising: no Django route takes a
+ * `<path:>` converter, so a segment containing a separator (or a dot segment)
+ * never addresses anything legitimate. Re-encoding instead would send Django a
+ * literal `%2f` it would answer 404 for, hiding the defect instead of naming it.
+ */
+const SEPARATOR_IN_SEGMENT = /[/\\]/;
+
+function escapesPrefix(segments: string[]): boolean {
+  return segments.some(
+    (segment) => segment === "." || segment === ".." || SEPARATOR_IN_SEGMENT.test(segment),
+  );
+}
+
 async function proxy(req: NextRequest, ctx: RouteContext): Promise<NextResponse> {
   const { path } = await ctx.params;
   const segments = path ?? [];
+
+  if (escapesPrefix(segments)) {
+    return new NextResponse(
+      JSON.stringify({ detail: "Ruta no válida." }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
+  }
 
   // Always add trailing slash — Django's APPEND_SLASH=True expects it, and DRF
   // raises a RuntimeError in DEBUG mode when a POST arrives without trailing slash.
