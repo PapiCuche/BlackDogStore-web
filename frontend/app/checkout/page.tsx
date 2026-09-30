@@ -217,13 +217,13 @@ export default function CheckoutPage() {
   const needsCity = form.delivery_method === "national_shipping";
 
   const inputClass =
-    "mt-1.5 w-full rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-sm text-white placeholder-zinc-600 focus:border-white/30 focus:outline-none";
-  const labelClass = "block text-xs font-medium text-zinc-400 uppercase tracking-wide";
+    "mt-1.5 w-full rounded-xl border border-bd-border bg-background px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/20";
+  const labelClass = "block text-xs font-bold text-muted-foreground uppercase tracking-[0.12em]";
   const sectionClass =
-    "rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 space-y-4";
+    "rounded-xl border border-bd-border bg-surface p-6 space-y-4";
 
   return (
-    <div className="min-h-screen bg-[#080808] px-4 py-12">
+    <div className="min-h-screen bg-background px-4 py-12 text-foreground">
       {/* Loaded ONLY from the constant map in lib/payments, and only once the
           backend has said which environment. The response never supplies a
           script address. */}
@@ -250,14 +250,17 @@ export default function CheckoutPage() {
       <div className="mx-auto max-w-xl">
 
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white">Checkout</h1>
-          <p className="mt-1 text-sm text-zinc-500">
-            Pago procesado de forma segura.
+          <span className="section-label">Checkout</span>
+          <h1 className="mt-2 font-display text-4xl font-black uppercase tracking-tight text-foreground">
+            Revisa tus datos.
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Confirma contacto, entrega, comprobante y políticas antes de abrir el formulario de pago.
           </p>
         </div>
 
         {cancelled && (
-          <div className="mb-5 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-300">
+          <div className="mb-5 rounded-xl border border-bd-border bg-surface p-4 text-sm text-muted-foreground">
             Pago cancelado. Tu carrito sigue disponible.
           </div>
         )}
@@ -267,14 +270,14 @@ export default function CheckoutPage() {
           </div>
         )}
         {coupon && (
-          <div className="mb-5 flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
+          <div className="mb-5 flex items-center justify-between rounded-xl border border-bd-border bg-surface px-4 py-3">
             <div>
-              <span className="text-xs text-zinc-500">Cupón aplicado</span>
-              <div className="text-sm font-semibold text-white">
+              <span className="text-xs text-muted-foreground">Cupón aplicado</span>
+              <div className="font-display text-sm font-black uppercase tracking-wide text-foreground">
                 {coupon.code} — {coupon.discount_percent}% de descuento
               </div>
             </div>
-            <Link href="/cart" className="text-xs text-zinc-500 hover:text-zinc-300">
+            <Link href="/cart" className="text-xs text-muted-foreground hover:text-foreground">
               Cambiar
             </Link>
           </div>
@@ -284,7 +287,7 @@ export default function CheckoutPage() {
 
           {/* 1. Datos personales */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-white">Datos personales</h2>
+            <h2 className="font-display text-sm font-black uppercase tracking-wide text-foreground">Datos personales</h2>
 
             <div>
               <label className={labelClass}>Nombre completo *</label>
@@ -366,7 +369,7 @@ export default function CheckoutPage() {
 
           {/* 2. Método de entrega */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-white">Método de entrega</h2>
+            <h2 className="font-display text-sm font-black uppercase tracking-wide text-foreground">Método de entrega</h2>
 
             <div className="space-y-2">
               {(
@@ -380,8 +383,8 @@ export default function CheckoutPage() {
                   key={value}
                   className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors ${
                     form.delivery_method === value
-                      ? "border-white/30 bg-white/[0.04]"
-                      : "border-white/[0.06] hover:border-white/15"
+                      ? "border-accent/60 bg-background"
+                      : "border-bd-border hover:border-accent/30"
                   }`}
                 >
                   <input
@@ -390,11 +393,11 @@ export default function CheckoutPage() {
                     value={value}
                     checked={form.delivery_method === value}
                     onChange={() => dispatch({ type: "set_str", field: "delivery_method", value })}
-                    className="mt-0.5 accent-white"
+                    className="mt-0.5 accent-accent"
                   />
                   <div>
-                    <p className="text-sm font-medium text-white">{label}</p>
-                    <p className="mt-0.5 text-xs text-zinc-500 leading-relaxed">
+                    <p className="text-sm font-medium text-foreground">{label}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">
                       {deliveryCopy[value]}
                     </p>
                   </div>
@@ -462,7 +465,7 @@ export default function CheckoutPage() {
 
           {/* 3. Tipo de comprobante */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-white">Comprobante</h2>
+            <h2 className="font-display text-sm font-black uppercase tracking-wide text-foreground">Comprobante</h2>
 
             <div className="flex gap-3">
               {(["boleta", "factura"] as const).map((type) => (
@@ -470,8 +473,8 @@ export default function CheckoutPage() {
                   key={type}
                   className={`flex flex-1 cursor-pointer items-center gap-2.5 rounded-lg border p-3.5 transition-colors ${
                     form.receipt_type === type
-                      ? "border-white/30 bg-white/[0.04]"
-                      : "border-white/[0.06] hover:border-white/15"
+                      ? "border-accent/60 bg-background"
+                      : "border-bd-border hover:border-accent/30"
                   }`}
                 >
                   <input
@@ -480,14 +483,14 @@ export default function CheckoutPage() {
                     value={type}
                     checked={form.receipt_type === type}
                     onChange={() => dispatch({ type: "set_str", field: "receipt_type", value: type })}
-                    className="accent-white"
+                    className="accent-accent"
                   />
-                  <span className="text-sm font-medium text-white capitalize">{type}</span>
+                  <span className="text-sm font-medium text-foreground capitalize">{type}</span>
                 </label>
               ))}
             </div>
             {form.receipt_type === "factura" && (
-              <p className="text-xs text-zinc-500">
+              <p className="text-xs text-muted-foreground">
                 La factura requiere RUC. El tipo de documento se ha fijado automáticamente.
               </p>
             )}
@@ -496,7 +499,7 @@ export default function CheckoutPage() {
 
           {/* 4. Notas */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-white">Notas del pedido (opcional)</h2>
+            <h2 className="font-display text-sm font-black uppercase tracking-wide text-foreground">Notas del pedido (opcional)</h2>
             <textarea
               value={form.notes}
               onChange={(e) => dispatch({ type: "set_str", field: "notes", value: e.target.value })}
@@ -505,13 +508,13 @@ export default function CheckoutPage() {
               rows={3}
               maxLength={500}
             />
-            <p className="text-xs text-zinc-600 text-right">{form.notes.length}/500</p>
+            <p className="text-xs text-muted-foreground text-right">{form.notes.length}/500</p>
             <FieldError msg={fe.notes} />
           </div>
 
           {/* 5. Aceptaciones */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-white">Declaraciones</h2>
+            <h2 className="font-display text-sm font-black uppercase tracking-wide text-foreground">Declaraciones</h2>
 
             <label className="flex cursor-pointer items-start gap-3">
               <input
@@ -520,9 +523,9 @@ export default function CheckoutPage() {
                 onChange={(e) =>
                   dispatch({ type: "set_bool", field: "accepted_terms", value: e.target.checked })
                 }
-                className="mt-0.5 h-4 w-4 accent-white"
+                className="mt-0.5 h-4 w-4 accent-accent"
               />
-              <span className="text-xs text-zinc-400 leading-relaxed">
+              <span className="text-xs text-muted-foreground leading-relaxed">
                 {terms}
               </span>
             </label>
@@ -535,9 +538,9 @@ export default function CheckoutPage() {
                 onChange={(e) =>
                   dispatch({ type: "set_bool", field: "accepted_warranty_policy", value: e.target.checked })
                 }
-                className="mt-0.5 h-4 w-4 accent-white"
+                className="mt-0.5 h-4 w-4 accent-accent"
               />
-              <span className="text-xs text-zinc-400 leading-relaxed">
+              <span className="text-xs text-muted-foreground leading-relaxed">
                 {warranty}
               </span>
             </label>
@@ -546,8 +549,8 @@ export default function CheckoutPage() {
 
           {/* Punto de retiro */}
           {form.delivery_method === "pickup_store" && (
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 text-xs text-zinc-500 leading-relaxed">
-              <p className="font-medium text-zinc-300 mb-1">Punto de retiro</p>
+            <div className="rounded-xl border border-bd-border bg-surface p-4 text-xs text-muted-foreground leading-relaxed">
+              <p className="font-medium text-foreground mb-1">Punto de retiro</p>
               {storefront.contact.address ? (
                 <p>
                   {storefront.contact.address}
@@ -564,7 +567,7 @@ export default function CheckoutPage() {
 
           <button
             type="submit"
-            className="w-full rounded-xl bg-white px-6 py-3.5 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-bold uppercase tracking-[0.1em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             disabled={loading}
           >
             {loading ? "Abriendo el pago…" : "Continuar al pago →"}
@@ -573,18 +576,16 @@ export default function CheckoutPage() {
           <div className="text-center">
             <Link
               href="/cart"
-              className="text-sm text-zinc-600 hover:text-zinc-300 transition"
+              className="text-sm text-muted-foreground transition hover:text-foreground"
             >
               ← Volver al carrito
             </Link>
           </div>
         </form>
 
-        <div className="mt-6 flex justify-center gap-6 text-xs text-zinc-700">
-          <span>SSL Encriptado</span>
-          <span>Pago seguro</span>
-          <span>Compra protegida</span>
-        </div>
+        <p className="mt-6 text-center text-xs leading-5 text-muted-foreground">
+          El pago se abre después de validar estos datos. La confirmación final se verifica con el backend.
+        </p>
       </div>
     </div>
   );
