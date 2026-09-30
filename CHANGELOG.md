@@ -9,6 +9,57 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## UXUI-02A — Foundations y storefront público
+
+**Estado: PARCIAL.** Sin migraciones ni cambios de contrato backend.
+
+Se consolidó la primera capa visual del storefront sobre el contrato SaaS
+existente. La fase no cambia autenticación, roles, tenancy, inventario, precios,
+cupones ni pagos: modifica jerarquía, semántica visual, accesibilidad y copy.
+
+### IMPLEMENTADO
+
+- tokens semánticos de UI separados de `--brand-accent` para que el color de
+  marca no funcione también como texto secundario;
+- `prefers-reduced-motion` como baseline global;
+- Montserrat como familia del producto, con cursiva de marca disponible de forma
+  opt-in y no aplicada globalmente al SaaS;
+- Header y Footer tenant-aware simplificados;
+- Home con categorías obtenidas del catálogo del tenant, sin campañas,
+  estadísticas o claims comerciales compilados;
+- Hero, catálogo, detalle, carrito, checkout, estados de pago, pedidos,
+  autenticación y flujos auxiliares de cuenta migrados al mismo sistema visual;
+- placeholders genéricos en lugar del isotipo de Black Dog para tenants que no
+  publicaron imagen;
+- eliminación en estas superficies de claims no verificados sobre piezas
+  originales, garantías fijas, cobertura nacional, True Tone, Nasan, mensajes
+  de pieza y superioridad comercial;
+- búsqueda del catálogo con debounce y error de categorías visible;
+- WhatsApp renderizado sólo cuando el tenant publicó el canal.
+
+### Verificación adicional
+
+La revisión posterior confirmó que siguen presentes los invariantes críticos de
+checkout/Izipay: creación server-side del intento, SDK resuelto desde la lista
+permitida, términos y política, cupón, sesión, verificación backend del estado y
+polling de pagos pendientes. Carrito, stock, reseñas autenticadas y cálculo de
+descuento conservan sus handlers.
+
+No hay workflow de CI asociado al commit de esta rama. Por ello esta fase **no
+se declara validada por tests/build** hasta ejecutar `npm run test:ci`,
+`npm run lint` y `npm run build` en un entorno con dependencias instalables.
+
+### PENDIENTE
+
+- actualizar los valores de branding del tenant piloto a la paleta v3.0 mediante
+  configuración/datos, sin hardcodearlos en la plataforma;
+- poblar el archivo Figma Foundations cuando vuelva a haber cuota MCP del plan;
+- consolidar el UI kit interno del SaaS;
+- convertir contenido público de servicios/campañas en configuración de tenant
+  cuando exista un modelo de contenido aprobado.
+
+---
+
 ## M12A — Acceso real del técnico y «Mis reparaciones»
 
 **Estado: IMPLEMENTADO.** Migración **0057**.
