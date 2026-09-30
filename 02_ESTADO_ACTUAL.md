@@ -3,6 +3,23 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-09-30 — F2 · F-CAP-01: el stock inicial exige autoridad de inventario
+
+`products.manage` es autoridad sobre el catálogo; `inventory.adjust`, sobre las
+existencias. Crear un producto con `inventory > 0` abre saldo con una línea
+`initial_stock` en el Kardex y ahora exige ambas, con la misma puerta que el ajuste
+directo (puente legacy incluido) y antes de escribir nada: sin `inventory.adjust`
+responde 403 y no quedan producto, stock, movimiento ni auditoría. Con `inventory`
+omitido o 0 basta `products.manage`. La sucursal del saldo la sigue eligiendo el
+servidor dentro del alcance de quien crea. Es la única ruta pública que abre saldo:
+la edición de producto rechaza `inventory`, la importación de productos no crea stock
+y la de stock ya exigía `inventory.adjust` y acceso a la sucursal. Los presets
+actuales sólo dan `products.manage` al rol «administrador», que también tiene
+`inventory.adjust`. Commit `c042fea`.
+
+Validación: backend PostgreSQL 4528 pruebas, OK (3 omitidas), 1511,2 s; `check` sin
+problemas; 0 migraciones por generar. Frontend sin cambios.
+
 ## 2026-09-30 — Auditoría F2 (eje «dónde»): delegación por sucursal
 
 El eje «dónde» ya tiene regla de delegación, como el eje «qué» la tenía desde G3:

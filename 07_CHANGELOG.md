@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-09-30 — F2 · F-CAP-01
+
+Crear un producto con stock inicial exige `inventory.adjust` además de
+`products.manage`; sin ella responde 403 sin efectos. Crear sin stock no cambia.
+Commit `c042fea`. Backend 4528 pruebas OK en PostgreSQL. Sin migraciones.
+
 ## 2026-09-30 — F2 · Delegación por sucursal
 
 Nueva regla `can_delegate_branch_scope`: una persona limitada a sucursales

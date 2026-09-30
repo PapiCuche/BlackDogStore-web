@@ -23,11 +23,11 @@ Comprobar con `git diff <SHA>..HEAD -- <archivos>` y revalidar sólo ese subárb
 | Branch | `audit/full-system-2026-09` (local; `origin/master` es el master autoritativo) |
 | Baseline medido | `65aa8c1` (merge de `origin/master` `2dca0a3` sobre `9525b08`) |
 | HEAD al sembrar | `4a9dd5c` — delta vs baseline: sólo `02_`, `07_`, `frontend/app/api/[...path]/route.ts`, `frontend/__tests__/api-proxy-scope.test.ts` |
-| Último SHA verificado | `70286d1` (F2: F-BRANCH-01/02/03). Backend cambia en `tenancy.py`, `tenant_views.py`, `staff_views.py`, `promotion_views.py`, `settings_views.py`, `tests.py` |
+| Último SHA verificado | `c042fea` (F2: F-BRANCH-01/02/03, F-CAP-01). Backend cambia en `tenancy.py`, `tenant_views.py`, `staff_views.py`, `promotion_views.py`, `settings_views.py`, `tests.py` |
 | Fecha | 2026-09-30 |
 | Working tree | limpio |
 | Migraciones | 105 aplicadas / 0 pendientes / 0 por generar (`store` llega a `0093_sales_service_delivery`) |
-| Backend tests | 4520 OK (3 skipped), PostgreSQL 14, 1520,6 s @ `70286d1` (baseline: 4489 @ `65aa8c1`) |
+| Backend tests | 4528 OK (3 skipped), PostgreSQL 14, 1511,2 s @ `c042fea` (baseline: 4489 @ `65aa8c1`) |
 | Frontend tests | 368/368 OK, 34 suites, @ `4a9dd5c` |
 | TypeScript | `tsc --noEmit` OK @ `4a9dd5c` |
 | Lint | 0 errores / 33 advertencias @ `4a9dd5c` |
@@ -109,6 +109,18 @@ Autoridad: `tenant_views.py::AdminMembershipDetailView.patch` (`role_assignments
 Tests: `H41StaffDeactivationTest`, `G3DeactivationEscalationTest`.
 Estado: VERIFICADO @ `4a9dd5c`. Consecuencia en E2E: E2E-02.
 
+**CAP-STOCK-01** — Abrir saldo exige autoridad sobre existencias, no sólo sobre catálogo.
+Autoridad: `admin_views.py::AdminProductListView.post` — con `inventory > 0` llama a
+`_company_context(request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES)`, la
+misma puerta que `inventory-adjust`, antes de cualquier escritura. `inventory` omitido
+o 0 sólo requiere `products.manage`. La sucursal del saldo la elige el servidor
+(`resolve_branch_for_user(user, company, None)` → dentro de `visible_branches`); el
+payload no puede nombrarla. Otras vías de saldo: PATCH de producto rechaza `inventory`
+(400); importación de productos no crea stock; importación de stock exige
+`inventory.adjust` + `_branch_access_error` en preview y apply.
+Tests: `F2ProductInitialInventoryCapabilityTest` (8), `Phase2dConsistencyTest`, `AdminProductCreateTest`.
+Estado: VERIFICADO @ `c042fea`.
+
 **LEGACY-01** — El puente legacy (`UserProfile.role` sin membresía, sólo tenant
 piloto) se limita a catálogo/pedidos/inventario/notas.
 Autoridad: `tenancy.py::uses_legacy_bridge`. Paridad frontend: `H412bFrontendLegacyRoleParityTest`.
@@ -180,7 +192,6 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | ID | Sev. | Dominio | Símbolo | Reproducción |
 |---|---|---|---|---|
 | DRIFT-07 | LOW | BRANCH/FRONTEND | `BranchAccessPanel.tsx`, `staff/page.tsx` (invitación, default «todas»), `promotion_views.py` lista `branches` = todas las de la empresa | la UI ofrece a un admin SELECTED «todas» o sucursales que no alcanza; el backend responde 403 con `detail` legible |
-| F-CAP-01 | MEDIUM | RBAC/INVENTORY | `admin_views.py` product create `post` (`opening_stock`) | `products.manage` sin `inventory.adjust`: POST producto `inventory=7` → 201 + Kardex `initial_stock` |
 | F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post` + `serializers.py::MembershipSerializer` | POST membresía con `user` de otra plataforma → 201 devuelve su `username` |
 | DRIFT-01 | MEDIUM | SERVICE/FRONTEND | `frontend/app/lib/service-console.ts` (`technicians`) vs `v1_service_views.py` (`candidates`) | selector de técnicos siempre vacío |
 | E2E-02 | MEDIUM | TESTS | `frontend/e2e/staff-personnel.spec.ts` (test I) | desactiva la primera ficha; cuenta queda con 0 capacidades |
@@ -203,6 +214,16 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/03/05…10, SEC-SET-04-B, AUTH-LOGGING-01, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01…04, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
 
 SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets), FE-AUTH-02/04/06/07/08/09.
+Presets vigentes (`company_provisioning.PRESET_ROLES` @ `c042fea`): sólo `administrador` tiene
+`products.manage`, y también tiene `inventory.adjust`; `inventario` tiene `inventory.adjust`.
+
+DEUDA (surgida en F-CAP-01): Django admin `ProductAdmin` deja editar `Product.inventory` a
+un superusuario de plataforma sin línea de Kardex (fuera de RBAC de empresa).
+TEST-ENV-01: `C15InitialRaceTest.test_a_deactivated_branch_is_refused_at_preview_too` da
+`IntegrityError store_company_pkey` si se ejecuta aislado (también @ `7977d53`); pasa en la
+suite completa. Además, tras una `TransactionTestCase` una BD `--keepdb` queda sin datos
+sembrados: usar `--noinput` (BD nueva) para subconjuntos.
+
 NO AUDITADO: webhook de pagos (firma/replay), `AdminAuditLogListView` (acotado por tenant),
 contrato `V1StockAdjustmentSerializer`.
 
@@ -221,6 +242,7 @@ que afectan a todas las sucursales; y lista promociones de todas las sucursales
 | F-BRANCH-01 | MEDIUM | `20d110c` | `tenancy.can_delegate_branch_scope`; `tenant_views` membership create/patch; `staff_views` invitaciones (mismo hueco, hallado en F2) | `F2BranchDelegationTest` | CORREGIDO |
 | F-BRANCH-01 · escritura parcial | LOW | `20d110c` | `AdminMembershipDetailView.patch` en `transaction.atomic` | `F2BranchDelegationTest.test_a_rejected_grant_list_rolls_the_whole_update_back` | CORREGIDO |
 | F-BRANCH-02 | MEDIUM | `cccb4d2` | `promotion_views._write_promotion` | `F2PromotionBranchScopeTest` | CORREGIDO |
+| F-CAP-01 | MEDIUM | `c042fea` | `admin_views.AdminProductListView.post` (única ruta pública que abre saldo) | `F2ProductInitialInventoryCapabilityTest` | CORREGIDO |
 | F-BRANCH-03 | MEDIUM | `70286d1` | `settings_views.AdminSequenceDetailView._scoped` | `F2SequenceBranchScopeTest` | CORREGIDO |
 | IDOR-01 | — | — | `admin_views.py::AdminOrderResendEmailView.post` | — | REFUTADO (deuda de limpieza: `order.save(update_fields=…)`) |
 | DEV-DEMO-01 | — | — | `dev_accounts_views.py` | — | REFUTADO (fail-closed por `DEBUG`) |
@@ -246,7 +268,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - TENANCY: `SaasTenancyResolutionTest`, `SaasIsolationApiTest`, `Phase2dCrossTenantIsolationTest`, `Erp1CrossCompanyReadIsolationTest`, `V1TenantSelectorAuthorityTest`, `H412bIsolationMatrixTest`.
 - RBAC: `Phase2aCapabilityMatrixTest`, `M11AntiEscalationTest`, `G3*`, `M6CapabilityRevocationTest`, `H412SaasCapabilityAuthorityTest`.
 - BRANCH: `F2BranchDelegationTest`, `F2PromotionBranchScopeTest`, `F2SequenceBranchScopeTest`, `Phase2dBranchAccessApiTest`, `Phase2dBranchScopedReadsTest`, `C15BranchAccessRevocationTest`, `Phase2eBranchScopeTest`, `Phase2eSequenceApiTest`, `Phase4BranchScopeTest`, `H412SelectedBranch*`.
-- INVENTORY: `Phase60*`, `M7Inventory*`, `C11TransferReserveTest`, `C14StockWriterDisciplineTest`.
+- INVENTORY: `F2ProductInitialInventoryCapabilityTest`, `Phase60*`, `M7Inventory*`, `C11TransferReserveTest`, `C14StockWriterDisciplineTest`.
 - POS: `C1Pos*`, `HardeningPosPaymentAuthorityTest`, `Ip1Pos*`.
 - PROMOTIONS: `C13Promotion*`, `C14PromotionTenantInvariantTest`.
 - FISCAL: `C22B*`, `Fiscal5a*`, `Fiscal5b*`, `Fiscal6*`.
@@ -262,7 +284,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | Número | Objeto | Invariante |
 |---|---|---|
 | 0014 | Company, Branch, Membership | TENANT-01 |
-| 0016 / 0017 | áreas, roles, presets (0017 reparte `products.manage` + `inventory.adjust` juntos) | RBAC-G3, F-CAP-01 atenuante |
+| 0016 / 0017 | áreas, roles, presets | RBAC-G3 |
 | 0024 / 0025 | multisucursal, `MembershipBranchAccess`, `branch_access_mode` | BRANCH-01/02 |
 | 0029 / 0030 | `InternalSequence` | F-BRANCH-03 |
 | 0056 | unicidad de asignación de rol | RBAC |
@@ -290,7 +312,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 - **F0 — Baseline**: medido @ `65aa8c1`; docs @ `d383806`.
 - **F1 — Security / tenancy / authorization**: COMPLETED @ `4a9dd5c`. Un fix (FE-AUTH-01). Backend sin cambios. Checkpoint completo en la transcripción de la sesión `acdf85aa`; artefactos en su scratchpad (`audit_f1_investigation.json`, `audit_security_sweep.json`, `demo_branch_scope.py`).
-- **F2 — Eje DÓNDE: delegación y alcance por sucursal**: EN CURSO. Cerrados F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`). Pendiente: F-CAP-01 (decisión: ¿`products.manage` abre saldo sin `inventory.adjust`?) → RBAC-01/02 → DRIFT-01 → DRIFT-07 → E2E-02 → E2E-01.
+- **F2 — Eje DÓNDE: delegación y alcance por sucursal**: EN CURSO. Cerrados F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`). F-CAP-01 (`c042fea`). Pendiente: RBAC-01/02 → DRIFT-01 → DRIFT-07 → E2E-02 → E2E-01.
 
 ---
 
