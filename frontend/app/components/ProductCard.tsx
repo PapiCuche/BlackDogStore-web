@@ -17,24 +17,37 @@ type ProductCardProps = {
 
 function StockBadge({ inventory }: { inventory?: number }) {
   if (inventory === undefined) return null;
+
   if (inventory === 0) {
     return (
-      <span className="rounded-full border border-red-500/20 bg-red-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-red-400">
+      <span className="rounded-full border border-red-500/25 bg-red-500/10 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] text-red-300">
         Sin stock
       </span>
     );
   }
+
   if (inventory <= 3) {
     return (
-      <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-400">
+      <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] text-amber-300">
         Últimas {inventory}
       </span>
     );
   }
+
   return (
-    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+    <span className="rounded-full border border-bd-border bg-background/80 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
       En stock
     </span>
+  );
+}
+
+function ProductPlaceholder() {
+  return (
+    <div className="flex h-full items-center justify-center text-muted-foreground" aria-hidden="true">
+      <svg className="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.4} d="M20 7l-8-4-8 4m16 0-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+      </svg>
+    </div>
   );
 }
 
@@ -53,70 +66,61 @@ export function ProductCard({
 
   return (
     <Link
-      href={`/product/${slug}`}
-      className="group flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111] transition-all duration-300 hover:border-white/20 hover:bg-[#161616]"
+      href={"/product/" + slug}
+      className="group flex h-full flex-col overflow-hidden rounded-xl border border-bd-border bg-surface transition duration-300 hover:-translate-y-0.5 hover:border-accent/60 hover:bg-surface-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
-      {/* Image */}
-      <div className="relative h-52 overflow-hidden bg-[#0d0d0d]">
+      <div className="relative aspect-[4/3] overflow-hidden bg-background">
         {image_url ? (
           <Image
             src={image_url}
             alt={name}
             fill
-            className={`object-cover transition duration-500 group-hover:scale-105 ${outOfStock ? "opacity-50" : ""}`}
+            className={"object-cover transition duration-500 group-hover:scale-[1.025] " + (outOfStock ? "opacity-55" : "")}
             sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 33vw"
           />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3">
-            <img
-              src="/assets/branding/logo-icon.png"
-              alt=""
-              className="h-12 w-12 object-contain opacity-[0.07] invert"
-            />
-          </div>
+          <ProductPlaceholder />
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#111]/80 to-transparent" />
 
-        {/* Stock badge overlay */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-surface to-transparent" />
         <div className="absolute left-3 top-3">
           <StockBadge inventory={inventory} />
         </div>
       </div>
 
-      {/* Content */}
-      <div className="flex flex-1 flex-col px-5 pb-5 pt-4">
-        {/* Category + rating row */}
-        <div className="mb-2 flex items-center justify-between gap-2">
-          {category ? (
-            <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-600">
-              {category.name}
-            </span>
-          ) : (
-            <span />
-          )}
+      <div className="flex flex-1 flex-col p-5">
+        <div className="flex min-h-5 items-center justify-between gap-3">
+          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+            {category?.name || "Producto"}
+          </span>
           {average_rating !== null && average_rating !== undefined && review_count ? (
-            <span className="text-[9px] text-zinc-600">
+            <span className="text-[10px] text-muted-foreground">
               ★ {average_rating.toFixed(1)} ({review_count})
             </span>
           ) : null}
         </div>
 
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-black uppercase leading-tight text-white transition group-hover:text-zinc-200 line-clamp-2">
-            {name}
-          </h2>
-          <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-sm font-black text-white">
-            S/ {formatMoney(price)}
-          </span>
-        </div>
+        <h2 className="mt-3 line-clamp-2 font-display text-xl font-black uppercase leading-tight text-foreground">
+          {name}
+        </h2>
 
-        <p className="mt-2 flex-1 text-sm leading-6 text-zinc-600 line-clamp-2">
-          {description || "Producto Apple de calidad premium con garantía."}
+        <p className="mt-2 line-clamp-2 flex-1 text-sm leading-6 text-muted-foreground">
+          {description || "Consulta disponibilidad, características y condiciones del producto."}
         </p>
 
-        <div className="mt-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-zinc-500 transition group-hover:text-white">
-          {outOfStock ? "Ver producto" : "Ver detalles"}
-          <span className="transition group-hover:translate-x-1">→</span>
+        <div className="mt-5 flex items-end justify-between gap-4 border-t border-bd-border pt-4">
+          <div>
+            <span className="block text-[9px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+              Precio
+            </span>
+            <span className="mt-1 block font-display text-xl font-black text-foreground">
+              S/ {formatMoney(price)}
+            </span>
+          </div>
+          <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.14em] text-muted-foreground transition group-hover:text-foreground">
+            {outOfStock ? "Ver producto" : "Ver detalles"}
+            <span className="transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
+          </span>
         </div>
       </div>
     </Link>
