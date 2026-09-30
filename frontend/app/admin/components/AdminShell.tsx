@@ -81,8 +81,8 @@ export function AdminShell({ user, dashboard, onSelectCompany, children }: Props
   const access = buildAccessContext(user, effective);
 
   return (
-    <div className="min-h-[calc(100vh-64px)] bg-zinc-950">
-      <div className="flex">
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="flex min-h-screen">
         <InternalSidebar access={access} companyName={effective?.company?.name} />
         <MobileSidebar
           access={access}
@@ -91,14 +91,14 @@ export function AdminShell({ user, dashboard, onSelectCompany, children }: Props
           onClose={() => setMenuOpen(false)}
         />
 
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 bg-background">
           <InternalTopbar
             user={user}
             dashboard={selfLoaded ? effective : null}
             onOpenMenu={() => setMenuOpen(true)}
             onSelectCompany={(companyId) => onSelectCompany?.(companyId)}
           />
-          <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+          <main className="mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 sm:py-8 xl:px-8">
             {children}
           </main>
         </div>
