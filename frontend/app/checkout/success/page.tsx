@@ -83,54 +83,56 @@ export default function CheckoutSuccessPage() {
     checkStatus();
   }, [reference, retryCount]);
 
-  // Loading / polling state
+  const failureMessages: Record<string, string> = {
+    failed: "El pago no pudo procesarse.",
+    expired: "La sesión de pago expiró.",
+    cancelled: "La orden fue cancelada.",
+    refunded: "El pago fue reembolsado.",
+  };
+
+  const shell = "flex min-h-screen items-center justify-center bg-background px-6 py-14 text-foreground";
+  const primaryAction =
+    "inline-flex min-h-12 items-center justify-center rounded-xl bg-primary px-6 py-3 text-sm font-bold text-background transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+  const secondaryAction =
+    "inline-flex min-h-12 items-center justify-center rounded-xl border border-bd-border bg-surface px-6 py-3 text-sm font-bold text-foreground transition hover:border-accent/50 hover:bg-surface-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-        <div className="text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-white/5">
-            <svg
-              className="h-6 w-6 animate-spin text-zinc-400"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="4"
-              />
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-              />
+      <div className={shell}>
+        <div className="w-full max-w-lg text-center">
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-xl border border-bd-border bg-surface">
+            <svg className="h-6 w-6 animate-spin text-muted-foreground" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
           </div>
-          <p className="text-sm text-zinc-400">Verificando pago...</p>
+          <span className="section-label">Pago</span>
+          <h1 className="mt-2 font-display text-3xl font-black uppercase text-foreground">
+            Verificando el estado.
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">
+            La confirmación se obtiene desde el backend; este paso puede tardar unos segundos.
+          </p>
         </div>
       </div>
     );
   }
 
-  // Generic error or missing reference
   if (error) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-        <div className="mx-auto max-w-lg text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10">
-            <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <div className={shell}>
+        <div className="w-full max-w-lg rounded-2xl border border-bd-border bg-surface p-8 text-center sm:p-10">
+          <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-xl border border-red-500/30 bg-red-500/10 text-red-300" aria-hidden="true">
+            <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </div>
-          <h1 className="mb-2 text-3xl font-bold text-white">Error</h1>
-          <p className="mb-8 text-zinc-400">{error}</p>
-          <Link
-            href="/checkout"
-            className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
-          >
+          <span className="section-label">Verificación</span>
+          <h1 className="mt-2 font-display text-3xl font-black uppercase text-foreground">
+            No pudimos verificar el pago.
+          </h1>
+          <p className="mt-4 text-sm leading-6 text-muted-foreground">{error}</p>
+          <Link href="/checkout" className={primaryAction + " mt-8"}>
             Volver al checkout
           </Link>
         </div>
@@ -138,72 +140,76 @@ export default function CheckoutSuccessPage() {
     );
   }
 
-  // Payment confirmed
   if (statusData?.status === "paid") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-        <div className="mx-auto max-w-lg text-center">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border border-white/20 bg-white/5">
-            <svg className="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <div className={shell}>
+        <div className="w-full max-w-xl rounded-2xl border border-bd-border bg-surface p-8 text-center sm:p-10">
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-xl border border-bd-border bg-background text-foreground" aria-hidden="true">
+            <svg className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
 
-          <h1 className="mb-2 text-4xl font-bold text-white">¡Pago confirmado!</h1>
-          <p className="mb-1 text-zinc-400">Tu orden #{statusData.order_id} ha sido registrada.</p>
-          <p className="mb-8 text-zinc-400">
-            Total pagado:{" "}
-            <span className="font-semibold text-white">
-              S/ {Number(statusData.total).toFixed(2)}
-            </span>
+          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-accent">Confirmado</span>
+          <h1 className="mt-2 font-display text-4xl font-black uppercase text-foreground">
+            Pago confirmado.
+          </h1>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Pedido #{statusData.order_id}
+          </p>
+          <p className="mt-1 font-display text-2xl font-black text-foreground">
+            S/ {Number(statusData.total).toFixed(2)}
           </p>
 
-          <div className="mb-8 rounded-2xl border border-white/10 bg-white/5 p-6 text-left text-sm text-zinc-400">
-            <p className="mb-2 font-medium text-white">¿Qué sigue?</p>
-            <ul className="space-y-1 list-disc list-inside">
-              <li>Recibirás la confirmación de tu pedido al correo registrado.</li>
-              <li>Nuestro equipo se comunicará contigo para coordinar la entrega.</li>
-              <li>Para consultas inmediatas escríbenos por WhatsApp.</li>
-            </ul>
+          <div className="mt-8 rounded-xl border border-bd-border bg-background p-5 text-left">
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-muted-foreground">
+              Siguiente paso
+            </p>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              El pedido ya figura como pagado. Puedes revisar su información desde “Mis pedidos”
+              y usar los canales publicados por la tienda si necesitas hacer una consulta.
+            </p>
           </div>
 
-          <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-            <Link
-              href="/product"
-              className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
-            >
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
+            <Link href="/orders" className={primaryAction}>
+              Ver mis pedidos
+            </Link>
+            <Link href="/product" className={secondaryAction}>
               Seguir comprando
             </Link>
-            <a
-              href={whatsappLink || "#"}
-              className="rounded-full border border-white/20 px-8 py-3 text-sm font-semibold text-white transition hover:border-white/40"
-            >
-              Contactar por WhatsApp
-            </a>
+            {whatsappLink ? (
+              <a href={whatsappLink} target="_blank" rel="noopener noreferrer" className={secondaryAction}>
+                WhatsApp
+              </a>
+            ) : null}
           </div>
         </div>
       </div>
     );
   }
 
-  // Pending after max retries (webhook delayed)
   if (statusData?.status === "pending_payment") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-        <div className="mx-auto max-w-lg text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-yellow-500/30 bg-yellow-500/10">
-            <svg className="h-8 w-8 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <div className={shell}>
+        <div className="w-full max-w-lg rounded-2xl border border-bd-border bg-surface p-8 text-center sm:p-10">
+          <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-xl border border-amber-400/30 bg-amber-400/10 text-amber-300" aria-hidden="true">
+            <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h1 className="mb-2 text-3xl font-bold text-white">Verificando pago</h1>
-          <p className="mb-8 text-zinc-400">
-            Tu pago está siendo procesado. Si ya completaste el pago,
-            espera unos segundos y recarga la página.
+          <span className="section-label">Pendiente</span>
+          <h1 className="mt-2 font-display text-3xl font-black uppercase text-foreground">
+            Seguimos verificando.
+          </h1>
+          <p className="mt-4 text-sm leading-6 text-muted-foreground">
+            El backend todavía no confirmó el resultado final. Si ya completaste el formulario de pago,
+            puedes volver a consultar el estado.
           </p>
           <button
+            type="button"
             onClick={() => { setLoading(true); setRetryCount(0); }}
-            className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
+            className={primaryAction + " mt-8"}
           >
             Verificar de nuevo
           </button>
@@ -212,37 +218,26 @@ export default function CheckoutSuccessPage() {
     );
   }
 
-  // Failed, expired, cancelled, refunded
-  const failureMessages: Record<string, string> = {
-    failed: "El pago no pudo procesarse.",
-    expired: "La sesión de pago expiró.",
-    cancelled: "La orden fue cancelada.",
-    refunded: "El pago fue reembolsado.",
-  };
-
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-      <div className="mx-auto max-w-lg text-center">
-        <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10">
-          <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <div className={shell}>
+      <div className="w-full max-w-lg rounded-2xl border border-bd-border bg-surface p-8 text-center sm:p-10">
+        <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-xl border border-red-500/30 bg-red-500/10 text-red-300" aria-hidden="true">
+          <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </div>
-        <h1 className="mb-2 text-3xl font-bold text-white">Pago no completado</h1>
-        <p className="mb-8 text-zinc-400">
+        <span className="section-label">Pago</span>
+        <h1 className="mt-2 font-display text-3xl font-black uppercase text-foreground">
+          Pago no completado.
+        </h1>
+        <p className="mt-4 text-sm leading-6 text-muted-foreground">
           {statusData ? failureMessages[statusData.status] ?? statusData.message : "Estado desconocido."}
         </p>
-        <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-          <Link
-            href="/checkout"
-            className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
-          >
+        <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
+          <Link href="/checkout" className={primaryAction}>
             Intentar de nuevo
           </Link>
-          <Link
-            href="/cart"
-            className="rounded-full border border-white/20 px-8 py-3 text-sm font-semibold text-white transition hover:border-white/40"
-          >
+          <Link href="/cart" className={secondaryAction}>
             Ver carrito
           </Link>
         </div>
