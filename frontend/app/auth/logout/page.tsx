@@ -8,14 +8,21 @@ export default function LogoutPage() {
   const router = useRouter();
 
   useEffect(() => {
-    logout().finally(() => router.replace("/"));
+    logout().finally(() => {
+      router.replace("/");
+      router.refresh();
+    });
   }, [router]);
 
   return (
-    <div className="min-h-screen bg-zinc-50 p-6">
-      <main className="max-w-3xl mx-auto bg-white rounded-3xl p-6 shadow-sm">
-        <h1 className="text-3xl font-bold mb-4">Cerrando sesión...</h1>
-      </main>
+    <div className="flex min-h-screen items-center justify-center bg-background px-6 text-foreground">
+      <div className="text-center" aria-live="polite">
+        <div className="mx-auto mb-5 h-8 w-8 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+        <span className="section-label">Cuenta</span>
+        <h1 className="mt-2 font-display text-2xl font-black uppercase text-foreground">
+          Cerrando sesión.
+        </h1>
+      </div>
     </div>
   );
 }
