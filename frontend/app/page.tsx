@@ -93,7 +93,8 @@ export default function Home() {
       <main className="mx-auto max-w-7xl px-6 lg:px-8">
 
         {/* Category sections grid */}
-        {categories.length > 0 ? (\n        <section className="border-b border-bd-border py-14 sm:py-16">
+        {categories.length > 0 ? (
+          <section className="border-b border-bd-border py-14 sm:py-16">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <span className="section-label">Catálogo</span>
