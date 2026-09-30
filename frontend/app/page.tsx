@@ -21,26 +21,20 @@ type Product = {
 };
 
 const CATALOG_SECTIONS = [
-  { label: "iPhone", slug: "iphone", icon: "📱" },
-  { label: "Apple Watch", slug: "apple-watch", icon: "⌚" },
-  { label: "iPad", slug: "ipad", icon: "🖥" },
-  { label: "Mac", slug: "mac", icon: "💻" },
-  { label: "Accesorios", slug: "accesorios", icon: "🎧" },
-  { label: "Audífonos", slug: "audifonos", icon: "🎵" },
+  { label: "iPhone", slug: "iphone" },
+  { label: "Apple Watch", slug: "apple-watch" },
+  { label: "iPad", slug: "ipad" },
+  { label: "Mac", slug: "mac" },
+  { label: "Accesorios", slug: "accesorios" },
+  { label: "Audífonos", slug: "audifonos" },
 ];
 
-const STATS = [
-  { stat: "5,000+", label: "Dispositivos reparados" },
-  { stat: "6 meses", label: "Garantía garantizada" },
-  { stat: "100%", label: "Repuestos originales" },
-  { stat: "0 soles", label: "Diagnóstico" },
-];
 
 const REPAIR_SERVICES = [
   {
     title: "Cambio de Pantalla",
-    desc: "OLED/LCD con calibración de True Tone. No aparece mensaje de pieza reparada.",
-    badge: "Más solicitado",
+    desc: "Evaluamos el módulo y te mostramos las opciones disponibles según el modelo y la condición del equipo.",
+    badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
@@ -49,8 +43,8 @@ const REPAIR_SERVICES = [
   },
   {
     title: "Cambio de Batería",
-    desc: "Baterías originales Nasan certificadas. Recupera la autonomía de tu iPhone.",
-    badge: "Cert. Nasan",
+    desc: "Revisamos el estado de la batería y la alternativa de reemplazo compatible antes de intervenir el equipo.",
+    badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h2a2 2 0 002-2V8a2 2 0 00-2-2h-2M3 8h14v12H3V8zM9 4h6v4H9V4z" />
@@ -59,8 +53,8 @@ const REPAIR_SERVICES = [
   },
   {
     title: "Tapa Trasera",
-    desc: "Tecnología láser para cambio preciso y seguro. Sin rastro de reparación.",
-    badge: "Tecnología láser",
+    desc: "Evaluamos el daño de la tapa y la alternativa de reparación adecuada para el modelo y acabado.",
+    badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4h16v16H4zM9 9h6v6H9z" />
@@ -69,7 +63,7 @@ const REPAIR_SERVICES = [
   },
   {
     title: "Cambio de Glass",
-    desc: "Protector de vidrio templado premium. Instalación sin burbujas ni polvo.",
+    desc: "Revisamos el vidrio y el módulo para definir la intervención adecuada antes de realizar el servicio.",
     badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -79,17 +73,6 @@ const REPAIR_SERVICES = [
   },
 ];
 
-const BRANDS_STRIP = [
-  "iPhone 17 Pro Max",
-  "iPhone 16 Pro",
-  "iPhone 16",
-  "iPhone 15 Pro",
-  "iPhone 15",
-  "iPhone 14 Pro",
-  "iPhone 14",
-  "iPhone 13",
-  "iPhone 12",
-];
 
 export default function Home() {
   // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
@@ -110,39 +93,13 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#080808] text-white">
+    <div className="min-h-screen bg-background text-foreground">
       <Hero />
-
-      {/* Stats bar */}
-      <section className="border-y border-white/[0.06] bg-[#111]">
-        <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-white/[0.06] lg:grid-cols-4">
-          {STATS.map((item) => (
-            <div key={item.label} className="px-8 py-8 text-center">
-              <p className="font-display text-4xl font-black tracking-tight text-white lg:text-5xl">
-                {item.stat}
-              </p>
-              <p className="mt-1.5 text-xs uppercase tracking-widest text-zinc-500">{item.label}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Scrolling marquee strip */}
-      <div className="overflow-hidden border-b border-white/[0.06] bg-[#0d0d0d] py-3">
-        <div className="flex animate-[marquee_25s_linear_infinite] gap-8 whitespace-nowrap">
-          {[...BRANDS_STRIP, ...BRANDS_STRIP, ...BRANDS_STRIP].map((brand, i) => (
-            <span key={i} className="flex items-center gap-8 text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-700">
-              {brand}
-              <span className="h-1 w-1 rounded-full bg-zinc-700" />
-            </span>
-          ))}
-        </div>
-      </div>
 
       <main className="mx-auto max-w-7xl px-6 lg:px-8">
 
         {/* Category sections grid */}
-        <section className="py-16">
+        <section className="border-b border-bd-border py-14 sm:py-16">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <span className="section-label">Catálogo</span>
@@ -150,20 +107,27 @@ export default function Home() {
                 Categorías
               </h2>
             </div>
-            <Link href="/product" className="text-sm font-bold uppercase tracking-widest text-zinc-400 transition hover:text-white">
+            <Link href="/product" className="text-sm font-bold uppercase tracking-widest text-muted-foreground transition hover:text-foreground">
               Ver todos →
             </Link>
           </div>
           <div className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            {CATALOG_SECTIONS.map((section) => (
+            {CATALOG_SECTIONS.map((section, index) => (
               <Link
                 key={section.slug}
                 href={`/product?category=${section.slug}`}
-                className="group flex flex-col items-center gap-3 rounded-2xl border border-white/[0.08] bg-[#111] p-5 text-center transition hover:border-white/20 hover:bg-[#161616]"
+                className="group flex min-h-32 flex-col justify-between rounded-xl border border-bd-border bg-surface p-5 text-left transition hover:-translate-y-0.5 hover:border-accent/60 hover:bg-surface-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
-                <span className="text-2xl">{section.icon}</span>
-                <span className="font-display text-xs font-black uppercase tracking-widest text-zinc-400 transition group-hover:text-white">
-                  {section.label}
+                <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-accent">
+                  0{index + 1}
+                </span>
+                <span className="flex items-end justify-between gap-3">
+                  <span className="font-display text-sm font-black uppercase tracking-wide text-muted-foreground transition group-hover:text-foreground">
+                    {section.label}
+                  </span>
+                  <span className="text-muted-foreground transition group-hover:translate-x-1 group-hover:text-foreground" aria-hidden="true">
+                    →
+                  </span>
                 </span>
               </Link>
             ))}
