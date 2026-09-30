@@ -684,16 +684,15 @@ class AdminMembershipDetailView(APIView):
         # F2 · F-BRANCH-01. Checked before anything is written: a refused
         # scope change must not leave the rest of the request applied.
         if 'branch_access_mode' in data or 'branch_access' in data:
-            if 'branch_access' in data:
-                wanted_ids = data['branch_access']
-            else:
-                wanted_ids = list(membership.branch_access.filter(
-                    is_active=True,
-                ).values_list('branch_id', flat=True))
+            current_ids = list(membership.branch_access.filter(
+                is_active=True, branch__is_active=True,
+            ).values_list('branch_id', flat=True))
+            wanted_ids = data.get('branch_access', current_ids)
             if not can_delegate_branch_scope(
                 request.user, membership.company,
                 mode=data.get('branch_access_mode', membership.branch_access_mode),
-                branch_ids=wanted_ids, target=membership,
+                branch_ids=wanted_ids,
+                current=(membership.branch_access_mode, current_ids),
             ):
                 return Response(
                     {'detail': BRANCH_SCOPE_NOT_GRANTABLE},

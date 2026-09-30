@@ -515,6 +515,9 @@ def can_delegate_capabilities(user, company, codes) -> bool:
     return set(codes) <= set(resolve_capabilities(user, company))
 
 
+# `Membership.ACCESS_MODE_ALL` and `Promotion.SCOPE_ALL` share this value.
+_SCOPE_MODE_ALL = 'all'
+
 # Same answer for a branch outside the caller's reach, another tenant's branch
 # and one that does not exist: none of them is theirs to grant.
 BRANCH_SCOPE_NOT_GRANTABLE = (
@@ -522,22 +525,22 @@ BRANCH_SCOPE_NOT_GRANTABLE = (
 )
 
 
-def can_delegate_branch_scope(user, company, *, mode, branch_ids, target=None) -> bool:
+def can_delegate_branch_scope(user, company, *, mode, branch_ids, current=None) -> bool:
     """
-    Whether the caller may give a membership of `company` the branch scope
+    Whether the caller may give something of `company` the branch scope
     `mode` + `branch_ids`. The WHERE-axis twin of can_delegate_capabilities().
 
     Anti-escalation rule: nobody grants a branch they cannot reach. Company-wide
     authority (platform master, mode ALL, legacy bridge) may grant anything. A
-    SELECTED member may only grant a subset of their own visible branches, and
+    SELECTED member may only name a subset of their own visible branches, and
     never ALL — ALL includes branches opened tomorrow that they will not reach.
 
-    `target` is the membership being edited, if any. Taking a branch away is
-    operating that branch as much as giving it, so a SELECTED member may not
-    touch the scope of someone who reaches further than they do.
+    `current` is the `(mode, branch_ids)` the object holds today when it is
+    being edited. Changing something that already reaches further than the
+    caller is operating those branches as much as granting them, so a SELECTED
+    member may not touch it. Used for membership grants (F-BRANCH-01) and for
+    promotions (F-BRANCH-02); both spell ALL as 'all'.
     """
-    from .models import Membership
-
     scope, _ = _branch_authority(user, company)
     if scope == _SCOPE_COMPANY:
         return True
@@ -545,23 +548,18 @@ def can_delegate_branch_scope(user, company, *, mode, branch_ids, target=None) -
         return False
 
     reachable = set(visible_branch_ids(user, company))
-    if target is not None:
-        if target.branch_access_mode == Membership.ACCESS_MODE_ALL:
+
+    def _within_reach(scope_mode, ids):
+        if scope_mode == _SCOPE_MODE_ALL:
             return False
-        current = set(
-            target.branch_access.filter(is_active=True, branch__is_active=True)
-            .values_list('branch_id', flat=True)
-        )
-        if not current <= reachable:
+        try:
+            return {int(b) for b in ids or []} <= reachable
+        except (TypeError, ValueError):
             return False
 
-    if mode == Membership.ACCESS_MODE_ALL:
+    if current is not None and not _within_reach(*current):
         return False
-    try:
-        wanted = {int(b) for b in branch_ids or []}
-    except (TypeError, ValueError):
-        return False
-    return wanted <= reachable
+    return _within_reach(mode, branch_ids)
 
 
 # ---------------------------------------------------------------------------

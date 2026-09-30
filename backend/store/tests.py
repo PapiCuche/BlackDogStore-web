@@ -60404,3 +60404,144 @@ class F2BranchDelegationTest(TestCase):
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(self._invite(self.wide).status_code, status.HTTP_201_CREATED)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · F-BRANCH-02 — promotions only fire where their author reaches
+# ---------------------------------------------------------------------------
+
+class F2PromotionBranchScopeTest(TestCase):
+    """
+    A promotion changes what a till charges. A member restricted to B1 holding
+    `sales.promotions.manage` used to be able to aim one at B2 — or at every
+    branch, which is the default scope — because the branch ids were checked
+    against the COMPANY and never against the author's own reach.
+    """
+
+    CAPS = ['company.view', 'sales.promotions.view', 'sales.promotions.manage']
+
+    def setUp(self):
+        from .models import Promotion, PromotionBranch
+
+        cache.clear()
+        self.company = _p2d_company('f2-promo')
+        self.b1 = _p2d_branch(self.company, 'F2P B1')
+        self.b2 = _p2d_branch(self.company, 'F2P B2')
+        self.p1 = _c1_product(self.company, 'F2P Uno', '100.00')
+        self.p2 = _c1_product(self.company, 'F2P Dos', '50.00')
+        self.actor, _ = _p2d_member(
+            self.company, 'f2p_selected', self.CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2p_wide', self.CAPS)
+
+        self.promo_b2 = Promotion.objects.create(
+            company=self.company, name='Sólo B2',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE, fixed_price=Decimal('120.00'),
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+        PromotionBranch.objects.create(promotion=self.promo_b2, branch=self.b2)
+        self.promo_all = Promotion.objects.create(
+            company=self.company, name='Todas',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE, fixed_price=Decimal('130.00'),
+            branch_scope=Promotion.SCOPE_ALL,
+        )
+        self.promo_b1 = Promotion.objects.create(
+            company=self.company, name='Sólo B1',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE, fixed_price=Decimal('140.00'),
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+        PromotionBranch.objects.create(promotion=self.promo_b1, branch=self.b1)
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _payload(self, **extra):
+        from .models import Promotion
+
+        payload = {
+            'name': 'Combo F2',
+            'promotion_type': Promotion.BUNDLE_FIXED_PRICE,
+            'fixed_price': '120.00',
+            'items': [
+                {'product': self.p1.pk, 'quantity': 1},
+                {'product': self.p2.pk, 'quantity': 1},
+            ],
+        }
+        payload.update(extra)
+        return payload
+
+    def _count(self):
+        from .models import Promotion
+
+        return Promotion.objects.filter(company=self.company).count()
+
+    def test_a_selected_member_cannot_create_a_promotion_for_an_unreached_branch(self):
+        before = self._count()
+        res = self._as(self.actor).post('/api/admin/sales/promotions/', self._payload(
+            branch_scope='selected', branches=[self.b2.pk],
+        ), format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._count(), before)
+
+    def test_a_selected_member_cannot_create_a_company_wide_promotion(self):
+        before = self._count()
+        res = self._as(self.actor).post(
+            '/api/admin/sales/promotions/', self._payload(), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._count(), before)
+
+    def test_a_selected_member_may_create_a_promotion_for_their_branch(self):
+        res = self._as(self.actor).post('/api/admin/sales/promotions/', self._payload(
+            branch_scope='selected', branches=[self.b1.pk],
+        ), format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_a_selected_member_cannot_reprice_a_promotion_of_an_unreached_branch(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sales/promotions/{self.promo_b2.pk}/',
+            {'fixed_price': '1.00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.promo_b2.refresh_from_db()
+        self.assertEqual(self.promo_b2.fixed_price, Decimal('120.00'))
+
+    def test_a_selected_member_cannot_switch_off_a_company_wide_promotion(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sales/promotions/{self.promo_all.pk}/',
+            {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.promo_all.refresh_from_db()
+        self.assertTrue(self.promo_all.is_active)
+
+    def test_a_selected_member_cannot_retarget_their_promotion_elsewhere(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sales/promotions/{self.promo_b1.pk}/',
+            {'branches': [self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(self.promo_b1.applies_to_branch(self.b1))
+        self.assertFalse(self.promo_b1.applies_to_branch(self.b2))
+
+    def test_a_selected_member_may_edit_a_promotion_of_their_branch(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sales/promotions/{self.promo_b1.pk}/',
+            {'fixed_price': '135.00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.promo_b1.refresh_from_db()
+        self.assertEqual(self.promo_b1.fixed_price, Decimal('135.00'))
+
+    def test_a_company_wide_member_is_unchanged(self):
+        client = self._as(self.wide)
+        res = client.post('/api/admin/sales/promotions/', self._payload(), format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        res = client.patch(
+            f'/api/admin/sales/promotions/{self.promo_b2.pk}/',
+            {'fixed_price': '110.00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
