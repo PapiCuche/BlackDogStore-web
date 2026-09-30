@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * Internal control sidebar — Phase 2A.2.
- *
- * Renders only modules that are implemented, routable and reachable by the
- * caller (see internal-modules.ts). A module that does not exist never becomes a
- * link here; the honest roadmap lives on the dashboard instead.
- *
- * This is navigation, not authorisation. Every route it points at enforces its
- * own permissions, and every endpoint behind them re-checks server-side.
- */
-
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { IconClose, IconDashboard } from "./icons";
@@ -21,9 +10,7 @@ import {
 
 type Props = {
   access: ModuleAccessContext;
-  /** The company being operated. Phase 3: the sidebar names IT, not a constant. */
   companyName?: string | null;
-  /** Mobile drawer only: closes the panel after navigating. */
   onNavigate?: () => void;
   onClose?: () => void;
 };
@@ -43,39 +30,38 @@ export function InternalSidebarContent({
   const groups = navigableGroups(access);
 
   const linkClass = (active: boolean) =>
-    `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${
+    `flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
       active
-        ? "bg-white/[0.08] font-medium text-white"
-        : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"
+        ? "border-bd-border bg-surface-elevated font-semibold text-foreground"
+        : "border-transparent text-muted-foreground hover:bg-surface hover:text-foreground"
     }`;
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-zinc-500">
+      <div className="flex min-h-[72px] items-center justify-between border-b border-bd-border px-5 py-4">
+        <div className="min-w-0">
+          <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
             Control interno
           </p>
           {companyName ? (
-            <p className="mt-0.5 text-sm font-semibold text-white">{companyName}</p>
-          ) : null}
+            <p className="mt-1 truncate text-sm font-semibold text-foreground">{companyName}</p>
+          ) : (
+            <p className="mt-1 text-sm font-semibold text-foreground">Administración</p>
+          )}
         </div>
-        {onClose && (
+        {onClose ? (
           <button
             type="button"
             onClick={onClose}
             aria-label="Cerrar menú"
-            className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-white/5 hover:text-white lg:hidden"
+            className="rounded-lg p-2 text-muted-foreground transition hover:bg-surface-elevated hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:hidden"
           >
             <IconClose />
           </button>
-        )}
+        ) : null}
       </div>
 
-      <nav
-        aria-label="Módulos del control interno"
-        className="flex-1 overflow-y-auto px-3 py-4"
-      >
+      <nav aria-label="Módulos del control interno" className="flex-1 overflow-y-auto px-3 py-4">
         <Link
           href="/admin"
           onClick={onNavigate}
@@ -90,11 +76,11 @@ export function InternalSidebarContent({
           const GroupIcon = group.icon;
           return (
             <div key={group.id} className="mt-6">
-              <p className="mb-1.5 flex items-center gap-2 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-600">
+              <p className="mb-2 flex items-center gap-2 px-3 text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                 <GroupIcon className="h-3.5 w-3.5" />
                 {group.label}
               </p>
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 {modules.map((module) => {
                   const active = isActive(pathname, module.href!);
                   return (
@@ -115,11 +101,11 @@ export function InternalSidebarContent({
         })}
       </nav>
 
-      <div className="border-t border-white/[0.06] px-3 py-3">
+      <div className="border-t border-bd-border px-3 py-3">
         <Link
           href="/"
           onClick={onNavigate}
-          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-zinc-500 transition hover:bg-white/[0.04] hover:text-white"
+          className="flex items-center gap-2 rounded-lg border border-transparent px-3 py-2.5 text-sm text-muted-foreground transition hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           ← Volver a la tienda
         </Link>
@@ -128,7 +114,6 @@ export function InternalSidebarContent({
   );
 }
 
-/** Desktop: sticky rail. Hidden below lg, where the drawer takes over. */
 export function InternalSidebar({
   access,
   companyName,
@@ -137,7 +122,7 @@ export function InternalSidebar({
   companyName?: string | null;
 }) {
   return (
-    <aside className="hidden w-[260px] shrink-0 border-r border-white/[0.06] bg-[#080808] lg:block">
+    <aside className="hidden w-[272px] shrink-0 border-r border-bd-border bg-background lg:block">
       <div className="sticky top-0 h-screen">
         <InternalSidebarContent access={access} companyName={companyName} />
       </div>
@@ -145,7 +130,6 @@ export function InternalSidebar({
   );
 }
 
-/** Mobile: drawer over a dimmed backdrop. */
 export function MobileSidebar({
   access,
   companyName,
@@ -166,7 +150,7 @@ export function MobileSidebar({
         onClick={onClose}
         className="absolute inset-0 h-full w-full bg-black/70"
       />
-      <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-white/10 bg-[#080808]">
+      <div className="absolute left-0 top-0 h-full w-[288px] max-w-[88vw] border-r border-bd-border bg-background">
         <InternalSidebarContent
           access={access}
           companyName={companyName}
