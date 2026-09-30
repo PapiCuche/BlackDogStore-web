@@ -438,6 +438,16 @@ class AdminSequenceDetailView(APIView):
             .filter(pk=pk)
             .first()
         )
+        # F2 · F-BRANCH-03. The same rule as the list: a branch series the caller
+        # cannot operate is not theirs to read or rewrite, and it answers exactly
+        # like one that does not exist.
+        if sequence is not None and sequence.branch_id is not None:
+            from .tenancy import visible_branches
+
+            if not visible_branches(request.user, sequence.company).filter(
+                pk=sequence.branch_id,
+            ).exists():
+                sequence = None
         if sequence is None:
             return None, Response(
                 {'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND,

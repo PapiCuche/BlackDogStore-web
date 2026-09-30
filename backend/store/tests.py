@@ -60545,3 +60545,72 @@ class F2PromotionBranchScopeTest(TestCase):
             {'fixed_price': '110.00'}, format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · F-BRANCH-03 — a series the list hides is not writable by pk
+# ---------------------------------------------------------------------------
+
+class F2SequenceBranchScopeTest(TestCase):
+    """
+    The sequence list already showed a SELECTED member only the branch series
+    they reach; the detail endpoint resolved by company alone, so the hidden
+    series of B2 could still be read and rewritten by its pk.
+    """
+
+    CAPS = ['company.view', 'company.manage']
+
+    def setUp(self):
+        from .sequences import ensure_branch_sequence
+
+        cache.clear()
+        self.company = _p2d_company('f2-seq')
+        self.b1 = _p2d_branch(self.company, 'F2S B1')
+        self.b2 = _p2d_branch(self.company, 'F2S B2')
+        _p2e_set_scope(self.company, CompanySettings.SEQUENCE_SCOPE_BRANCH)
+        self.seq_b1 = ensure_branch_sequence(self.company, self.b1)
+        self.seq_b2 = ensure_branch_sequence(self.company, self.b2)
+        self.actor, _ = _p2d_member(
+            self.company, 'f2s_selected', self.CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2s_wide', self.CAPS)
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_an_unreached_branch_series_cannot_be_rewritten(self):
+        prefix = self.seq_b2.prefix
+        res = self._as(self.actor).patch(
+            f'/api/admin/sequences/{self.seq_b2.pk}/', {'prefix': 'HACK-'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.seq_b2.refresh_from_db()
+        self.assertEqual(self.seq_b2.prefix, prefix)
+
+    def test_an_unreached_branch_series_cannot_be_read(self):
+        res = self._as(self.actor).get(f'/api/admin/sequences/{self.seq_b2.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_it_answers_like_a_series_that_does_not_exist(self):
+        hidden = self._as(self.actor).get(f'/api/admin/sequences/{self.seq_b2.pk}/')
+        missing = self._as(self.actor).get('/api/admin/sequences/987654/')
+        self.assertEqual(
+            (hidden.status_code, hidden.data), (missing.status_code, missing.data),
+        )
+
+    def test_the_series_of_a_reached_branch_is_still_editable(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sequences/{self.seq_b1.pk}/', {'prefix': 'B1-'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.seq_b1.refresh_from_db()
+        self.assertEqual(self.seq_b1.prefix, 'B1-')
+
+    def test_a_company_wide_member_is_unchanged(self):
+        res = self._as(self.wide).patch(
+            f'/api/admin/sequences/{self.seq_b2.pk}/', {'prefix': 'B2-'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
