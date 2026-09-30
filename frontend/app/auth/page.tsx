@@ -67,7 +67,7 @@ export default function AuthPage() {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
       </div>
     );
   }
@@ -98,7 +98,7 @@ export default function AuthPage() {
                 { label: "Nombre", value: user.first_name || "—" },
                 { label: "Apellido", value: user.last_name || "—" },
               ].map((field) => (
-                <div key={field.label} className="rounded-xl border border-white/[0.06] bg-background px-4 py-3">
+                <div key={field.label} className="rounded-xl border border-bd-border bg-background px-4 py-3">
                   <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{field.label}</span>
                   <p className="mt-0.5 text-sm font-medium text-foreground">{field.value}</p>
                 </div>
@@ -127,7 +127,7 @@ export default function AuthPage() {
               /* eslint-disable-next-line @next/next/no-img-element */
               <img
                 src={branding.logo_url}
-                alt={company.name}
+                alt=""
                 className="h-10 w-auto object-contain"
               />
             ) : null}
@@ -178,7 +178,7 @@ export default function AuthPage() {
                 /* eslint-disable-next-line @next/next/no-img-element */
                 <img
                   src={branding.logo_url}
-                  alt={company.name}
+                  alt=""
                   className="h-8 w-auto object-contain"
                 />
               ) : null}
@@ -200,7 +200,7 @@ export default function AuthPage() {
               </div>
             )}
             {success && (
-              <div className="mb-5 rounded-xl border border-bd-border bg-surface p-4 text-sm text-zinc-200">
+              <div className="mb-5 rounded-xl border border-bd-border bg-surface p-4 text-sm text-foreground">
                 {success}
               </div>
             )}
@@ -272,7 +272,7 @@ export default function AuthPage() {
                 <button
                   type="button"
                   onClick={() => { setError(null); setSuccess(null); setIsLogin(!isLogin); }}
-                  className="font-bold text-foreground transition hover:text-zinc-300"
+                  className="font-bold text-foreground transition hover:text-foreground"
                 >
                   {isLogin ? "Crear una ahora" : "Iniciar sesión"}
                 </button>
