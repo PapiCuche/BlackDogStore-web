@@ -6,6 +6,32 @@
 
 ---
 
+## Addendum 30 de septiembre de 2026 — UX/UI storefront
+
+Este addendum **no sustituye** la fecha ni las conclusiones históricas de la
+auditoría original de junio. Registra únicamente el estado verificable de la
+rama `uxui/phase-02a-home`.
+
+**IMPLEMENTADO en la rama:** foundations semánticas de color, Montserrat,
+reduced-motion, Header, Footer, Home, catálogo, detalle de producto, carrito,
+checkout, verificación de pago, pedidos, login/registro, recuperación,
+restablecimiento y verificación de correo.
+
+**Compatibilidad:** no se modificaron modelos, migraciones, endpoints, permisos,
+roles, reglas de stock, cupones ni el flujo de confirmación server-to-server de
+pagos.
+
+**PARCIAL:** el storefront obtiene identidad y seis colores del tenant, pero el
+contenido editorial/servicios todavía no tiene un CMS o modelo multiempresa
+propio. Se retiró copy específico del piloto donde podía filtrarse a otros
+tenants; la configuración de contenido sigue pendiente.
+
+**PENDIENTE DE VALIDACIÓN AUTOMATIZADA:** no existen checks de CI asociados al
+commit de esta rama y el entorno de esta sesión no pudo instalar el repositorio.
+Antes de merge deben ejecutarse tests frontend, lint y build.
+
+---
+
 ## 1. Resumen ejecutivo
 
 Black Dog Store es un ecommerce en construcción compuesto por:
