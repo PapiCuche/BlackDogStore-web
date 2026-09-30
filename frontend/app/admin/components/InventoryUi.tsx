@@ -1,11 +1,19 @@
 "use client";
 
-// Shared presentational pieces for the inventory screens.
-// Phase 6.0, extended in 2D for per-branch stock.
-// Monochrome to match the rest of the admin panel — no accent hues.
-
 import Link from "next/link";
 import type { BranchStockRow, MovementType, StockMovement } from "../../lib/inventory";
+import {
+  ErrorBox,
+  EmptyState,
+  Panel as BasePanel,
+  Spinner,
+  StatCard as BaseStatCard,
+  TableWrap,
+  Td,
+  Th,
+} from "./internal-ui";
+
+export { ErrorBox, Spinner, TableWrap, Td, Th };
 
 export function StatCard({
   label,
@@ -18,21 +26,7 @@ export function StatCard({
   hint?: string;
   emphasis?: boolean;
 }) {
-  return (
-    <div
-      className={`rounded-xl border p-5 ${
-        emphasis
-          ? "border-white/15 bg-white/[0.06]"
-          : "border-white/[0.06] bg-white/[0.02]"
-      }`}
-    >
-      <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
-        {label}
-      </p>
-      <p className="mt-2 text-2xl font-semibold tabular-nums text-white">{value}</p>
-      {hint ? <p className="mt-1 text-xs text-zinc-500">{hint}</p> : null}
-    </div>
-  );
+  return <BaseStatCard label={label} value={value} hint={hint} emphasis={emphasis} />;
 }
 
 export function Panel({
@@ -46,59 +40,24 @@ export function Panel({
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  return (
-    <section className="rounded-xl border border-white/[0.06] bg-white/[0.02]">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-4">
-        <div>
-          <h2 className="text-sm font-semibold text-white">{title}</h2>
-          {description ? (
-            <p className="mt-0.5 text-xs text-zinc-500">{description}</p>
-          ) : null}
-        </div>
-        {action}
-      </header>
-      <div className="p-5">{children}</div>
-    </section>
-  );
-}
-
-export function Spinner({ label = "Cargando…" }: { label?: string }) {
-  return (
-    <div className="flex items-center gap-3 py-8 text-sm text-zinc-500">
-      <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-600 border-t-transparent" />
-      {label}
-    </div>
-  );
-}
-
-export function ErrorBox({ message }: { message: string }) {
-  return (
-    <div className="rounded-lg border border-red-500/25 bg-red-500/[0.07] px-4 py-3">
-      <p className="text-sm text-red-300">{message}</p>
-    </div>
-  );
+  return <BasePanel title={title} description={description} action={action}>{children}</BasePanel>;
 }
 
 export function EmptyBox({ message }: { message: string }) {
-  return (
-    <div className="rounded-lg border border-dashed border-white/10 px-4 py-8 text-center">
-      <p className="text-sm text-zinc-500">{message}</p>
-    </div>
-  );
+  return <EmptyState message={message} />;
 }
 
 export function StockBadge({ value, threshold = 5 }: { value: number; threshold?: number }) {
   const tone =
     value <= 0
-      ? "border-white/25 bg-white/[0.10] text-white"
+      ? "border-red-500/30 bg-red-500/[0.07] text-red-300"
       : value <= threshold
-        ? "border-white/15 bg-white/[0.05] text-zinc-200"
-        : "border-white/[0.08] bg-transparent text-zinc-400";
+        ? "border-amber-400/30 bg-amber-400/[0.07] text-amber-300"
+        : "border-bd-border bg-background text-muted-foreground";
   const label = value <= 0 ? "Agotado" : `${value} u.`;
+
   return (
-    <span
-      className={`inline-block whitespace-nowrap rounded border px-2 py-0.5 text-[11px] font-medium tabular-nums ${tone}`}
-    >
+    <span className={`inline-flex whitespace-nowrap rounded-md border px-2 py-1 text-[10px] font-medium tabular-nums ${tone}`}>
       {label}
     </span>
   );
@@ -107,10 +66,10 @@ export function StockBadge({ value, threshold = 5 }: { value: number; threshold?
 export function MovementBadge({ movement }: { movement: StockMovement }) {
   return (
     <span
-      className={`inline-block whitespace-nowrap rounded border px-2 py-0.5 text-[11px] font-medium ${
+      className={`inline-flex whitespace-nowrap rounded-md border px-2 py-1 text-[10px] font-medium ${
         movement.is_entry
-          ? "border-white/20 bg-white/[0.07] text-white"
-          : "border-white/[0.08] bg-transparent text-zinc-400"
+          ? "border-emerald-400/25 bg-emerald-400/[0.06] text-emerald-300"
+          : "border-bd-border bg-background text-muted-foreground"
       }`}
       title={movement.movement_type_label}
     >
@@ -121,54 +80,10 @@ export function MovementBadge({ movement }: { movement: StockMovement }) {
 
 export function SignedQty({ movement }: { movement: StockMovement }) {
   return (
-    <span
-      className={`tabular-nums font-medium ${
-        movement.is_entry ? "text-white" : "text-zinc-400"
-      }`}
-    >
+    <span className={`tabular-nums font-medium ${movement.is_entry ? "text-emerald-300" : "text-muted-foreground"}`}>
       {movement.is_entry ? "+" : "−"}
       {movement.quantity}
     </span>
-  );
-}
-
-export function Th({ children, right = false }: { children: React.ReactNode; right?: boolean }) {
-  return (
-    <th
-      className={`whitespace-nowrap px-3 py-2.5 text-[11px] font-semibold uppercase tracking-widest text-zinc-500 ${
-        right ? "text-right" : "text-left"
-      }`}
-    >
-      {children}
-    </th>
-  );
-}
-
-export function Td({
-  children,
-  right = false,
-  muted = false,
-}: {
-  children: React.ReactNode;
-  right?: boolean;
-  muted?: boolean;
-}) {
-  return (
-    <td
-      className={`px-3 py-2.5 text-sm ${right ? "text-right" : "text-left"} ${
-        muted ? "text-zinc-500" : "text-zinc-300"
-      }`}
-    >
-      {children}
-    </td>
-  );
-}
-
-export function TableWrap({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[640px] border-collapse">{children}</table>
-    </div>
   );
 }
 
@@ -199,15 +114,6 @@ export function movementReference(movement: StockMovement): string {
 
 export type { MovementType };
 
-// --- Phase 2D: stock rows are per branch ------------------------------------
-
-/**
- * A table of BranchStock rows.
- *
- * The branch column appears only when the rows actually span more than one —
- * repeating the same shop name down a single-branch table is noise, and its
- * absence is not ambiguity because the selector above says which branch it is.
- */
 export function BranchStockTable({
   rows,
   emptyMessage,
@@ -222,8 +128,8 @@ export function BranchStockTable({
 
   return (
     <TableWrap>
-      <thead>
-        <tr className="border-b border-white/[0.06]">
+      <thead className="bg-background/50">
+        <tr className="border-b border-bd-border">
           <Th>Producto</Th>
           {multiBranch ? <Th>Sucursal</Th> : null}
           <Th right>Precio</Th>
@@ -234,11 +140,11 @@ export function BranchStockTable({
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={row.id} className="border-b border-white/[0.03]">
+          <tr key={row.id} className="border-b border-bd-border last:border-0 transition hover:bg-foreground/[0.02]">
             <Td>
               <Link
                 href={`/admin/products/${row.product}/stock-card`}
-                className="transition hover:text-white"
+                className="transition hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
                 {row.product_name}
               </Link>
@@ -254,9 +160,7 @@ export function BranchStockTable({
             <Td right muted>{row.minimum_stock || "—"}</Td>
             {showSuggested ? (
               <Td right>
-                <span className="tabular-nums text-zinc-300">
-                  {row.suggested_quantity || "—"}
-                </span>
+                <span className="tabular-nums text-foreground">{row.suggested_quantity || "—"}</span>
               </Td>
             ) : null}
           </tr>
