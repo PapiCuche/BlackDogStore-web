@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-09-30 — Auditoría F2 (eje «dónde»): delegación por sucursal
+
+El eje «dónde» ya tiene regla de delegación, como el eje «qué» la tenía desde G3:
+nadie concede, retira ni modifica por escritura una sucursal que no alcanza.
+`tenancy.can_delegate_branch_scope` es la autoridad única. Quien opera toda la
+empresa (plataforma, modo «todas», puente legacy) sigue concediendo cualquier cosa;
+una persona limitada a sucursales seleccionadas sólo nombra un subconjunto de las
+suyas, nunca «todas», y no toca a quien llega más lejos que ella. Se aplica al alta y
+edición de membresías, a las invitaciones de personal (tenían el mismo hueco) y a las
+promociones. Además, la edición de una membresía es ahora una sola transacción, y la
+serie interna de una sucursal que la persona no alcanza responde 404 también en el
+detalle, igual que ya pasaba en el listado. Cerrados: F-BRANCH-01 (`20d110c`),
+F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`).
+
+Validación: backend PostgreSQL 4520 pruebas, OK (3 omitidas), 1520,6 s (31 nuevas);
+`check` sin problemas; 0 migraciones por generar. Frontend sin cambios. Pendiente
+en F2: F-CAP-01 (requiere decisión), RBAC-01/02, DRIFT-01, DRIFT-07 (la interfaz sigue
+ofreciendo «todas» a quien no puede concederlo; el backend responde 403 con un
+mensaje legible), E2E-02 y E2E-01.
+
 ## 2026-09-30 — Auditoría F1 (seguridad, tenancy, autorización) cerrada
 
 F1 completada sobre `4a9dd5c`. Único HIGH, FE-AUTH-01, corregido en ese commit: el

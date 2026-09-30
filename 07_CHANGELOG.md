@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-09-30 — F2 · Delegación por sucursal
+
+Nueva regla `can_delegate_branch_scope`: una persona limitada a sucursales
+seleccionadas ya no puede ampliarse su propio acceso, pasar a nadie a «todas»,
+conceder o retirar sucursales que no alcanza (membresías e invitaciones), crear o
+modificar promociones fuera de su alcance, ni leer o reescribir por id la serie
+interna de otra sucursal. La edición de membresías deja de guardar cambios a medias
+cuando la lista de sucursales se rechaza. Commits `20d110c`, `cccb4d2`, `70286d1`.
+Backend 4520 pruebas OK en PostgreSQL. Sin migraciones.
+
 ## 2026-09-30 — Auditoría F1 y memoria central
 
 `4a9dd5c` corrige FE-AUTH-01 (HIGH): el proxy de Next ya no puede salir de `/api/`
