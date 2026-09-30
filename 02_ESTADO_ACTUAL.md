@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-09-30 — Auditoría F1 (seguridad, tenancy, autorización) cerrada
+
+F1 completada sobre `4a9dd5c`. Único HIGH, FE-AUTH-01, corregido en ese commit: el
+proxy `frontend/app/api/[...path]/route.ts` rechaza con 400 los segmentos que tras
+decodificar son `.`/`..` o contienen `/` o `\`, y ya no sirve el admin de Django por el
+origen público (regresión `frontend/__tests__/api-proxy-scope.test.ts`, 11 casos;
+jest 368/368 en 34 suites, typecheck OK, lint 0/33). El backend no cambió. Quedan
+confirmados y pendientes, entre otros: F-BRANCH-01/02/03 (el eje «dónde» no tiene
+regla de delegación), F-CAP-01, F-TENANT-01, DRIFT-01, E2E-01, E2E-02, SEC-SET-02,
+SEC-SET-04-A y THROTTLE-CACHE-01. IDOR-01 refutado. Índice verificado de hallazgos,
+invariantes, símbolos y tests: [docs/AUDIT_MEMORY.md](docs/AUDIT_MEMORY.md).
+Siguiente fase: F2, delegación y alcance por sucursal.
+
 ## 2026-09-29 — ERP-FISCAL-6 cerrado · auditoría integral abierta
 
 ERP-FISCAL-6 queda cerrado en `erp/sales-fiscal-ui` con cuatro commits: `97043d6`

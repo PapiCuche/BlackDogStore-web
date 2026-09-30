@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-09-30 — Auditoría F1 y memoria central
+
+`4a9dd5c` corrige FE-AUTH-01 (HIGH): el proxy de Next ya no puede salir de `/api/`
+con segmentos codificados (`%2f`, `%2e%2e`, `%5c`). Se añade `docs/AUDIT_MEMORY.md`,
+índice verificado de la auditoría (baseline, invariantes, hallazgos abiertos y
+cerrados, tests y consultas rápidas). Sin cambios de backend ni migraciones.
+
 ## 2026-09-29 — Cierre de ERP-FISCAL-6 y apertura de la auditoría integral
 
 Commits de cierre en `erp/sales-fiscal-ui`: `97043d6`, `c9e64b9`, `fabfa38`, `9525b08`
