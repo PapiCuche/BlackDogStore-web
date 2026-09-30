@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { logout, getCurrentUser, isAdminRole, type AuthUser } from "../lib/auth";
 import { getSessionKey } from "../lib/cart";
 import { apiUrl } from "../lib/api";
@@ -18,6 +19,7 @@ const navLinkClass =
 
 export function Header() {
   const { company, branding, contact } = useStorefront();
+  const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -51,7 +53,8 @@ export function Header() {
   function handleLogout() {
     logout().finally(() => {
       setUser(null);
-      window.location.href = "/";
+      router.push("/");
+      router.refresh();
     });
   }
 
