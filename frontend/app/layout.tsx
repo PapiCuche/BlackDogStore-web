@@ -1,13 +1,19 @@
 import type { Metadata } from "next";
-import { Montserrat } from "next/font/google";
+import { Inter, Montserrat } from "next/font/google";
 import "./globals.css";
 import { Header } from "./components/Header";
 import { Footer } from "./components/Footer";
 import { StorefrontProvider } from "./components/StorefrontProvider";
 import { brandingStyle, fetchStorefrontConfig } from "./lib/storefront";
 
+const inter = Inter({
+  variable: "--font-neutral",
+  subsets: ["latin"],
+  display: "swap",
+});
+
 const montserrat = Montserrat({
-  variable: "--font-body",
+  variable: "--font-brand",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700", "800", "900"],
   style: ["normal", "italic"],
@@ -51,7 +57,7 @@ export default async function RootLayout({
   return (
     <html
       lang="es"
-      className={`${montserrat.variable} h-full antialiased`}
+      className={`${inter.variable} ${montserrat.variable} h-full antialiased`}
       style={theme}
     >
       <body className="min-h-full bg-background font-sans text-foreground">
