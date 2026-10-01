@@ -239,7 +239,7 @@ function RoleCard({
                 {role.is_active ? "Desactivar rol" : "Reactivar rol"}
               </button>
               {editable ? (
-                <button type="button" disabled={busy || !name.trim()} onClick={() => void save()} className="rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-black hover:bg-zinc-200 disabled:opacity-40">Guardar rol</button>
+                <button type="button" disabled={busy || !name.trim()} onClick={() => void save()} className={internalPrimaryButtonClass}>Guardar rol</button>
               ) : null}
             </div>
           ) : null}
@@ -287,7 +287,7 @@ function NewRole({ companyId, catalog, onCreated }: { companyId: number; catalog
     }
   }
 
-  if (!open) return <button type="button" onClick={() => setOpen(true)} className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-zinc-200">Nuevo rol</button>;
+  if (!open) return <button type="button" onClick={() => setOpen(true)} className={internalPrimaryButtonClass}>Nuevo rol</button>;
 
   return (
     <section className="rounded-2xl border border-bd-border bg-foreground/[0.03] p-5">
@@ -301,7 +301,7 @@ function NewRole({ companyId, catalog, onCreated }: { companyId: number; catalog
       </div>
       <CapabilityMatrix catalog={catalog} selected={selected} disabled={busy} onToggle={toggle} />
       {error ? <p className="mt-4 text-sm text-red-400">{error}</p> : null}
-      <div className="mt-5 flex justify-end"><button type="button" onClick={() => void create()} disabled={busy || !name.trim()} className="rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">Crear rol</button></div>
+      <div className="mt-5 flex justify-end"><button type="button" onClick={() => void create()} disabled={busy || !name.trim()} className={internalPrimaryButtonClass}>Crear rol</button></div>
     </section>
   );
 }
