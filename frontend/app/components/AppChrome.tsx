@@ -30,13 +30,13 @@ export function AppChrome({ children, whatsappLink }: Props) {
 
       {!internal ? <Header /> : null}
 
-      <div
-        id={internal ? undefined : "main-content"}
-        tabIndex={internal ? undefined : -1}
-        className={internal ? "internal-ui-fonts" : undefined}
-      >
-        {children}
-      </div>
+      {internal ? (
+        <div className="internal-ui-fonts">{children}</div>
+      ) : (
+        <main id="main-content" tabIndex={-1} className="outline-none">
+          {children}
+        </main>
+      )}
 
       {!internal ? (
         <>
