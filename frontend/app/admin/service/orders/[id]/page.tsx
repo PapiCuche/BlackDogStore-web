@@ -501,7 +501,7 @@ function QuoteSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                 <table className="mt-3 w-full text-left text-sm">
                   <tbody>
                     {q.items.map((item) => (
-                      <tr key={item.id} className="border-t border-white/[0.05]">
+                      <tr key={item.id} className="border-t border-bd-border/70">
                         <td className="py-2 pr-3 text-foreground/70">
                           {item.description}
                           <span className="ml-2 text-[11px] text-foreground/30">
