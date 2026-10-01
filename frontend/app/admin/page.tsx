@@ -99,7 +99,7 @@ function CompanySelectionPrompt({
               key={company.id}
               type="button"
               onClick={() => onSelect(company.id)}
-              className="flex w-full items-center gap-3 rounded-2xl border border-bd-border bg-surface p-4 text-left transition hover:border-foreground/25"
+              className="flex w-full items-center gap-3 rounded-xl border border-bd-border bg-surface p-4 text-left transition hover:border-foreground/25"
             >
               <IconStore className="h-4 w-4 shrink-0 text-muted" />
               <span className="min-w-0">
