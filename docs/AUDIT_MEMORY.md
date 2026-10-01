@@ -28,11 +28,11 @@ Comprobar con `git diff <SHA>..HEAD -- <archivos>` y revalidar sólo ese subárb
 | Working tree | limpio |
 | Migraciones | 105 aplicadas / 0 pendientes / 0 por generar (`store` llega a `0093_sales_service_delivery`) |
 | Backend tests | 4569 ejecutadas, 4566 OK, 3 skipped, 0 fallos, PostgreSQL 14, 1544,8 s @ `c191a84` (baseline: 4489 @ `65aa8c1`) |
-| Frontend tests | 402/402 OK, 37 suites, @ `c191a84` |
-| TypeScript | `tsc --noEmit` OK @ `c191a84` |
-| Lint | 0 errores / 33 advertencias @ `c191a84` |
-| Build | OK (44 páginas) @ `c191a84` |
-| E2E | Playwright 118/118, 0 omitidas, sin reintentos, 7,6 min, 1 worker @ `c191a84` |
+| Frontend tests | 411/411 OK, 40 suites, @ `1fea6b9` (rama `reconcile/uxui-after-f2`; en `master` `ef9890f`: 402/37) |
+| TypeScript | `tsc --noEmit` OK @ `1fea6b9` |
+| Lint | 0 errores / 26 advertencias @ `1fea6b9` (en `master`: 0 / 33) |
+| Build | OK (44 páginas) @ `1fea6b9` |
+| E2E | Playwright 118/118, 0 omitidas, sin reintentos, 1 worker @ `1fea6b9` y @ `c191a84` |
 
 Reglas de medición: suite backend completa sólo en PostgreSQL y un proceso a la
 vez; Playwright contra los dev servers :3000/:8000 (SQLite dev, `FISCAL_ENABLED=True`
@@ -138,6 +138,20 @@ alcanzadas; sin edición de quien llega más lejos), `staff/page.tsx` (invitaci�
 `sales/promotions/page.tsx` (archivar y crear combo).
 Tests: `admin-write-scope.test.tsx` (15), `branch-authority.test.ts` (14).
 Estado: VERIFICADO @ `f6dc9ca`.
+
+**UX-RECON-01** — En la reconciliación con UX/UI (#39) master decide el comportamiento y
+#39 la presentación donde es compatible. Las seis pantallas de F2 (`branches/page.tsx`,
+`SequenceSettings.tsx`, `sales/promotions/page.tsx`, `service/orders/[id]/page.tsx`,
+`settings/page.tsx`, `users/page.tsx`) conservan su lógica QUÉ + DÓNDE con el diseño de #39
+(`PageHeader`, `internalButtonClass`, `internalInputClass` de `internal-ui.tsx`);
+`branch-authority.ts`, `internal-modules.ts` e `InternalControlGuard.tsx` quedan idénticos a
+master. Los colores de estado sólo-oscuros de #39 se expresan con los tokens del tema
+(`danger`/`warning`/`success`/`info` y sus `-surface`/`-border`), que es lo que exigen
+`surfaces.test.ts` y `theme-coverage.test.ts`.
+Tests: suites F2 de frontend sin cambios (`admin-write-scope`, `branch-authority`,
+`service-assignment-contract`, `fiscal-document-panel`, `api-proxy-scope`), `surfaces.test.ts`,
+`internal-sidebar-a11y.test.tsx`, Playwright 118/118.
+Estado: VERIFICADO @ `1fea6b9` (rama `reconcile/uxui-after-f2`, pendiente de merge).
 
 **READ-01** — Pertenecer a una empresa no autoriza a leerla. `GET /admin/companies/`,
 `/admin/companies/{pk}/`, `/admin/branches/`, `/admin/branches/{pk}/` exigen capacidad de
@@ -286,6 +300,12 @@ serie de nivel empresa y cambiar el alcance de numeración (`AdminSequenceScopeV
 que afectan a todas las sucursales; y lista promociones de todas las sucursales
 (lectura). La parte de escritura (sucursales, despacho, serie de empresa, alcance de
 numeración, ajustes de empresa) quedó cerrada por WRITE-SCOPE-01.
+DEUDA UX (surgida en la reconciliación de #39, `1fea6b9`): el rediseño de #39 NO se adoptó en
+los archivos que ambos lados reescribieron y donde master lleva funcionalidad que #39 no
+conoce (escaparate por CMS, tema claro/oscuro, `BrandLogo`): `app/page.tsx`, `components/Hero.tsx`,
+`Header.tsx`, `Footer.tsx`, `services/page.tsx`, `layout.tsx`, `globals.css` y `auth/page.tsx`.
+Tampoco `AppChrome.tsx` (duplicaba `StorefrontChrome`; se pierde su enlace «Saltar al contenido»)
+ni la fila de sellos de confianza de `ProductDetail`. #39 queda PARCIAL.
 DEUDA (surgida en DRIFT-07): `app/admin/components/BranchAccessPanel.tsx` no se monta en ninguna
 pantalla (código muerto) y conserva la oferta de «Todas»; el botón «Añadir trabajador» de
 `staff/page.tsx` no comprueba capacidad (RBAC-F4 de F1, LOW, sin cambio).
@@ -386,6 +406,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - **F0 — Baseline**: medido @ `65aa8c1`; docs @ `d383806`.
 - **F1 — Security / tenancy / authorization**: COMPLETED @ `4a9dd5c`. Un fix (FE-AUTH-01). Backend sin cambios. Checkpoint completo en la transcripción de la sesión `acdf85aa`; artefactos en su scratchpad (`audit_f1_investigation.json`, `audit_security_sweep.json`, `demo_branch_scope.py`).
 - **F2 — Eje DÓNDE: delegación y alcance por sucursal**: COMPLETADA @ `c191a84`. F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`), F-CAP-01 (`c042fea`), RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`), WRITE-SCOPE-01 (`fa85d41`, `c076120`), DRIFT-01 (`a4be03b`), DRIFT-07 (`6958ec0`, `f6dc9ca`), E2E-02 (`9c3445f`), E2E-01 (`c191a84`). Sin push. Siguiente fase: por decidir.
+- **Integración**: ERP + F1/F2 en `master` por PR #42 (merge `ef9890f`, árbol `44cfffd` idéntico al validado). Reconciliación UX/UI de #39: merge `1fea6b9` en `reconcile/uxui-after-f2` (75 archivos en conflicto, 0 backend, 0 migraciones), PARCIAL, pendiente de merge.
 
 ---
 

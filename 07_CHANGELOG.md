@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-01 — Integración en master y reconciliación UX/UI
+
+ERP + F1/F2 integrados en `master` por el PR #42 (`ef9890f`). Reconciliación de la rama
+UX/UI (#39) en `reconcile/uxui-after-f2` (`1fea6b9`): diseño del control interno,
+carrito, catálogo y detalle adoptado; portada, cabecera, pie, servicios e inicio de
+sesión se quedan como estaban en `master`. Frontend 411 pruebas OK, typecheck, lint
+0/26, build OK y Playwright 118/118. Sin backend ni migraciones.
+
 ## 2026-09-30 — F2 completada
 
 Cierre de la fase «dónde» de la auditoría (`c191a84`): E2E-02 (`9c3445f`,

@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-01 — Integración en master y reconciliación UX/UI (#39)
+
+ERP y las fases F1/F2 de la auditoría están en `master` desde el PR #42 (merge
+`ef9890f`): una sola transición, con el árbol exactamente igual al que pasó todas las
+compuertas.
+
+La rama de UX/UI (#39) se diseñó sobre el `master` anterior y chocaba en 75 archivos. Su
+reconciliación vive en `reconcile/uxui-after-f2` (merge `1fea6b9`), todavía sin
+integrar. Criterio: `master` decide el comportamiento y #39 la presentación cuando es
+compatible. **IMPLEMENTADO** en esa rama: el lenguaje visual de #39 en el control
+interno (cabeceras de página, botones y campos compartidos, navegación lateral con
+foco atrapado en móvil), las páginas de error, carga y no encontrado, y la presentación
+de carrito, catálogo, detalle de producto, pedidos y recuperación de contraseña. Las
+reglas de F2 no cambian: qué puede hacer cada persona y en qué sucursales se decide
+igual que antes. **PARCIAL**: el rediseño de #39 para la portada, la cabecera y el pie
+de la tienda, la página de servicios y la pantalla de inicio de sesión no se adoptó,
+porque `master` ya los había rehecho con contenido editable, tema claro/oscuro y
+logotipo por empresa, que #39 no conoce. Los colores de estado de #39, pensados sólo
+para tema oscuro, se expresan con los tokens del tema.
+
+Validación sobre `1fea6b9`: frontend 411 pruebas en 40 suites, OK; typecheck OK; lint 0
+errores y 26 advertencias; build de producción OK (44 páginas); Playwright 118 de 118.
+Sin archivos de backend ni migraciones en el cambio, por lo que la corrida completa de
+backend vigente es la de `c191a84` (4566 OK).
+
 ## 2026-09-30 — F2 completada: delegación y alcance por sucursal
 
 La fase F2 de la auditoría queda cerrada sobre `c191a84`. Qué puede hacer una persona
