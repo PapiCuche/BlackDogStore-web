@@ -4,10 +4,10 @@ import Link from "next/link";
 import { useStorefront } from "./StorefrontProvider";
 
 const SERVICE_SHORTCUTS = [
-  { label: "Pantallas", href: "/services" },
-  { label: "Baterías", href: "/services" },
-  { label: "Diagnóstico", href: "/services" },
-  { label: "Accesorios", href: "/product?category=accesorios" },
+  { label: "Catálogo", href: "/product" },
+  { label: "Servicio técnico", href: "/services" },
+  { label: "Carrito", href: "/cart" },
+  { label: "Mi cuenta", href: "/auth" },
 ];
 
 export default function Hero() {
