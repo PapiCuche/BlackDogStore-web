@@ -184,7 +184,7 @@ export default function CartPage() {
               <h2 className="font-display text-xl font-extrabold uppercase text-foreground">Resumen</h2>
 
               <div className="mt-5">
-                <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.1em] text-muted">
+                <label htmlFor="cart-coupon" className="mb-2 block text-[10px] font-bold uppercase tracking-[0.1em] text-muted">
                   Cupón
                 </label>
                 {coupon ? (
@@ -200,7 +200,10 @@ export default function CartPage() {
                 ) : (
                   <div className="flex gap-2">
                     <input
+                      id="cart-coupon"
+                      name="coupon"
                       type="text"
+                      autoComplete="off"
                       value={couponInput}
                       onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
                       onKeyDown={(e) => e.key === "Enter" && validateCoupon()}
