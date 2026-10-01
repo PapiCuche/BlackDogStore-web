@@ -170,7 +170,7 @@ function ProductsContent({ user }: { user: AuthUser }) {
           ) : null}
         </FilterBar>
 
-        <section className="rounded-2xl border border-bd-border bg-surface p-5 sm:p-6">
+        <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
           {error ? <p className="mb-4 text-sm text-red-300" role="alert">{error}</p> : null}
           {loading ? (
             <p className="py-8 text-center text-sm text-muted">Cargando productos…</p>
