@@ -7,16 +7,16 @@ import { verifyEmail } from "../../lib/auth";
 
 function VerifyEmailContent() {
   const searchParams = useSearchParams();
-  const [state, setState] = useState<"loading" | "success" | "error">("loading");
-  const [message, setMessage] = useState("");
+  const token = searchParams.get("token");
+  const missingTokenMessage =
+    "No se encontró el token en la URL. Usa el enlace recibido por correo.";
+  const [state, setState] = useState<"loading" | "success" | "error">(
+    token ? "loading" : "error",
+  );
+  const [message, setMessage] = useState(token ? "" : missingTokenMessage);
 
   useEffect(() => {
-    const token = searchParams.get("token");
-    if (!token) {
-      setState("error");
-      setMessage("No se encontró el token en la URL. Usa el enlace recibido por correo.");
-      return;
-    }
+    if (!token) return;
 
     verifyEmail(token)
       .then((data) => {
@@ -27,7 +27,7 @@ function VerifyEmailContent() {
         setState("error");
         setMessage(err.message);
       });
-  }, [searchParams]);
+  }, [token]);
 
   return (
     <div className="min-h-[70vh] bg-background px-6 py-12">
