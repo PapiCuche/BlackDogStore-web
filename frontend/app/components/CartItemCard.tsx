@@ -57,7 +57,7 @@ export function CartItemCard({ quantity, product, onQuantityChange, onRemove }: 
               min={1}
               value={quantity}
               onChange={(event) => updateQuantity(event.target.value)}
-              className="w-16 rounded-xl border border-bd-border bg-background px-2 py-2 text-center text-sm tabular-nums text-foreground focus:border-foreground/25 focus:outline-none"
+              className="h-11 w-16 rounded-xl border border-bd-border bg-background px-2 text-center text-sm tabular-nums text-foreground focus:border-foreground/25 focus:outline-none"
             />
           </label>
           <p className="min-w-24 text-right font-display font-extrabold tabular-nums text-foreground">
@@ -67,7 +67,7 @@ export function CartItemCard({ quantity, product, onQuantityChange, onRemove }: 
             <button
               type="button"
               onClick={onRemove}
-              className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-300 transition hover:border-red-400/50"
+              className="min-h-11 rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-300 transition hover:border-red-400/50"
             >
               Eliminar
             </button>
