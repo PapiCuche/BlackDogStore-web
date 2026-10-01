@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { logout, getCurrentUser, isAdminRole, type AuthUser } from "../lib/auth";
 import { getSessionKey } from "../lib/cart";
@@ -20,6 +21,7 @@ const MOBILE_LINKS = [
 
 export function Header() {
   const { company, branding, contact } = useStorefront();
+  const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -66,7 +68,9 @@ export function Header() {
   function handleLogout() {
     logout().finally(() => {
       setUser(null);
-      window.location.href = "/";
+      setMenuOpen(false);
+      router.replace("/");
+      router.refresh();
     });
   }
 
