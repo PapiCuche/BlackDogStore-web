@@ -112,7 +112,6 @@ export default function ServicesPage() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <section className="relative overflow-hidden border-b border-bd-border">
-        <div className="topo-bg pointer-events-none absolute inset-0 opacity-75" />
         <div className="relative mx-auto max-w-7xl px-6 py-16 lg:px-8 lg:py-24">
           <span className="section-label">Servicio técnico</span>
           <h1 className="mt-4 max-w-4xl font-display text-5xl font-black italic uppercase leading-[0.86] tracking-[-0.05em] text-foreground sm:text-7xl lg:text-8xl">
@@ -176,7 +175,7 @@ export default function ServicesPage() {
         </section>
 
         <section className="mt-16 overflow-hidden rounded-[1.75rem] border border-bd-border bg-surface sm:mt-20">
-          <div className="topo-bg">
+          <div>
             <div className="grid gap-8 p-7 sm:p-10 lg:grid-cols-[0.7fr_1.3fr] lg:p-12">
               <div>
                 <span className="section-label">Proceso</span>
