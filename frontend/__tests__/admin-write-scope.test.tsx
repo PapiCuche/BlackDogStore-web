@@ -43,6 +43,7 @@ const BranchesPage = require('@/app/admin/branches/page').default;
 const SettingsPage = require('@/app/admin/settings/page').default;
 const UsersPage = require('@/app/admin/users/page').default;
 const StaffPage = require('@/app/admin/staff/page').default;
+const PromotionsPage = require('@/app/admin/sales/promotions/page').default;
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 const CENTRO = { id: 11, name: 'Sucursal Centro' };
@@ -70,6 +71,15 @@ function membership(id: number, username: string, mode: 'all' | 'selected', gran
   };
 }
 
+function promotion(id: number, name: string, scope: 'all' | 'selected', branches: typeof CENTRO[]) {
+  return {
+    id, name, promotion_type: 'bundle_fixed_price', promotion_type_label: 'Combo a precio fijo',
+    priority: 0, is_active: true, is_live: true, starts_at: null, ends_at: null,
+    branch_scope: scope, branches, fixed_price: '100.00', discount_percent: null,
+    max_applications_per_order: null, items: [], stats: {},
+  };
+}
+
 /** `can_manage` is the server's WHAT for company.manage on these screens. */
 function mockApi(canManage: boolean) {
   jest.mocked(fetchWithAuth).mockImplementation(async (input) => {
@@ -90,6 +100,15 @@ function mockApi(canManage: boolean) {
       membership(31, 'propia', 'selected', [CENTRO]),
       membership(32, 'global', 'all', []),
     ] };
+    else if (path.includes('/admin/sales/promotions/')) body = {
+      can_manage: true, branches: [CENTRO, NORTE],
+      results: [
+        promotion(41, 'Combo global', 'all', []),
+        promotion(42, 'Combo Centro', 'selected', [CENTRO]),
+        promotion(43, 'Combo Norte', 'selected', [NORTE]),
+      ],
+    };
+    else if (path.includes('/admin/sales/coupons/')) body = { can_manage: true, results: [] };
     else if (path.includes('/admin/roles/')) body = { results: [] };
     else if (path.includes('/admin/areas/')) body = { results: [] };
     return { ok: true, status: 200, json: async () => body } as Response;
@@ -241,5 +260,38 @@ describe('Personal · invitación', () => {
     expect(screen.getByLabelText('Todas las sucursales')).toBeChecked();
     fireEvent.click(screen.getByLabelText('Sucursales seleccionadas'));
     expect(screen.getByLabelText('Sucursal Norte')).toBeInTheDocument();
+  });
+});
+
+// -- promotions (F-BRANCH-02) --------------------------------------------------
+
+describe('Promociones', () => {
+  const SALES = ['sales.promotions.view', 'sales.promotions.manage'];
+
+  it('SELECTED archives only promotions that fire inside its reach', async () => {
+    asCaller(SELECTED, SALES);
+    await show(PromotionsPage);
+    await screen.findByText('Combo Norte');
+    expect(screen.getAllByRole('button', { name: 'Archivar' })).toHaveLength(1);
+  });
+
+  it('SELECTED is told a new combo applies only in its branches', async () => {
+    asCaller(SELECTED, SALES);
+    await show(PromotionsPage);
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Nuevo combo' }));
+    });
+    expect(screen.getByText(/Se aplicará solo en tus sucursales: Sucursal Centro/)).toBeInTheDocument();
+  });
+
+  it('ALL archives any promotion and is not told about a limit', async () => {
+    asCaller(ALL, SALES);
+    await show(PromotionsPage);
+    await screen.findByText('Combo Norte');
+    expect(screen.getAllByRole('button', { name: 'Archivar' })).toHaveLength(3);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Nuevo combo' }));
+    });
+    expect(screen.queryByText(/Se aplicará solo en tus sucursales/)).not.toBeInTheDocument();
   });
 });

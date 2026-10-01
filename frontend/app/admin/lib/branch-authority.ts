@@ -50,3 +50,15 @@ export function canEditBranchScopeOf(
   const reachable = reachableBranchIds(scope);
   return target.grantedIds.every((id) => reachable.has(id));
 }
+
+/**
+ * The branch scope a SELECTED caller must send when creating something whose
+ * default would be every branch (a promotion, F-BRANCH-02): exactly their own
+ * branches. Company-wide callers send nothing and keep the server default.
+ */
+export function ownBranchScopePayload(
+  scope: BranchScope | null | undefined,
+): { branch_scope?: "selected"; branches?: number[] } {
+  if (hasCompanyWideScope(scope)) return {};
+  return { branch_scope: "selected", branches: scope?.branches.map((b) => b.id) ?? [] };
+}

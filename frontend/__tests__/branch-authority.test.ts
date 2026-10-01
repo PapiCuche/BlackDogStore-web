@@ -2,6 +2,7 @@ import type { BranchScope } from '@/app/admin/lib/internal-api';
 import {
   canEditBranchScopeOf,
   hasCompanyWideScope,
+  ownBranchScopePayload,
   reachesBranch,
 } from '@/app/admin/lib/branch-authority';
 
@@ -61,5 +62,17 @@ describe('canEditBranchScopeOf', () => {
     expect(canEditBranchScopeOf(scope('all'), { mode: 'all', grantedIds: [] })).toBe(true);
     expect(canEditBranchScopeOf(scope('none'), { mode: 'selected', grantedIds: [] })).toBe(false);
     expect(canEditBranchScopeOf(null, { mode: 'selected', grantedIds: [] })).toBe(false);
+  });
+});
+
+describe('ownBranchScopePayload', () => {
+  it('company-wide keeps the server default', () => {
+    expect(ownBranchScopePayload(scope('all'))).toEqual({});
+  });
+
+  it('SELECTED names exactly its own branches', () => {
+    expect(ownBranchScopePayload(scope('selected', [A, B]))).toEqual({
+      branch_scope: 'selected', branches: [A.id, B.id],
+    });
   });
 });

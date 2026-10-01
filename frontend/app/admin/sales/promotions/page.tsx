@@ -38,8 +38,14 @@ import {
   updatePromotion,
   type CouponRow,
   type PromotionList,
+  type BranchScope,
   type PromotionRow,
 } from "../../lib/internal-api";
+import {
+  canEditBranchScopeOf,
+  hasCompanyWideScope,
+  ownBranchScopePayload,
+} from "../../lib/branch-authority";
 
 function money(value: string | number) {
   const n = typeof value === "number" ? value : Number(value);
@@ -56,12 +62,21 @@ const LABEL =
 function PromotionRowView({
   promotion,
   canManage,
+  branchScope,
   onToggled,
 }: {
   promotion: PromotionRow;
   canManage: boolean;
+  /** The CALLER's branch scope, from the server (WHERE). */
+  branchScope: BranchScope | null | undefined;
   onToggled: (next: PromotionRow) => void;
 }) {
+  // F-BRANCH-02: only a promotion that fires inside the caller's reach is
+  // theirs to switch; one running elsewhere, or everywhere, is not.
+  const canToggle = canManage && canEditBranchScopeOf(branchScope, {
+    mode: promotion.branch_scope,
+    grantedIds: promotion.branches.map((b) => b.id),
+  });
   const [busy, setBusy] = useState(false);
   const regular = promotion.items.reduce(
     (sum, i) => sum + Number(i.price) * i.quantity,
@@ -119,7 +134,7 @@ function PromotionRowView({
           {promotion.stats.orders ?? 0} venta(s) · descontado{" "}
           {money(promotion.stats.discount_given ?? "0")}
         </span>
-        {canManage ? (
+        {canToggle ? (
           <button
             type="button"
             disabled={busy}
@@ -149,13 +164,19 @@ function PromotionRowView({
 
 function ComboForm({
   companyId,
+  branchScope,
   onCreated,
   onCancel,
 }: {
   companyId: number | null;
+  /** The CALLER's branch scope, from the server (WHERE). */
+  branchScope: BranchScope | null | undefined;
   onCreated: () => void;
   onCancel: () => void;
 }) {
+  // A combo with no scope fires everywhere; a caller restricted to some
+  // branches may only aim it at theirs (F-BRANCH-02), and is told so.
+  const companyWide = hasCompanyWideScope(branchScope);
   const [name, setName] = useState("");
   const [type, setType] = useState<"bundle_fixed_price" | "bundle_percent">(
     "bundle_fixed_price",
@@ -212,6 +233,7 @@ function ComboForm({
         priority: Number(priority) || 0,
         is_active: true,
         items: picked.map((p) => ({ product: p.product, quantity: p.quantity })),
+        ...ownBranchScopePayload(branchScope),
       });
       onCreated();
     } catch (err) {
@@ -225,6 +247,12 @@ function ComboForm({
 
   return (
     <div className="space-y-4 rounded-xl border border-bd-border bg-surface p-5">
+      {!companyWide ? (
+        <p className="text-xs text-muted">
+          Se aplicará solo en tus sucursales:{" "}
+          {branchScope?.branches.map((b) => b.name).join(", ") || "ninguna"}.
+        </p>
+      ) : null}
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <label className={LABEL} htmlFor="combo-name">
@@ -501,6 +529,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
             {creating ? (
               <ComboForm
                 companyId={companyId}
+                branchScope={ctx.dashboard?.branch_scope}
                 onCancel={() => setCreating(false)}
                 onCreated={() => {
                   setCreating(false);
@@ -519,6 +548,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                     key={p.id}
                     promotion={p}
                     canManage={data.can_manage}
+                    branchScope={ctx.dashboard?.branch_scope}
                     onToggled={(next) =>
                       setData((prev) =>
                         prev
