@@ -13,8 +13,9 @@
 - **IMPLEMENTADO en rama:** foundations visuales semánticos, storefront con rol tipográfico de marca, Header, Hero, Home, ProductCard, catálogo, servicios, Footer, Auth, carrito y presentación del checkout. Home obtiene las categorías desde el catálogo del tenant; ya no contiene una matriz Apple fija.
 - **PARCIAL:** branding multiempresa. Los seis colores del tenant siguen siendo la fuente de datos, pero aún existen superficies no migradas y contenido comercial hardcodeado fuera del bloque intervenido.
 - **IMPLEMENTADO EN RAMA / PENDIENTE DE QA VISUAL:** design system unificado del panel SaaS interno. Shell, navegación, componentes compartidos, superficies principales, administración secundaria, inventario, ventas, RBAC y detalles operativos ya consumen foundations comunes. El SaaS usa Inter como rol tipográfico neutral separado del storefront.
-- **VALIDADO POR CI:** GitHub Actions sobre `794e8cc`: 6 suites / 45 tests PASS; ESLint PASS con 0 errores y 14 warnings; `next build` PASS; 38/38 rutas generadas. Los warnings restantes son `react-hooks/set-state-in-effect` y quedan como deuda no bloqueante para revisión individual.
+- **VALIDADO POR CI:** GitHub Actions sobre `358aa74a373f9bb314b49251655e303f65d839e2`: `npm ci` PASS; 9 suites / 55 tests PASS; ESLint PASS con 0 errores y 14 warnings; `next build` PASS; 38/38 rutas generadas. Los warnings restantes son `react-hooks/set-state-in-effect` y quedan como deuda no bloqueante para revisión individual.
 - **PARCIAL accesibilidad:** foco visible, reduced-motion, drawer interno con semántica de diálogo, foco inicial, bloqueo de scroll y Escape (cubierto por test), más advertencia de contraste WCAG en Branding. Falta QA real de teclado completo, lector de pantalla y breakpoints.
+- **PARCIAL multiempresa / compatibilidad:** storage de carrito y cupón ya usa nombres `storefront_*`; las claves `blackdog_*` sobreviven únicamente en la capa temporal de migración para no partir sesiones invitadas abiertas durante el despliegue.
 - **Sin cambios** en autenticación, roles, endpoints, base de datos, migraciones o flujo de pago.
 
 ---
