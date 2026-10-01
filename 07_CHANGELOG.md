@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-01 — SVC-FUNC-01 · Servicio técnico e integración con la caja
+
+Rama `feature/service-pos-functional-integration` (sin empujar). Cada módulo del
+servicio técnico tiene su ruta y su cola (`937cf82`). Nueva capacidad
+`service.orders.assign`: asignar técnico ya no exige `service.orders.manage`, y el
+técnico debe poder ver órdenes y alcanzar la sucursal (`1928b05`). Nueva capacidad
+`service.payments.collect`: el técnico registra pagos y no puede reversarlos
+(`d62fa30`). La caja recibe equipos para servicio y asigna al técnico en la misma
+operación, sin crear venta, stock, comprobante ni comisión (`6caa88c`). Prueba de
+navegador del flujo caja → técnico → cobro y reparación de prueba sembrada por
+`seed_demo_users --e2e-fixtures` (`1d35b7d`). Migraciones `0094` y `0095` (sólo
+roles estándar sin modificar). Backend 4624 pruebas, 0 fallos, en PostgreSQL;
+frontend 426 pruebas, typecheck, lint 0/33 y build OK (50 páginas); Playwright sin pasada completa limpia: el equipo entró en suspensión durante las corridas y agotó el tiempo de la prueba que estuviera en curso (110 de 121 en la completa, con 4 tiempos agotados y 7 sin ejecutar; `service-pos` 3 de 3 y `h411-auth-interop` 8 de 8 en verde); queda por repetir con el equipo conectado.
+
 ## 2026-09-30 — F2 completada
 
 Cierre de la fase «dónde» de la auditoría (`c191a84`): E2E-02 (`9c3445f`,
