@@ -330,7 +330,8 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
     setError(null);
     try {
       // `currency` is read-only server-side; sending it would be noise.
-      const { currency: _readOnly, ...payload } = draft;
+      const payload = { ...draft };
+      delete payload.currency;
       const updated = await updateCompanyConfiguration(companyId, payload);
       setConfig(updated);
       setDraft(draftFrom(updated));
