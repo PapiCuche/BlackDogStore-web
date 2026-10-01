@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-01 — UX-RECON-SVC-01 · Interfaz reconciliada con servicio y caja
+
+Rama `reconcile/uxui-after-svc`: la capa UX/UI del PR #43 (`9c1486b`) sobre el
+`master` que ya incluye SVC-FUNC-01 (`d98d70c`), en el merge `ee3a8d3`. La raíz del
+servicio sigue redirigiendo a Órdenes, las seis colas conservan su ruta y adoptan el
+diseño de #43 en `ServiceQueue`, y la caja mantiene «Productos / Servicio técnico».
+Asignación y cobro quedan como en `master`. Sin backend ni migraciones. Frontend 437
+pruebas, typecheck, lint 0/26 y build OK (50 páginas); Playwright 121/121.
+
 ## 2026-10-01 — SVC-FUNC-01 · Servicio técnico e integración con la caja
 
 Rama `feature/service-pos-functional-integration`. Cada módulo del
@@ -20,6 +29,13 @@ navegador del flujo caja → técnico → cobro y reparación de prueba sembrada
 (`9b59a31`). Migraciones `0094` y `0095` (sólo roles estándar sin modificar).
 Backend 4643 pruebas, 0 fallos, en PostgreSQL; frontend 428 pruebas, typecheck,
 lint 0/33 y build OK (50 páginas); Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min.
+## 2026-10-01 — Integración en master y reconciliación UX/UI
+
+ERP + F1/F2 integrados en `master` por el PR #42 (`ef9890f`). Reconciliación de la rama
+UX/UI (#39) en `reconcile/uxui-after-f2` (`1fea6b9`): diseño del control interno,
+carrito, catálogo y detalle adoptado; portada, cabecera, pie, servicios e inicio de
+sesión se quedan como estaban en `master`. Frontend 411 pruebas OK, typecheck, lint
+0/26, build OK y Playwright 118/118. Sin backend ni migraciones.
 
 ## 2026-09-30 — F2 completada
 

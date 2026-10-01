@@ -28,6 +28,7 @@ import {
   type InternalContext,
 } from "../components/InternalControlGuard";
 import { DashboardSection } from "../components/dashboard-ui";
+import { PageHeader, internalButtonClass, internalInputClass } from "../components/internal-ui";
 import {
   fetchReplenishment,
   fetchSalesDashboard,
@@ -83,7 +84,7 @@ function Sparkline({ points }: { points: { date: string; revenue: string }[] }) 
           key={p.date}
           title={`${p.date}: ${money(p.revenue)}`}
           style={{ height: `${Math.max((Number(p.revenue) / max) * 100, 1.5)}%` }}
-          className="flex-1 rounded-t bg-surface-2"
+          className="flex-1 rounded-t bg-foreground/15"
         />
       ))}
     </div>
@@ -159,31 +160,27 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
   return (
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <label htmlFor="admin-sales-page-sucursal" className="text-[11px] uppercase tracking-widest text-muted">
-              Sucursal
-            </label>
-            <select id="admin-sales-page-sucursal"
-              value={branch ?? ""}
-              onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
-              className="rounded-lg border border-bd-border bg-background/40 px-3 py-1.5 text-sm text-foreground outline-none"
-            >
-              <option value="">Todas las sucursales</option>
-              {data.branches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <Link
-            href="/admin/sales/pos"
-            className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-bd-border hover:text-foreground"
-          >
-            Punto de venta
-          </Link>
-        </div>
+        <PageHeader
+          eyebrow="Ventas"
+          title="Resumen comercial"
+          description="Ventas pagadas, comportamiento por canal y señales de reposición sin inventar margen ni rentabilidad."
+          actions={
+            <>
+              <label className="flex items-center gap-2 text-xs font-semibold text-muted">
+                Sucursal
+                <select
+                  value={branch ?? ""}
+                  onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
+                  className={internalInputClass}
+                >
+                  <option value="">Todas las sucursales</option>
+                  {data.branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </label>
+              <Link href="/admin/sales/pos" className={internalButtonClass}>Punto de venta</Link>
+            </>
+          }
+        />
 
         <DashboardSection
           title="Resumen"
@@ -243,7 +240,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
               Todavía no hay ventas registradas en este periodo.
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-bd-border">
+            <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
               <table className="w-full min-w-[40rem] text-left text-sm">
                 <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                   <tr>
@@ -256,9 +253,9 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
                 </thead>
                 <tbody>
                   {data.top_products.results.map((p) => (
-                    <tr key={p.product_id} className="border-b border-bd-border last:border-0">
+                    <tr key={p.product_id} className="border-b border-bd-border/70 last:border-0">
                       <td className="px-4 py-3 text-foreground">{p.product_name}</td>
-                      <td className="px-4 py-3 text-right font-mono text-foreground/85">
+                      <td className="px-4 py-3 text-right font-mono text-foreground">
                         {p.units_sold}
                       </td>
                       <td className="px-4 py-3 text-right font-mono text-muted">
@@ -316,7 +313,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
             </p>
           ) : (
             <>
-              <div className="overflow-x-auto rounded-xl border border-bd-border">
+              <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
                 <table className="w-full min-w-[62rem] text-left text-sm">
                   <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                     <tr>
@@ -337,7 +334,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
                       return (
                         <tr
                           key={`${r.branch_id}-${r.product_id}`}
-                          className="border-b border-bd-border last:border-0"
+                          className="border-b border-bd-border/70 last:border-0"
                         >
                           <td className="px-3 py-3 text-foreground">
                             {r.product_name}
@@ -349,7 +346,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
                             ) : null}
                           </td>
                           <td className="px-3 py-3 text-muted">{r.branch_name}</td>
-                          <td className="px-3 py-3 text-right font-mono text-foreground/85">
+                          <td className="px-3 py-3 text-right font-mono text-foreground">
                             {r.quantity}
                           </td>
                           <td className="px-3 py-3 text-right font-mono text-muted">

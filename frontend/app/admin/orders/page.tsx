@@ -5,6 +5,12 @@ import { AccessGuard } from "../components/AccessGuard";
 import { AdminShell } from "../components/AdminShell";
 import { OrdersTable } from "../components/OrdersTable";
 import {
+  FilterBar,
+  PageHeader,
+  internalButtonClass,
+  internalInputClass,
+} from "../components/internal-ui";
+import {
   AdminOrder,
   PaginatedResponse,
   fetchAdminOrders,
@@ -34,6 +40,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
     date_from: "",
     date_to: "",
   });
+  const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +49,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchAdminOrders({
+      setData(await fetchAdminOrders({
         search: filters.search || undefined,
         status: filters.status || undefined,
         fulfillment_status: filters.fulfillment_status || undefined,
@@ -52,8 +59,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         date_to: filters.date_to || undefined,
         page,
         page_size: 25,
-      });
-      setData(result);
+      }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al cargar órdenes.");
     } finally {
@@ -62,7 +68,15 @@ function OrdersContent({ user }: { user: AuthUser }) {
   }, [filters, page]);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(() => {
+      setFilters((current) => ({ ...current, search: searchInput }));
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
+    void load();
   }, [load]);
 
   function setFilter(key: keyof Filters, value: string) {
@@ -70,106 +84,95 @@ function OrdersContent({ user }: { user: AuthUser }) {
     setPage(1);
   }
 
-  const totalPages = data ? Math.ceil(data.count / data.page_size) : 1;
+  const totalPages = data ? Math.max(1, Math.ceil(data.count / data.page_size)) : 1;
 
   return (
     <AdminShell user={user}>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground">Órdenes</h1>
-          <p className="mt-1 text-sm text-muted">
-            {data ? `${data.count} órdenes en total` : "Cargando…"}
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Comercial"
+          title="Órdenes"
+          description={data ? `${data.count} órdenes en total. Filtra por pago, despacho y fecha.` : "Pedidos del e-commerce y su estado operativo."}
+        />
 
-        <div className="flex flex-wrap gap-3">
-          <input
-            type="text"
-            placeholder="Buscar por cliente, email o #ID…"
-            value={filters.search}
-            onChange={(e) => setFilter("search", e.target.value)}
-            className="flex-1 min-w-52 bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border"
-          />
-          <select
-            value={filters.status}
-            onChange={(e) => setFilter("status", e.target.value)}
-            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
-          >
-            <option value="">Todos los pagos</option>
-            {Object.entries(PAYMENT_STATUS_LABELS).map(([v, l]) => (
-              <option key={v} value={v}>{l}</option>
-            ))}
-          </select>
-          <select
-            value={filters.fulfillment_status}
-            onChange={(e) => setFilter("fulfillment_status", e.target.value)}
-            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
-          >
-            <option value="">Todos los despachos</option>
-            {Object.entries(FULFILLMENT_STATUS_LABELS).map(([v, l]) => (
-              <option key={v} value={v}>{l}</option>
-            ))}
-          </select>
-          <select
-            value={filters.paid}
-            onChange={(e) => setFilter("paid", e.target.value)}
-            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
-          >
-            <option value="">Pagado / No pagado</option>
-            <option value="true">Pagado</option>
-            <option value="false">No pagado</option>
-          </select>
-          <input
-            type="date"
-            value={filters.date_from}
-            onChange={(e) => setFilter("date_from", e.target.value)}
-            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
-          />
-          <input
-            type="date"
-            value={filters.date_to}
-            onChange={(e) => setFilter("date_to", e.target.value)}
-            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
-          />
-          <label className="inline-flex items-center gap-2 px-3 py-2 text-sm text-foreground/85 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={filters.shortfall === "true"}
-              onChange={(e) => setFilter("shortfall", e.target.checked ? "true" : "")}
-              className="accent-warning"
-            />
-            Solo con faltante de stock
-          </label>
-        </div>
+        <FilterBar>
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_repeat(6,minmax(0,auto))]">
+            <label>
+              <span className="sr-only">Buscar órdenes</span>
+              <input
+                type="search"
+                placeholder="Cliente, email o #ID"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                className={internalInputClass}
+              />
+            </label>
+            <label>
+              <span className="sr-only">Estado de pago</span>
+              <select value={filters.status} onChange={(e) => setFilter("status", e.target.value)} className={internalInputClass}>
+                <option value="">Todos los pagos</option>
+                {Object.entries(PAYMENT_STATUS_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className="sr-only">Estado de despacho</span>
+              <select value={filters.fulfillment_status} onChange={(e) => setFilter("fulfillment_status", e.target.value)} className={internalInputClass}>
+                <option value="">Todos los despachos</option>
+                {Object.entries(FULFILLMENT_STATUS_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className="sr-only">Pagado o no pagado</span>
+              <select value={filters.paid} onChange={(e) => setFilter("paid", e.target.value)} className={internalInputClass}>
+                <option value="">Pagado / No pagado</option>
+                <option value="true">Pagado</option>
+                <option value="false">No pagado</option>
+              </select>
+            </label>
+            <label>
+              <span className="sr-only">Fecha desde</span>
+              <input type="date" value={filters.date_from} onChange={(e) => setFilter("date_from", e.target.value)} className={internalInputClass} />
+            </label>
+            <label>
+              <span className="sr-only">Fecha hasta</span>
+              <input type="date" value={filters.date_to} onChange={(e) => setFilter("date_to", e.target.value)} className={internalInputClass} />
+            </label>
+            <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm text-foreground/85">
+              <input
+                type="checkbox"
+                checked={filters.shortfall === "true"}
+                onChange={(e) => setFilter("shortfall", e.target.checked ? "true" : "")}
+                className="accent-warning"
+              />
+              Solo con faltante de stock
+            </label>
+          </div>
+        </FilterBar>
 
-        <div className="rounded-xl border border-bd-border bg-surface p-6">
-          {error && <p className="text-sm text-danger mb-4">{error}</p>}
+        <section className="rounded-xl border border-bd-border bg-surface">
+          {error ? <p className="px-5 pt-5 text-sm text-danger" role="alert">{error}</p> : null}
           {loading ? (
-            <p className="text-muted text-sm py-6 text-center">Cargando…</p>
+            <p className="px-5 py-10 text-center text-sm text-muted">Cargando órdenes…</p>
           ) : (
             <OrdersTable orders={data?.results ?? []} />
           )}
-        </div>
+        </section>
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between text-sm text-muted">
-            <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              className="px-3 py-1.5 rounded border border-bd-border hover:border-bd-border disabled:opacity-40 disabled:cursor-not-allowed transition"
-            >
-              ← Anterior
+        {totalPages > 1 ? (
+          <div className="flex flex-col gap-3 border-t border-bd-border pt-4 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
+            <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page <= 1} className={internalButtonClass}>
+              Anterior
             </button>
             <span>Página {page} de {totalPages}</span>
-            <button
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="px-3 py-1.5 rounded border border-bd-border hover:border-bd-border disabled:opacity-40 disabled:cursor-not-allowed transition"
-            >
-              Siguiente →
+            <button type="button" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page >= totalPages} className={internalButtonClass}>
+              Siguiente
             </button>
           </div>
-        )}
+        ) : null}
       </div>
     </AdminShell>
   );

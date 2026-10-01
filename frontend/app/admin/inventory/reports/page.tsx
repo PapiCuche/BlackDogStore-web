@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { AccessGuard } from "../../components/AccessGuard";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import {
   BranchStockTable,
   EmptyBox,
@@ -99,36 +100,22 @@ function ReportsContent({ user }: { user: AuthUser }) {
     };
   }, [load, reloadKey, scope.ready]);
 
-  const fieldClass =
-    "w-24 rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border";
+  const fieldClass = `${internalInputClass} w-24`;
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Reportes de inventario</h1>
-            <p className="mt-1 text-sm text-muted">
-              Stock crítico, rotación y ventas por producto.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href="/admin/inventory"
-              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-            >
-              ← Inventario
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title="Reportes"
+          description="Stock crítico, rotación y ventas por producto."
+          actions={
+            <>
+              <BranchSelector access={scope.access} value={scope.branch} onChange={(next) => { setLoading(true); scope.setBranch(next); }} />
+              <Link href="/admin/inventory" className={internalButtonClass}>Inventario</Link>
+            </>
+          }
+        />
 
         <ScopeNote scope={data?.scope} />
 
@@ -165,7 +152,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
               setLoading(true);
               setReloadKey((k) => k + 1);
             }}
-            className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90"
+            className={internalPrimaryButtonClass}
           >
             Actualizar
           </button>
@@ -229,7 +216,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
                   </thead>
                   <tbody>
                     {data.best.map((row) => (
-                      <tr key={row.product_id} className="border-b border-bd-border">
+                      <tr key={row.product_id} className="border-b border-bd-border/60">
                         <Td>{row.product_name}</Td>
                         <Td right>{row.units_sold}</Td>
                         <Td right muted>{formatSoles(row.revenue)}</Td>

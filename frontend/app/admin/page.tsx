@@ -79,7 +79,7 @@ function CompanySelectionPrompt({
 }) {
   return (
     <div className="mx-auto max-w-lg py-10 text-center">
-      <span className="inline-flex rounded-xl border border-bd-border bg-surface p-3 text-foreground">
+      <span className="inline-flex rounded-xl border border-foreground/20 bg-foreground/[0.05] p-3 text-foreground">
         <IconShield />
       </span>
       <h1 className="mt-4 font-display text-xl font-bold text-foreground">
@@ -99,7 +99,7 @@ function CompanySelectionPrompt({
               key={company.id}
               type="button"
               onClick={() => onSelect(company.id)}
-              className="flex w-full items-center gap-3 rounded-xl border border-bd-border bg-surface p-4 text-left transition hover:border-bd-border"
+              className="flex w-full items-center gap-3 rounded-xl border border-bd-border bg-surface p-4 text-left transition hover:border-foreground/25"
             >
               <IconStore className="h-4 w-4 shrink-0 text-muted" />
               <span className="min-w-0">
@@ -536,9 +536,9 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
                 <Link
                   key={module.id}
                   href={module.href!}
-                  className="group flex items-start gap-3.5 rounded-xl border border-bd-border bg-surface p-5 transition hover:border-bd-border"
+                  className="group flex items-start gap-3.5 rounded-xl border border-bd-border bg-surface p-5 transition hover:border-foreground/25"
                 >
-                  <span className="mt-0.5 rounded-lg border border-bd-border bg-surface p-2 text-muted transition group-hover:text-foreground">
+                  <span className="mt-0.5 rounded-lg border border-bd-border bg-surface-2 p-2 text-muted transition group-hover:text-foreground">
                     <Icon />
                   </span>
                   <span className="min-w-0">
@@ -565,7 +565,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
             type="button"
             onClick={() => setShowRoadmap((v) => !v)}
             aria-expanded={showRoadmap}
-            className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-muted transition hover:border-bd-border hover:text-foreground"
+            className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-muted transition hover:border-foreground/25 hover:text-foreground"
           >
             {showRoadmap ? "Ocultar mapa" : "Ver mapa completo"}
           </button>

@@ -21,6 +21,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
+import { PageHeader, TableShell, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../components/internal-ui";
 import { InternalControlGuard, type InternalContext } from "../components/InternalControlGuard";
 import {
   createBranch,
@@ -67,12 +68,11 @@ function BranchEditor({
     }
   }
 
-  const field =
-    "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+  const field = internalInputClass;
 
   return (
     <>
-      <tr className="border-b border-bd-border">
+      <tr className="border-b border-bd-border/60">
         <td className="px-4 py-3 text-foreground">{branch.name}</td>
         <td className="px-4 py-3 text-muted">{branch.address || "—"}</td>
         <td className="px-4 py-3 text-muted">{branch.phone || "—"}</td>
@@ -80,7 +80,7 @@ function BranchEditor({
           <span
             className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] ${
               branch.is_active
-                ? "border-bd-border text-foreground/85"
+                ? "border-foreground/20 text-foreground"
                 : "border-bd-border text-muted"
             }`}
           >
@@ -92,7 +92,7 @@ function BranchEditor({
             type="button"
             disabled={disabled}
             onClick={() => setOpen((v) => !v)}
-            className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-foreground/85 transition hover:border-bd-border hover:text-foreground disabled:opacity-40"
+            className={internalButtonClass}
           >
             {open ? "Cerrar" : "Editar"}
           </button>
@@ -136,7 +136,7 @@ function BranchEditor({
                 type="button"
                 disabled={busy}
                 onClick={() => void run(draft)}
-                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
+                className={internalPrimaryButtonClass}
               >
                 Guardar
               </button>
@@ -152,7 +152,7 @@ function BranchEditor({
                       `la tienda dejará de poder cerrar pedidos hasta que elijas otra.`;
                   if (window.confirm(warning)) void run({ is_active: next });
                 }}
-                className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground disabled:opacity-40"
+                className={internalButtonClass}
               >
                 {branch.is_active ? "Desactivar" : "Reactivar"}
               </button>
@@ -246,27 +246,21 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
     }
   }
 
-  const field =
-    "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+  const field = internalInputClass;
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Sucursales</h1>
-            <p className="mt-1 text-sm text-muted">
-              Ubicaciones de la empresa. Sus datos aparecen como punto de retiro en
-              los documentos de los pedidos que despachan.
-            </p>
-          </div>
-          <Link
-            href="/admin/settings"
-            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-          >
-            ← Configuración
-          </Link>
-        </div>
+        <PageHeader
+          eyebrow="Administración"
+          title="Sucursales"
+          description="Ubicaciones de la empresa. Sus datos participan en despacho, retiro y control de stock."
+          actions={
+            <Link href="/admin/settings" className={internalButtonClass}>
+              Configuración
+            </Link>
+          }
+        />
 
         {loading ? <p className="py-10 text-center text-muted">Cargando…</p> : null}
         {error ? (
@@ -315,7 +309,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
             onSubmit={handleCreate}
             className="rounded-xl border border-bd-border bg-surface p-5"
           >
-            <p className="mb-4 text-sm font-medium text-foreground/85">Nueva sucursal</p>
+            <p className="mb-4 text-sm font-medium text-foreground">Nueva sucursal</p>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label
@@ -354,7 +348,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
             <button
               type="submit"
               disabled={busy || !newName.trim()}
-              className="mt-4 rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
+              className={`mt-4 ${internalPrimaryButtonClass}`}
             >
               Crear sucursal
             </button>
@@ -368,7 +362,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
         ) : null}
 
         {branches.length > 0 ? (
-          <div className="overflow-x-auto rounded-xl border border-bd-border">
+          <TableShell>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-bd-border bg-surface text-left text-xs font-semibold uppercase tracking-wider text-muted">
@@ -395,7 +389,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableShell>
         ) : null}
       </div>
     </AdminShell>

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 
 import { dashboard, user } from './support/fixtures';
 
@@ -157,7 +157,7 @@ describe('InternalControlGuard', () => {
       </InternalControlGuard>,
     );
     await waitFor(() => expect(captured).not.toBeNull());
-    captured!.reload();
+    act(() => captured!.reload());
     await waitFor(() => expect(mockFetchDashboard).toHaveBeenCalledTimes(2));
   });
 
@@ -175,7 +175,7 @@ describe('InternalControlGuard', () => {
       </InternalControlGuard>,
     );
     await waitFor(() => expect(captured).not.toBeNull());
-    captured!.selectCompany(8);
+    act(() => captured!.selectCompany(8));
     await waitFor(() => expect(mockFetchDashboard).toHaveBeenLastCalledWith(8));
   });
 });

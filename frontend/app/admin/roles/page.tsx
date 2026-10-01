@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../components/internal-ui";
 import {
   InternalControlGuard,
   type InternalContext,
@@ -92,7 +93,7 @@ function CapabilityMatrix({
   return (
     <div className="space-y-4">
       {grouped.map(([module, capabilities]) => (
-        <section key={module} className="rounded-xl border border-bd-border bg-background/20 p-4">
+        <section key={module} className="rounded-xl border border-bd-border bg-background p-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-foreground">{MODULE_LABELS[module] ?? module}</h3>
             <span className="text-[10px] text-muted">{capabilities.length} permisos</span>
@@ -105,19 +106,19 @@ function CapabilityMatrix({
               return (
                 <label
                   key={capability.code}
-                  className={`flex gap-3 rounded-lg border px-3 py-3 ${checked ? "border-bd-border bg-surface" : "border-bd-border"} ${locked ? "opacity-55" : "cursor-pointer"}`}
+                  className={`flex gap-3 rounded-lg border px-3 py-3 ${checked ? "border-foreground/20 bg-foreground/[0.04]" : "border-bd-border/70"} ${locked ? "opacity-55" : "cursor-pointer"}`}
                   title={!capability.assignable ? "Todavía no puede asignarse." : !canDelegate ? "No puedes delegar un permiso que no posees." : undefined}
                 >
                   <input type="checkbox" checked={checked} disabled={locked} onChange={() => onToggle(capability.code)} className="mt-0.5" />
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-foreground">{capability.name}</span>
-                      <span className={`rounded px-1.5 py-0.5 text-[9px] ${capability.status === "active" ? "bg-surface-2 text-muted" : capability.status === "available" ? "bg-warning-surface text-warning" : "bg-surface-2 text-muted"}`}>
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] ${capability.status === "active" ? "bg-foreground/[0.06] text-muted" : capability.status === "available" ? "bg-warning-surface text-warning" : "bg-foreground/[0.04] text-muted"}`}>
                         {capability.status === "active" ? "Activo" : capability.status === "available" ? "Transición" : "Reservado"}
                       </span>
                     </span>
                     <span className="mt-1 block text-xs leading-5 text-muted">{capability.description}</span>
-                    <code className="mt-1.5 block text-[10px] text-muted">{capability.code}</code>
+                    <code className="mt-1.5 block text-[10px] text-muted/70">{capability.code}</code>
                   </span>
                 </label>
               );
@@ -198,7 +199,7 @@ function RoleCard({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-medium text-foreground">{role.name}</h2>
-            <span className={`rounded-full px-2 py-0.5 text-[10px] ${role.is_active ? "bg-surface-2 text-foreground/85" : "bg-danger-surface text-danger"}`}>{role.is_active ? "Activo" : "Inactivo"}</span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] ${role.is_active ? "bg-foreground/[0.06] text-foreground" : "bg-danger-surface text-danger"}`}>{role.is_active ? "Activo" : "Inactivo"}</span>
           </div>
           <p className="mt-1 truncate text-xs text-muted">{role.description || "Sin descripción"}</p>
         </div>
@@ -212,17 +213,17 @@ function RoleCard({
       {open ? (
         <div className="border-t border-bd-border px-5 py-5">
           {roleExceedsMyAuthority ? (
-            <div className="mb-4 rounded-lg border border-warning-border bg-amber-500/[0.05] px-4 py-3 text-xs text-warning">Este rol contiene permisos superiores a tu autoridad. Puedes revisarlo, pero no modificarlo ni conservar esos privilegios mediante una edición indirecta.</div>
+            <div className="mb-4 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-xs text-warning">Este rol contiene permisos superiores a tu autoridad. Puedes revisarlo, pero no modificarlo ni conservar esos privilegios mediante una edición indirecta.</div>
           ) : null}
           {role.assignment_count > 0 ? (
             <div className="mb-4 rounded-lg border border-bd-border bg-surface px-4 py-3 text-xs leading-5 text-muted">
-              Este rol está asignado a <strong className="text-foreground/85">{role.assignment_count}</strong> persona(s). Desactivarlo les retira estas capacidades de inmediato; si era su único rol quedan <strong className="text-foreground/85">sin permisos</strong>, no con el rol heredado. Las asignaciones se conservan como historial.
+              Este rol está asignado a <strong className="text-foreground">{role.assignment_count}</strong> persona(s). Desactivarlo les retira estas capacidades de inmediato; si era su único rol quedan <strong className="text-foreground">sin permisos</strong>, no con el rol heredado. Las asignaciones se conservan como historial.
             </div>
           ) : null}
 
           <div className="mb-5 grid gap-4 md:grid-cols-[1fr_2fr]">
-            <label className="text-xs text-muted">Nombre<input value={name} onChange={(event) => setName(event.target.value)} disabled={!editable || busy} className="mt-1.5 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2.5 text-sm text-foreground" /></label>
-            <label className="text-xs text-muted">Descripción<input value={description} onChange={(event) => setDescription(event.target.value)} disabled={!editable || busy} className="mt-1.5 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2.5 text-sm text-foreground" /></label>
+            <label className="text-xs text-muted">Nombre<input value={name} onChange={(event) => setName(event.target.value)} disabled={!editable || busy} className={`mt-1.5 ${internalInputClass}`} /></label>
+            <label className="text-xs text-muted">Descripción<input value={description} onChange={(event) => setDescription(event.target.value)} disabled={!editable || busy} className={`mt-1.5 ${internalInputClass}`} /></label>
           </div>
 
           <CapabilityMatrix catalog={catalog} selected={selected} disabled={!editable || busy} onToggle={toggle} />
@@ -233,12 +234,12 @@ function RoleCard({
                 type="button"
                 disabled={busy}
                 onClick={() => void toggleActive()}
-                className={`rounded-lg border px-4 py-2.5 text-sm disabled:opacity-40 ${role.is_active ? "border-bd-border text-foreground/85 hover:border-danger-border hover:text-danger" : "border-success-border text-success hover:border-success-border"}`}
+                className={`rounded-xl border px-4 py-2.5 text-sm font-semibold disabled:opacity-40 ${role.is_active ? "border-bd-border text-foreground hover:border-danger-border hover:text-danger" : "border-bd-border text-foreground hover:border-foreground/25"}`}
               >
                 {role.is_active ? "Desactivar rol" : "Reactivar rol"}
               </button>
               {editable ? (
-                <button type="button" disabled={busy || !name.trim()} onClick={() => void save()} className="rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background hover:bg-foreground/90 disabled:opacity-40">Guardar rol</button>
+                <button type="button" disabled={busy || !name.trim()} onClick={() => void save()} className={internalPrimaryButtonClass}>Guardar rol</button>
               ) : null}
             </div>
           ) : null}
@@ -286,21 +287,21 @@ function NewRole({ companyId, catalog, onCreated }: { companyId: number; catalog
     }
   }
 
-  if (!open) return <button type="button" onClick={() => setOpen(true)} className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background hover:bg-foreground/90">Nuevo rol</button>;
+  if (!open) return <button type="button" onClick={() => setOpen(true)} className={internalPrimaryButtonClass}>Nuevo rol</button>;
 
   return (
-    <section className="rounded-xl border border-bd-border bg-surface p-5">
+    <section className="rounded-xl border border-bd-border bg-foreground/[0.03] p-5">
       <div className="mb-5 flex items-start justify-between gap-3">
         <div><h2 className="font-semibold text-foreground">Nuevo rol empresarial</h2><p className="mt-1 text-xs text-muted">Empieza con el mínimo privilegio y agrega solo lo necesario.</p></div>
         <button type="button" onClick={() => setOpen(false)} className="text-sm text-muted hover:text-foreground">Cerrar</button>
       </div>
       <div className="mb-5 grid gap-4 md:grid-cols-2">
-        <label className="text-xs text-muted">Nombre<input value={name} onChange={(event) => setName(event.target.value)} className="mt-1.5 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2.5 text-sm text-foreground" placeholder="Ej. Recepción" /></label>
-        <label className="text-xs text-muted">Descripción<input value={description} onChange={(event) => setDescription(event.target.value)} className="mt-1.5 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2.5 text-sm text-foreground" placeholder="Responsabilidades del rol" /></label>
+        <label className="text-xs text-muted">Nombre<input value={name} onChange={(event) => setName(event.target.value)} className={`mt-1.5 ${internalInputClass}`} placeholder="Ej. Recepción" /></label>
+        <label className="text-xs text-muted">Descripción<input value={description} onChange={(event) => setDescription(event.target.value)} className={`mt-1.5 ${internalInputClass}`} placeholder="Responsabilidades del rol" /></label>
       </div>
       <CapabilityMatrix catalog={catalog} selected={selected} disabled={busy} onToggle={toggle} />
       {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
-      <div className="mt-5 flex justify-end"><button type="button" onClick={() => void create()} disabled={busy || !name.trim()} className="rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background disabled:opacity-40">Crear rol</button></div>
+      <div className="mt-5 flex justify-end"><button type="button" onClick={() => void create()} disabled={busy || !name.trim()} className={internalPrimaryButtonClass}>Crear rol</button></div>
     </section>
   );
 }
@@ -353,21 +354,21 @@ function RolesContent({ ctx }: { ctx: InternalContext }) {
       onSelectCompany={ctx.selectCompany}
     >
       <div className="space-y-7">
-        <header className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted">Administración</p>
-            <h1 className="mt-1 text-2xl font-semibold text-foreground">Roles y permisos</h1>
-            <p className="mt-2 max-w-3xl text-sm text-muted">Configura autoridad por empresa. El nombre del rol organiza; las capacidades son las que realmente autorizan.</p>
-          </div>
-          <div className="flex gap-2">
-            <Link href="/admin/users" className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground/85 hover:text-foreground">Personal</Link>
-            {canManage && companyId && catalog ? <NewRole companyId={companyId} catalog={catalog} onCreated={load} /> : null}
-          </div>
-        </header>
+        <PageHeader
+          eyebrow="Administración"
+          title="Roles y permisos"
+          description="Configura autoridad por empresa. El nombre del rol organiza; las capacidades son las que realmente autorizan."
+          actions={
+            <>
+              <Link href="/admin/users" className={internalButtonClass}>Personal</Link>
+              {canManage && companyId && catalog ? <NewRole companyId={companyId} catalog={catalog} onCreated={load} /> : null}
+            </>
+          }
+        />
 
-        {!companyId ? <div className="rounded-xl border border-warning-border bg-amber-500/[0.05] p-5 text-sm text-warning">Selecciona una empresa. El master de plataforma tiene autoridad global, pero debe escoger el tenant antes de editarlo.</div> : null}
+        {!companyId ? <div className="rounded-xl border border-warning-border bg-warning-surface p-5 text-sm text-warning">Selecciona una empresa. El master de plataforma tiene autoridad global, pero debe escoger el tenant antes de editarlo.</div> : null}
         {loading ? <p className="py-12 text-center text-sm text-muted">Cargando roles…</p> : null}
-        {error ? <div className="rounded-xl border border-danger-border bg-red-500/[0.05] p-4 text-sm text-danger">{error}</div> : null}
+        {error ? <div className="rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger">{error}</div> : null}
 
         {companyId && catalog && !loading && !error ? (
           <>
@@ -377,7 +378,7 @@ function RolesContent({ ctx }: { ctx: InternalContext }) {
               <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Mi alcance delegable</p><p className="mt-1 text-2xl font-semibold text-foreground">{catalog.is_platform_admin ? catalog.capabilities.filter((cap) => cap.assignable).length : catalog.held_by_me.length}</p></div>
             </div>
 
-            <div className="rounded-xl border border-bd-border bg-surface p-4 text-xs leading-5 text-muted"><strong className="text-foreground/85">Leyenda:</strong> Activo gobierna endpoints actuales; Transición todavía convive con compatibilidad legacy; Reservado describe funcionalidad futura y no puede asignarse.</div>
+            <div className="rounded-xl border border-bd-border bg-surface p-4 text-xs leading-5 text-muted"><strong className="text-foreground">Leyenda:</strong> Activo gobierna endpoints actuales; Transición todavía convive con compatibilidad legacy; Reservado describe funcionalidad futura y no puede asignarse.</div>
 
             <div className="space-y-3">
               {roles.map((role) => <RoleCard key={role.id} role={role} catalog={catalog} canManage={canManage} onSaved={load} />)}

@@ -45,7 +45,7 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
   // One company: a dropdown with a single option is noise, not a choice.
   if (available.length <= 1 && current) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2">
+      <div className="flex min-w-0 max-w-[12rem] items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 sm:max-w-[16rem]">
         <IconStore className="h-4 w-4 text-muted" />
         <span className="truncate text-sm font-medium text-foreground">
           {current.name}
@@ -61,7 +61,8 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm transition hover:border-bd-border"
+        aria-controls="company-switcher-options"
+        className="flex min-w-0 max-w-[12rem] items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm transition hover:border-foreground/20 sm:max-w-[16rem]"
       >
         <IconStore className="h-4 w-4 text-muted" />
         <span className="max-w-[10rem] truncate font-medium text-foreground">
@@ -71,24 +72,28 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
       </button>
 
       {open && (
-        <ul
+        <div
+          id="company-switcher-options"
           role="listbox"
-          className="absolute right-0 z-50 mt-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-bd-border bg-background p-1.5 shadow-2xl"
+          aria-label="Seleccionar empresa"
+          className="absolute right-0 z-50 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-bd-border bg-surface p-1.5"
         >
           {available.map((company) => {
             const isCurrent = current?.id === company.id;
             return (
-              <li key={company.id} role="option" aria-selected={isCurrent}>
-                <button
-                  type="button"
+              <button
+                key={company.id}
+                type="button"
+                role="option"
+                aria-selected={isCurrent}
                   onClick={() => {
                     setOpen(false);
                     onSelect(company.id);
                   }}
                   className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition ${
                     isCurrent
-                      ? "bg-surface-2 text-foreground"
-                      : "text-muted hover:bg-surface hover:text-foreground"
+                      ? "bg-foreground/[0.08] text-foreground"
+                      : "text-muted hover:bg-foreground/[0.04] hover:text-foreground"
                   }`}
                 >
                   <span className="min-w-0">
@@ -103,10 +108,9 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
                     </span>
                   )}
                 </button>
-              </li>
             );
           })}
-        </ul>
+        </div>
       )}
     </div>
   );

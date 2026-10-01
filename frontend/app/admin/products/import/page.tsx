@@ -26,6 +26,7 @@ import {
   type InternalContext,
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
+import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import {
   CountsBar,
   HistoryTable,
@@ -46,10 +47,8 @@ import {
   type InspectedSheet,
 } from "../../lib/internal-api";
 
-const BUTTON =
-  "rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40";
-const PRIMARY = `${BUTTON} bg-foreground text-background hover:bg-foreground/90`;
-const GHOST = `${BUTTON} border border-bd-border text-foreground/85 hover:bg-surface-2`;
+const PRIMARY = internalPrimaryButtonClass;
+const GHOST = internalButtonClass;
 
 function text(row: { data: Record<string, unknown> }, key: string) {
   const value = row.data?.[key];
@@ -172,7 +171,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 const selected = event.target.files?.[0];
                 if (selected) void onFile(selected);
               }}
-              className="block w-full text-sm text-background file:mr-4 file:rounded-lg file:border-0 file:bg-foreground file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
+              className="block w-full text-sm text-muted file:mr-4 file:rounded-xl file:border-0 file:bg-primary file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
             />
             <p className="text-xs text-muted">
               ¿No tienes un archivo? Descarga la plantilla, complétala y vuelve aquí.
@@ -202,8 +201,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 className={
                   "w-full rounded-xl border px-4 py-3 text-left transition " +
                   (sheet?.name === entry.name
-                    ? "border-bd-border bg-surface-2"
-                    : "border-bd-border hover:bg-surface")
+                    ? "border-foreground/30 bg-foreground/[0.06]"
+                    : "border-bd-border hover:bg-foreground/[0.03]")
                 }
               >
                 <div className="flex flex-wrap items-center gap-2">
@@ -255,7 +254,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 min={1}
                 value={headerRow}
                 onChange={(event) => setHeaderRow(Number(event.target.value) || 1)}
-                className="ml-2 w-20 rounded-lg border border-bd-border bg-background/40 px-2 py-1 text-sm text-foreground"
+                className="ml-2 w-20 rounded-xl border border-bd-border bg-background px-2 py-1 text-sm text-foreground"
               />
             </label>
 
@@ -274,7 +273,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                       else next[field] = Number(event.target.value);
                       setMapping(next);
                     }}
-                    className="w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
+                    className="w-full rounded-xl border border-bd-border bg-background px-3 py-2 text-sm text-foreground"
                   >
                     <option value="">— no importar —</option>
                     {sheet.headers.map((header, index) => (
@@ -287,7 +286,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
               ))}
             </div>
 
-            <div className="space-y-2 rounded-xl border border-bd-border bg-background/20 px-4 py-3 text-xs text-muted">
+            <div className="space-y-2 rounded-xl border border-bd-border bg-surface px-4 py-3 text-xs text-muted">
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -432,14 +431,11 @@ export default function ProductImportPage() {
           onSelectCompany={ctx.selectCompany}
         >
           <div className="space-y-6">
-            <header>
-              <h1 className="text-xl font-semibold text-foreground">
-                Carga masiva de productos
-              </h1>
-              <p className="text-sm text-muted">
-                Sube un Excel, revisa lo que va a pasar y sólo entonces aplícalo.
-              </p>
-            </header>
+            <PageHeader
+              eyebrow="Catálogo"
+              title="Carga masiva de productos"
+              description="Sube un Excel, revisa lo que va a pasar y sólo entonces aplícalo."
+            />
             <ProductImportScreen ctx={ctx} />
           </div>
         </AdminShell>

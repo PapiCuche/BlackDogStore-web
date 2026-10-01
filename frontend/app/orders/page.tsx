@@ -28,155 +28,179 @@ type Order = {
 };
 
 export default function OrdersPage() {
-  // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
   const whatsappLink = useStorefront().contact.whatsapp_link;
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
   const router = useRouter();
 
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
       const user = await getCurrentUser();
       if (!user) {
         router.push("/auth");
         return;
       }
+
       try {
         const res = await fetchWithAuth(`${API_BASE}/orders/`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.detail || "No se pudieron cargar tus pedidos.");
+        }
         const data = await res.json();
-        setOrders(Array.isArray(data) ? data : []);
-      } catch {
-        setOrders([]);
+        if (!cancelled) {
+          setOrders(Array.isArray(data) ? data : []);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "No se pudieron cargar tus pedidos.");
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
-    load();
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   function toggleOrder(id: number) {
-    setExpandedOrder((prev) => (prev === id ? null : id));
+    setExpandedOrder((previous) => previous === id ? null : id);
   }
 
   return (
-    <div className="min-h-screen bg-background px-6 py-12">
-      <div className="mx-auto max-w-4xl">
-        <div className="mb-8">
-          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-success">Cuenta</p>
-          <h1 className="mt-1 text-4xl font-bold text-foreground">Mis pedidos</h1>
-        </div>
+    <div className="min-h-screen bg-background px-6 py-10 sm:py-12">
+      <div className="mx-auto max-w-5xl">
+        <header className="mb-8 border-b border-bd-border pb-7">
+          <span className="section-label">Cuenta</span>
+          <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground sm:text-5xl">
+            Mis pedidos
+          </h1>
+          <p className="mt-3 max-w-xl text-sm leading-6 text-muted">
+            Revisa las órdenes asociadas a tu cuenta y el estado de pago registrado.
+          </p>
+        </header>
 
         {loading ? (
-          <div className="space-y-3">
-            {[1, 2, 3].map((i) => <div key={i} className="h-20 animate-pulse rounded-2xl bg-surface" />)}
+          <div className="space-y-3" aria-label="Cargando pedidos">
+            {[1, 2, 3].map((i) => <div key={i} className="h-24 animate-pulse rounded-2xl bg-surface" />)}
+          </div>
+        ) : error ? (
+          <div className="rounded-2xl border border-danger-border bg-danger-surface px-5 py-6 text-sm text-danger" role="alert">
+            <p className="font-semibold">No pudimos cargar tus pedidos.</p>
+            <p className="mt-1 text-danger">{error}</p>
           </div>
         ) : orders.length === 0 ? (
-          <div className="flex flex-col items-center gap-6 rounded-3xl border border-dashed border-bd-border p-16 text-center">
-            <svg className="h-16 w-16 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>
-            <div>
-              <p className="text-lg font-semibold text-foreground">No tienes pedidos aún</p>
-              <p className="mt-1 text-sm text-muted">Tus compras aparecerán aquí.</p>
-            </div>
-            <Link href="/product" className="rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-on-status transition hover:bg-emerald-600">
+          <div className="rounded-2xl border border-dashed border-bd-border px-6 py-14 text-center">
+            <p className="font-display text-2xl font-extrabold uppercase text-foreground">Todavía no tienes pedidos</p>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Cuando completes una compra, su orden aparecerá aquí.</p>
+            <Link href="/product" className="mt-6 inline-flex rounded-xl bg-primary px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
               Explorar catálogo
             </Link>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {orders.map((order) => {
               const isExpanded = expandedOrder === order.id;
               const hasDiscount = Number(order.discount_amount) > 0;
+
               return (
-                <div key={order.id} className="rounded-2xl border border-bd-border bg-surface overflow-hidden">
+                <article key={order.id} className="overflow-hidden rounded-2xl border border-bd-border bg-surface">
                   <button
+                    type="button"
                     onClick={() => toggleOrder(order.id)}
-                    className="w-full text-left px-6 py-5 transition hover:bg-surface"
+                    aria-expanded={isExpanded}
+                    className="w-full px-5 py-5 text-left transition hover:bg-foreground/[0.025] sm:px-6"
                   >
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${order.paid ? "border-success-border bg-success-surface" : "border-bd-border bg-surface-2"}`}>
-                          {order.paid ? (
-                            <svg className="h-5 w-5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                          ) : (
-                            <svg className="h-5 w-5 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                          )}
-                        </div>
-                        <div>
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <div className="flex items-center gap-3">
+                          <span className={`h-2.5 w-2.5 rounded-full ${order.paid ? "bg-emerald-400" : "bg-amber-300"}`} aria-hidden="true" />
                           <p className="font-semibold text-foreground">Pedido #{order.id}</p>
-                          <p className="text-xs text-muted">
-                            {new Date(order.created_at).toLocaleDateString("es-PE", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-                          </p>
                         </div>
+                        <time className="mt-1 block text-xs text-muted" dateTime={order.created_at}>
+                          {new Date(order.created_at).toLocaleDateString("es-PE", {
+                            year: "numeric",
+                            month: "long",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </time>
                       </div>
 
-                      <div className="flex items-center gap-6">
+                      <div className="flex items-center justify-between gap-4 sm:justify-end">
                         <div className="text-right">
-                          <p className="font-bold text-foreground">S/ {formatMoney(order.total)}</p>
-                          {hasDiscount && (
-                            <p className="text-xs text-success">Ahorraste S/ {formatMoney(order.discount_amount)}</p>
-                          )}
+                          <p className="font-extrabold tabular-nums text-foreground">S/ {formatMoney(order.total)}</p>
+                          {hasDiscount ? <p className="mt-0.5 text-xs text-muted">Descuento S/ {formatMoney(order.discount_amount)}</p> : null}
                         </div>
-                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${order.paid ? "bg-success-surface text-success border border-success-border" : "bg-warning-surface text-warning border border-warning-border"}`}>
+                        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+                          order.paid
+                            ? "border-success-border bg-success-surface text-success"
+                            : "border-warning-border bg-warning-surface text-warning"
+                        }`}>
                           {order.paid ? "Pagado" : "Pendiente"}
                         </span>
-                        <svg className={`h-4 w-4 text-muted transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
+                        <span className={`text-muted transition-transform ${isExpanded ? "rotate-180" : ""}`} aria-hidden="true">⌄</span>
                       </div>
                     </div>
                   </button>
 
-                  {isExpanded && (
-                    <div className="border-t border-bd-border px-6 pb-5 pt-4">
-                      {order.coupon_code && (
-                        <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-success-surface border border-success-border px-3 py-1 text-xs font-medium text-success">
-                          🏷️ Cupón: {order.coupon_code} (−{formatMoney(order.discount_amount)} S/)
+                  {isExpanded ? (
+                    <div className="border-t border-bd-border px-5 pb-5 pt-4 sm:px-6">
+                      {order.coupon_code ? (
+                        <div className="mb-4 inline-flex rounded-full border border-bd-border px-2.5 py-1 text-xs font-semibold text-muted">
+                          Cupón {order.coupon_code} · −S/ {formatMoney(order.discount_amount)}
                         </div>
-                      )}
-                      <div className="space-y-3">
+                      ) : null}
+
+                      <div className="divide-y divide-bd-border">
                         {order.items.map((item) => (
-                          <div key={item.id} className="flex items-center justify-between gap-4">
-                            <div className="flex items-center gap-3">
-                              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-bd-border bg-surface text-muted">
-                                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                </svg>
-                              </div>
-                              <div>
-                                <Link href={`/product/${item.product.slug}`} className="text-sm font-medium text-foreground hover:text-success transition">
-                                  {item.product.name}
-                                </Link>
-                                <p className="text-xs text-muted">Cant.: {item.quantity} × S/ {formatMoney(item.price)}</p>
-                              </div>
+                          <div key={item.id} className="flex items-center justify-between gap-4 py-3">
+                            <div className="min-w-0">
+                              <Link href={`/product/${item.product.slug}`} className="block truncate text-sm font-medium text-foreground transition hover:underline">
+                                {item.product.name}
+                              </Link>
+                              <p className="mt-1 text-xs text-muted">
+                                {item.quantity} × S/ {formatMoney(item.price)}
+                              </p>
                             </div>
-                            <span className="text-sm font-semibold text-foreground">S/ {formatMoney(Number(item.price) * item.quantity)}</span>
+                            <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
+                              S/ {formatMoney(Number(item.price) * item.quantity)}
+                            </span>
                           </div>
                         ))}
                       </div>
 
-                      {!order.paid && (
-                        <div className="mt-4 rounded-xl border border-warning-border bg-warning-surface p-3 text-xs text-warning">
-                          Este pedido está pendiente de pago. Si tienes dudas, contáctanos por WhatsApp.
+                      {!order.paid ? (
+                        <div className="mt-4 rounded-xl border border-warning-border bg-warning-surface p-3 text-xs leading-5 text-warning">
+                          Esta orden aún figura como pendiente de pago.
                         </div>
-                      )}
+                      ) : null}
                     </div>
-                  )}
-                </div>
+                  ) : null}
+                </article>
               );
             })}
           </div>
         )}
 
-        <div className="mt-8 flex gap-4">
-          <Link href="/product" className="text-sm text-muted hover:text-foreground transition">← Seguir comprando</Link>
-          <a href={whatsappLink || "#"} className="text-sm text-success hover:text-success transition">¿Problemas con tu pedido? WhatsApp →</a>
+        <div className="mt-8 flex flex-wrap gap-4 border-t border-bd-border pt-6">
+          <Link href="/product" className="text-sm font-semibold text-muted transition hover:text-foreground">
+            ← Seguir comprando
+          </Link>
+          {whatsappLink ? (
+            <a href={whatsappLink} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-muted transition hover:text-foreground">
+              Consultar por WhatsApp ↗
+            </a>
+          ) : null}
         </div>
       </div>
     </div>

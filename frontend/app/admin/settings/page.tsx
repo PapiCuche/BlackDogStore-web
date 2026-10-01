@@ -24,6 +24,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
 import { InternalControlGuard, type InternalContext } from "../components/InternalControlGuard";
 import { DashboardSection } from "../components/dashboard-ui";
+import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../components/internal-ui";
 import { SequenceSettings } from "../components/SequenceSettings";
 import {
   fetchCompanyConfiguration,
@@ -129,7 +130,7 @@ function Field({
   onChange: (name: string, value: string) => void;
 }) {
   const base =
-    "w-full rounded-lg border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+    "w-full rounded-xl border bg-background px-3 py-2.5 text-sm text-foreground outline-none transition focus:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-50";
   const borderClass = error ? "border-danger-border" : "border-bd-border";
 
   return (
@@ -156,7 +157,7 @@ function Field({
           <input
             type="color"
             aria-label={field.label}
-            className="h-9 w-12 shrink-0 cursor-pointer rounded border border-bd-border bg-background/40"
+            className="h-10 w-12 shrink-0 cursor-pointer rounded-xl border border-bd-border bg-background"
             value={/^#[0-9A-Fa-f]{6}$/.test(value) ? value : "#000000"}
             disabled={disabled}
             onChange={(e) => onChange(field.name, e.target.value.toUpperCase())}
@@ -191,6 +192,24 @@ function Field({
   );
 }
 
+function relativeLuminance(hex: string): number | null {
+  if (!/^#[0-9A-Fa-f]{6}$/.test(hex)) return null;
+  const channels = [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255);
+  const linear = channels.map((value) =>
+    value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
+  );
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+function contrastRatio(a: string, b: string): number | null {
+  const l1 = relativeLuminance(a);
+  const l2 = relativeLuminance(b);
+  if (l1 === null || l2 === null) return null;
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 function BrandPreview({ draft, name }: { draft: Draft; name: string }) {
   const hex = (v: string, fallback: string) =>
     /^#[0-9A-Fa-f]{6}$/.test(v) ? v : fallback;
@@ -200,6 +219,12 @@ function BrandPreview({ draft, name }: { draft: Draft; name: string }) {
   const border = hex(draft.border_color, "#262626");
   const primary = hex(draft.primary_color, "#FFFFFF");
   const accent = hex(draft.accent_color, "#A1A1AA");
+  const textContrast = contrastRatio(text, bg);
+  const primaryContrast = contrastRatio(primary, bg);
+  const contrastChecks = [
+    { label: "Texto / fondo", ratio: textContrast, passes: (textContrast ?? 0) >= 4.5 },
+    { label: "Botón primario / fondo", ratio: primaryContrast, passes: (primaryContrast ?? 0) >= 4.5 },
+  ];
 
   return (
     <div
@@ -224,11 +249,30 @@ function BrandPreview({ draft, name }: { draft: Draft; name: string }) {
           Así se verá tu tienda
         </p>
         <span
-          className="mt-3 inline-block rounded-full px-4 py-1.5 text-xs font-bold uppercase tracking-widest"
+          className="mt-3 inline-block rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-[0.06em]"
           style={{ background: primary, color: bg }}
         >
           Comprar
         </span>
+      </div>
+
+      <div className="mt-4 space-y-2 border-t pt-4" style={{ borderColor: border }}>
+        <p className="text-[10px] font-bold uppercase tracking-[0.12em]" style={{ color: text }}>
+          Contraste
+        </p>
+        {contrastChecks.map((check) => (
+          <div key={check.label} className="flex items-center justify-between gap-3 text-[11px]">
+            <span style={{ color: text }}>{check.label}</span>
+            <span style={{ color: check.passes ? text : "#FCA5A5" }}>
+              {check.ratio === null ? "Revisa el color" : `${check.ratio.toFixed(1)}:1 · ${check.passes ? "AA" : "Bajo"}`}
+            </span>
+          </div>
+        ))}
+        {contrastChecks.some((check) => !check.passes) ? (
+          <p className="text-[11px] leading-5" style={{ color: text }}>
+            Ajusta la paleta si quieres una lectura más accesible. Esta advertencia no bloquea el guardado.
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -287,7 +331,8 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
     setError(null);
     try {
       // `currency` is read-only server-side; sending it would be noise.
-      const { currency: _readOnly, ...payload } = draft;
+      const payload = { ...draft };
+      delete payload.currency;
       const updated = await updateCompanyConfiguration(companyId, payload);
       setConfig(updated);
       setDraft(draftFrom(updated));
@@ -319,21 +364,16 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Configuración</h1>
-            <p className="mt-1 text-sm text-muted">
-              Identidad, branding y políticas de {config?.company.name ?? "tu empresa"}.
-              Estos datos aparecen en tu tienda, tus emails y tus documentos.
-            </p>
-          </div>
-          <Link
-            href="/admin/branches"
-            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-          >
-            Sucursales →
-          </Link>
-        </div>
+        <PageHeader
+          eyebrow="Administración"
+          title="Configuración"
+          description={`Identidad, branding y políticas de ${config?.company.name ?? "tu empresa"}. Estos datos aparecen en la tienda, emails y documentos de esta empresa.`}
+          actions={
+            <Link href="/admin/branches" className={internalButtonClass}>
+              Sucursales
+            </Link>
+          }
+        />
 
         {loading ? <p className="py-10 text-center text-muted">Cargando…</p> : null}
 
@@ -362,7 +402,7 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
         ) : null}
 
         {config && config.status.missing_count > 0 ? (
-          <div className="rounded-xl border border-warning-border bg-amber-400/[0.06] px-5 py-4">
+          <div className="rounded-xl border border-warning-border bg-warning-surface px-5 py-4">
             <p className="text-sm font-medium text-warning">
               Falta configurar {config.status.missing_count} dato(s)
             </p>
@@ -377,35 +417,39 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
             <div className="grid gap-6 lg:grid-cols-[1fr_20rem]">
               <div className="space-y-8">
                 {sections.map(([title, description, fields]) => (
-                  <DashboardSection key={title} title={title} description={description}>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {fields.map((field) => (
-                        <div
-                          key={field.name}
-                          className={field.type === "textarea" ? "sm:col-span-2" : ""}
-                        >
-                          <Field
-                            field={field}
-                            value={draft[field.name] ?? ""}
-                            error={errors[field.name]}
-                            disabled={disabled}
-                            onChange={set}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </DashboardSection>
+                  <div key={title} className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                    <DashboardSection title={title} description={description}>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        {fields.map((field) => (
+                          <div
+                            key={field.name}
+                            className={field.type === "textarea" ? "sm:col-span-2" : ""}
+                          >
+                            <Field
+                              field={field}
+                              value={draft[field.name] ?? ""}
+                              error={errors[field.name]}
+                              disabled={disabled}
+                              onChange={set}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </DashboardSection>
+                  </div>
                 ))}
                 {/* Phase 2E — the counter lives behind its own endpoint, so
                     it saves separately from the fields above. That is the point:
                     an unrelated settings save must not be able to move a
                     document counter. */}
-                <DashboardSection
-                  title="Numeración interna"
-                  description="Cómo se numeran tus notas de venta internas."
-                >
-                  <SequenceSettings companyId={companyId} companyWide={companyWide} />
-                </DashboardSection>
+                <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                  <DashboardSection
+                    title="Numeración interna"
+                    description="Cómo se numeran tus notas de venta internas."
+                  >
+                    <SequenceSettings companyId={companyId} companyWide={companyWide} />
+                  </DashboardSection>
+                </div>
               </div>
 
               <div className="space-y-4 lg:sticky lg:top-24 lg:self-start">
@@ -417,11 +461,11 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   Aproximación de la tienda pública. Se guarda solo al confirmar.
                 </p>
 
-                <div className="rounded-xl border border-bd-border bg-surface p-4">
+                <div className="rounded-xl border border-bd-border bg-surface p-5">
                   <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                     Sucursal de despacho
                   </p>
-                  <p className="mt-2 text-sm text-foreground/85">
+                  <p className="mt-2 text-sm text-foreground">
                     {config.fulfillment_branch?.name ?? "Sin configurar"}
                   </p>
                   <p className="mt-1 text-[11px] text-muted">
@@ -429,7 +473,7 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   </p>
                   <Link
                     href="/admin/branches"
-                    className="mt-3 inline-block text-xs text-muted underline underline-offset-4 transition hover:text-foreground"
+                    className="mt-3 inline-flex text-xs font-semibold text-muted underline underline-offset-4 transition hover:text-foreground"
                   >
                     Cambiar en Sucursales
                   </Link>
@@ -443,7 +487,7 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   type="button"
                   onClick={() => void save()}
                   disabled={saving}
-                  className="rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
+                  className={internalPrimaryButtonClass}
                 >
                   {saving ? "Guardando…" : "Guardar configuración"}
                 </button>

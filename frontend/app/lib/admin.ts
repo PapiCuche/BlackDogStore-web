@@ -484,7 +484,7 @@ export async function downloadOrderReceiptPdf(
   }
   if (!res.ok) throw new Error('No se pudo descargar el PDF.');
   const blob = await res.blob();
-  return { blob, filename: `blackdog-pedido-${orderId}.pdf` };
+  return { blob, filename: `pedido-${orderId}.pdf` };
 }
 
 export const ACTION_LABELS: Record<string, string> = {

@@ -36,6 +36,7 @@ import {
   type InternalContext,
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
+import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import {
   CountsBar,
   HistoryTable,
@@ -56,11 +57,9 @@ import {
   type InspectedSheet,
 } from "../../lib/internal-api";
 
-const BUTTON =
-  "rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40";
-const PRIMARY = `${BUTTON} bg-foreground text-background hover:bg-foreground/90`;
-const DANGER = `${BUTTON} bg-amber-400 text-background hover:bg-amber-300`;
-const GHOST = `${BUTTON} border border-bd-border text-foreground/85 hover:bg-surface-2`;
+const PRIMARY = internalPrimaryButtonClass;
+const DANGER = "rounded-xl bg-amber-300 px-4 py-2.5 text-sm font-bold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-40";
+const GHOST = internalButtonClass;
 
 function text(row: { data: Record<string, unknown> }, key: string) {
   const value = row.data?.[key];
@@ -184,7 +183,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 const selected = event.target.files?.[0];
                 if (selected) void onFile(selected);
               }}
-              className="block w-full text-sm text-background file:mr-4 file:rounded-lg file:border-0 file:bg-foreground file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
+              className="block w-full text-sm text-muted file:mr-4 file:rounded-xl file:border-0 file:bg-primary file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
             />
           </DashboardSection>
 
@@ -203,7 +202,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 {branches.map((branch) => (
                   <label
                     key={branch.id}
-                    className="flex items-center gap-2 rounded-lg border border-bd-border px-3 py-1.5 text-xs text-foreground/85"
+                    className="flex items-center gap-2 rounded-lg border border-bd-border px-3 py-1.5 text-xs text-foreground"
                   >
                     <input
                       type="checkbox"
@@ -270,7 +269,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                     else next[String(column.index)] = Number(event.target.value);
                     setBranchMap(next);
                   }}
-                  className="w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
+                  className="w-full rounded-xl border border-bd-border bg-background px-3 py-2 text-sm text-foreground"
                 >
                   <option value="">— no importar esta columna —</option>
                   {branches.map((branch) => (
@@ -325,8 +324,8 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 className={
                   "w-full rounded-xl border px-4 py-3 text-left transition " +
                   (mode === value
-                    ? "border-bd-border bg-surface-2"
-                    : "border-bd-border hover:bg-surface")
+                    ? "border-foreground/30 bg-foreground/[0.06]"
+                    : "border-bd-border hover:bg-foreground/[0.03]")
                 }
               >
                 <span className="font-semibold text-foreground">{label}</span>
@@ -362,7 +361,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
           <CountsBar job={job} />
           <Notices job={job} />
 
-          <p className="mb-4 rounded-lg border border-bd-border bg-background/30 px-4 py-2 text-xs text-muted">
+          <p className="mb-4 rounded-lg border border-bd-border bg-surface px-4 py-2 text-xs text-muted">
             Las filas marcadas <strong className="text-warning">Omitir</strong>{" "}
             tienen la celda de cantidad vacía: su stock no cambia. Un cero escrito
             explícitamente sí baja el stock a cero.
@@ -480,15 +479,11 @@ export default function StockImportPage() {
           onSelectCompany={ctx.selectCompany}
         >
           <div className="space-y-6">
-            <header>
-              <h1 className="text-xl font-semibold text-foreground">
-                Carga masiva de inventario
-              </h1>
-              <p className="text-sm text-muted">
-                Una celda vacía deja el stock como está. Un cero escrito lo pone en
-                cero.
-              </p>
-            </header>
+            <PageHeader
+              eyebrow="Inventario"
+              title="Carga masiva de inventario"
+              description="Una celda vacía deja el stock como está. Un cero escrito lo pone en cero."
+            />
             <StockImportScreen ctx={ctx} />
           </div>
         </AdminShell>

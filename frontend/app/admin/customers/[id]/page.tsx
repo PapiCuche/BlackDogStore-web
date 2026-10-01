@@ -30,6 +30,7 @@ import {
   type InternalContext,
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
+import { PageHeader, TableShell, internalButtonClass } from "../../components/internal-ui";
 import { CustomerForm } from "../../components/CustomerForm";
 import {
   fetchCustomer,
@@ -57,18 +58,18 @@ function Field({ label, value }: { label: string; value: string }) {
       <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
         {label}
       </p>
-      <p className="mt-0.5 text-sm text-foreground/85">{value || "—"}</p>
+      <p className="mt-0.5 text-sm text-foreground">{value || "—"}</p>
     </div>
   );
 }
 
 function OrderRow({ order }: { order: CustomerOrderRow }) {
   return (
-    <tr className="border-b border-bd-border last:border-0">
+    <tr className="border-b border-bd-border/70 last:border-0">
       <td className="px-4 py-3">
         <Link
           href={`/admin/orders/${order.id}`}
-          className="text-foreground/85 transition hover:text-foreground"
+          className="text-foreground transition hover:text-foreground"
         >
           #{order.id}
         </Link>
@@ -81,7 +82,7 @@ function OrderRow({ order }: { order: CustomerOrderRow }) {
           <span className="text-xs text-muted">{order.status}</span>
         )}
       </td>
-      <td className="px-4 py-3 text-right font-mono text-xs text-foreground/85">
+      <td className="px-4 py-3 text-right font-mono text-xs text-foreground">
         {money(order.total)}
       </td>
       <td className="px-4 py-3 text-xs text-muted">{order.customer_name || "—"}</td>
@@ -175,22 +176,15 @@ function CustomerDetailContent({
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
       <div className="space-y-8">
         <div>
-          <Link
-            href="/admin/customers"
-            className="text-xs text-muted transition hover:text-foreground/85"
-          >
+          <Link href="/admin/customers" className="mb-3 inline-flex text-xs font-semibold text-muted transition hover:text-foreground">
             ← Clientes
           </Link>
-          <div className="mt-2 flex flex-wrap items-baseline justify-between gap-3">
-            <h1 className="font-display text-xl font-semibold text-foreground">
-              {customer.display_name}
-            </h1>
-            {!customer.is_active ? (
-              <span className="rounded border border-bd-border px-2 py-0.5 text-xs text-muted">
-                Archivado
-              </span>
-            ) : null}
-          </div>
+          <PageHeader
+            eyebrow="CRM"
+            title={customer.display_name}
+            description={customer.customer_type === "business" ? "Ficha de empresa" : "Ficha de cliente"}
+            actions={!customer.is_active ? <span className="rounded-full border border-bd-border px-2.5 py-1 text-xs text-muted">Archivado</span> : null}
+          />
         </div>
 
         <DashboardSection
@@ -201,7 +195,7 @@ function CustomerDetailContent({
                 <button
                   type="button"
                   onClick={() => setEditing(true)}
-                  className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-bd-border hover:text-foreground"
+                  className={internalButtonClass}
                 >
                   Editar
                 </button>
@@ -209,7 +203,7 @@ function CustomerDetailContent({
                   type="button"
                   disabled={busy}
                   onClick={() => void toggleActive()}
-                  className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-muted transition hover:border-bd-border hover:text-foreground disabled:opacity-40"
+                  className={internalButtonClass}
                 >
                   {customer.is_active ? "Archivar" : "Reactivar"}
                 </button>
@@ -295,7 +289,7 @@ function CustomerDetailContent({
           ) : (
             <div className="space-y-4">
               {paidOrders.length ? (
-                <div className="overflow-x-auto rounded-xl border border-bd-border">
+                <TableShell>
                   <table className="w-full min-w-[38rem] text-left text-sm">
                     <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                       <tr>
@@ -312,7 +306,7 @@ function CustomerDetailContent({
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </TableShell>
               ) : null}
 
               {otherOrders.length ? (
@@ -320,7 +314,7 @@ function CustomerDetailContent({
                   <p className="mb-2 text-[11px] uppercase tracking-widest text-muted">
                     Pedidos no pagados — no cuentan como ventas
                   </p>
-                  <div className="overflow-x-auto rounded-xl border border-bd-border">
+                  <TableShell>
                     <table className="w-full min-w-[38rem] text-left text-sm">
                       <tbody>
                         {otherOrders.map((o) => (
@@ -328,7 +322,7 @@ function CustomerDetailContent({
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </TableShell>
                 </div>
               ) : null}
 
@@ -348,7 +342,7 @@ function CustomerDetailContent({
         >
           <div className="rounded-xl border border-bd-border bg-surface p-5">
             {customer.notes ? (
-              <p className="whitespace-pre-wrap text-sm text-foreground/85">{customer.notes}</p>
+              <p className="whitespace-pre-wrap text-sm text-foreground">{customer.notes}</p>
             ) : (
               <p className="text-sm text-muted">Sin notas.</p>
             )}

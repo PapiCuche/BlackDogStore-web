@@ -31,9 +31,9 @@ import {
   type SequenceList,
   type SequenceScope,
 } from "../lib/internal-api";
+import { internalButtonClass, internalInputClass } from "./internal-ui";
 
-const FIELD =
-  "w-full rounded-lg border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+const FIELD = internalInputClass;
 
 function SequenceRow({
   sequence,
@@ -101,7 +101,7 @@ function SequenceRow({
           </label>
           <input
             id={`seq-prefix-${sequence.id}`}
-            className={`${FIELD} ${errors.prefix ? "border-danger-border" : "border-bd-border"} font-mono`}
+            className={`${FIELD} ${errors.prefix ? "border-danger-border" : ""} font-mono`}
             value={prefix}
             maxLength={12}
             disabled={!canManage || saving}
@@ -128,7 +128,7 @@ function SequenceRow({
             type="number"
             min={1}
             max={12}
-            className={`${FIELD} ${errors.padding ? "border-danger-border" : "border-bd-border"}`}
+            className={`${FIELD} ${errors.padding ? "border-danger-border" : ""}`}
             value={padding}
             disabled={!canManage || saving}
             onChange={(e) => setPadding(e.target.value)}
@@ -149,7 +149,7 @@ function SequenceRow({
             id={`seq-next-${sequence.id}`}
             type="number"
             min={1}
-            className={`${FIELD} ${errors.next_value ? "border-danger-border" : "border-bd-border"}`}
+            className={`${FIELD} ${errors.next_value ? "border-danger-border" : ""}`}
             value={nextValue}
             disabled={!canManage || saving || !sequence.can_edit_next_value}
             onChange={(e) => setNextValue(e.target.value)}
@@ -176,7 +176,7 @@ function SequenceRow({
             type="button"
             disabled={saving || !dirty}
             onClick={() => void save()}
-            className="rounded-lg border border-bd-border px-4 py-2 text-sm font-medium text-foreground transition hover:border-bd-border hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+            className={internalButtonClass}
           >
             {saving ? "Guardando…" : "Guardar serie"}
           </button>
@@ -276,7 +276,7 @@ export function SequenceSettings({
             ["branch", "Una numeración por sucursal", "Cada sucursal lleva su propio correlativo, empezando en 1."],
           ] as [SequenceScope, string, string][]
         ).map(([value, title, hint]) => (
-          <label key={value} className="flex items-start gap-2 text-sm text-foreground/85">
+          <label key={value} className="flex items-start gap-2 text-sm text-foreground">
             <input
               type="radio"
               name="sequence-scope"

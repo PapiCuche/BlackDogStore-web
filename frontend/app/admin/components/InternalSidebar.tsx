@@ -13,6 +13,7 @@
 
 import Link from "next/link";
 import { BrandLogo } from "../../components/BrandLogo";
+import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { IconClose, IconDashboard } from "./icons";
 import {
@@ -46,8 +47,8 @@ export function InternalSidebarContent({
   const linkClass = (active: boolean) =>
     `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${
       active
-        ? "bg-surface-2 font-medium text-foreground"
-        : "text-muted hover:bg-surface hover:text-foreground"
+        ? "bg-foreground/[0.08] font-medium text-foreground"
+        : "text-muted hover:bg-foreground/[0.04] hover:text-foreground"
     }`;
 
   return (
@@ -82,7 +83,7 @@ export function InternalSidebarContent({
             type="button"
             onClick={onClose}
             aria-label="Cerrar menú"
-            className="rounded-lg p-1.5 text-muted transition hover:bg-surface hover:text-foreground lg:hidden"
+            className="rounded-lg p-1.5 text-muted transition hover:bg-surface-2 hover:text-foreground lg:hidden"
           >
             <IconClose />
           </button>
@@ -168,16 +169,73 @@ export function MobileSidebar({
   open: boolean;
   onClose: () => void;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const panel = panelRef.current;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    panel?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+
+      if (event.key !== "Tab" || !panel) return;
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => !element.hasAttribute("hidden"));
+
+      if (focusable.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+
+      if (event.shiftKey && (active === first || active === panel)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [open, onClose]);
+
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 lg:hidden">
+    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navegación del control interno">
       <button
         type="button"
-        aria-label="Cerrar menú"
+        aria-label="Cerrar navegación al hacer clic fuera"
         onClick={onClose}
-        className="absolute inset-0 h-full w-full bg-background/70"
+        tabIndex={-1}
+        className="absolute inset-0 h-full w-full bg-black/70"
       />
-      <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-bd-border bg-background">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-bd-border bg-background outline-none"
+      >
         <InternalSidebarContent
           access={access}
           companyName={companyName}

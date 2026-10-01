@@ -21,6 +21,13 @@ import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { InternalControlGuard, type InternalContext } from "../../components/InternalControlGuard";
 import {
+  FilterBar,
+  PageHeader,
+  TableShell,
+  internalButtonClass,
+  internalInputClass,
+} from "../../components/internal-ui";
+import {
   CAP_ORDERS_VIEW,
   ServiceApiError,
   fetchServiceContext,
@@ -30,24 +37,13 @@ import {
 } from "../../../lib/service-console";
 import { SERVICE_QUEUES, type ServiceQueueConfig, type ServiceQueueKey } from "../queues";
 import { ServiceIntake } from "./ServiceIntake";
+import { Panel, Pill } from "./ServiceUi";
 
 const INTAKE_CAPABILITIES = ["service.orders.create", "service.customers.view", "service.devices.view"];
 
-function Panel({ children }: { children: React.ReactNode }) {
-  return (
-    <section className="rounded-2xl border border-bd-border bg-surface p-6">
-      {children}
-    </section>
-  );
-}
-
-function StatusPill({ label }: { label: string }) {
-  return (
-    <span className="rounded-full border border-bd-border px-2.5 py-1 text-[11px] text-muted">
-      {label}
-    </span>
-  );
-}
+const TOGGLE = "rounded-lg border px-3.5 py-2 text-sm font-semibold transition";
+const TOGGLE_ON = "border-foreground/25 bg-foreground/[0.08] text-foreground";
+const TOGGLE_OFF = "border-bd-border text-muted hover:border-foreground/20 hover:text-foreground";
 
 function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: ServiceQueueConfig }) {
   const router = useRouter();
@@ -65,6 +61,8 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
   const [status, setStatus] = useState("");
   const [history, setHistory] = useState(false);
   const [branchId, setBranchId] = useState<number | null>(null);
+  // What is typed, and what is asked of the server once the typing pauses.
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   // Technical staff start with assigned repairs; reception sees the authorized
   // workshop. Both filters remain subject to server-side tenant/branch scope.
@@ -79,6 +77,14 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
   // One code when the operator picked it; otherwise the whole queue. The server
   // filters; this only says which of ITS codes are being asked for.
   const statusQuery = status || (scope ? scope.join(",") : "");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
 
   const load = useCallback(async () => {
     if (!slug || !mayView) return;
@@ -111,9 +117,9 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
   if (!slug) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
+        <PageHeader eyebrow="Taller" title={queue.title} />
         <Panel>
-          <h1 className="text-lg font-semibold">{queue.title}</h1>
-          <p className="mt-2 text-sm text-muted">
+          <p className="text-sm text-muted">
             Selecciona una empresa para ver sus órdenes de servicio.
           </p>
         </Panel>
@@ -124,11 +130,10 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
   if (!mayView) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
+        <PageHeader eyebrow="Taller" title={queue.title} />
         <Panel>
-          <h1 className="text-lg font-semibold">{queue.title}</h1>
-          <p className="mt-2 text-sm text-muted">
-            Tu cuenta no tiene permiso para ver las órdenes de servicio de esta
-            empresa.
+          <p className="text-sm text-muted">
+            Tu cuenta no tiene permiso para ver las órdenes de servicio de esta empresa.
           </p>
         </Panel>
       </AdminShell>
@@ -144,23 +149,22 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
   return (
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
       <div className="space-y-6">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold">{queue.title}</h1>
-            <p className="mt-1 text-sm text-muted">
-              {queue.description} {count} orden(es) en el alcance que tu cuenta alcanza.
-            </p>
-          </div>
-          {mayIntake && queue.intake === "toggle" ? (
-            <button type="button" className="rounded-lg border border-bd-border px-4 py-2 text-sm"
+        <PageHeader
+          eyebrow="Taller"
+          title={queue.title}
+          description={`${queue.description} ${loading
+            ? "Cargando el alcance actual del taller…"
+            : `${count} orden${count === 1 ? "" : "es"} dentro del alcance actual de tu cuenta.`}`}
+          actions={mayIntake && queue.intake === "toggle" ? (
+            <button type="button" className={internalButtonClass}
               onClick={() => setIntake(!intake)}>{intake ? "Cerrar recepción" : "Nueva orden"}</button>
           ) : null}
-        </div>
+        />
 
         {intake && mayIntake && context ? <ServiceIntake key={slug} slug={slug} context={context}
           may={(cap) => capabilities.includes(cap)} onCreated={(id) => router.push(`/admin/service/orders/${id}`)} /> : null}
 
-        <Panel>
+        <FilterBar>
           {/* M12A — "Mis reparaciones" primero.
               El técnico entra a trabajar lo suyo; la vista del taller completo
               sigue a un clic, porque supervisar también es parte del trabajo. */}
@@ -174,11 +178,7 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
                 type="button"
                 aria-pressed={mine === option.value}
                 onClick={() => { setMine(option.value); setPage(1); }}
-                className={`rounded-lg border px-4 py-2 text-sm transition ${
-                  mine === option.value
-                    ? "border-bd-border bg-surface-2 text-foreground"
-                    : "border-bd-border text-muted hover:text-foreground/85"
-                }`}
+                className={`${TOGGLE} ${mine === option.value ? TOGGLE_ON : TOGGLE_OFF}`}
               >
                 {option.label}
               </button>
@@ -188,11 +188,7 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
                 type="button"
                 aria-pressed={history}
                 onClick={() => { setHistory(!history); setStatus(""); setPage(1); }}
-                className={`rounded-lg border px-4 py-2 text-sm transition ${
-                  history
-                    ? "border-bd-border bg-surface-2 text-foreground"
-                    : "border-bd-border text-muted hover:text-foreground/85"
-                }`}
+                className={`${TOGGLE} ${history ? TOGGLE_ON : TOGGLE_OFF}`}
               >
                 {queue.history.label}
               </button>
@@ -205,12 +201,12 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
           </div>
 
           <div className="grid gap-3 md:grid-cols-4">
-            <label className="text-xs text-muted">
+            <label className="text-xs font-semibold text-muted">
               Estado
               <select
                 value={status}
                 onChange={(e) => { setStatus(e.target.value); setPage(1); }}
-                className="mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
+                className={`mt-1.5 ${internalInputClass}`}
               >
                 <option value="">Todos</option>
                 {statusOptions.map((s) => (
@@ -219,7 +215,7 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
               </select>
             </label>
 
-            <label className="text-xs text-muted">
+            <label className="text-xs font-semibold text-muted">
               Sucursal
               <select
                 value={branchId ?? ""}
@@ -227,7 +223,7 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
                   setBranchId(e.target.value ? Number(e.target.value) : null);
                   setPage(1);
                 }}
-                className="mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
+                className={`mt-1.5 ${internalInputClass}`}
               >
                 {/* Only the branches this member reaches — the server decides
                     that, and an id outside it is not found rather than
@@ -239,95 +235,95 @@ function ServiceQueueContent({ ctx, queue }: { ctx: InternalContext; queue: Serv
               </select>
             </label>
 
-            <label className="text-xs text-muted md:col-span-2">
+            <label className="text-xs font-semibold text-muted md:col-span-2">
               Buscar
               <input
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
                 placeholder="Número, cliente o equipo"
-                className="mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
+                className={`mt-1.5 ${internalInputClass}`}
               />
             </label>
           </div>
-        </Panel>
+        </FilterBar>
 
         {error ? (
-          <Panel>
-            <p className="text-sm text-danger">{error}</p>
-          </Panel>
+          <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger" role="alert">
+            {error}
+          </div>
         ) : null}
 
-        <Panel>
-          {loading ? (
-            <p className="text-sm text-muted">Cargando…</p>
-          ) : rows.length === 0 ? (
-            <p className="text-sm text-muted">
-              {mine
-                ? "No tienes órdenes asignadas con ese filtro. Prueba «Todo el taller»."
-                : "No hay órdenes que coincidan con ese filtro."}
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="text-xs uppercase tracking-wide text-muted">
-                  <tr>
-                    <th className="py-2 pr-4">Número</th>
-                    <th className="py-2 pr-4">Cliente</th>
-                    <th className="py-2 pr-4">Equipo</th>
-                    <th className="py-2 pr-4">Sucursal</th>
-                    <th className="py-2 pr-4">Técnico</th>
-                    <th className="py-2 pr-4">Estado</th>
+        {loading ? (
+          <div className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-sm text-muted">
+            Cargando órdenes…
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-bd-border px-5 py-10 text-center text-sm text-muted">
+            {mine
+              ? "No tienes órdenes asignadas con ese filtro. Prueba «Todo el taller»."
+              : "No hay órdenes que coincidan con ese filtro."}
+          </div>
+        ) : (
+          <TableShell>
+            <table className="w-full min-w-[58rem] text-left text-sm">
+              <thead className="border-b border-bd-border text-[11px] uppercase tracking-[0.1em] text-muted">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Número</th>
+                  <th className="px-4 py-3 font-semibold">Cliente</th>
+                  <th className="px-4 py-3 font-semibold">Equipo</th>
+                  <th className="px-4 py-3 font-semibold">Sucursal</th>
+                  <th className="px-4 py-3 font-semibold">Técnico</th>
+                  <th className="px-4 py-3 font-semibold">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.id} className="border-b border-bd-border/70 last:border-0 hover:bg-foreground/[0.025]">
+                    <td className="px-4 py-3">
+                      <Link
+                        href={`/admin/service/orders/${row.id}`}
+                        className="font-semibold text-foreground transition hover:underline"
+                      >
+                        {row.number}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-foreground/80">{row.customer_name}</td>
+                    <td className="px-4 py-3 text-foreground/80">{row.device_summary}</td>
+                    <td className="px-4 py-3 text-muted">{row.branch_name}</td>
+                    <td className="px-4 py-3 text-muted">{row.technician_name || "—"}</td>
+                    <td className="px-4 py-3">
+                      <Pill label={row.status_label} />
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row) => (
-                    <tr key={row.id} className="border-t border-bd-border">
-                      <td className="py-3 pr-4">
-                        <Link
-                          href={`/admin/service/orders/${row.id}`}
-                          className="font-medium text-foreground hover:underline"
-                        >
-                          {row.number}
-                        </Link>
-                      </td>
-                      <td className="py-3 pr-4 text-muted">{row.customer_name}</td>
-                      <td className="py-3 pr-4 text-muted">{row.device_summary}</td>
-                      <td className="py-3 pr-4 text-muted">{row.branch_name}</td>
-                      <td className="py-3 pr-4 text-muted">
-                        {row.technician_name || "—"}
-                      </td>
-                      <td className="py-3 pr-4">
-                        <StatusPill label={row.status_label} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                ))}
+              </tbody>
+            </table>
+          </TableShell>
+        )}
 
-          {count > rows.length ? (
-            <div className="mt-4 flex items-center gap-2">
+        {count > rows.length ? (
+          <div className="flex flex-col gap-3 border-t border-bd-border pt-4 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
+            <span>Página {page}</span>
+            <div className="flex gap-2">
               <button
                 type="button"
                 disabled={page <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="rounded-lg border border-bd-border px-3 py-1.5 text-xs disabled:opacity-30"
+                className={internalButtonClass}
               >
                 Anterior
               </button>
-              <span className="text-xs text-muted">Página {page}</span>
               <button
                 type="button"
                 disabled={rows.length === 0}
                 onClick={() => setPage((p) => p + 1)}
-                className="rounded-lg border border-bd-border px-3 py-1.5 text-xs disabled:opacity-30"
+                className={internalButtonClass}
               >
                 Siguiente
               </button>
             </div>
-          ) : null}
-        </Panel>
+          </div>
+        ) : null}
       </div>
     </AdminShell>
   );

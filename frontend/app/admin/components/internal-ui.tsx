@@ -14,6 +14,61 @@ import type { IconComponent } from "./icons";
 import { IconAlert } from "./icons";
 import { STATUS_LABELS, type ModuleStatus } from "../lib/internal-modules";
 
+
+export function PageHeader({
+  eyebrow,
+  title,
+  description,
+  actions,
+}: {
+  eyebrow?: string;
+  title: string;
+  description?: string;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <header className="grid gap-5 border-b border-bd-border pb-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+      <div className="min-w-0">
+        {eyebrow ? (
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted">{eyebrow}</p>
+        ) : null}
+        <h1 className="mt-1.5 font-display text-2xl font-extrabold tracking-[-0.03em] text-foreground sm:text-[2rem]">
+          {title}
+        </h1>
+        {description ? (
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">{description}</p>
+        ) : null}
+      </div>
+      {actions ? <div className="flex flex-wrap items-center gap-2 lg:justify-end">{actions}</div> : null}
+    </header>
+  );
+}
+
+export function FilterBar({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-bd-border bg-surface p-4 sm:p-5">
+      {children}
+    </div>
+  );
+}
+
+export function TableShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
+      {children}
+    </div>
+  );
+}
+
+export const internalInputClass =
+  "w-full rounded-lg border border-bd-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted/60 outline-none transition focus:border-foreground/30 focus:ring-2 focus:ring-foreground/[0.05]";
+
+export const internalButtonClass =
+  "rounded-lg border border-bd-border bg-background px-3.5 py-2.5 text-sm font-semibold text-foreground transition hover:border-foreground/25 hover:bg-foreground/[0.03] disabled:cursor-not-allowed disabled:opacity-40";
+
+export const internalPrimaryButtonClass =
+  "rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40";
+
 // ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------
@@ -61,9 +116,9 @@ export function QuickActionCard({
   return (
     <Link
       href={href}
-      className="group flex items-start gap-3 rounded-xl border border-bd-border bg-surface p-5 transition hover:border-bd-border hover:bg-surface"
+      className="group flex items-start gap-3 rounded-xl border border-bd-border bg-surface p-5 transition hover:border-foreground/20 hover:bg-foreground/[0.04]"
     >
-      <span className="mt-0.5 rounded-lg border border-bd-border bg-background/40 p-2 text-muted transition group-hover:text-foreground">
+      <span className="mt-0.5 rounded-lg border border-bd-border bg-background p-2 text-muted transition group-hover:text-foreground">
         <Icon />
       </span>
       <span className="min-w-0">
@@ -79,9 +134,9 @@ export function QuickActionCard({
 export function StatusBadge({ status }: { status: ModuleStatus }) {
   const tone =
     status === "implemented"
-      ? "border-bd-border bg-surface-2 text-foreground"
+      ? "border-foreground/25 bg-foreground/[0.08] text-foreground"
       : status === "partial"
-        ? "border-bd-border bg-surface text-foreground/85"
+        ? "border-foreground/20 bg-foreground/[0.04] text-foreground"
         : "border-bd-border bg-transparent text-muted";
   return (
     <span
@@ -116,7 +171,7 @@ export function ModuleCard({
   // No href → no link. A module that does not exist never becomes a dead click.
   if (!href) {
     return (
-      <div className="rounded-lg border border-bd-border bg-surface p-4 opacity-70">
+      <div className="rounded-lg border border-bd-border bg-background p-4 opacity-70">
         {body}
       </div>
     );
@@ -125,7 +180,7 @@ export function ModuleCard({
   return (
     <Link
       href={href}
-      className="block rounded-lg border border-bd-border bg-surface p-4 transition hover:border-bd-border hover:bg-surface"
+      className="block rounded-lg border border-bd-border bg-surface p-4 transition hover:border-foreground/20 hover:bg-foreground/[0.04]"
     >
       {body}
     </Link>
@@ -165,7 +220,7 @@ export function Section({
 
 export function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-block rounded-lg border border-bd-border bg-surface px-2.5 py-1 text-xs text-foreground/85">
+    <span className="inline-block rounded-lg border border-bd-border bg-foreground/[0.03] px-2.5 py-1 text-xs text-foreground">
       {children}
     </span>
   );
@@ -189,9 +244,9 @@ export function AlertsPanel({
       {alerts.map((alert) => {
         const tone =
           alert.level === "critical"
-            ? "border-danger-border bg-red-500/[0.07]"
+            ? "border-danger-border bg-danger-surface"
             : alert.level === "warning"
-              ? "border-bd-border bg-surface"
+              ? "border-foreground/20 bg-foreground/[0.05]"
               : "border-bd-border bg-surface";
         return (
           <div
@@ -215,15 +270,15 @@ export function AlertsPanel({
 export function DashboardSkeleton() {
   return (
     <div className="space-y-8" aria-busy="true" aria-label="Cargando dashboard">
-      <div className="h-16 w-full max-w-md animate-pulse rounded-xl bg-surface" />
+      <div className="h-16 w-full max-w-md animate-pulse rounded-xl bg-foreground/[0.03]" />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="h-28 animate-pulse rounded-xl bg-surface" />
+          <div key={i} className="h-28 animate-pulse rounded-xl bg-foreground/[0.03]" />
         ))}
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {[0, 1, 2, 3, 4, 5].map((i) => (
-          <div key={i} className="h-24 animate-pulse rounded-xl bg-surface" />
+          <div key={i} className="h-24 animate-pulse rounded-xl bg-foreground/[0.03]" />
         ))}
       </div>
     </div>

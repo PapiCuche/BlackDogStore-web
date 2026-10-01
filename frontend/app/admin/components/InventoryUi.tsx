@@ -22,7 +22,7 @@ export function StatCard({
     <div
       className={`rounded-xl border p-5 ${
         emphasis
-          ? "border-bd-border bg-surface-2"
+          ? "border-warning-border bg-warning-surface"
           : "border-bd-border bg-surface"
       }`}
     >
@@ -47,7 +47,7 @@ export function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="min-w-0 rounded-xl border border-bd-border bg-surface">
+    <section className="rounded-xl border border-bd-border bg-surface">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-bd-border px-5 py-4">
         <div>
           <h2 className="text-sm font-semibold text-foreground">{title}</h2>
@@ -65,7 +65,7 @@ export function Panel({
 export function Spinner({ label = "Cargando…" }: { label?: string }) {
   return (
     <div className="flex items-center gap-3 py-8 text-sm text-muted">
-      <div className="h-4 w-4 animate-spin rounded-full border-2 border-bd-border border-t-transparent" />
+      <div className="h-4 w-4 animate-spin rounded-full border-2 border-muted border-t-transparent" />
       {label}
     </div>
   );
@@ -73,7 +73,7 @@ export function Spinner({ label = "Cargando…" }: { label?: string }) {
 
 export function ErrorBox({ message }: { message: string }) {
   return (
-    <div className="rounded-lg border border-danger-border bg-red-500/[0.07] px-4 py-3">
+    <div className="rounded-xl border border-danger-border bg-danger-surface px-4 py-3">
       <p className="text-sm text-danger">{message}</p>
     </div>
   );
@@ -81,7 +81,7 @@ export function ErrorBox({ message }: { message: string }) {
 
 export function EmptyBox({ message }: { message: string }) {
   return (
-    <div className="rounded-lg border border-dashed border-bd-border px-4 py-8 text-center">
+    <div className="rounded-xl border border-dashed border-bd-border px-4 py-8 text-center">
       <p className="text-sm text-muted">{message}</p>
     </div>
   );
@@ -90,14 +90,14 @@ export function EmptyBox({ message }: { message: string }) {
 export function StockBadge({ value, threshold = 5 }: { value: number; threshold?: number }) {
   const tone =
     value <= 0
-      ? "border-bd-border bg-surface-2 text-foreground"
+      ? "border-danger-border bg-danger-surface text-danger"
       : value <= threshold
-        ? "border-bd-border bg-surface text-foreground"
+        ? "border-warning-border bg-warning-surface text-warning"
         : "border-bd-border bg-transparent text-muted";
   const label = value <= 0 ? "Agotado" : `${value} u.`;
   return (
     <span
-      className={`inline-block whitespace-nowrap rounded border px-2 py-0.5 text-[11px] font-medium tabular-nums ${tone}`}
+      className={`inline-block whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-medium tabular-nums ${tone}`}
     >
       {label}
     </span>
@@ -107,9 +107,9 @@ export function StockBadge({ value, threshold = 5 }: { value: number; threshold?
 export function MovementBadge({ movement }: { movement: StockMovement }) {
   return (
     <span
-      className={`inline-block whitespace-nowrap rounded border px-2 py-0.5 text-[11px] font-medium ${
+      className={`inline-block whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-medium ${
         movement.is_entry
-          ? "border-bd-border bg-surface-2 text-foreground"
+          ? "border-foreground/20 bg-foreground/[0.07] text-foreground"
           : "border-bd-border bg-transparent text-muted"
       }`}
       title={movement.movement_type_label}
@@ -156,7 +156,7 @@ export function Td({
   return (
     <td
       className={`px-3 py-2.5 text-sm ${right ? "text-right" : "text-left"} ${
-        muted ? "text-muted" : "text-foreground/85"
+        muted ? "text-muted" : "text-foreground"
       }`}
     >
       {children}
@@ -234,7 +234,7 @@ export function BranchStockTable({
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={row.id} className="border-b border-bd-border">
+          <tr key={row.id} className="border-b border-bd-border/60">
             <Td>
               <Link
                 href={`/admin/products/${row.product}/stock-card`}
@@ -254,7 +254,7 @@ export function BranchStockTable({
             <Td right muted>{row.minimum_stock || "—"}</Td>
             {showSuggested ? (
               <Td right>
-                <span className="tabular-nums text-foreground/85">
+                <span className="tabular-nums text-foreground">
                   {row.suggested_quantity || "—"}
                 </span>
               </Td>
