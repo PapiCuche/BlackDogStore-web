@@ -195,7 +195,7 @@ function CustomerDetailContent({
                 <button
                   type="button"
                   onClick={() => setEditing(true)}
-                  className="rounded-lg border border-foreground/20 px-3 py-1.5 text-sm text-zinc-200 transition hover:border-foreground/30 hover:text-foreground"
+                  className={internalButtonClass}
                 >
                   Editar
                 </button>
@@ -203,7 +203,7 @@ function CustomerDetailContent({
                   type="button"
                   disabled={busy}
                   onClick={() => void toggleActive()}
-                  className="rounded-lg border border-white/[0.08] px-3 py-1.5 text-sm text-muted transition hover:border-foreground/25 hover:text-zinc-200 disabled:opacity-40"
+                  className={internalButtonClass}
                 >
                   {customer.is_active ? "Archivar" : "Reactivar"}
                 </button>
