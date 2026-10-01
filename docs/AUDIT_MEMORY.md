@@ -28,10 +28,10 @@ Comprobar con `git diff <SHA>..HEAD -- <archivos>` y revalidar sólo ese subárb
 | Working tree | limpio |
 | Migraciones | 105 aplicadas / 0 pendientes / 0 por generar (`store` llega a `0093_sales_service_delivery`) |
 | Backend tests | 4563 ejecutadas, 4560 OK, 3 skipped, 0 fallos, PostgreSQL 14, 1519,8 s @ `c076120` (baseline: 4489 @ `65aa8c1`) |
-| Frontend tests | 368/368 OK, 34 suites, @ `4a9dd5c` |
-| TypeScript | `tsc --noEmit` OK @ `4a9dd5c` |
-| Lint | 0 errores / 33 advertencias @ `4a9dd5c` |
-| Build | OK (44 páginas) @ `65aa8c1` |
+| Frontend tests | 400/400 OK, 37 suites, @ `f6dc9ca` |
+| TypeScript | `tsc --noEmit` OK @ `f6dc9ca` |
+| Lint | 0 errores / 33 advertencias @ `f6dc9ca` |
+| Build | OK (44 páginas) @ `f6dc9ca` |
 | E2E | 113/118 @ `65aa8c1`; E2E-01 falla, 4 serie no ejecutadas |
 
 Reglas de medición: suite backend completa sólo en PostgreSQL y un proceso a la
@@ -108,6 +108,21 @@ sucursal alcanzada sigue editable. Lecturas sin cambio (RBAC-01).
 Un SELECTED ya no puede reactivar una sucursal inactiva (no está en `visible_branches`).
 Tests: `F2SelectedBranchWriteScopeTest` (10), `F2SelectedCompanySettingsScopeTest` (8).
 Estado: VERIFICADO @ `c076120`.
+
+**UI-SCOPE-01** — La UI representa conjuntamente capabilities (QUÉ) y branch scope (DÓNDE);
+el backend sigue siendo la autoridad. Leer un recurso de nivel empresa no implica que un
+SELECTED pueda modificarlo.
+Autoridad UI: `frontend/app/admin/lib/branch-authority.ts` — `hasCompanyWideScope` (espejo de
+`tenancy.has_company_wide_scope`), `reachesBranch`, `canEditBranchScopeOf` y
+`ownBranchScopePayload` (espejos de `can_delegate_branch_scope`). Fuente: `dashboard.branch_scope`
+del servidor; nunca se infiere del número de sucursales visibles.
+Pantallas: `branches/page.tsx` (crear y despacho exigen company-wide; editar exige alcanzar la
+fila), `settings/page.tsx` + `SequenceSettings` (ajustes, serie de empresa y alcance sólo
+company-wide; serie de sucursal propia editable), `users/page.tsx` (sin «Todas» ni sucursales no
+alcanzadas; sin edición de quien llega más lejos), `staff/page.tsx` (invitación),
+`sales/promotions/page.tsx` (archivar y crear combo).
+Tests: `admin-write-scope.test.tsx` (15), `branch-authority.test.ts` (14).
+Estado: VERIFICADO @ `f6dc9ca`.
 
 **READ-01** — Pertenecer a una empresa no autoriza a leerla. `GET /admin/companies/`,
 `/admin/companies/{pk}/`, `/admin/branches/`, `/admin/branches/{pk}/` exigen capacidad de
@@ -219,9 +234,7 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 
 | ID | Sev. | Dominio | Símbolo | Reproducción |
 |---|---|---|---|---|
-| DRIFT-07 | LOW | BRANCH/FRONTEND | `BranchAccessPanel.tsx`, `staff/page.tsx` (invitación, default «todas»), `promotion_views.py` lista `branches` = todas las de la empresa | la UI ofrece a un admin SELECTED «todas» o sucursales que no alcanza; el backend responde 403 con `detail` legible |
 | F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post` + `serializers.py::MembershipSerializer` | POST membresía con `user` de otra plataforma → 201 devuelve su `username` |
-| DRIFT-01 | MEDIUM | SERVICE/FRONTEND | `frontend/app/lib/service-console.ts` (`technicians`) vs `v1_service_views.py` (`candidates`) | selector de técnicos siempre vacío |
 | E2E-02 | MEDIUM | TESTS | `frontend/e2e/staff-personnel.spec.ts` (test I) | desactiva la primera ficha; cuenta queda con 0 capacidades |
 | E2E-01 | MEDIUM | TESTS/FISCAL | `frontend/e2e/fiscal-invoice.spec.ts` | espera «Emitir factura», UI dice «Preparar factura» desde `b3b1cfc` |
 | SEC-SET-04-A | MEDIUM | AUTH | `auth_views.py` refresh, `v1_auth_views.py` refresh | refresh sin throttle; filas `OutstandingToken` sin límite |
@@ -258,6 +271,9 @@ serie de nivel empresa y cambiar el alcance de numeración (`AdminSequenceScopeV
 que afectan a todas las sucursales; y lista promociones de todas las sucursales
 (lectura). La parte de escritura (sucursales, despacho, serie de empresa, alcance de
 numeración, ajustes de empresa) quedó cerrada por WRITE-SCOPE-01.
+DEUDA (surgida en DRIFT-07): `app/admin/components/BranchAccessPanel.tsx` no se monta en ninguna
+pantalla (código muerto) y conserva la oferta de «Todas»; el botón «Añadir trabajador» de
+`staff/page.tsx` no comprueba capacidad (RBAC-F4 de F1, LOW, sin cambio).
 NO AUDITADO bajo WRITE-SCOPE-01: `storefront_content_views` (campañas y páginas de la
 tienda, también de nivel empresa) y otras mutaciones de nivel empresa fuera de
 `tenant_views`/`settings_views`.
@@ -275,6 +291,8 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | F-BRANCH-01 | MEDIUM | `20d110c` | `tenancy.can_delegate_branch_scope`; `tenant_views` membership create/patch; `staff_views` invitaciones (mismo hueco, hallado en F2) | `F2BranchDelegationTest` | CORREGIDO |
 | F-BRANCH-01 · escritura parcial | LOW | `20d110c` | `AdminMembershipDetailView.patch` en `transaction.atomic` | `F2BranchDelegationTest.test_a_rejected_grant_list_rolls_the_whole_update_back` | CORREGIDO |
 | F-BRANCH-02 | MEDIUM | `cccb4d2` | `promotion_views._write_promotion` | `F2PromotionBranchScopeTest` | CORREGIDO |
+| DRIFT-01 | MEDIUM | `a4be03b` | `service-console.fetchServiceAssignmentOptions`, `service/orders/[id]/page.tsx` | `service-assignment-contract.test.tsx` | CORREGIDO |
+| DRIFT-07 | LOW | `6958ec0`, `f6dc9ca` | `branch-authority.ts` + 6 pantallas | `admin-write-scope.test.tsx` | CORREGIDO |
 | WRITE-SCOPE-01 · sucursales | MEDIUM | `fa85d41` | `tenant_views` crear/editar sucursal, sucursal de despacho | `F2SelectedBranchWriteScopeTest` | CORREGIDO |
 | WRITE-SCOPE-01 · configuración | MEDIUM | `c076120` | `settings_views` serie de empresa, alcance, ajustes | `F2SelectedCompanySettingsScopeTest` | CORREGIDO |
 | RBAC-01 | LOW | `5afdb81` | `tenant_views` company/branch list+detail vía `access_views._scope_readable` | `F2TenantReadAuthorizationTest` | CORREGIDO |
@@ -290,7 +308,8 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 
 | Contrato | Backend | Frontend | Estado |
 |---|---|---|---|
-| SERVICE-ASSIGNMENT | `{current, candidates}` (`v1_service_views.py`; fijado por tests M8) | `{current, technicians}` (`service-console.ts`) | DRIFT (DRIFT-01) |
+| SERVICE-ASSIGNMENT | `{current, candidates}` (`v1_service_views.V1ServiceOrderAssignmentView`; tests M8) | `ServiceAssignment` / `ServiceAssignmentCandidate` (`service-console.ts`), `service-assignment-contract.test.tsx` | OK @ `a4be03b` |
+| BRANCH-SCOPE (autoridad) | `dashboard.branch_scope.mode` = `describe_branch_scope` (`platform`/`legacy`/`all`/`selected`/`none`) | `app/admin/lib/branch-authority.ts` | OK @ `f6dc9ca` |
 | INVENTORY-ADJUST branch | acepta sucursal / usa default | no envía sucursal (`app/lib/admin.ts`) | DRIFT (DRIFT-02) |
 | DRF field errors | `{field: [msg]}` | clientes que sólo leen `detail` | DRIFT LOW (DRIFT-03) |
 | Legacy role sets | backend | frontend | OK (`H412bFrontendLegacyRoleParityTest`) |
@@ -311,7 +330,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - FISCAL: `C22B*`, `Fiscal5a*`, `Fiscal5b*`, `Fiscal6*`.
 - SERVICE: `M8*`, `M9*`, `M10CapabilitySeparationTest`, `P0CServiceTransitionIsolationTest`.
 - STAFF: `H41Staff*`.
-- FRONTEND: `api-proxy-scope.test.ts`.
+- FRONTEND: `api-proxy-scope.test.ts`, `service-assignment-contract.test.tsx`, `admin-write-scope.test.tsx`, `branch-authority.test.ts`.
 - E2E: `h411-auth-interop`, `pos-ticket`, `pos-receipt-options`, `staff-personnel` (E2E-02), `fiscal-invoice` (E2E-01).
 
 ---
@@ -349,7 +368,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 - **F0 — Baseline**: medido @ `65aa8c1`; docs @ `d383806`.
 - **F1 — Security / tenancy / authorization**: COMPLETED @ `4a9dd5c`. Un fix (FE-AUTH-01). Backend sin cambios. Checkpoint completo en la transcripción de la sesión `acdf85aa`; artefactos en su scratchpad (`audit_f1_investigation.json`, `audit_security_sweep.json`, `demo_branch_scope.py`).
-- **F2 — Eje DÓNDE: delegación y alcance por sucursal**: EN CURSO. Cerrados F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`). F-CAP-01 (`c042fea`). RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`), WRITE-SCOPE-01 (`fa85d41`, `c076120`). Pendiente: DRIFT-01 → DRIFT-07 → E2E-02 → E2E-01.
+- **F2 — Eje DÓNDE: delegación y alcance por sucursal**: EN CURSO. Cerrados F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`). F-CAP-01 (`c042fea`). RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`), WRITE-SCOPE-01 (`fa85d41`, `c076120`). DRIFT-01 (`a4be03b`), DRIFT-07 (`6958ec0`, `f6dc9ca`). Pendiente: E2E-02 → E2E-01 → gates finales F2.
 
 ---
 

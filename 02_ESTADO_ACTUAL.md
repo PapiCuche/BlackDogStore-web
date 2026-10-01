@@ -3,6 +3,27 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-09-30 — F2 · DRIFT-01 y DRIFT-07: la interfaz refleja el contrato
+
+Asignar técnico desde la web vuelve a funcionar: la consola leía `technicians` y el
+servidor responde `candidates`, así que el selector salía siempre vacío. El tipo
+TypeScript describe ahora la respuesta real (`a4be03b`).
+
+La interfaz de administración tiene en cuenta dónde puede actuar cada persona, no
+sólo qué puede hacer. A quien tiene sucursales seleccionadas ya no se le ofrece
+«Todas», sucursales que no alcanza, crear sucursales, elegir la sucursal de
+despacho, guardar los ajustes de la empresa, editar la serie de empresa ni cambiar
+el alcance de la numeración; tampoco archivar promociones que funcionan fuera de sus
+sucursales, y un combo nuevo se aplica sólo en las suyas. Sigue viendo la plantilla
+completa, los ajustes y las series, y edita su sucursal y la serie de su sucursal.
+El alcance sale del contexto que envía el servidor; el backend sigue rechazando todo
+lo anterior (`6958ec0`, `f6dc9ca`).
+
+Validación: frontend 400 pruebas en 37 suites, OK; typecheck OK; lint 0 errores y 33
+advertencias (sin cambio); build de producción OK (44 páginas). Backend sin cambios:
+regresiones de contrato (73 pruebas) OK; la corrida completa vigente es la de
+`c076120` (4560 OK). E2E pendiente (E2E-02, E2E-01).
+
 ## 2026-09-30 — F2 · WRITE-SCOPE-01: el alcance por sucursal limita también lo que se modifica
 
 `company.manage` dice qué se puede cambiar; el alcance por sucursales dice dónde. Una

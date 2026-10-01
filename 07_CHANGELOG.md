@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-09-30 — F2 · DRIFT-01 y DRIFT-07
+
+Consola de servicio: el selector de técnicos lee `candidates` (`a4be03b`). Panel de
+administración: las acciones se ofrecen sólo si la persona tiene la capacidad y el
+alcance por sucursal que el servidor exige (`6958ec0`, `f6dc9ca`). Frontend 400
+pruebas OK, typecheck, lint 0/33 y build OK. Backend sin cambios.
+
 ## 2026-09-30 — F2 · WRITE-SCOPE-01
 
 Las modificaciones de nivel empresa (crear sucursal, sucursal de despacho, serie de
