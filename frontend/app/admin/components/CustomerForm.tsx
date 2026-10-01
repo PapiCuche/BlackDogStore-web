@@ -353,7 +353,7 @@ export function CustomerForm({
           type="button"
           disabled={saving}
           onClick={() => void save()}
-          className="rounded-lg border border-white/15 px-4 py-2 text-sm font-medium text-foreground transition hover:border-white/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          className={internalPrimaryButtonClass}
         >
           {saving ? "Guardando…" : customer ? "Guardar cambios" : "Crear cliente"}
         </button>
