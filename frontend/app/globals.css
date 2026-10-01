@@ -34,8 +34,8 @@
   --color-muted: var(--muted);
   --color-primary: var(--primary);
   --color-accent: var(--accent);
-  --font-sans: var(--font-body);
-  --font-display: var(--font-body);
+  --font-sans: var(--font-ui-active, var(--font-brand));
+  --font-display: var(--font-display-active, var(--font-brand));
 }
 
 html {
@@ -45,12 +45,12 @@ html {
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-body), "Montserrat", Arial, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-ui-active, var(--font-brand)), "Montserrat", Arial, ui-sans-serif, system-ui, sans-serif;
   text-rendering: optimizeLegibility;
 }
 
 .font-display {
-  font-family: var(--font-body), "Montserrat", Arial, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-display-active, var(--font-brand)), "Montserrat", Arial, ui-sans-serif, system-ui, sans-serif;
 }
 
 /* Black Dog's secondary texture. Keep it quiet enough that content wins. */
@@ -124,4 +124,11 @@ img {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+
+/* Internal SaaS stays neutral even while the pilot storefront uses its brand font. */
+.internal-ui-fonts {
+  --font-ui-active: var(--font-neutral);
+  --font-display-active: var(--font-neutral);
 }
