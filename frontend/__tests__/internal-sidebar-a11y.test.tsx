@@ -10,17 +10,35 @@ const access = {
 };
 
 describe('MobileSidebar accessibility', () => {
-  it('moves focus into the drawer, locks background scroll and closes with Escape', () => {
+  it('moves focus into the drawer, traps it, restores it and closes with Escape', () => {
     const onClose = jest.fn();
     const previousOverflow = document.body.style.overflow;
 
-    const { unmount } = render(
-      <MobileSidebar
-        access={access}
-        companyName="Empresa demo"
-        open
-        onClose={onClose}
-      />,
+    const { rerender, unmount } = render(
+      <>
+        <button type="button">Abrir panel</button>
+        <MobileSidebar
+          access={access}
+          companyName="Empresa demo"
+          open={false}
+          onClose={onClose}
+        />
+      </>,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Abrir panel' });
+    trigger.focus();
+
+    rerender(
+      <>
+        <button type="button">Abrir panel</button>
+        <MobileSidebar
+          access={access}
+          companyName="Empresa demo"
+          open
+          onClose={onClose}
+        />
+      </>,
     );
 
     const dialog = screen.getByRole('dialog', {
@@ -32,10 +50,30 @@ describe('MobileSidebar accessibility', () => {
     expect(panel).toHaveFocus();
     expect(document.body.style.overflow).toBe('hidden');
 
+    fireEvent.keyDown(window, { key: 'Tab', shiftKey: true });
+    expect(screen.getByRole('link', { name: /Volver a la tienda/ })).toHaveFocus();
+
+    fireEvent.keyDown(window, { key: 'Tab' });
+    expect(screen.getByRole('button', { name: 'Cerrar menú' })).toHaveFocus();
+
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
 
-    unmount();
+    rerender(
+      <>
+        <button type="button">Abrir panel</button>
+        <MobileSidebar
+          access={access}
+          companyName="Empresa demo"
+          open={false}
+          onClose={onClose}
+        />
+      </>,
+    );
+
     expect(document.body.style.overflow).toBe(previousOverflow);
+    expect(screen.getByRole('button', { name: 'Abrir panel' })).toHaveFocus();
+
+    unmount();
   });
 });
