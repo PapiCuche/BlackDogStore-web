@@ -94,7 +94,7 @@ export function Header() {
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-5 lg:px-8">
         <Link
           href="/"
-          className="group flex min-w-0 shrink-0 items-center gap-3 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+          className="group flex min-w-0 flex-1 items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 sm:gap-3 md:flex-none"
           aria-label={company.name ? `Ir al inicio de ${company.name}` : "Ir al inicio"}
         >
           {branding.logo_url ? (
@@ -102,7 +102,7 @@ export function Header() {
             <img
               src={branding.logo_url}
               alt=""
-              className="h-8 w-auto max-w-36 object-contain transition-opacity group-hover:opacity-80 sm:max-w-44"
+              className="h-8 w-auto max-w-24 shrink-0 object-contain transition-opacity group-hover:opacity-80 sm:max-w-36 lg:max-w-44"
             />
           ) : null}
           <span className="min-w-0 leading-none">
