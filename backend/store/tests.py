@@ -61316,3 +61316,80 @@ class F2E2eFixtureSeedTest(TestCase):
         with self.assertRaises(CommandError):
             self._seed(e2e_fixtures=True)
         self.assertIsNone(self._worker())
+
+
+# ---------------------------------------------------------------------------
+# SVC-FUNC-01 — technical service: scoped assignment, collection, POS intake
+# ---------------------------------------------------------------------------
+
+# -- SVC-FUNC-01 · SVC-NAV-01 --------------------------------------------------
+
+class SvcFuncBase(M8ServiceBase):
+    """M8's fixture plus staff built by capability and branch scope."""
+
+    VIEW = ('company.view', 'service.orders.view')
+
+    def member(self, username, capabilities, *, branches=None, active=True):
+        user = _m7_user(username)
+        membership = Membership.objects.create(
+            user=user, company=self.company, role='customer',
+            branch_access_mode=(
+                Membership.ACCESS_MODE_SELECTED if branches is not None
+                else Membership.ACCESS_MODE_ALL
+            ),
+        )
+        _assign(membership, _role(
+            self.company, f'Rol {username}', capabilities=list(capabilities),
+            slug=f'rol-{username}',
+        ))
+        for branch in branches or []:
+            _M7BranchAccess.objects.create(membership=membership, branch=branch)
+        if not active:
+            user.is_active = False
+            user.save(update_fields=['is_active'])
+        cache.clear()
+        return user
+
+    def acting_with(self, *capabilities, slug='svc-actor'):
+        """`recepcion` holding EXACTLY these capabilities."""
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(self.membership, _role(
+            self.company, f'Rol {slug}', capabilities=list(capabilities), slug=slug,
+        ))
+        cache.clear()
+        self.client = _m7_login('recepcion')
+        return self.client
+
+    def assignment_url(self, order):
+        return _m8_url('m8-taller', f'orders/{order.pk}/assignment/')
+
+
+class SvcQueueStatusFilterTest(SvcFuncBase):
+    """SVC-NAV-01. A queue lists several lifecycle codes; one code still works."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.acting_with('company.view', 'service.orders.view')
+        self.received = self.make_order()
+        self.diagnosing = self.make_order()
+        _M8RepairOrder.objects.filter(pk=self.diagnosing.pk).update(status='diagnosing')
+        self.waiting = self.make_order()
+        _M8RepairOrder.objects.filter(pk=self.waiting.pk).update(status='waiting_approval')
+
+    def ids(self, query):
+        res = self.client.get(_m8_url('m8-taller', 'orders/') + query)
+        self.assertEqual(res.status_code, 200, res.data)
+        return sorted(row['id'] for row in res.data['results'])
+
+    def test_several_codes(self):
+        self.assertEqual(
+            self.ids('?status=diagnosing,waiting_approval'),
+            sorted([self.diagnosing.pk, self.waiting.pk]),
+        )
+
+    def test_one_code_is_unchanged(self):
+        self.assertEqual(self.ids('?status=received'), [self.received.pk])
+
+    def test_an_unknown_code_matches_nothing(self):
+        self.assertEqual(self.ids('?status=diagnosing,nope'), [self.diagnosing.pk])
+        self.assertEqual(self.ids('?status=nope'), [])

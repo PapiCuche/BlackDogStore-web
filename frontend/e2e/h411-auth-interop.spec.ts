@@ -247,7 +247,7 @@ test.describe("H4.1.1 · web ↔ v1 interno", () => {
     const contextResponse = page.waitForResponse(finalResponse(`${INTERNAL}/service/context`));
     const unreadResponse = page.waitForResponse(finalResponse(`${INTERNAL}/notifications/unread-count`));
     await page
-      .locator('nav[aria-label="Módulos del control interno"] a[href="/admin/service"]')
+      .locator('nav[aria-label="Módulos del control interno"] a[href="/admin/service/orders"]')
       .first()
       .click();
     expect((await contextResponse).status(), "service/context").toBe(200);

@@ -359,9 +359,16 @@ class V1ServiceOrderListView(V1ServiceSurfaceMixin, APIView):
             ))
         )
 
-        wanted_status = request.query_params.get('status', '').strip()
-        if wanted_status:
-            rows = rows.filter(status=wanted_status)
+        # One code, or several separated by commas: a work queue lists a few
+        # consecutive stages (SVC-NAV-01). A single code behaves as it always
+        # did, and a code that does not exist simply matches nothing.
+        wanted_statuses = [
+            code.strip()
+            for code in request.query_params.get('status', '').split(',')
+            if code.strip()
+        ]
+        if wanted_statuses:
+            rows = rows.filter(status__in=wanted_statuses)
 
         search = request.query_params.get('search', '').strip()
         if search:
