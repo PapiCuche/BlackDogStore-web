@@ -62,7 +62,7 @@ const TREND_MARK: Record<string, string> = {
 
 function Kpi({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="rounded-2xl border border-bd-border bg-surface p-4">
+    <div className="rounded-xl border border-bd-border bg-surface p-4">
       <p className="text-[11px] uppercase tracking-widest text-muted">{label}</p>
       <p className="mt-1 font-display text-xl text-foreground">{value}</p>
       {hint ? <p className="mt-0.5 text-[11px] text-muted">{hint}</p> : null}
@@ -216,7 +216,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
               ([label, c]) => (
                 <div
                   key={label}
-                  className="rounded-2xl border border-bd-border bg-surface p-4"
+                  className="rounded-xl border border-bd-border bg-surface p-4"
                 >
                   <p className="text-[11px] uppercase tracking-widest text-muted">
                     {label}
@@ -240,7 +240,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
               Todavía no hay ventas registradas en este periodo.
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+            <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
               <table className="w-full min-w-[40rem] text-left text-sm">
                 <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                   <tr>
@@ -313,7 +313,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
             </p>
           ) : (
             <>
-              <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+              <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
                 <table className="w-full min-w-[62rem] text-left text-sm">
                   <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                     <tr>
