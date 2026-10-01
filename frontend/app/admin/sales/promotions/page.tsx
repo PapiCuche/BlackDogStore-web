@@ -311,7 +311,7 @@ function ComboForm({
       {picked.length ? (
         <div className="space-y-2">
           {picked.map((p) => (
-            <div key={p.product} className="flex items-center gap-3 rounded-lg bg-black/30 p-2">
+            <div key={p.product} className="flex items-center gap-3 rounded-lg bg-surface p-2">
               <span className="flex-1 text-sm text-foreground">{p.name}</span>
               <input
                 type="number"
