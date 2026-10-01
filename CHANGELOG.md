@@ -39,6 +39,26 @@ información que no esté respaldada por código o commits.
 - `AdminShell`, sidebar y topbar consumen los foundations comunes sin alterar guards, módulos, roles ni capabilities.
 - Verificación adicional: sin `dot-grid`, sin fondos `#080808/#111111` activos y sin nuevas comprobaciones de rol/capability en los archivos intervenidos.
 
+### UXUI-04B — Superficies operativas SaaS
+
+**Estado: PARCIAL.** Sin cambios de API, base de datos, roles ni capabilities.
+
+- Nuevos primitives internos: `PageHeader`, `FilterBar`, `TableShell`, clases de input y botones compartidas.
+- Dashboard: eliminados hardcodes visuales locales sin alterar KPIs ni condiciones de visibilidad.
+- Clientes: encabezado, filtros, tabla, paginación, formulario nuevo y estados migrados al patrón común.
+- Servicio técnico: tabla y filtros normalizados; búsqueda con debounce de 300 ms; se reutilizan `Panel` y `Pill` compartidos.
+- Inventario: `InventoryUi` y dashboard de inventario migrados, por lo que subpantallas que consumen esos componentes heredan la misma base visual.
+- Configuración: campos, preview, mensajes y guardado alineados al sistema común conservando la escritura atómica existente.
+- POS: superficie de caja normalizada sin tocar scanner focus, idempotencia, cálculo servidor, descuentos, términos ni flujo de cobro.
+
+### Verificación adicional UXUI-04B
+
+- Rama sin divergencia respecto de su base al finalizar el bloque.
+- Sin `bg-[#080808]`, `bg-[#111111]`, `bg-black/40` ni `dot-grid` en los archivos intervenidos.
+- Sin botón primario emerald en POS/Servicio; verde permanece únicamente como significado de éxito/estado/ahorro.
+- No se añadieron checks de rol ni cambios a capabilities.
+- Tests/lint/build continúan **PENDIENTES DE CI/LOCAL** por la limitación de red documentada en este entorno.
+
 ### Deuda pendiente
 
 - El contenido del storefront continúa parcialmente hardcodeado por categorías/servicios; falta un modelo de contenido por tenant.
