@@ -102,7 +102,7 @@ function RateEditor({
           type="button"
           disabled={saving}
           onClick={() => void save()}
-          className="rounded border border-white/15 px-2.5 py-1 text-xs text-foreground transition hover:border-white/30 disabled:opacity-40"
+          className="rounded border border-foreground/20 px-2.5 py-1 text-xs text-foreground transition hover:border-foreground/30 disabled:opacity-40"
         >
           {saving ? "…" : "Guardar"}
         </button>
