@@ -195,7 +195,7 @@ export default function AuthPage() {
                 </div>
               ) : null}
 
-              <button className="mt-2 w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-extrabold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+              <button type="submit" className="mt-2 w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-extrabold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
                 {isLogin ? "Iniciar sesión" : "Registrarme"}
               </button>
             </form>
