@@ -61559,6 +61559,145 @@ class SvcAssignCapabilityTest(SvcFuncBase):
 
 
 
+class SvcUnassignAuthorityTest(SvcFuncBase):
+    """
+    SVC-ASSIGN-UNASSIGN. `service.orders.assign` chooses the technician and may
+    correct the choice; it may NOT leave an order with nobody responsible.
+    Releasing an order stays with `service.orders.manage`.
+
+    The refusal is the server's, and it happens before anything is written.
+    """
+
+    ASSIGNER = ('company.view', 'service.orders.view', 'service.orders.assign')
+    MANAGER = ('company.view', 'service.orders.view', 'service.orders.manage')
+
+    def setUp(self):
+        super().setUp()
+        self.tech = self.member('svc_resp', self.VIEW)
+        self.other_tech = self.member('svc_resp_2', self.VIEW)
+        self.order = self.make_order(branch=self.branch_a)
+        _m8_service.assign_technician(
+            repair_order=self.order, technician=self.tech, actor=self.staff,
+        )
+
+    def post(self, technician_id):
+        return self.client.post(
+            self.assignment_url(self.order), {'technician_id': technician_id}, format='json',
+        )
+
+    def footprint(self):
+        from .models import Notification
+
+        self.order.refresh_from_db()
+        return {
+            'assignments': list(
+                _M8Assignment.objects.filter(repair_order=self.order)
+                .order_by('pk').values_list('pk', 'technician_id', 'unassigned_at'),
+            ),
+            'history': _M8History.objects.filter(repair_order=self.order).count(),
+            'audit': AdminAuditLog.objects.count(),
+            'notifications': Notification.objects.count(),
+            'order': (self.order.status, self.order.updated_at),
+        }
+
+    def current(self):
+        return _M8Assignment.objects.get(repair_order=self.order, unassigned_at__isnull=True)
+
+    # -- what `assign` may do ---------------------------------------------------
+
+    def test_assign_may_assign_an_order_nobody_has(self):
+        fresh = self.make_order(branch=self.branch_a)
+        self.acting_with(*self.ASSIGNER)
+        res = self.client.post(
+            self.assignment_url(fresh), {'technician_id': self.tech.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(
+            _M8Assignment.objects.get(repair_order=fresh, unassigned_at__isnull=True).technician,
+            self.tech,
+        )
+
+    def test_assign_may_reassign_and_the_history_is_kept(self):
+        self.acting_with(*self.ASSIGNER)
+        res = self.post(self.other_tech.pk)
+        self.assertEqual(res.status_code, 200, res.data)
+
+        rows = list(_M8Assignment.objects.filter(repair_order=self.order).order_by('pk'))
+        self.assertEqual([row.technician for row in rows], [self.tech, self.other_tech])
+        self.assertIsNotNone(rows[0].unassigned_at)
+        self.assertIsNone(rows[1].unassigned_at)
+
+    # -- what it may not --------------------------------------------------------
+
+    def test_assign_may_not_leave_the_order_without_a_technician(self):
+        self.acting_with(*self.ASSIGNER)
+        before = self.footprint()
+
+        res = self.post(None)
+
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(self.footprint(), before)
+        self.assertEqual(self.current().technician, self.tech)
+
+    def test_the_refusal_does_not_depend_on_there_being_somebody_to_release(self):
+        fresh = self.make_order(branch=self.branch_a)
+        self.acting_with(*self.ASSIGNER)
+        res = self.client.post(
+            self.assignment_url(fresh), {'technician_id': None}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertFalse(_M8Assignment.objects.filter(repair_order=fresh).exists())
+
+    def test_manage_still_releases_the_order(self):
+        self.acting_with(*self.MANAGER)
+        res = self.post(None)
+        self.assertEqual(res.status_code, 200, res.data)
+        row = _M8Assignment.objects.get(repair_order=self.order)
+        self.assertIsNotNone(row.unassigned_at)
+        self.assertEqual(res.data['technician_name'], '')
+
+    def test_assign_together_with_manage_releases_too(self):
+        self.acting_with(*self.MANAGER, 'service.orders.assign')
+        self.assertEqual(self.post(None).status_code, 200)
+
+    def test_without_assign_or_manage_nothing_is_allowed(self):
+        self.acting_with('company.view', 'service.orders.view')
+        before = self.footprint()
+        for technician_id in (None, self.other_tech.pk):
+            self.assertEqual(self.post(technician_id).status_code, 403, technician_id)
+        self.assertEqual(self.footprint(), before)
+
+    # -- the rest of the contract did not move ------------------------------------
+
+    def test_a_technician_of_another_company_is_still_not_found(self):
+        foreigner = _m7_user('svc_resp_foreign')
+        _assign(
+            Membership.objects.create(user=foreigner, company=self.other, role='customer'),
+            _role(self.other, 'Rol ajeno resp', capabilities=list(self.VIEW), slug='rol-ajeno-resp'),
+        )
+        self.acting_with(*self.ASSIGNER)
+        before = self.footprint()
+        self.assertEqual(self.post(foreigner.pk).status_code, 404)
+        self.assertEqual(self.footprint(), before)
+
+    def test_a_technician_outside_the_branch_is_still_not_eligible(self):
+        elsewhere = self.member('svc_resp_b', self.VIEW, branches=[self.branch_b])
+        self.acting_with(*self.ASSIGNER)
+        before = self.footprint()
+        self.assertEqual(self.post(elsewhere.pk).status_code, 404)
+        self.assertEqual(self.footprint(), before)
+
+    def test_the_candidates_answer_keeps_its_shape(self):
+        self.acting_with(*self.ASSIGNER)
+        res = self.client.get(self.assignment_url(self.order))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(sorted(res.data), ['candidates', 'current'])
+        self.assertEqual(res.data['current']['technician'], self.tech.pk)
+        self.assertTrue(res.data['candidates'])
+        for row in res.data['candidates']:
+            self.assertEqual(sorted(row), ['id', 'name'])
+
+
 class SvcTechnicianEligibilityTest(SvcFuncBase):
     """
     If the order can be assigned to someone, it can appear in their queue: the

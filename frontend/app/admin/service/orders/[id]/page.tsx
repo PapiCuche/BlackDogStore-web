@@ -408,7 +408,9 @@ function AssignmentSection({ data, may, busy, run, slug, orderId }: SectionProps
         >
           Asignar
         </Button>
-        {data.order.technician_name ? (
+        {/* Dejar la orden sin responsable es de quien la gestiona: con sólo
+            `service.orders.assign` el servidor lo rechaza. */}
+        {data.order.technician_name && may(CAP_ORDERS_MANAGE) ? (
           <Confirm
             label="Quitar"
             question="¿Dejar la orden sin técnico?"

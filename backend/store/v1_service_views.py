@@ -603,7 +603,8 @@ class V1ServiceOrderAssignmentView(V1ServiceSurfaceMixin, APIView):
     def require_assignment_authority(self, company):
         """
         `service.orders.manage`, as always — or `service.orders.assign` held by
-        somebody who may SEE orders.
+        somebody who may SEE orders. Releasing an order (a null technician) is
+        narrower still: see `post`.
 
         Both answers of this endpoint carry the order: who has it now, and after
         a change the whole detail. The narrow capability says who gets a device;
@@ -632,11 +633,19 @@ class V1ServiceOrderAssignmentView(V1ServiceSurfaceMixin, APIView):
     def post(self, request, company_slug=None, pk=None):
         company = self.get_internal_company()
         self.require_assignment_authority(company)
-        order = self.get_order(company, pk)
 
         serializer = V1ServiceAssignmentWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         technician_id = serializer.validated_data.get('technician_id')
+
+        # SVC-ASSIGN-UNASSIGN. `service.orders.assign` chooses the technician
+        # and may correct the choice. Leaving an order with NOBODY responsible
+        # is a different act, and it stays with whoever manages orders. Decided
+        # before the order is looked up, so a refusal writes and reveals nothing.
+        if technician_id is None:
+            self.require_capability(company, CAP_ORDERS_MANAGE)
+
+        order = self.get_order(company, pk)
 
         if technician_id is None:
             service.unassign_technician(

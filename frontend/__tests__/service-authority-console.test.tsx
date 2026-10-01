@@ -67,9 +67,9 @@ function mockApi(overrides: (path: string, method: string) => unknown | undefine
   });
 }
 
-async function openOrderAs(caps: string[]) {
+async function openOrderAs(caps: string[], order: Partial<typeof ORDER> = {}) {
   mockContext = { user: user(), dashboard: dashboard(caps), selectedCompanyId: 7, selectCompany: jest.fn(), reload: jest.fn() };
-  mockApi();
+  mockApi((path) => (path.endsWith('/orders/1/') ? { ...ORDER, ...order } : undefined));
   await act(async () => {
     render(<Suspense fallback="Cargando"><ServiceOrderPage params={Promise.resolve({ id: '1' })} /></Suspense>);
   });
@@ -83,6 +83,19 @@ describe('asignación de técnico', () => {
     expect(within(picker).getByRole('option', { name: 'Ana Técnica' })).toBeInTheDocument();
     // …y no por eso puede mover la orden por el taller.
     expect(screen.queryByText('Mover la orden')).not.toBeInTheDocument();
+  });
+
+  // SVC-ASSIGN-UNASSIGN: dejar una orden sin responsable es de quien la gestiona.
+  it('con assign se puede corregir el técnico, no dejar la orden sin él', async () => {
+    await openOrderAs(['service.orders.view', 'service.orders.assign'], { technician_name: 'Ana Técnica' });
+    expect(screen.getByRole('button', { name: 'Asignar' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Quitar' })).not.toBeInTheDocument();
+  });
+
+  it('con manage se ofrece además quitarlo', async () => {
+    await openOrderAs(['service.orders.view', 'service.orders.manage'], { technician_name: 'Ana Técnica' });
+    expect(screen.getByRole('button', { name: 'Asignar' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Quitar' })).toBeInTheDocument();
   });
 
   it('sin assign ni manage no se piden candidatos', async () => {
