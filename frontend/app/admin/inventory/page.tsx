@@ -104,29 +104,36 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
           title="Inventario"
           description="Stock por sucursal, movimientos, reposición y control físico dentro del alcance de tu cuenta."
           actions={
-            <>
-              <BranchSelector
-                access={scope.access}
-                value={scope.branch}
-                onChange={(next) => {
-                  setLoading(true);
-                  scope.setBranch(next);
-                }}
-              />
-              {[
-                ["/admin/inventory/movements", "Movimientos"],
-                ["/admin/inventory/transfers", "Transferencias"],
-                ["/admin/inventory/counts", "Recuentos"],
-                ["/admin/inventory/replenishment", "Reposición"],
-                ["/admin/inventory/reports", "Reportes"],
-              ].map(([href, label]) => (
-                <Link key={href} href={href} className={internalButtonClass}>
-                  {label}
-                </Link>
-              ))}
-            </>
+            <BranchSelector
+              access={scope.access}
+              value={scope.branch}
+              onChange={(next) => {
+                setLoading(true);
+                scope.setBranch(next);
+              }}
+            />
           }
         />
+
+        <nav className="-mt-2 overflow-x-auto border-b border-bd-border pb-3" aria-label="Secciones de inventario">
+          <div className="flex min-w-max gap-1">
+            {[
+              ["/admin/inventory/movements", "Movimientos"],
+              ["/admin/inventory/transfers", "Transferencias"],
+              ["/admin/inventory/counts", "Recuentos"],
+              ["/admin/inventory/replenishment", "Reposición"],
+              ["/admin/inventory/reports", "Reportes"],
+            ].map(([href, label]) => (
+              <Link
+                key={href}
+                href={href}
+                className="rounded-lg px-3 py-2 text-xs font-semibold text-muted transition hover:bg-foreground/[0.04] hover:text-foreground"
+              >
+                {label}
+              </Link>
+            ))}
+          </div>
+        </nav>
 
         <ScopeNote scope={data?.dashboard.scope} />
 
