@@ -215,7 +215,7 @@ export function MobileSidebar({
     <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navegación del control interno">
       <button
         type="button"
-        aria-label="Cerrar menú"
+        aria-label="Cerrar navegación al hacer clic fuera"
         onClick={onClose}
         tabIndex={-1}
         className="absolute inset-0 h-full w-full bg-black/70"
