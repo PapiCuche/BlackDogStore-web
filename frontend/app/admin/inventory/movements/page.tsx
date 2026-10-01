@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
-import { PageHeader, internalButtonClass, internalInputClass } from "../../components/internal-ui";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { StaffGuard } from "../../components/StaffGuard";
 import { StockMovementForm } from "../../components/StockMovementForm";
 import {
