@@ -62087,3 +62087,174 @@ class SvcCollectPresetTest(TestCase):
         first = {slug: sorted(self.caps(slug)) for slug in (*self.PRESETS, 'administrador')}
         self.run_migration()
         self.assertEqual(first, {slug: sorted(self.caps(slug)) for slug in first})
+
+# -- SVC-FUNC-01 · fixtures E2E y línea de servicio ----------------------------
+
+@override_settings(DEBUG=True)
+class SvcE2eServiceFixtureSeedTest(TestCase):
+    """
+    The browser suite needs a repair with an APPROVED quote to prove a
+    technician can record a payment. A test cannot build one and clean it up:
+    `purge_e2e_data` refuses, rightly, to delete an order somebody worked on.
+
+    So `seed_demo_users --e2e-fixtures` keeps one of its own: assigned to
+    `dev_technician`, approved, with money still owed. It is not marked «[E2E]»,
+    so the browser purge neither deletes it nor stops because of it.
+    """
+
+    SLUG = 'svc-e2e-seed'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('SVC E2E SA', self.SLUG)
+        Branch.objects.create(company=self.company, name='Principal')
+
+    def _seed(self, **options):
+        call_command('seed_demo_users', company_slug=self.SLUG, stdout=StringIO(), **options)
+
+    def _technician(self):
+        return User.objects.get(username='dev_technician')
+
+    def _fixtures(self):
+        from .management.commands.seed_demo_users import E2E_SERVICE_FIXTURE_ISSUE
+
+        return _M8RepairOrder.objects.filter(
+            company=self.company, reported_issue=E2E_SERVICE_FIXTURE_ISSUE,
+        ).order_by('pk')
+
+    def test_it_is_an_approved_repair_assigned_to_the_demo_technician(self):
+        self._seed(e2e_fixtures=True)
+        order = self._fixtures().get()
+        self.assertEqual(order.status, _M8Status.APPROVED)
+        self.assertEqual(
+            order.assignments.get(unassigned_at__isnull=True).technician, self._technician(),
+        )
+        summary = _m8_service.service_payment_summary(order)
+        self.assertEqual(summary['outstanding'], Decimal('120.00'))
+        # What is owed is a described service, not a product of the catalogue.
+        line = _m8_service.financial_quote(order).items.get()
+        self.assertEqual(line.item_type, 'service')
+        self.assertIsNone(line.product_id)
+
+    def test_without_the_flag_there_is_none(self):
+        self._seed()
+        self.assertFalse(self._fixtures().exists())
+
+    def test_reseeding_keeps_the_one_that_still_owes_money(self):
+        self._seed(e2e_fixtures=True)
+        self._seed(e2e_fixtures=True)
+        self.assertEqual(self._fixtures().count(), 1)
+
+    def test_a_fully_paid_one_is_replaced_by_a_fresh_one(self):
+        self._seed(e2e_fixtures=True)
+        paid = self._fixtures().get()
+        _m8_service.record_service_payment(
+            repair_order=paid, amount=Decimal('120.00'), method='cash',
+            actor=self._technician(), idempotency_key='svc-e2e-seed-full',
+        )
+        self._seed(e2e_fixtures=True)
+        self.assertEqual(self._fixtures().count(), 2)
+        fresh = self._fixtures().last()
+        self.assertEqual(
+            _m8_service.service_payment_summary(fresh)['outstanding'], Decimal('120.00'),
+        )
+
+    def test_it_touches_nothing_of_the_shop(self):
+        from .models import FiscalDocument, Order as _Order
+
+        self._seed(e2e_fixtures=True)
+        self.assertEqual(_Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_the_browser_purge_leaves_it_alone(self):
+        self._seed(e2e_fixtures=True)
+        call_command('purge_e2e_data', company_slug=self.SLUG, stdout=StringIO())
+        self.assertEqual(self._fixtures().count(), 1)
+
+    def test_purging_the_demo_accounts_removes_it(self):
+        self._seed(e2e_fixtures=True)
+        order = self._fixtures().get()
+        _m8_service.record_service_payment(
+            repair_order=order, amount=Decimal('1.00'), method='cash',
+            actor=self._technician(), idempotency_key='svc-e2e-seed-one',
+        )
+        call_command('seed_demo_users', purge=True, stdout=StringIO())
+        self.assertFalse(self._fixtures().exists())
+        self.assertFalse(User.objects.filter(username='dev_technician').exists())
+
+    def test_purging_removes_a_fixture_somebody_kept_working_on(self):
+        self._seed(e2e_fixtures=True)
+        order = self._fixtures().get()
+        _m8_service.start_repair(repair_order=order, actor=self._technician())
+
+        call_command('seed_demo_users', purge=True, stdout=StringIO())
+
+        self.assertFalse(self._fixtures().exists())
+        self.assertFalse(User.objects.filter(username='dev_technician').exists())
+
+    def test_a_second_marked_customer_does_not_break_the_seed(self):
+        from .management.commands.seed_demo_users import E2E_SERVICE_FIXTURE_NOTE
+        from .models import Customer as _Customer
+
+        for _ in range(2):
+            _Customer.objects.create(
+                company=self.company, customer_type=_Customer.TYPE_PERSON,
+                first_name='Fixture', last_name='Cobro E2E', notes=E2E_SERVICE_FIXTURE_NOTE,
+            )
+        self._seed(e2e_fixtures=True)
+        self.assertEqual(self._fixtures().count(), 1)
+
+
+
+class SvcCustomServiceLineTest(M9ServiceBase):
+    """
+    A service the shop sells is a LINE OF A QUOTE, not a product.
+
+    The till has no "custom product": the work a technician charges for is
+    described, priced and quantified on the repair's quote, where it is
+    approved by the customer before anybody pays. This pins that the existing
+    model does it — no catalogue entry, no stock, no sale.
+    """
+
+    def add_line(self, quote, **overrides):
+        payload = {
+            'item_type': 'service', 'description': 'Limpieza interna y cambio de pasta térmica',
+            'quantity': '2', 'unit_price': '35.50',
+        }
+        payload.update(overrides)
+        return self.client.post(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/items/'), payload, format='json',
+        )
+
+    def test_a_described_service_is_priced_without_a_product(self):
+        quote = _m8_service.create_quote(repair_order=self.order, actor=self.staff)
+        products_before = Product.objects.count()
+
+        res = self.add_line(quote)
+
+        self.assertEqual(res.status_code, 201, res.data)
+        line = quote.items.get()
+        self.assertEqual(line.item_type, 'service')
+        self.assertEqual(line.description, 'Limpieza interna y cambio de pasta térmica')
+        self.assertEqual(line.quantity, Decimal('2.00'))
+        self.assertEqual(line.unit_price, Decimal('35.50'))
+        self.assertEqual(line.line_total, Decimal('71.00'))
+        self.assertIsNone(line.product_id)
+        self.assertEqual(Product.objects.count(), products_before)
+        quote.refresh_from_db()
+        self.assertEqual(quote.total, Decimal('71.00'))
+
+    def test_it_is_not_a_sale(self):
+        from .models import FiscalDocument, Order as _Order, OrderItem as _OrderItem, SalesCommission
+
+        def shop():
+            return (_Order.objects.count(), _OrderItem.objects.count(),
+                    StockMovement.objects.count(), FiscalDocument.objects.count(),
+                    SalesCommission.objects.count())
+
+        before = shop()
+        quote = _m8_service.create_quote(repair_order=self.order, actor=self.staff)
+        self.assertEqual(self.add_line(quote).status_code, 201)
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        self.assertEqual(shop(), before)

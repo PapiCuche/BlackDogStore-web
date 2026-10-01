@@ -95,6 +95,19 @@ DEMO_E2E_STAFF_USERNAME = 'dev_e2e_staff'
 DEMO_E2E_STAFF_ROLE = ('ventas', 'ventas')  # rol, área
 
 
+# SVC-FUNC-01 — a repair the browser tests may take a payment on.
+#
+# Proving that a technician can record a payment needs an order whose quote the
+# CUSTOMER approved. A browser test cannot leave one behind: `purge_e2e_data`
+# refuses to delete an order with a quote or a payment, because outside a test
+# that is somebody's work. So the seed owns one, marked with a text of its own
+# — deliberately NOT «[E2E]», which is the browser purge's marker.
+E2E_SERVICE_FIXTURE_ISSUE = '[FIXTURE-E2E] Cobro de servicio técnico'
+E2E_SERVICE_FIXTURE_NOTE = '[FIXTURE-E2E] creado por seed_demo_users --e2e-fixtures'
+E2E_SERVICE_FIXTURE_TECHNICIAN = 'dev_technician'
+E2E_SERVICE_FIXTURE_PRICE = '120.00'
+
+
 def demo_email(username: str) -> str:
     return f'{username}@{DEMO_EMAIL_DOMAIN}'
 
@@ -187,6 +200,11 @@ class Command(BaseCommand):
 
         User = self._get_user_model()
         removed, skipped = [], []
+        fixtures = self._purge_e2e_service_fixture()
+        if fixtures:
+            self.stdout.write(self.style.SUCCESS(
+                f'  eliminado  {fixtures} reparación(es) fixture de E2E'
+            ))
 
         for username in (*ALL_DEMO_USERNAMES, DEMO_E2E_STAFF_USERNAME):
             user = User.objects.filter(username=username).first()
@@ -377,6 +395,143 @@ class Command(BaseCommand):
             f'  fixture E2E  {DEMO_E2E_STAFF_USERNAME} — trabajador desechable, '
             f'no es una cuenta de acceso'
         ))
+        self._seed_e2e_service_fixture(company, decided_by=worker)
+
+    def _seed_e2e_service_fixture(self, company, *, decided_by):
+        """
+        One approved repair, assigned to the demo technician, with money owed.
+
+        Built through the SERVICES, the same ones the application calls: the
+        order is received, assigned, quoted, published and approved, so every
+        rule that guards a real repair guarded this one. Nothing of the shop is
+        involved — no sale, no stock, no receipt.
+
+        Idempotent while it is useful: a fixture that still owes money is kept;
+        once the tests have paid it off, the next seed opens another.
+        """
+        from decimal import Decimal
+
+        from store import service_services as service
+        from store.models import (
+            Branch, Customer, Device, RepairOrder, RepairQuoteItem, RepairStatusCode,
+        )
+
+        User = self._get_user_model()
+        for order in RepairOrder.objects.filter(
+            company=company, reported_issue=E2E_SERVICE_FIXTURE_ISSUE,
+        ).order_by('-pk'):
+            if service.service_payment_summary(order)['outstanding'] >= Decimal('1.00'):
+                self.stdout.write(self.style.SUCCESS(
+                    f'  fixture E2E  {order.number} — reparación aprobada con saldo'
+                ))
+                return order
+
+        technician = User.objects.get(username=E2E_SERVICE_FIXTURE_TECHNICIAN)
+        branch = Branch.objects.filter(company=company, is_active=True).order_by('pk').first()
+        if branch is None:
+            # A repair is received AT a branch. The disposable worker above does
+            # not need one, so this is said and skipped rather than failed.
+            self.stdout.write(self.style.WARNING(
+                f'  fixture E2E  sin reparación: "{company.slug}" no tiene sucursal activa'
+            ))
+            return None
+
+        # `.first()` and not `get_or_create`: the marker is a text, not a unique
+        # key, and a second marked row must not stop the seed.
+        marked = {'company': company, 'notes': E2E_SERVICE_FIXTURE_NOTE}
+        customer = Customer.objects.filter(**marked).order_by('pk').first() or Customer.objects.create(
+            customer_type=Customer.TYPE_PERSON, first_name='Fixture', last_name='Cobro E2E',
+            **marked,
+        )
+        device = (
+            Device.objects.filter(customer=customer, **marked).order_by('pk').first()
+            or Device.objects.create(
+                customer=customer, device_type=Device.TYPE_PHONE, brand='Fixture',
+                model='Cobro E2E', **marked,
+            )
+        )
+
+        order = service.create_repair_order_with_assignment(
+            technician=technician, company=company, branch=branch, customer=customer,
+            device=device, reported_issue=E2E_SERVICE_FIXTURE_ISSUE, actor=technician,
+        )
+        service.transition_repair_order(
+            repair_order=order, to_status=RepairStatusCode.DIAGNOSING, actor=technician,
+        )
+        diagnostic = service.create_diagnostic(
+            repair_order=order, actor=technician,
+            description='Fixture de pruebas de navegador.',
+            recommended_action='Servicio de prueba.',
+        )
+        quote = service.create_quote(repair_order=order, diagnostic=diagnostic, actor=technician)
+        service.add_quote_item(
+            quote=quote, item_type=RepairQuoteItem.TYPE_SERVICE,
+            description='Servicio técnico de prueba', quantity=1,
+            unit_price=E2E_SERVICE_FIXTURE_PRICE,
+        )
+        service.publish_quote(quote=quote, actor=technician)
+        quote.refresh_from_db()
+        service.record_quote_decision(
+            quote=quote, customer=customer, user=decided_by, decision='approve',
+        )
+
+        order.refresh_from_db()
+        self.stdout.write(self.style.SUCCESS(
+            f'  fixture E2E  {order.number} — reparación aprobada, asignada a '
+            f'{E2E_SERVICE_FIXTURE_TECHNICIAN}'
+        ))
+        return order
+
+    def _purge_e2e_service_fixture(self):
+        """
+        Remove the repairs `_seed_e2e_service_fixture` created — and only those.
+
+        `TechnicianAssignment.technician` is PROTECT, so the demo technician
+        cannot be deleted while a fixture is assigned to them. These rows were
+        written by this command and are found by its own exact marker; nothing a
+        person created carries it.
+        """
+        from store.models import (
+            AdminAuditLog, Customer, Device, Notification, NotificationEvent,
+            RepairDelivery, RepairDiagnostic, RepairOrder, RepairPayment, RepairQuote,
+            RepairQuoteDecision, RepairStatusHistory, TechnicianAssignment,
+        )
+
+        orders = RepairOrder.objects.filter(reported_issue=E2E_SERVICE_FIXTURE_ISSUE)
+        order_ids = list(orders.values_list('pk', flat=True))
+        NotificationEvent.objects.filter(
+            target_type='repair_order', target_id__in=order_ids,
+        ).delete()
+        Notification.objects.filter(
+            target_type='repair_order', target_id__in=order_ids,
+        ).delete()
+        AdminAuditLog.objects.filter(
+            target_type='repair_order', target_id__in=[str(pk) for pk in order_ids],
+        ).delete()
+        # Somebody may have kept working on a fixture by hand. Everything that
+        # hangs from the order goes with it, or the purge would stop half-way
+        # and leave the demo accounts behind.
+        for order in orders:
+            order.part_usages.all().delete()
+            order.quality_checks.all().delete()
+            order.executions.all().delete()
+        RepairDelivery.objects.filter(repair_order_id__in=order_ids).delete()
+        RepairPayment.objects.filter(repair_order_id__in=order_ids).delete()
+        RepairQuoteDecision.objects.filter(repair_order_id__in=order_ids).delete()
+        RepairQuote.objects.filter(repair_order_id__in=order_ids).delete()
+        RepairDiagnostic.objects.filter(repair_order_id__in=order_ids).delete()
+        TechnicianAssignment.objects.filter(repair_order_id__in=order_ids).delete()
+        RepairStatusHistory.objects.filter(repair_order_id__in=order_ids).delete()
+        orders.delete()
+        # A marked device or customer that somebody gave an order of their own
+        # is no longer only the fixture's: it stays.
+        Device.objects.filter(
+            notes=E2E_SERVICE_FIXTURE_NOTE, repair_orders__isnull=True,
+        ).delete()
+        Customer.objects.filter(
+            notes=E2E_SERVICE_FIXTURE_NOTE, devices__isnull=True, repair_orders__isnull=True,
+        ).delete()
+        return len(order_ids)
 
     DEMO_FISCAL_SERIES = (('01', 'F001', 'factura'), ('03', 'B001', 'boleta'))
 
