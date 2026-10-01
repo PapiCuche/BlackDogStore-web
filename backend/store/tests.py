@@ -61120,3 +61120,112 @@ class F2SelectedBranchWriteScopeTest(TestCase):
             self._edit(master, self.b2.pk, name='Por plataforma').status_code,
             status.HTTP_200_OK,
         )
+
+
+class F2SelectedCompanySettingsScopeTest(TestCase):
+    """
+    The company-level numbering (its own series and the company/branch scope
+    switch) and the company settings (identity, branding, currency) reach every
+    branch. A member restricted to B1 holding `company.manage` could change all
+    of them. They now need company-wide authority; the series of a branch the
+    member reaches stays theirs to edit.
+    """
+
+    CAPS = ['company.view', 'company.manage']
+
+    def setUp(self):
+        from .sequences import ensure_branch_sequence, ensure_company_sequence
+
+        cache.clear()
+        self.company = _p2d_company('f2-wsc')
+        self.b1 = _p2d_branch(self.company, 'F2WC B1')
+        self.b2 = _p2d_branch(self.company, 'F2WC B2')
+        self.company_seq = ensure_company_sequence(self.company)
+        _p2e_set_scope(self.company, CompanySettings.SEQUENCE_SCOPE_BRANCH)
+        self.seq_b1 = ensure_branch_sequence(self.company, self.b1)
+        self.selected, _ = _p2d_member(
+            self.company, 'f2wc_selected', self.CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2wc_wide', self.CAPS)
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _q(self):
+        return f'?company={self.company.pk}'
+
+    def _seq_state(self, seq):
+        seq.refresh_from_db()
+        return seq.prefix, seq.padding, seq.next_value, seq.is_active
+
+    def test_a_selected_member_cannot_edit_the_company_series(self):
+        before = self._seq_state(self.company_seq)
+        res = self._as(self.selected).patch(
+            f'/api/admin/sequences/{self.company_seq.pk}/', {'prefix': 'ALL-'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._seq_state(self.company_seq), before)
+
+    def test_a_selected_member_may_still_read_the_company_series(self):
+        res = self._as(self.selected).get(f'/api/admin/sequences/{self.company_seq.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_a_selected_member_may_edit_the_series_of_their_branch(self):
+        res = self._as(self.selected).patch(
+            f'/api/admin/sequences/{self.seq_b1.pk}/', {'prefix': 'B1-'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_a_selected_member_cannot_switch_the_numbering_scope(self):
+        res = self._as(self.selected).patch(
+            f'/api/admin/sequences/scope/{self._q()}',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_COMPANY}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        row = CompanySettings.objects.get(company=self.company)
+        self.assertEqual(row.sales_note_sequence_scope, CompanySettings.SEQUENCE_SCOPE_BRANCH)
+
+    def test_a_selected_member_cannot_change_company_settings(self):
+        row = CompanySettings.objects.get(company=self.company)
+        before = (self.company.name, row.primary_color, row.currency)
+        res = self._as(self.selected).patch(
+            f'/api/admin/company-settings/{self._q()}',
+            {'name': 'Renombrada', 'primary_color': '#123456'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.company.refresh_from_db()
+        row.refresh_from_db()
+        self.assertEqual((self.company.name, row.primary_color, row.currency), before)
+
+    def test_a_selected_member_may_still_read_company_settings(self):
+        res = self._as(self.selected).get(f'/api/admin/company-settings/{self._q()}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_a_refused_change_is_not_audited_as_done(self):
+        actions = ['sequence_updated', 'sequence_scope_changed', 'company_settings_updated']
+        before = AdminAuditLog.objects.filter(action__in=actions).count()
+        client = self._as(self.selected)
+        client.patch(f'/api/admin/sequences/{self.company_seq.pk}/', {'prefix': 'X-'},
+                     format='json')
+        client.patch(f'/api/admin/sequences/scope/{self._q()}',
+                     {'scope': CompanySettings.SEQUENCE_SCOPE_COMPANY}, format='json')
+        client.patch(f'/api/admin/company-settings/{self._q()}', {'name': 'X'},
+                     format='json')
+        self.assertEqual(AdminAuditLog.objects.filter(action__in=actions).count(), before)
+
+    def test_a_company_wide_member_keeps_company_configuration(self):
+        client = self._as(self.wide)
+        self.assertEqual(client.patch(
+            f'/api/admin/sequences/{self.company_seq.pk}/', {'prefix': 'ALL-'},
+            format='json').status_code, status.HTTP_200_OK)
+        self.assertEqual(client.patch(
+            f'/api/admin/sequences/scope/{self._q()}',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_COMPANY},
+            format='json').status_code, status.HTTP_200_OK)
+        self.assertEqual(client.patch(
+            f'/api/admin/company-settings/{self._q()}', {'primary_color': '#123456'},
+            format='json').status_code, status.HTTP_200_OK)

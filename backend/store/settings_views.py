@@ -185,6 +185,22 @@ class StorefrontConfigView(APIView):
 # Internal configuration
 # ---------------------------------------------------------------------------
 
+def _require_company_wide_scope(request, company):
+    """
+    WRITE-SCOPE-01. A 403 Response when the caller's branch scope does not cover
+    the whole company, else None. For writes whose effect reaches every branch:
+    `company.manage` says WHAT may change, not that a member restricted to some
+    branches may change it for all of them. Reads are not gated by this.
+    """
+    from .tenancy import COMPANY_WIDE_SCOPE_REQUIRED, has_company_wide_scope
+
+    if has_company_wide_scope(request.user, company):
+        return None
+    return Response(
+        {'detail': COMPANY_WIDE_SCOPE_REQUIRED}, status=status.HTTP_403_FORBIDDEN,
+    )
+
+
 def _settings_context(request, capability):
     """
     Resolve the company this configuration request acts on and authorise it.
@@ -278,6 +294,9 @@ class AdminCompanySettingsView(APIView):
 
     def patch(self, request):
         company, settings_row, error = _settings_context(request, CAP_COMPANY_MANAGE)
+        if error:
+            return error
+        error = _require_company_wide_scope(request, company)
         if error:
             return error
 
@@ -471,6 +490,12 @@ class AdminSequenceDetailView(APIView):
         sequence, error = self._scoped(request, pk)
         if error:
             return error
+        # The company-level series numbers documents of every branch; a branch
+        # series reached by the caller stays theirs (F-BRANCH-03 hides the rest).
+        if sequence.branch_id is None:
+            error = _require_company_wide_scope(request, sequence.company)
+            if error:
+                return error
 
         ser = InternalSequenceWriteSerializer(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
@@ -558,6 +583,9 @@ class AdminSequenceScopeView(APIView):
 
     def patch(self, request):
         company, settings_row, error = _settings_context(request, CAP_COMPANY_MANAGE)
+        if error:
+            return error
+        error = _require_company_wide_scope(request, company)
         if error:
             return error
 
