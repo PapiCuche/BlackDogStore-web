@@ -45,7 +45,7 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
   // One company: a dropdown with a single option is noise, not a choice.
   if (available.length <= 1 && current) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2">
+      <div className="flex min-w-0 max-w-[12rem] items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 sm:max-w-[16rem]">
         <IconStore className="h-4 w-4 text-muted" />
         <span className="truncate text-sm font-medium text-foreground">
           {current.name}
@@ -62,7 +62,7 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls="company-switcher-options"
-        className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm transition hover:border-foreground/20"
+        className="flex min-w-0 max-w-[12rem] items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm transition hover:border-foreground/20 sm:max-w-[16rem]"
       >
         <IconStore className="h-4 w-4 text-muted" />
         <span className="max-w-[10rem] truncate font-medium text-foreground">
@@ -76,7 +76,7 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
           id="company-switcher-options"
           role="listbox"
           aria-label="Seleccionar empresa"
-          className="absolute right-0 z-50 mt-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-bd-border bg-surface p-1.5"
+          className="absolute right-0 z-50 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-bd-border bg-surface p-1.5"
         >
           {available.map((company) => {
             const isCurrent = current?.id === company.id;
