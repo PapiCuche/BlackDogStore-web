@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { API_BASE, fetcher } from "../lib/api";
 import { getCurrentUser } from "../lib/auth";
-import { getSessionKey, emitCartChange } from "../lib/cart";
+import { clearStoredCoupon, emitCartChange, getSessionKey, readStoredCoupon, writeStoredCoupon } from "../lib/cart";
 import { formatMoney } from "../lib/format";
 import { CartItemCard } from "../components/CartItemCard";
 
@@ -30,11 +30,7 @@ export default function CartPage() {
   const sessionKey = getSessionKey();
 
   const [couponInput, setCouponInput] = useState("");
-  const [coupon, setCoupon] = useState<Coupon | null>(() => {
-    if (typeof window === "undefined") return null;
-    const saved = sessionStorage.getItem("blackdog_coupon");
-    return saved ? (JSON.parse(saved) as Coupon) : null;
-  });
+  const [coupon, setCoupon] = useState<Coupon | null>(() => readStoredCoupon());
   const [couponError, setCouponError] = useState<string | null>(null);
   const [couponLoading, setCouponLoading] = useState(false);
 
@@ -95,11 +91,11 @@ export default function CartPage() {
       if (!res.ok) {
         setCouponError(data.detail || "Cupón no válido.");
         setCoupon(null);
-        sessionStorage.removeItem("blackdog_coupon");
+        clearStoredCoupon();
       } else {
         setCoupon(data);
         setCouponError(null);
-        sessionStorage.setItem("blackdog_coupon", JSON.stringify(data));
+        writeStoredCoupon(data);
         setCouponInput("");
       }
     } catch {
@@ -112,7 +108,7 @@ export default function CartPage() {
   function removeCoupon() {
     setCoupon(null);
     setCouponError(null);
-    sessionStorage.removeItem("blackdog_coupon");
+    clearStoredCoupon();
   }
 
   const unitCount = items.reduce((sum, item) => sum + item.quantity, 0);
