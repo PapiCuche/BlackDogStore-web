@@ -6,6 +6,18 @@
 
 ---
 
+## Actualización UX/UI — 30 de septiembre de 2026
+
+> Esta sección actualiza exclusivamente el frontend de la rama `uxui/header-hero-foundations`; el resto de este documento conserva contenido histórico y debe seguir contrastándose con código, migraciones y tests.
+
+- **IMPLEMENTADO en rama:** foundations visuales semánticos, Montserrat, Header, Hero, Home, ProductCard, catálogo, servicios, Footer, Auth, carrito y presentación del checkout.
+- **PARCIAL:** branding multiempresa. Los seis colores del tenant siguen siendo la fuente de datos, pero aún existen superficies no migradas y contenido comercial hardcodeado fuera del bloque intervenido.
+- **PENDIENTE:** design system unificado del panel SaaS interno.
+- **PENDIENTE DE VERIFICACIÓN:** tests, lint y build de esta rama; no pudieron ejecutarse desde este entorno porque el contenedor no resolvió `github.com` para obtener el repositorio/dependencias.
+- **Sin cambios** en autenticación, roles, endpoints, base de datos, migraciones o flujo de pago.
+
+---
+
 ## 1. Resumen ejecutivo
 
 Black Dog Store es un ecommerce en construcción compuesto por:
@@ -98,7 +110,7 @@ La separación principal entre frontend y backend es correcta para la etapa actu
 - TypeScript 5.
 - Tailwind CSS 4.
 - App Router.
-- `next/font` con Inter y Unbounded.
+- `next/font` con Montserrat en la rama UX/UI; `master` debe verificarse antes de merge.
 
 ### Backend
 
