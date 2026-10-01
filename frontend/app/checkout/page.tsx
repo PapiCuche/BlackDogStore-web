@@ -4,7 +4,7 @@ import { useEffect, useReducer, useState } from "react";
 import Link from "next/link";
 import Script from "next/script";
 import { useRouter } from "next/navigation";
-import { getSessionKey } from "../lib/cart";
+import { clearStoredCoupon, getSessionKey, readStoredCoupon } from "../lib/cart";
 import { API_BASE } from "../lib/api";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import {
@@ -108,10 +108,7 @@ export default function CheckoutPage() {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     setCancelled(params.get("cancelled") === "true");
-    const saved = sessionStorage.getItem("blackdog_coupon");
-    if (saved) {
-      try { setCoupon(JSON.parse(saved)); } catch { /* ignore */ }
-    }
+    setCoupon(readStoredCoupon());
     getCurrentUser()
       .then((profile) => {
         if (profile) {
@@ -185,7 +182,7 @@ export default function CheckoutPage() {
       if (!sdkUrlFor(data.environment)) {
         throw new Error("Entorno de pago no reconocido.");
       }
-      sessionStorage.removeItem("blackdog_coupon");
+      clearStoredCoupon();
       setPayment(data);
     } catch (e: unknown) {
       setMessage(e instanceof Error ? e.message : "Error al iniciar el pago.");
