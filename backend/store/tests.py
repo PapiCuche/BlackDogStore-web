@@ -60985,3 +60985,138 @@ class F2MembershipBranchOracleTest(TestCase):
         res = self._patch(self.wide, self.b2.pk)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['branch'], self.b2.pk)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · WRITE-SCOPE-01 — branch scope also caps what a mutation reaches
+# ---------------------------------------------------------------------------
+
+class F2SelectedBranchWriteScopeTest(TestCase):
+    """
+    `company.manage` says WHAT may be changed; branch scope says WHERE. A member
+    restricted to B1 could create branches, edit or deactivate B2 and choose the
+    branch the online store ships from, because these writes asked only
+    `can_manage_company`. Reading the roster stays as RBAC-01 left it.
+    """
+
+    CAPS = ['company.view', 'company.manage']
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('f2-ws')
+        self.b1 = _p2d_branch(self.company, 'F2W B1')
+        self.b2 = _p2d_branch(self.company, 'F2W B2')
+        self.other = _p2d_company('f2-ws-other')
+        self.foreign = _p2d_branch(self.other, 'F2W Ajena')
+        self.selected, _ = _p2d_member(
+            self.company, 'f2w_selected', self.CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2w_wide', self.CAPS)
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _create(self, user, name='F2W Nueva'):
+        return self._as(user).post('/api/admin/branches/', {
+            'company': self.company.pk, 'name': name,
+        }, format='json')
+
+    def _edit(self, user, branch_pk, **data):
+        return self._as(user).patch(
+            f'/api/admin/branches/{branch_pk}/', data, format='json',
+        )
+
+    def _fulfillment(self, user, branch_pk):
+        return self._as(user).patch(
+            f'/api/admin/companies/{self.company.pk}/fulfillment-branch/',
+            {'branch': branch_pk}, format='json',
+        )
+
+    # -- SELECTED ----------------------------------------------------------------
+
+    def test_a_selected_member_cannot_create_a_branch(self):
+        before = Branch.objects.filter(company=self.company).count()
+        res = self._create(self.selected)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(Branch.objects.filter(company=self.company).count(), before)
+
+    def test_a_selected_member_may_edit_their_branch(self):
+        res = self._edit(self.selected, self.b1.pk, phone='999000111')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.b1.refresh_from_db()
+        self.assertEqual(self.b1.phone, '999000111')
+
+    def test_a_selected_member_cannot_edit_an_unreached_branch(self):
+        res = self._edit(self.selected, self.b2.pk, name='Tomada')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.b2.refresh_from_db()
+        self.assertEqual(self.b2.name, 'F2W B2')
+
+    def test_a_selected_member_cannot_deactivate_an_unreached_branch(self):
+        res = self._edit(self.selected, self.b2.pk, is_active=False)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.b2.refresh_from_db()
+        self.assertTrue(self.b2.is_active)
+
+    def test_missing_and_foreign_branches_still_answer_alike(self):
+        missing = self._edit(self.selected, 987654, name='X')
+        foreign = self._edit(self.selected, self.foreign.pk, name='X')
+        self.assertEqual(
+            (foreign.status_code, str(foreign.data)),
+            (missing.status_code, str(missing.data)),
+        )
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_selected_member_cannot_choose_the_fulfillment_branch(self):
+        before = self.company.default_inventory_branch_id
+        for target in (self.b1.pk, self.b2.pk, None):
+            res = self._fulfillment(self.selected, target)
+            self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, target)
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.default_inventory_branch_id, before)
+
+    def test_a_refused_write_is_not_audited_as_done(self):
+        before = AdminAuditLog.objects.filter(
+            action__in=['branch_created', 'branch_updated',
+                        'company_fulfillment_branch_changed'],
+        ).count()
+        self._create(self.selected)
+        self._edit(self.selected, self.b2.pk, is_active=False)
+        self._fulfillment(self.selected, self.b1.pk)
+        self.assertEqual(AdminAuditLog.objects.filter(
+            action__in=['branch_created', 'branch_updated',
+                        'company_fulfillment_branch_changed'],
+        ).count(), before)
+
+    def test_a_selected_member_still_reads_the_whole_roster(self):
+        res = self._as(self.selected).get('/api/admin/branches/')
+        self.assertIn(self.b2.pk, [row['id'] for row in res.data['results']])
+
+    # -- company-wide --------------------------------------------------------------
+
+    def test_a_company_wide_member_keeps_every_branch_write(self):
+        self.assertEqual(self._create(self.wide).status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            self._edit(self.wide, self.b2.pk, name='B2 renombrada').status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._fulfillment(self.wide, self.b2.pk).status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._edit(self.wide, self.b2.pk, is_active=False).status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_the_platform_master_keeps_every_branch_write(self):
+        master = User.objects.create_superuser(
+            username='f2w_master', password='x', email='m@f2w.test',
+        )
+        self.assertEqual(self._create(master).status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            self._edit(master, self.b2.pk, name='Por plataforma').status_code,
+            status.HTTP_200_OK,
+        )

@@ -1384,6 +1384,34 @@ def _granted_branches(company, membership):
     )
 
 
+# WRITE-SCOPE-01. Same refusal wherever a mutation would reach further than the
+# caller's branches.
+COMPANY_WIDE_SCOPE_REQUIRED = (
+    'Esta operación afecta a toda la empresa y requiere acceso a todas sus '
+    'sucursales.'
+)
+
+
+def has_company_wide_scope(user, company) -> bool:
+    """
+    Whether the caller's branch scope covers the WHOLE of `company`.
+
+    True for a platform master, a membership in mode ALL and the legacy bridge —
+    the company-wide rung of _branch_authority(). False for SELECTED, and for
+    anyone with no scope at all.
+
+    WRITE-SCOPE-01: branch scope caps the reach of a mutation, not only of a
+    read. A capability such as `company.manage` says WHAT may be changed; it does
+    not turn a member restricted to some branches into authority over the rest.
+    So a write whose effect spans the company — creating a branch, choosing the
+    fulfillment branch, the company series, the numbering scope, the company
+    settings — needs this as well as its capability. describe_branch_scope() is
+    for rendering and says so; this is the boolean that authorises.
+    """
+    scope, _membership = _branch_authority(user, company)
+    return scope == _SCOPE_COMPANY
+
+
 def visible_branches(user, company):
     """
     Every ACTIVE branch of `company` the caller may operate in.

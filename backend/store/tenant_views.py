@@ -40,14 +40,17 @@ from .serializers import (
 )
 from .tenancy import (
     BRANCH_SCOPE_NOT_GRANTABLE,
+    COMPANY_WIDE_SCOPE_REQUIRED,
     active_memberships,
     can_delegate_branch_scope,
     can_grant_company_role,
     can_manage_company,
     can_manage_company_memberships,
+    has_company_wide_scope,
     is_platform_admin,
     resolve_capabilities,
     scope_queryset,
+    visible_branches,
     visible_companies,
 )
 from .throttles import AdminUsersThrottle
@@ -91,6 +94,7 @@ _ROLE_NOT_GRANTABLE = (
 # One answer for a branch id that does not exist, belongs to another tenant or
 # lies outside what the caller may grant (RBAC-02): none of them is theirs.
 _BRANCH_NOT_FOUND = 'Sucursal no encontrada o sin acceso.'
+_BRANCH_NOT_REACHED = 'No puedes modificar una sucursal que no alcanzas.'
 
 
 def _grantable_branch(actor, company, branch_id):
@@ -326,6 +330,11 @@ class AdminCompanyFulfillmentBranchView(APIView):
                 {'detail': 'Se requiere rol de administrador de la empresa.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        # WRITE-SCOPE-01: where the online store ships from is company-wide.
+        if not has_company_wide_scope(request.user, company):
+            return Response(
+                {'detail': COMPANY_WIDE_SCOPE_REQUIRED}, status=status.HTTP_403_FORBIDDEN,
+            )
 
         raw = request.data.get('branch', None)
         branch = None
@@ -402,6 +411,12 @@ class AdminBranchListView(APIView):
         # can_manage_company() already short-circuits for platform admins.
         if not can_manage_company(request.user, company):
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        # WRITE-SCOPE-01: a new branch changes the company's topology and is born
+        # outside a SELECTED member's grants. Not added to them as a workaround.
+        if not has_company_wide_scope(request.user, company):
+            return Response(
+                {'detail': COMPANY_WIDE_SCOPE_REQUIRED}, status=status.HTTP_403_FORBIDDEN,
+            )
 
         branch = ser.save()
         AdminAuditLog.log(
@@ -459,6 +474,15 @@ class AdminBranchDetailView(APIView):
             return Response(
                 {'detail': 'Se requiere rol de administrador de la empresa.'},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+        # WRITE-SCOPE-01: a SELECTED member edits only a branch they reach. 403,
+        # not 404: the roster already shows them this branch (RBAC-01), so the
+        # answer reveals nothing they could not read.
+        if not has_company_wide_scope(request.user, branch.company) and not (
+            visible_branches(request.user, branch.company).filter(pk=branch.pk).exists()
+        ):
+            return Response(
+                {'detail': _BRANCH_NOT_REACHED}, status=status.HTTP_403_FORBIDDEN,
             )
 
         payload = request.data if isinstance(request.data, dict) else {}
