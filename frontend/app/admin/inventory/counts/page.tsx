@@ -15,6 +15,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { StaffGuard } from "../../components/StaffGuard";
 import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
 import { useBranchScope } from "../../lib/use-branch-scope";
@@ -52,10 +53,10 @@ export function CountStatusBadge({ count }: { count: InventoryCount }) {
     <span
       className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium ${
         emphasised
-          ? "border-white/25 bg-white/[0.08] text-white"
+          ? "border-foreground/25 bg-foreground/[0.08] text-foreground"
           : muted
-            ? "border-white/[0.06] text-zinc-600"
-            : "border-white/10 text-zinc-400"
+            ? "border-bd-border text-muted"
+            : "border-bd-border text-muted"
       }`}
     >
       {count.status_label}
@@ -127,38 +128,23 @@ function CountsContent({ user }: { user: AuthUser }) {
     }
   }
 
-  const fieldClass =
-    "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
-  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500";
+  const fieldClass = internalInputClass;
+  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-white">Recuentos físicos</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              Conteo de una sucursal. Las diferencias se aplican como corrección
-              al aprobar, contra el stock del momento de la aprobación.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href="/admin/inventory"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              ← Inventario
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title="Recuentos físicos"
+          description="Conteo de una sucursal. Las diferencias se aplican al aprobar contra el stock vigente."
+          actions={
+            <>
+              <BranchSelector access={scope.access} value={scope.branch} onChange={(next) => { setLoading(true); scope.setBranch(next); }} />
+              <Link href="/admin/inventory" className={internalButtonClass}>Inventario</Link>
+            </>
+          }
+        />
 
         <ScopeNote scope={resultScope} />
         {scope.error ? <ErrorBox message={scope.error} /> : null}
@@ -207,7 +193,7 @@ function CountsContent({ user }: { user: AuthUser }) {
               <button
                 type="submit"
                 disabled={creating}
-                className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+                className={internalPrimaryButtonClass}
               >
                 {creating ? "Creando…" : "Abrir recuento"}
               </button>
@@ -227,8 +213,8 @@ function CountsContent({ user }: { user: AuthUser }) {
                 }}
                 className={`rounded-lg border px-3 py-1.5 text-sm transition ${
                   statusFilter === option.value
-                    ? "border-white/25 bg-white/[0.06] text-white"
-                    : "border-white/10 text-zinc-400 hover:border-white/20 hover:text-white"
+                    ? "border-foreground/25 bg-foreground/[0.06] text-foreground"
+                    : "border-bd-border text-muted hover:border-foreground/20 hover:text-foreground"
                 }`}
               >
                 {option.label}
@@ -246,7 +232,7 @@ function CountsContent({ user }: { user: AuthUser }) {
           {!loading && !error && counts.length > 0 ? (
             <TableWrap>
               <thead>
-                <tr className="border-b border-white/[0.06]">
+                <tr className="border-b border-bd-border">
                   <Th>#</Th>
                   <Th>Fecha</Th>
                   <Th>Sucursal</Th>
@@ -258,11 +244,11 @@ function CountsContent({ user }: { user: AuthUser }) {
               </thead>
               <tbody>
                 {counts.map((c) => (
-                  <tr key={c.id} className="border-b border-white/[0.03]">
+                  <tr key={c.id} className="border-b border-bd-border/60">
                     <Td>
                       <Link
                         href={`/admin/inventory/counts/${c.id}`}
-                        className="transition hover:text-white"
+                        className="transition hover:text-foreground"
                       >
                         #{c.id}
                       </Link>
