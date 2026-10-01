@@ -9,7 +9,7 @@ export default function AdminError({
   reset: () => void;
 }) {
   return (
-    <main className="min-h-[70vh] bg-background px-5 py-10 text-foreground sm:px-8">
+    <main id="admin-main-content" tabIndex={-1} className="outline-none min-h-[70vh] bg-background px-5 py-10 text-foreground sm:px-8">
       <div className="mx-auto max-w-3xl rounded-xl border border-red-500/20 bg-surface p-6">
         <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted">
           Control interno
