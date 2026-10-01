@@ -30,6 +30,7 @@ import {
   type InternalContext,
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
+import { PageHeader, internalButtonClass, internalInputClass } from "../../components/internal-ui";
 import {
   fetchCommissionSettings,
   fetchCommissions,
@@ -93,15 +94,15 @@ function RateEditor({
         value={value}
         disabled={saving}
         onChange={(e) => setValue(e.target.value)}
-        className="w-24 rounded border border-white/[0.08] bg-black/40 px-2 py-1 text-right text-sm text-zinc-200 outline-none"
+        className={`${internalInputClass} w-24 text-right`}
       />
-      <span className="text-xs text-zinc-600">%</span>
+      <span className="text-xs text-muted">%</span>
       {dirty ? (
         <button
           type="button"
           disabled={saving}
           onClick={() => void save()}
-          className="rounded border border-white/15 px-2.5 py-1 text-xs text-zinc-200 transition hover:border-white/30 disabled:opacity-40"
+          className="rounded border border-white/15 px-2.5 py-1 text-xs text-foreground transition hover:border-white/30 disabled:opacity-40"
         >
           {saving ? "…" : "Guardar"}
         </button>
@@ -157,7 +158,7 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
   if (loading) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <p className="py-8 text-sm text-zinc-600">Cargando comisiones…</p>
+        <p className="py-8 text-sm text-muted">Cargando comisiones…</p>
       </AdminShell>
     );
   }
@@ -174,46 +175,45 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
   return (
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex gap-1 rounded-lg border border-white/[0.08] p-1">
-            {WINDOWS.map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setDays(value)}
-                className={`rounded px-2.5 py-1 text-xs transition ${
-                  days === value ? "bg-white/10 text-white" : "text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <Link
-            href="/admin/sales"
-            className="text-sm text-zinc-500 transition hover:text-zinc-300"
-          >
-            ← Resumen comercial
-          </Link>
+        <PageHeader
+          eyebrow="Ventas"
+          title="Comisiones"
+          description="Distingue lo ya devengado de la configuración vigente. Cambiar una tasa no reescribe el historial."
+          actions={<Link href="/admin/sales" className={internalButtonClass}>Resumen comercial</Link>}
+        />
+        <div className="inline-flex gap-1 rounded-xl border border-bd-border bg-surface p-1">
+          {WINDOWS.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setDays(value)}
+              aria-pressed={days === value}
+              className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                days === value ? "bg-foreground/[0.08] text-foreground" : "text-muted hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
         <DashboardSection
           title="Comisiones devengadas"
           description={report.note}
           action={
-            <span className="font-display text-lg text-white">
+            <span className="font-display text-lg text-foreground">
               {money(report.total_commission)}
             </span>
           }
         >
           {report.results.length === 0 ? (
-            <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-8 text-center text-sm text-zinc-500">
+            <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">
               No hay comisiones devengadas en este periodo.
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+            <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
               <table className="w-full min-w-[40rem] text-left text-sm">
-                <thead className="border-b border-white/[0.06] text-[11px] uppercase tracking-widest text-zinc-500">
+                <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                   <tr>
                     <th className="px-4 py-3 font-semibold">Vendedor</th>
                     <th className="px-4 py-3 text-right font-semibold">Ventas</th>
@@ -226,19 +226,19 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
                   {report.results.map((r) => (
                     <tr
                       key={`${r.seller_id}-${r.seller_name}`}
-                      className="border-b border-white/[0.04] last:border-0"
+                      className="border-b border-bd-border/70 last:border-0"
                     >
-                      <td className="px-4 py-3 text-zinc-200">{r.seller_name}</td>
-                      <td className="px-4 py-3 text-right font-mono text-zinc-400">
+                      <td className="px-4 py-3 text-foreground">{r.seller_name}</td>
+                      <td className="px-4 py-3 text-right font-mono text-muted">
                         {r.sales}
                       </td>
-                      <td className="px-4 py-3 text-right font-mono text-zinc-400">
+                      <td className="px-4 py-3 text-right font-mono text-muted">
                         {money(r.net_amount)}
                       </td>
-                      <td className="px-4 py-3 text-right text-xs text-zinc-600">
+                      <td className="px-4 py-3 text-right text-xs text-muted">
                         {r.current_rate_percent ? `${r.current_rate_percent}%` : "—"}
                       </td>
-                      <td className="px-4 py-3 text-right font-mono text-white">
+                      <td className="px-4 py-3 text-right font-mono text-foreground">
                         {money(r.commission)}
                       </td>
                     </tr>
@@ -258,9 +258,9 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
                 : "Sólo lectura: no tienes permiso para configurar comisiones."
             }
           >
-            <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+            <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
               <table className="w-full min-w-[32rem] text-left text-sm">
-                <thead className="border-b border-white/[0.06] text-[11px] uppercase tracking-widest text-zinc-500">
+                <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                   <tr>
                     <th className="px-4 py-3 font-semibold">Miembro</th>
                     <th className="px-4 py-3 font-semibold">Rol</th>
@@ -271,10 +271,10 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
                   {settings.results.map((row) => (
                     <tr
                       key={row.membership_id}
-                      className="border-b border-white/[0.04] last:border-0"
+                      className="border-b border-bd-border/70 last:border-0"
                     >
-                      <td className="px-4 py-3 text-zinc-200">{row.name}</td>
-                      <td className="px-4 py-3 text-xs text-zinc-500">{row.role}</td>
+                      <td className="px-4 py-3 text-foreground">{row.name}</td>
+                      <td className="px-4 py-3 text-xs text-muted">{row.role}</td>
                       <td className="px-4 py-3">
                         {settings.can_manage ? (
                           <RateEditor
@@ -296,7 +296,7 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
                             }
                           />
                         ) : (
-                          <p className="text-right font-mono text-zinc-400">
+                          <p className="text-right font-mono text-muted">
                             {row.commission_rate_percent}%
                           </p>
                         )}
