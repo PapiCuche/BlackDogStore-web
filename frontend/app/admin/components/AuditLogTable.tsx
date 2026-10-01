@@ -27,14 +27,14 @@ function MetadataSummary({ metadata }: { metadata: Record<string, unknown> }) {
 export function AuditLogTable({ logs }: Props) {
   if (logs.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-bd-border py-12 text-center text-sm text-muted">
+      <div className="rounded-xl border border-dashed border-bd-border py-12 text-center text-sm text-muted">
         No hay registros de auditoría.
       </div>
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+    <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
       <table className="w-full min-w-[58rem] text-sm">
         <thead>
           <tr className="border-b border-bd-border text-left text-[11px] font-semibold uppercase tracking-[0.1em] text-muted">
