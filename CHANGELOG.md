@@ -30,6 +30,15 @@ información que no esté respaldada por código o commits.
 - Búsqueda explícita en los archivos modificados: sin `5,000+`, `True Tone`, `Tecnología Láser`, `pieza reparada`, preventa fija ni fallback `/assets/branding/logo-icon.png` en las superficies intervenidas.
 - El entorno de ejecución no pudo clonar GitHub por falta de DNS, por lo que `npm ci`, tests, lint y build quedan **PENDIENTES DE CI/LOCAL**; no se marcan como PASS.
 
+### UXUI-04A — UI Kit del SaaS interno
+
+**Estado: PARCIAL.**
+
+- `dashboard-ui.tsx`, `internal-ui.tsx` y `ServiceUi.tsx` comparten ahora los mismos roles semánticos de superficie, borde, foreground y muted.
+- El botón primario de la consola técnica deja de usar verde como acción general; verde/ámbar/rojo quedan reservados a significado de estado.
+- `AdminShell`, sidebar y topbar consumen los foundations comunes sin alterar guards, módulos, roles ni capabilities.
+- Verificación adicional: sin `dot-grid`, sin fondos `#080808/#111111` activos y sin nuevas comprobaciones de rol/capability en los archivos intervenidos.
+
 ### Deuda pendiente
 
 - El contenido del storefront continúa parcialmente hardcodeado por categorías/servicios; falta un modelo de contenido por tenant.
