@@ -197,7 +197,7 @@ export function AlertsPanel({
 
 export function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-block rounded-lg border border-white/[0.08] bg-foreground/[0.03] px-2.5 py-1 text-xs text-foreground">
+    <span className="inline-block rounded-lg border border-bd-border bg-foreground/[0.03] px-2.5 py-1 text-xs text-foreground">
       {children}
     </span>
   );
