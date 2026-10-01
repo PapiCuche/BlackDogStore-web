@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { AdminOrder } from "../../lib/admin";
+import { AdminOrder, formatAdminDate } from "../../lib/admin";
 import { OrderStatusBadge } from "./OrderStatusBadge";
 import { FulfillmentStatusBadge } from "./FulfillmentStatusBadge";
-import { formatAdminDate } from "../../lib/admin";
 
 type Props = {
   orders: AdminOrder[];
@@ -13,7 +12,7 @@ type Props = {
 export function OrdersTable({ orders }: Props) {
   if (orders.length === 0) {
     return (
-      <p className="text-zinc-500 text-sm py-6 text-center">
+      <p className="py-8 text-center text-sm text-muted">
         No hay órdenes que coincidan.
       </p>
     );
@@ -21,47 +20,43 @@ export function OrdersTable({ orders }: Props) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="w-full min-w-[48rem] text-sm">
         <thead>
-          <tr className="border-b border-white/[0.08] text-zinc-400">
-            <th className="text-left pb-3 pr-4 font-medium">#</th>
-            <th className="text-left pb-3 pr-4 font-medium">Cliente</th>
-            <th className="text-right pb-3 pr-4 font-medium hidden md:table-cell">Total</th>
-            <th className="text-left pb-3 pr-4 font-medium">Pago</th>
-            <th className="text-left pb-3 pr-4 font-medium">Despacho</th>
-            <th className="text-left pb-3 pr-4 font-medium hidden lg:table-cell">Fecha</th>
-            <th className="text-right pb-3 font-medium">Ver</th>
+          <tr className="border-b border-bd-border text-left text-[11px] uppercase tracking-[0.1em] text-muted">
+            <th className="px-4 py-3 font-semibold">#</th>
+            <th className="px-4 py-3 font-semibold">Cliente</th>
+            <th className="hidden px-4 py-3 text-right font-semibold md:table-cell">Total</th>
+            <th className="px-4 py-3 font-semibold">Pago</th>
+            <th className="px-4 py-3 font-semibold">Despacho</th>
+            <th className="hidden px-4 py-3 font-semibold lg:table-cell">Fecha</th>
+            <th className="px-4 py-3 text-right font-semibold">Acción</th>
           </tr>
         </thead>
         <tbody>
-          {orders.map((o) => (
+          {orders.map((order) => (
             <tr
-              key={o.id}
-              className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors"
+              key={order.id}
+              className="border-b border-bd-border/70 transition last:border-0 hover:bg-foreground/[0.025]"
             >
-              <td className="py-3 pr-4 text-zinc-400 font-mono text-xs">#{o.id}</td>
-              <td className="py-3 pr-4">
-                <p className="text-zinc-100 font-medium leading-tight">{o.customer_name || "—"}</p>
-                <p className="text-zinc-500 text-xs mt-0.5">{o.customer_email}</p>
+              <td className="px-4 py-3 font-mono text-xs text-muted">#{order.id}</td>
+              <td className="px-4 py-3">
+                <p className="font-medium leading-tight text-foreground">{order.customer_name || "—"}</p>
+                <p className="mt-1 text-xs text-muted">{order.customer_email}</p>
               </td>
-              <td className="py-3 pr-4 text-right text-zinc-200 hidden md:table-cell">
-                S/ {parseFloat(o.total).toFixed(2)}
+              <td className="hidden px-4 py-3 text-right font-medium tabular-nums text-foreground md:table-cell">
+                S/ {parseFloat(order.total).toFixed(2)}
               </td>
-              <td className="py-3 pr-4">
-                <OrderStatusBadge status={o.status} />
+              <td className="px-4 py-3"><OrderStatusBadge status={order.status} /></td>
+              <td className="px-4 py-3"><FulfillmentStatusBadge status={order.fulfillment_status} /></td>
+              <td className="hidden px-4 py-3 text-xs text-muted lg:table-cell">
+                {formatAdminDate(order.created_at)}
               </td>
-              <td className="py-3 pr-4">
-                <FulfillmentStatusBadge status={o.fulfillment_status} />
-              </td>
-              <td className="py-3 pr-4 text-zinc-500 text-xs hidden lg:table-cell">
-                {formatAdminDate(o.created_at)}
-              </td>
-              <td className="py-3 text-right">
+              <td className="px-4 py-3 text-right">
                 <Link
-                  href={`/admin/orders/${o.id}`}
-                  className="text-zinc-400 hover:text-zinc-100 text-xs hover:underline"
+                  href={`/admin/orders/${order.id}`}
+                  className="text-xs font-semibold text-foreground transition hover:underline"
                 >
-                  Detalle
+                  Ver detalle
                 </Link>
               </td>
             </tr>
