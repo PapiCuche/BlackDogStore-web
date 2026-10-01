@@ -660,7 +660,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             ) : null}
 
             {found.length ? (
-              <div className="overflow-hidden rounded-2xl border border-bd-border bg-surface">
+              <div className="overflow-hidden rounded-xl border border-bd-border bg-surface">
                 {found.map((p) => (
                   <button
                     key={p.id}
@@ -692,7 +692,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           </div>
 
           {/* --- carrito --------------------------------------------- */}
-          <div className="space-y-3 rounded-2xl border border-bd-border bg-surface p-5 lg:sticky lg:top-24 lg:self-start">
+          <div className="space-y-3 rounded-xl border border-bd-border bg-surface p-5 lg:sticky lg:top-24 lg:self-start">
             <div className="flex items-baseline justify-between">
               <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Carrito
