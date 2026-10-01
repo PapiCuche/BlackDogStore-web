@@ -14,6 +14,61 @@ import type { IconComponent } from "./icons";
 import { IconAlert } from "./icons";
 import { STATUS_LABELS, type ModuleStatus } from "../lib/internal-modules";
 
+
+export function PageHeader({
+  eyebrow,
+  title,
+  description,
+  actions,
+}: {
+  eyebrow?: string;
+  title: string;
+  description?: string;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <header className="flex flex-col gap-4 border-b border-bd-border pb-6 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0">
+        {eyebrow ? (
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted">{eyebrow}</p>
+        ) : null}
+        <h1 className="mt-1 font-display text-2xl font-extrabold tracking-[-0.025em] text-foreground sm:text-3xl">
+          {title}
+        </h1>
+        {description ? (
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">{description}</p>
+        ) : null}
+      </div>
+      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+    </header>
+  );
+}
+
+export function FilterBar({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-bd-border bg-surface p-4 sm:p-5">
+      {children}
+    </div>
+  );
+}
+
+export function TableShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+      {children}
+    </div>
+  );
+}
+
+export const internalInputClass =
+  "w-full rounded-xl border border-bd-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted/60 outline-none transition focus:border-foreground/25";
+
+export const internalButtonClass =
+  "rounded-xl border border-bd-border px-3.5 py-2.5 text-sm font-semibold text-foreground transition hover:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-40";
+
+export const internalPrimaryButtonClass =
+  "rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40";
+
 // ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------
