@@ -62,7 +62,7 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
 
   if (branches.length === 0) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-warning-border bg-amber-400/[0.06] px-3 py-2">
+      <div className="flex items-center gap-2 rounded-lg border border-warning-border bg-warning-surface px-3 py-2">
         <IconBranch className="h-4 w-4 text-warning" />
         <span className="text-sm text-warning">Sin sucursales asignadas</span>
       </div>
@@ -94,7 +94,8 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm text-foreground transition hover:border-bd-border"
+        aria-controls="branch-selector-options"
+        className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm text-foreground transition hover:border-foreground/20"
       >
         <IconBranch className="h-4 w-4 text-muted" />
         <span className="max-w-[12rem] truncate font-medium">{labelFor(access, value)}</span>
@@ -103,8 +104,10 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
 
       {open && (
         <div
+          id="branch-selector-options"
           role="listbox"
-          className="absolute right-0 z-50 mt-1.5 min-w-[14rem] overflow-hidden rounded-xl border border-bd-border bg-surface py-1 shadow-2xl"
+          aria-label="Seleccionar sucursal"
+          className="absolute right-0 z-50 mt-1.5 min-w-[14rem] overflow-hidden rounded-xl border border-bd-border bg-surface py-1"
         >
           {options.map((option) => {
             const selected = option.value === value;
@@ -118,7 +121,7 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
                   onChange(option.value);
                   setOpen(false);
                 }}
-                className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-sm transition hover:bg-surface ${
+                className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-sm transition hover:bg-foreground/[0.05] ${
                   selected ? "text-foreground" : "text-muted"
                 }`}
               >

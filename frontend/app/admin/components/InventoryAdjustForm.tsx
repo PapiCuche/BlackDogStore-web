@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { adjustInventory } from "../../lib/admin";
+import { internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type Props = {
   productId: number;
@@ -56,18 +57,19 @@ export function InventoryAdjustForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="flex gap-4">
+      <div className="grid gap-4 sm:grid-cols-[1fr_2fr]">
         <div className="flex-1">
-          <label htmlFor="mponents-inventoryadjustform-delta-positivo-ingreso-negativo-salida" className="block text-xs text-muted mb-1.5">
+          <label htmlFor="inventory-adjust-delta" className="mb-1.5 block text-xs text-muted">
             Delta (positivo = ingreso, negativo = salida)
           </label>
-          <input id="mponents-inventoryadjustform-delta-positivo-ingreso-negativo-salida"
+          <input
+            id="inventory-adjust-delta"
             type="number"
             value={delta}
             onChange={(e) => setDelta(e.target.value)}
             placeholder="ej. +5 o -3"
             disabled={saving}
-            className="w-full bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border disabled:opacity-50"
+            className={internalInputClass}
           />
           {preview !== null && (
             <p className="text-xs mt-1.5 text-muted">
@@ -87,26 +89,27 @@ export function InventoryAdjustForm({
           )}
         </div>
         <div className="flex-[2]">
-          <label htmlFor="mponents-inventoryadjustform-motivo" className="block text-xs text-muted mb-1.5">Motivo</label>
-          <input id="mponents-inventoryadjustform-motivo"
+          <label htmlFor="inventory-adjust-reason" className="mb-1.5 block text-xs text-muted">Motivo</label>
+          <input
+            id="inventory-adjust-reason"
             type="text"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             placeholder="ej. Restock de proveedor"
             maxLength={500}
             disabled={saving}
-            className="w-full bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border disabled:opacity-50"
+            className={internalInputClass}
           />
         </div>
       </div>
 
-      {error && <p className="text-sm text-danger">{error}</p>}
-      {success && <p className="text-sm text-foreground/85">{success}</p>}
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+      {success && <p role="status" className="text-sm text-muted">{success}</p>}
 
       <button
         type="submit"
         disabled={saving}
-        className="px-4 py-2 bg-foreground text-background text-sm font-medium rounded hover:bg-foreground/90 disabled:opacity-50 transition-colors"
+        className={internalPrimaryButtonClass}
       >
         {saving ? "Guardando…" : "Aplicar ajuste"}
       </button>

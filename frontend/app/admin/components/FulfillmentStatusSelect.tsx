@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { FULFILLMENT_STATUS_OPTIONS, updateOrderFulfillment } from "../../lib/admin";
+import { internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type Props = {
   orderId: number;
@@ -75,18 +76,18 @@ export function FulfillmentStatusSelect({ orderId, current, allowed, onChanged }
           onChange={(e) => setNote(e.target.value)}
           maxLength={500}
           disabled={saving}
-          className="flex-1 min-w-48 bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border disabled:opacity-50"
+          className={`min-w-48 flex-1 ${internalInputClass}`}
         />
         <button
           onClick={handleSave}
           disabled={!hasChanged || saving}
-          className="px-4 py-2 bg-foreground text-background text-sm font-medium rounded hover:bg-foreground/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          className={internalPrimaryButtonClass}
         >
           {saving ? "Guardando…" : "Guardar"}
         </button>
       </div>
-      {error && <p className="text-sm text-danger">{error}</p>}
-      {success && <p className="text-sm text-muted">Estado de despacho actualizado.</p>}
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+      {success && <p role="status" className="text-sm text-muted">Estado de despacho actualizado.</p>}
     </div>
   );
 }

@@ -4,7 +4,7 @@ import { useEffect, useReducer, useState } from "react";
 import Link from "next/link";
 import Script from "next/script";
 import { useRouter } from "next/navigation";
-import { getSessionKey, readCart } from "../lib/cart";
+import { clearStoredCoupon, getSessionKey, readCart, readStoredCoupon } from "../lib/cart";
 
 /**
  * Lo que el cliente está a punto de pagar.
@@ -110,9 +110,9 @@ const initialForm: FormState = {
   accepted_warranty_policy: false,
 };
 
-function FieldError({ msg }: { msg?: string }) {
+function FieldError({ msg, id }: { msg?: string; id?: string }) {
   if (!msg) return null;
-  return <p className="mt-1 text-xs text-danger">{msg}</p>;
+  return <p id={id} role="alert" className="mt-1 text-xs text-danger">{msg}</p>;
 }
 
 export default function CheckoutPage() {
@@ -222,10 +222,7 @@ export default function CheckoutPage() {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     setCancelled(params.get("cancelled") === "true");
-    const saved = sessionStorage.getItem("blackdog_coupon");
-    if (saved) {
-      try { setCoupon(JSON.parse(saved)); } catch { /* ignore */ }
-    }
+    setCoupon(readStoredCoupon());
     getCurrentUser()
       .then((profile) => {
         if (profile) {
@@ -299,7 +296,7 @@ export default function CheckoutPage() {
       if (!sdkUrlFor(data.environment)) {
         throw new Error("Entorno de pago no reconocido.");
       }
-      sessionStorage.removeItem("blackdog_coupon");
+      clearStoredCoupon();
       setPayment(data);
     } catch (e: unknown) {
       setMessage(e instanceof Error ? e.message : "Error al iniciar el pago.");
@@ -329,15 +326,18 @@ export default function CheckoutPage() {
     form.delivery_method === "delivery_arequipa" ||
     form.delivery_method === "national_shipping";
   const needsCity = form.delivery_method === "national_shipping";
+  const localDeliveryLabel = storefront.contact.city
+    ? `Delivery ${storefront.contact.city}`
+    : "Delivery local";
 
   const inputClass =
-    "mt-1.5 w-full rounded-lg border border-bd-border bg-surface px-3.5 py-2.5 text-sm text-foreground placeholder-muted focus:border-bd-border focus:outline-none";
-  const labelClass = "block text-xs font-medium text-muted uppercase tracking-wide";
+    "mt-1.5 w-full rounded-xl border border-bd-border bg-background px-3.5 py-3 text-sm text-foreground placeholder:text-muted/60 focus:border-foreground/25 focus:outline-none";
+  const labelClass = "block text-xs font-bold text-muted";
   const sectionClass =
-    "rounded-xl border border-bd-border bg-surface p-6 space-y-4";
+    "rounded-2xl border border-bd-border bg-surface p-5 space-y-4 sm:p-6";
 
   return (
-    <div className="min-h-screen bg-background px-4 py-12">
+    <div className="min-h-screen bg-background px-4 py-10 sm:py-12">
       {/* Loaded ONLY from the constant map in lib/payments, and only once the
           backend has said which environment. The response never supplies a
           script address. */}
@@ -361,34 +361,37 @@ export default function CheckoutPage() {
           }}
         />
       )}
-      <div className="mx-auto max-w-6xl">
+      <div className="mx-auto max-w-2xl">
 
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-foreground">Checkout</h1>
-          <p className="mt-1 text-sm text-muted">
-            Pago procesado de forma segura.
+        <div className="mb-8 border-b border-bd-border pb-7">
+          <span className="section-label">Compra</span>
+          <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground sm:text-5xl">
+            Checkout
+          </h1>
+          <p className="mt-3 max-w-xl text-sm leading-6 text-muted">
+            Completa tus datos de entrega y comprobante antes de abrir el formulario de pago.
           </p>
         </div>
 
         {cancelled && (
-          <div className="mb-5 rounded-xl border border-bd-border bg-surface p-4 text-sm text-foreground/85">
+          <div role="status" className="mb-5 rounded-xl border border-bd-border bg-surface p-4 text-sm text-foreground">
             Pago cancelado. Tu carrito sigue disponible.
           </div>
         )}
         {message && (
-          <div className="mb-5 rounded-xl border border-danger-border bg-red-500/[0.06] p-4 text-sm text-danger">
+          <div role="alert" className="mb-5 rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger">
             {message}
           </div>
         )}
         {coupon && (
-          <div className="mb-5 flex items-center justify-between rounded-xl border border-bd-border bg-surface px-4 py-3">
+          <div role="status" className="mb-5 flex items-center justify-between rounded-xl border border-bd-border bg-surface px-4 py-3">
             <div>
               <span className="text-xs text-muted">Cupón aplicado</span>
               <div className="text-sm font-semibold text-foreground">
                 {coupon.code} — {coupon.discount_percent}% de descuento
               </div>
             </div>
-            <Link href="/cart" className="text-xs text-muted hover:text-foreground/85">
+            <Link href="/cart" className="text-xs text-muted hover:text-foreground">
               Cambiar
             </Link>
           </div>
@@ -411,8 +414,13 @@ export default function CheckoutPage() {
             <h2 className="text-sm font-semibold text-foreground">Datos personales</h2>
 
             <div>
-              <label htmlFor="checkout-page-nombre-completo" className={labelClass}>Nombre completo *</label>
-              <input id="checkout-page-nombre-completo"
+              <label htmlFor="checkout-customer-name" className={labelClass}>Nombre completo *</label>
+              <input
+                id="checkout-customer-name"
+                name="customer_name"
+                autoComplete="name"
+                aria-invalid={Boolean(fe.customer_name)}
+                aria-describedby={fe.customer_name ? "checkout-customer-name-error" : undefined}
                 value={form.customer_name}
                 onChange={(e) => dispatch({ type: "set_str", field: "customer_name", value: e.target.value })}
                 className={inputClass}
@@ -420,14 +428,19 @@ export default function CheckoutPage() {
                 required
                 maxLength={255}
               />
-              <FieldError msg={fe.customer_name} />
+              <FieldError id="checkout-customer-name-error" msg={fe.customer_name} />
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label htmlFor="checkout-page-correo-electronico" className={labelClass}>Correo electrónico *</label>
-                <input id="checkout-page-correo-electronico"
+                <label htmlFor="checkout-customer-email" className={labelClass}>Correo electrónico *</label>
+                <input
+                  id="checkout-customer-email"
+                  name="customer_email"
                   type="email"
+                  autoComplete="email"
+                  aria-invalid={Boolean(fe.customer_email)}
+                  aria-describedby={fe.customer_email ? "checkout-customer-email-error" : undefined}
                   value={form.customer_email}
                   onChange={(e) => dispatch({ type: "set_str", field: "customer_email", value: e.target.value })}
                   className={inputClass}
@@ -435,12 +448,17 @@ export default function CheckoutPage() {
                   required
                   maxLength={254}
                 />
-                <FieldError msg={fe.customer_email} />
+                <FieldError id="checkout-customer-email-error" msg={fe.customer_email} />
               </div>
               <div>
-                <label htmlFor="checkout-page-telefono" className={labelClass}>Teléfono *</label>
-                <input id="checkout-page-telefono"
+                <label htmlFor="checkout-customer-phone" className={labelClass}>Teléfono *</label>
+                <input
+                  id="checkout-customer-phone"
+                  name="customer_phone"
                   type="tel"
+                  autoComplete="tel"
+                  aria-invalid={Boolean(fe.customer_phone)}
+                  aria-describedby={fe.customer_phone ? "checkout-customer-phone-error" : undefined}
                   value={form.customer_phone}
                   onChange={(e) => dispatch({ type: "set_str", field: "customer_phone", value: e.target.value })}
                   className={inputClass}
@@ -448,14 +466,18 @@ export default function CheckoutPage() {
                   required
                   maxLength={30}
                 />
-                <FieldError msg={fe.customer_phone} />
+                <FieldError id="checkout-customer-phone-error" msg={fe.customer_phone} />
               </div>
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label htmlFor="checkout-page-tipo-de-documento" className={labelClass}>Tipo de documento *</label>
-                <select id="checkout-page-tipo-de-documento"
+                <label htmlFor="checkout-document-type" className={labelClass}>Tipo de documento *</label>
+                <select
+                  id="checkout-document-type"
+                  name="document_type"
+                  aria-invalid={Boolean(fe.document_type)}
+                  aria-describedby={fe.document_type ? "checkout-document-type-error" : undefined}
                   value={form.document_type}
                   onChange={(e) => dispatch({ type: "set_str", field: "document_type", value: e.target.value })}
                   className={inputClass}
@@ -465,11 +487,16 @@ export default function CheckoutPage() {
                   <option value="ce">Carnet de Extranjería</option>
                   <option value="ruc">RUC</option>
                 </select>
-                <FieldError msg={fe.document_type} />
+                <FieldError id="checkout-document-type-error" msg={fe.document_type} />
               </div>
               <div>
-                <label htmlFor="checkout-page-numero-de-documento" className={labelClass}>Número de documento *</label>
-                <input id="checkout-page-numero-de-documento"
+                <label htmlFor="checkout-document-number" className={labelClass}>Número de documento *</label>
+                <input
+                  id="checkout-document-number"
+                  name="document_number"
+                  autoComplete="off"
+                  aria-invalid={Boolean(fe.document_number)}
+                  aria-describedby={fe.document_number ? "checkout-document-number-error" : undefined}
                   value={form.document_number}
                   onChange={(e) => dispatch({ type: "set_str", field: "document_number", value: e.target.value })}
                   className={inputClass}
@@ -483,20 +510,25 @@ export default function CheckoutPage() {
                   required
                   maxLength={20}
                 />
-                <FieldError msg={fe.document_number} />
+                <FieldError id="checkout-document-number-error" msg={fe.document_number} />
               </div>
             </div>
           </div>
 
           {/* 2. Método de entrega */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-foreground">Método de entrega</h2>
+            <h2 id="checkout-delivery-label" className="text-sm font-semibold text-foreground">Método de entrega</h2>
 
-            <div className="space-y-2">
+            <div
+              className="space-y-2"
+              role="radiogroup"
+              aria-labelledby="checkout-delivery-label"
+              aria-describedby={fe.delivery_method ? "checkout-delivery-error" : undefined}
+            >
               {(
                 [
                   ["pickup_store", "Recojo en tienda"],
-                  ["delivery_arequipa", "Delivery Arequipa"],
+                  ["delivery_arequipa", localDeliveryLabel],
                   ["national_shipping", "Envío nacional"],
                 ] as const
               ).map(([value, label]) => (
@@ -504,8 +536,8 @@ export default function CheckoutPage() {
                   key={value}
                   className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors ${
                     form.delivery_method === value
-                      ? "border-bd-border bg-surface"
-                      : "border-bd-border hover:border-bd-border"
+                      ? "border-foreground/25 bg-foreground/[0.04]"
+                      : "border-bd-border hover:border-foreground/20"
                   }`}
                 >
                   <input
@@ -514,7 +546,7 @@ export default function CheckoutPage() {
                     value={value}
                     checked={form.delivery_method === value}
                     onChange={() => dispatch({ type: "set_str", field: "delivery_method", value })}
-                    className="mt-0.5 accent-white"
+                    className="mt-0.5 accent-current"
                   />
                   <div>
                     <p className="text-sm font-medium text-foreground">{label}</p>
@@ -525,60 +557,80 @@ export default function CheckoutPage() {
                 </label>
               ))}
             </div>
-            <FieldError msg={fe.delivery_method} />
+            <FieldError id="checkout-delivery-error" msg={fe.delivery_method} />
 
             {needsAddress && (
               <div className="space-y-4 pt-1">
                 <div>
-                  <label htmlFor="checkout-page-direccion" className={labelClass}>Dirección *</label>
-                  <input id="checkout-page-direccion"
+                  <label htmlFor="checkout-address" className={labelClass}>Dirección *</label>
+                  <input
+                    id="checkout-address"
+                    name="address_line"
+                    autoComplete="street-address"
+                    aria-invalid={Boolean(fe.address_line)}
+                    aria-describedby={fe.address_line ? "checkout-address-error" : undefined}
                     value={form.address_line}
                     onChange={(e) => dispatch({ type: "set_str", field: "address_line", value: e.target.value })}
                     className={inputClass}
                     placeholder="Av. Ejemplo 123, Dpto 4B"
                     maxLength={300}
                   />
-                  <FieldError msg={fe.address_line} />
+                  <FieldError id="checkout-address-error" msg={fe.address_line} />
                 </div>
 
                 {needsCity && (
                   <div>
-                    <label htmlFor="checkout-page-ciudad" className={labelClass}>Ciudad *</label>
-                    <input id="checkout-page-ciudad"
+                    <label htmlFor="checkout-city" className={labelClass}>Ciudad *</label>
+                    <input
+                      id="checkout-city"
+                      name="city"
+                      autoComplete="address-level2"
+                      aria-invalid={Boolean(fe.city)}
+                      aria-describedby={fe.city ? "checkout-city-error" : undefined}
                       value={form.city}
                       onChange={(e) => dispatch({ type: "set_str", field: "city", value: e.target.value })}
                       className={inputClass}
                       placeholder="Lima"
                       maxLength={100}
                     />
-                    <FieldError msg={fe.city} />
+                    <FieldError id="checkout-city-error" msg={fe.city} />
                   </div>
                 )}
 
                 <div>
-                  <label className={labelClass}>
+                  <label htmlFor="checkout-district" className={labelClass}>
                     {needsCity ? "Distrito / Departamento *" : "Distrito *"}
                   </label>
                   <input
+                    id="checkout-district"
+                    name="district"
+                    autoComplete="address-level3"
+                    aria-invalid={Boolean(fe.district)}
+                    aria-describedby={fe.district ? "checkout-district-error" : undefined}
                     value={form.district}
                     onChange={(e) => dispatch({ type: "set_str", field: "district", value: e.target.value })}
                     className={inputClass}
                     placeholder={needsCity ? "Miraflores / Lima" : "Miraflores"}
                     maxLength={100}
                   />
-                  <FieldError msg={fe.district} />
+                  <FieldError id="checkout-district-error" msg={fe.district} />
                 </div>
 
                 <div>
-                  <label htmlFor="checkout-page-referencia-opcional" className={labelClass}>Referencia (opcional)</label>
-                  <input id="checkout-page-referencia-opcional"
+                  <label htmlFor="checkout-reference" className={labelClass}>Referencia (opcional)</label>
+                  <input
+                    id="checkout-reference"
+                    name="reference"
+                    autoComplete="off"
+                    aria-invalid={Boolean(fe.reference)}
+                    aria-describedby={fe.reference ? "checkout-reference-error" : undefined}
                     value={form.reference}
                     onChange={(e) => dispatch({ type: "set_str", field: "reference", value: e.target.value })}
                     className={inputClass}
                     placeholder="Frente al parque, edificio blanco"
                     maxLength={250}
                   />
-                  <FieldError msg={fe.reference} />
+                  <FieldError id="checkout-reference-error" msg={fe.reference} />
                 </div>
               </div>
             )}
@@ -586,16 +638,21 @@ export default function CheckoutPage() {
 
           {/* 3. Tipo de comprobante */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-foreground">Comprobante</h2>
+            <h2 id="checkout-receipt-label" className="text-sm font-semibold text-foreground">Comprobante</h2>
 
-            <div className="flex gap-3">
+            <div
+              className="grid gap-3 sm:grid-cols-2"
+              role="radiogroup"
+              aria-labelledby="checkout-receipt-label"
+              aria-describedby={fe.receipt_type ? "checkout-receipt-error" : undefined}
+            >
               {(["boleta", "factura"] as const).map((type) => (
                 <label
                   key={type}
                   className={`flex flex-1 cursor-pointer items-center gap-2.5 rounded-lg border p-3.5 transition-colors ${
                     form.receipt_type === type
-                      ? "border-bd-border bg-surface"
-                      : "border-bd-border hover:border-bd-border"
+                      ? "border-foreground/25 bg-foreground/[0.04]"
+                      : "border-bd-border hover:border-foreground/20"
                   }`}
                 >
                   <input
@@ -604,7 +661,7 @@ export default function CheckoutPage() {
                     value={type}
                     checked={form.receipt_type === type}
                     onChange={() => dispatch({ type: "set_str", field: "receipt_type", value: type })}
-                    className="accent-white"
+                    className="accent-current"
                   />
                   <span className="text-sm font-medium text-foreground capitalize">{type}</span>
                 </label>
@@ -615,13 +672,18 @@ export default function CheckoutPage() {
                 La factura requiere RUC. El tipo de documento se ha fijado automáticamente.
               </p>
             )}
-            <FieldError msg={fe.receipt_type} />
+            <FieldError id="checkout-receipt-error" msg={fe.receipt_type} />
           </div>
 
           {/* 4. Notas */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-foreground">Notas del pedido (opcional)</h2>
+            <h2 id="checkout-notes-label" className="text-sm font-semibold text-foreground">Notas del pedido (opcional)</h2>
             <textarea
+              id="checkout-notes"
+              name="notes"
+              aria-labelledby="checkout-notes-label"
+              aria-invalid={Boolean(fe.notes)}
+              aria-describedby={fe.notes ? "checkout-notes-error" : undefined}
               value={form.notes}
               onChange={(e) => dispatch({ type: "set_str", field: "notes", value: e.target.value })}
               className={`${inputClass} resize-none`}
@@ -630,7 +692,7 @@ export default function CheckoutPage() {
               maxLength={500}
             />
             <p className="text-xs text-muted text-right">{form.notes.length}/500</p>
-            <FieldError msg={fe.notes} />
+            <FieldError id="checkout-notes-error" msg={fe.notes} />
           </div>
 
           {/* 5. Aceptaciones */}
@@ -639,39 +701,47 @@ export default function CheckoutPage() {
 
             <label className="flex cursor-pointer items-start gap-3">
               <input
+                id="checkout-accepted-terms"
+                name="accepted_terms"
                 type="checkbox"
+                aria-invalid={Boolean(fe.accepted_terms)}
+                aria-describedby={fe.accepted_terms ? "checkout-accepted-terms-error" : undefined}
                 checked={form.accepted_terms}
                 onChange={(e) =>
                   dispatch({ type: "set_bool", field: "accepted_terms", value: e.target.checked })
                 }
-                className="mt-0.5 h-4 w-4 accent-white"
+                className="mt-0.5 h-4 w-4 accent-current"
               />
               <span className="text-xs text-muted leading-relaxed">
                 {terms}
               </span>
             </label>
-            <FieldError msg={fe.accepted_terms} />
+            <FieldError id="checkout-accepted-terms-error" msg={fe.accepted_terms} />
 
             <label className="flex cursor-pointer items-start gap-3">
               <input
+                id="checkout-accepted-warranty"
+                name="accepted_warranty_policy"
                 type="checkbox"
+                aria-invalid={Boolean(fe.accepted_warranty_policy)}
+                aria-describedby={fe.accepted_warranty_policy ? "checkout-accepted-warranty-error" : undefined}
                 checked={form.accepted_warranty_policy}
                 onChange={(e) =>
                   dispatch({ type: "set_bool", field: "accepted_warranty_policy", value: e.target.checked })
                 }
-                className="mt-0.5 h-4 w-4 accent-white"
+                className="mt-0.5 h-4 w-4 accent-current"
               />
               <span className="text-xs text-muted leading-relaxed">
                 {warranty}
               </span>
             </label>
-            <FieldError msg={fe.accepted_warranty_policy} />
+            <FieldError id="checkout-accepted-warranty-error" msg={fe.accepted_warranty_policy} />
           </div>
 
           {/* Punto de retiro */}
           {form.delivery_method === "pickup_store" && (
             <div className="rounded-xl border border-bd-border bg-surface p-4 text-xs text-muted leading-relaxed">
-              <p className="font-medium text-foreground/85 mb-1">Punto de retiro</p>
+              <p className="font-medium text-foreground mb-1">Punto de retiro</p>
               {storefront.contact.address ? (
                 <p>
                   {storefront.contact.address}
@@ -688,7 +758,7 @@ export default function CheckoutPage() {
 
           <button
             type="submit"
-            className="w-full rounded-xl bg-foreground px-6 py-3.5 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-bold uppercase tracking-[0.06em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={loading}
           >
             {loading ? "Abriendo el pago…" : "Continuar al pago →"}
@@ -697,7 +767,7 @@ export default function CheckoutPage() {
           <div className="text-center">
             <Link
               href="/cart"
-              className="text-sm text-muted hover:text-foreground/85 transition"
+              className="text-sm text-muted hover:text-foreground transition"
             >
               ← Volver al carrito
             </Link>

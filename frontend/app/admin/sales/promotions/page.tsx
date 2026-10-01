@@ -28,6 +28,7 @@ import {
   type InternalContext,
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
+import { PageHeader, internalButtonClass, internalInputClass } from "../../components/internal-ui";
 import { fetchAdminProducts, type AdminProduct } from "../../../lib/admin";
 import {
   createCoupon,
@@ -54,8 +55,7 @@ function money(value: string | number) {
     : String(value);
 }
 
-const FIELD =
-  "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+const FIELD = internalInputClass;
 const LABEL =
   "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
@@ -117,7 +117,7 @@ function PromotionRowView({
         {promotion.items.map((item) => (
           <p key={item.product}>
             {item.quantity}× {item.product_name}{" "}
-            <span className="text-muted">{money(item.price)}</span>
+            <span className="text-muted/70">{money(item.price)}</span>
           </p>
         ))}
       </div>
@@ -152,7 +152,7 @@ function PromotionRowView({
                 }
               })();
             }}
-            className="text-muted underline underline-offset-2 transition hover:text-foreground/85"
+            className="text-muted underline underline-offset-2 transition hover:text-foreground"
           >
             {promotion.is_active ? "Archivar" : "Reactivar"}
           </button>
@@ -326,9 +326,9 @@ function ComboForm({
                   );
                   setTerm("");
                 }}
-                className="flex w-full justify-between border-b border-bd-border px-3 py-2 text-left text-sm transition last:border-0 hover:bg-surface"
+                className="flex w-full justify-between border-b border-bd-border/70 px-3 py-2 text-left text-sm transition last:border-0 hover:bg-foreground/[0.03]"
               >
-                <span className="text-foreground/85">{h.name}</span>
+                <span className="text-foreground">{h.name}</span>
                 <span className="font-mono text-xs text-muted">{money(h.price)}</span>
               </button>
             ))}
@@ -339,7 +339,7 @@ function ComboForm({
       {picked.length ? (
         <div className="space-y-2">
           {picked.map((p) => (
-            <div key={p.product} className="flex items-center gap-3 rounded-lg bg-background/30 p-2">
+            <div key={p.product} className="flex items-center gap-3 rounded-lg bg-surface p-2">
               <span className="flex-1 text-sm text-foreground">{p.name}</span>
               <input
                 type="number"
@@ -354,7 +354,7 @@ function ComboForm({
                     ),
                   )
                 }
-                className="w-16 rounded border border-bd-border bg-background/40 px-2 py-1 text-sm text-foreground outline-none"
+                className="w-20 rounded-xl border border-bd-border bg-background px-2.5 py-2 text-sm text-foreground outline-none focus:border-foreground/25"
               />
               <span className="w-24 text-right font-mono text-xs text-muted">
                 {money(Number(p.price) * p.quantity)}
@@ -402,14 +402,14 @@ function ComboForm({
             type="button"
             disabled={saving || picked.length < 2 || !name.trim()}
             onClick={() => void save()}
-            className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:border-bd-border disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-lg border border-foreground/20 px-4 py-2 text-sm text-foreground transition hover:border-foreground/30 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Creando…" : "Crear promoción"}
           </button>
           <button
             type="button"
             onClick={onCancel}
-            className="text-sm text-muted transition hover:text-foreground/85"
+            className="text-sm text-muted transition hover:text-foreground"
           >
             Cancelar
           </button>
@@ -482,32 +482,31 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
   return (
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
       <div className="space-y-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex gap-1 rounded-lg border border-bd-border p-1">
-            {(
-              [
-                ["auto", "Automáticas y combos"],
-                ["codes", "Códigos"],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setTab(value)}
-                className={`rounded px-3 py-1 text-xs transition ${
-                  tab === value ? "bg-surface-2 text-foreground" : "text-muted hover:text-foreground/85"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <Link
-            href="/admin/sales"
-            className="text-sm text-muted transition hover:text-foreground/85"
-          >
-            ← Resumen comercial
-          </Link>
+        <PageHeader
+          eyebrow="Ventas"
+          title="Promociones y descuentos"
+          description="Administra promociones automáticas y códigos sin mezclar sus reglas de aplicación."
+          actions={<Link href="/admin/sales" className={internalButtonClass}>Resumen comercial</Link>}
+        />
+        <div className="inline-flex gap-1 rounded-xl border border-bd-border bg-surface p-1">
+          {(
+            [
+              ["auto", "Automáticas y combos"],
+              ["codes", "Códigos"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setTab(value)}
+              aria-pressed={tab === value}
+              className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                tab === value ? "bg-foreground/[0.08] text-foreground" : "text-muted hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
         {tab === "auto" ? (
@@ -519,7 +518,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                 <button
                   type="button"
                   onClick={() => setCreating(true)}
-                  className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-bd-border"
+                  className="rounded-lg border border-foreground/20 px-3 py-1.5 text-sm text-foreground transition hover:border-foreground/30"
                 >
                   Nuevo combo
                 </button>
@@ -620,7 +619,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                       }
                     })();
                   }}
-                  className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:border-bd-border"
+                  className="rounded-lg border border-foreground/20 px-4 py-2 text-sm text-foreground transition hover:border-foreground/30"
                 >
                   Crear código
                 </button>
@@ -645,7 +644,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                   </thead>
                   <tbody>
                     {coupons.results.map((c) => (
-                      <tr key={c.id} className="border-b border-bd-border last:border-0">
+                      <tr key={c.id} className="border-b border-bd-border/70 last:border-0">
                         <td className="px-4 py-3 font-mono text-foreground">{c.code}</td>
                         <td className="px-4 py-3 text-right text-muted">
                           {c.discount_percent}%
@@ -671,7 +670,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                                   await load();
                                 })();
                               }}
-                              className="text-xs text-muted underline underline-offset-2 transition hover:text-foreground/85"
+                              className="text-xs text-muted underline underline-offset-2 transition hover:text-foreground"
                             >
                               {c.is_active ? "Desactivar" : "Activar"}
                             </button>

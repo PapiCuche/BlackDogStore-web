@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { AccessGuard } from "../../components/AccessGuard";
 import type { InternalAccess } from "../../lib/internal-access";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { StockMovementForm } from "../../components/StockMovementForm";
 import {
   EmptyBox,
@@ -142,37 +143,23 @@ function MovementsContent({ user, access }: { user: AuthUser; access: InternalAc
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const fieldClass =
-    "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border";
+  const fieldClass = internalInputClass;
   const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Movimientos de inventario</h1>
-            <p className="mt-1 text-sm text-muted">
-              Kardex completo. Cada línea registra el stock antes y después.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href="/admin/inventory"
-              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-            >
-              ← Inventario
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title="Movimientos"
+          description="Kardex completo. Cada línea registra el stock antes y después."
+          actions={
+            <>
+              <BranchSelector access={scope.access} value={scope.branch} onChange={(next) => { setLoading(true); scope.setBranch(next); }} />
+              <Link href="/admin/inventory" className={internalButtonClass}>Inventario</Link>
+            </>
+          }
+        />
 
         <ScopeNote scope={resultScope} />
         {scope.error ? <ErrorBox message={scope.error} /> : null}
@@ -278,14 +265,14 @@ function MovementsContent({ user, access }: { user: AuthUser; access: InternalAc
             <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-5">
               <button
                 type="submit"
-                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90"
+                className={internalPrimaryButtonClass}
               >
                 Filtrar
               </button>
               <button
                 type="button"
                 onClick={resetFilters}
-                className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
+                className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:border-foreground/20 hover:text-foreground"
               >
                 Limpiar
               </button>
@@ -318,7 +305,7 @@ function MovementsContent({ user, access }: { user: AuthUser; access: InternalAc
                 </thead>
                 <tbody>
                   {movements.map((m) => (
-                    <tr key={m.id} className="border-b border-bd-border">
+                    <tr key={m.id} className="border-b border-bd-border/60">
                       <Td muted>{formatDateTime(m.created_at)}</Td>
                       <Td muted>{m.branch_name}</Td>
                       <Td>
@@ -353,7 +340,7 @@ function MovementsContent({ user, access }: { user: AuthUser; access: InternalAc
                       setLoading(true);
                       setPage((p) => Math.max(1, p - 1));
                     }}
-                    className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground disabled:opacity-30"
+                    className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-foreground/20 hover:text-foreground disabled:opacity-30"
                   >
                     Anterior
                   </button>
@@ -364,7 +351,7 @@ function MovementsContent({ user, access }: { user: AuthUser; access: InternalAc
                       setLoading(true);
                       setPage((p) => Math.min(totalPages, p + 1));
                     }}
-                    className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground disabled:opacity-30"
+                    className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-foreground/20 hover:text-foreground disabled:opacity-30"
                   >
                     Siguiente
                   </button>

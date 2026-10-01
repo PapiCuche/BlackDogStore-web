@@ -76,7 +76,7 @@ export function InternalTopbar({
             type="button"
             onClick={onOpenMenu}
             aria-label="Abrir menú de módulos"
-            className="rounded-lg p-2 text-muted transition hover:bg-surface hover:text-foreground lg:hidden"
+            className="rounded-lg p-2 text-muted transition hover:bg-surface-2 hover:text-foreground lg:hidden"
           >
             <IconMenu />
           </button>
@@ -119,7 +119,7 @@ export function InternalTopbar({
           {isMaster && (
             <span
               title="Administrador de plataforma (User.is_superuser)"
-              className="hidden items-center gap-1.5 rounded-lg border border-bd-border bg-surface-2 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-foreground sm:flex"
+              className="hidden items-center gap-1.5 rounded-lg border border-foreground/25 bg-foreground/[0.08] px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-foreground sm:flex"
             >
               <IconShield className="h-3.5 w-3.5" />
               Master
@@ -135,7 +135,7 @@ export function InternalTopbar({
           )}
 
           <div className="hidden text-right md:block">
-            <p className="truncate text-sm text-foreground/85">
+            <p className="truncate text-sm text-foreground">
               {user.first_name || user.username}
             </p>
             <p className="truncate text-[11px] text-muted">
@@ -147,7 +147,7 @@ export function InternalTopbar({
 
           <Link
             href="/"
-            className="hidden rounded-lg border border-bd-border px-3 py-2 text-xs text-muted transition hover:border-bd-border hover:text-foreground sm:block"
+            className="hidden rounded-lg border border-bd-border px-3 py-2 text-xs text-muted transition hover:border-foreground/20 hover:text-foreground sm:block"
           >
             Volver a la tienda
           </Link>

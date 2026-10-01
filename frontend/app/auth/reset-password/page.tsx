@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { confirmPasswordReset } from "../../lib/auth";
@@ -14,29 +15,8 @@ function ResetPasswordContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (!token) {
-    return (
-      <div className="min-h-screen bg-background px-6 py-12">
-        <div className="mx-auto max-w-md text-center">
-          <div className="rounded-2xl border border-bd-border bg-surface p-10">
-            <h1 className="text-2xl font-bold text-foreground">Enlace inválido</h1>
-            <p className="mt-4 text-muted">
-              No se encontró el token. Usa el enlace del correo de recuperación.
-            </p>
-            <a
-              href="/auth/forgot-password"
-              className="mt-6 inline-block text-sm text-muted hover:text-foreground transition"
-            >
-              Solicitar nuevo enlace
-            </a>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
     setError(null);
     if (newPassword !== confirmPassword) {
       setError("Las contraseñas no coinciden.");
@@ -53,75 +33,92 @@ function ResetPasswordContent() {
     }
   }
 
+  if (!token) {
+    return (
+      <div className="min-h-[70vh] bg-background px-6 py-12">
+        <div className="mx-auto max-w-md rounded-2xl border border-bd-border bg-surface p-7 text-center">
+          <span className="section-label">Cuenta</span>
+          <h1 className="mt-2 font-display text-3xl font-black italic uppercase tracking-[-0.035em] text-foreground">
+            Enlace inválido
+          </h1>
+          <p className="mt-4 text-sm leading-6 text-muted">
+            No se encontró un token de recuperación. Usa el enlace recibido por correo o solicita uno nuevo.
+          </p>
+          <Link href="/auth/forgot-password" className="mt-6 inline-flex rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25">
+            Solicitar nuevo enlace
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   const inputClass =
-    "mt-2 w-full rounded-xl border border-bd-border bg-surface px-4 py-3 text-foreground placeholder-muted focus:border-bd-border focus:outline-none";
+    "mt-2 w-full rounded-xl border border-bd-border bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted/60 focus:border-foreground/25 focus:outline-none";
 
   return (
-    <div className="min-h-screen bg-background px-6 py-12">
+    <div className="min-h-[70vh] bg-background px-6 py-12">
       <div className="mx-auto max-w-md">
-        <div className="mb-8 text-center">
-          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-muted">Cuenta</p>
-          <h1 className="mt-2 text-3xl font-bold text-foreground">Nueva contraseña</h1>
-        </div>
+        <header className="mb-8">
+          <span className="section-label">Cuenta</span>
+          <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground">
+            Nueva contraseña
+          </h1>
+        </header>
 
-        <div className="rounded-2xl border border-bd-border bg-surface p-8">
+        <section className="rounded-2xl border border-bd-border bg-surface p-6 sm:p-8">
           {success ? (
-            <div className="text-center">
+            <div>
               <p className="font-semibold text-foreground">Contraseña restablecida</p>
-              <p className="mt-3 text-sm text-muted">
-                Tu contraseña fue actualizada. Ya puedes iniciar sesión con tu nueva contraseña.
+              <p className="mt-3 text-sm leading-6 text-muted">
+                Ya puedes iniciar sesión con la nueva contraseña.
               </p>
-              <a
-                href="/auth"
-                className="mt-6 inline-block rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90"
-              >
+              <Link href="/auth" className="mt-6 inline-flex rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
                 Iniciar sesión
-              </a>
+              </Link>
             </div>
           ) : (
             <>
-              {error && (
-                <div className="mb-5 rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger">
+              {error ? (
+                <div className="mb-5 rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger" role="alert">
                   {error}
                 </div>
-              )}
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <label htmlFor="auth-reset-password-page-nueva-contrasena" className="block text-sm font-medium text-foreground/85">Nueva contraseña</label>
-                  <input id="auth-reset-password-page-nueva-contrasena"
+              ) : null}
+
+              <form onSubmit={handleSubmit} className="space-y-5">
+                <label className="block text-xs font-bold uppercase tracking-[0.08em] text-muted">
+                  Nueva contraseña
+                  <input
                     type="password"
                     value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
+                    onChange={(event) => setNewPassword(event.target.value)}
                     required
                     autoComplete="new-password"
                     className={inputClass}
                     placeholder="Mínimo 8 caracteres"
                   />
-                </div>
-                <div>
-                  <label htmlFor="auth-reset-password-page-confirmar-contrasena" className="block text-sm font-medium text-foreground/85">
-                    Confirmar contraseña
-                  </label>
-                  <input id="auth-reset-password-page-confirmar-contrasena"
+                </label>
+                <label className="block text-xs font-bold uppercase tracking-[0.08em] text-muted">
+                  Confirmar contraseña
+                  <input
                     type="password"
                     value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
                     required
                     autoComplete="new-password"
                     className={inputClass}
                   />
-                </div>
+                </label>
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-50"
+                  className="w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90 disabled:opacity-50"
                 >
                   {loading ? "Guardando…" : "Guardar nueva contraseña"}
                 </button>
               </form>
             </>
           )}
-        </div>
+        </section>
       </div>
     </div>
   );
@@ -131,8 +128,8 @@ export default function ResetPasswordPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-background">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+        <div className="flex min-h-[70vh] items-center justify-center bg-background">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-label="Cargando" />
         </div>
       }
     >

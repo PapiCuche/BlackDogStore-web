@@ -14,6 +14,7 @@ import { useParams } from "next/navigation";
 import { AdminShell } from "../../../components/AdminShell";
 import { AccessGuard } from "../../../components/AccessGuard";
 import type { InternalAccess } from "../../../lib/internal-access";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
 import {
   CountStatusBadge,
   EmptyBox,
@@ -129,24 +130,17 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">
-              Recuento {count ? `#${count.id}` : ""}
-            </h1>
-            {count ? (
-              <p className="mt-1 flex items-center gap-2 text-sm text-muted">
-                {count.branch_name} <CountStatusBadge count={count} />
-              </p>
-            ) : null}
-          </div>
-          <Link
-            href="/admin/inventory/counts"
-            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-          >
-            ← Recuentos
-          </Link>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title={count ? `Recuento #${count.id}` : "Recuento"}
+          description={count?.branch_name ?? "Conteo físico"}
+          actions={
+            <>
+              {count ? <CountStatusBadge count={count} /> : null}
+              <Link href="/admin/inventory/counts" className={internalButtonClass}>Recuentos</Link>
+            </>
+          }
+        />
 
         {loading ? <Spinner label="Cargando recuento…" /> : null}
         {error ? <ErrorBox message={error} /> : null}
@@ -186,7 +180,7 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
                       void run(() => approveCount(count.id));
                     }
                   }}
-                  className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  className={internalPrimaryButtonClass}
                 >
                   Aprobar y ajustar
                 </button>
@@ -198,7 +192,7 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
                       void run(() => cancelCount(count.id));
                     }
                   }}
-                  className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground disabled:opacity-40"
+                  className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-foreground/20 hover:text-foreground disabled:opacity-40"
                 >
                   Anular
                 </button>
@@ -233,7 +227,7 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
                         type="number"
                         min={0}
                         placeholder="—"
-                        className="w-20 rounded-lg border border-bd-border bg-background/40 px-2 py-1.5 text-sm text-foreground outline-none transition focus:border-bd-border"
+                        className={`${internalInputClass} w-20`}
                         value={draft[p.id] ?? ""}
                         onChange={(e) => setDraft((d) => ({ ...d, [p.id]: e.target.value }))}
                       />
@@ -244,7 +238,7 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
                   type="button"
                   disabled={busy}
                   onClick={() => void saveQuantities()}
-                  className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
+                  className={internalPrimaryButtonClass}
                 >
                   Guardar cantidades
                 </button>
@@ -267,7 +261,7 @@ function CountDetail({ user, access, countId }: { user: AuthUser; access: Intern
                   </thead>
                   <tbody>
                     {count.items.map((item) => (
-                      <tr key={item.id} className="border-b border-bd-border">
+                      <tr key={item.id} className="border-b border-bd-border/60">
                         <Td>{item.product_name}</Td>
                         <Td right muted>{item.theoretical_at_start}</Td>
                         <Td right>

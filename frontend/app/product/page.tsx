@@ -29,7 +29,6 @@ const ORDERING_OPTIONS = [
 ];
 
 function CatalogContent() {
-  // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
   const whatsappLink = useStorefront().contact.whatsapp_link;
   const router = useRouter();
   const pathname = usePathname();
@@ -37,6 +36,7 @@ function CatalogContent() {
 
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [categoryError, setCategoryError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,6 +44,7 @@ function CatalogContent() {
   const search = searchParams.get("search") ?? "";
   const inStock = searchParams.get("in_stock") === "true";
   const ordering = searchParams.get("ordering") ?? "";
+  const [searchInput, setSearchInput] = useState(search);
 
   const updateParam = useCallback(
     (key: string, value: string) => {
@@ -53,67 +54,97 @@ function CatalogContent() {
       } else {
         params.delete(key);
       }
-      router.push(`${pathname}?${params.toString()}`, { scroll: false });
+      const query = params.toString();
+      router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
     },
     [router, pathname, searchParams],
   );
 
   const clearFilters = useCallback(() => {
+    setSearchInput("");
     router.push(pathname, { scroll: false });
   }, [router, pathname]);
 
   useEffect(() => {
-    fetcher<Category[]>(apiUrl("/categories")).then(setCategories).catch(() => {});
+    setSearchInput(search);
+  }, [search]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (searchInput !== search) updateParam("search", searchInput);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput, search, updateParam]);
+
+  useEffect(() => {
+    fetcher<Category[]>(apiUrl("/categories"))
+      .then((data) => {
+        setCategories(data);
+        setCategoryError(false);
+      })
+      .catch(() => {
+        setCategories([]);
+        setCategoryError(true);
+      });
   }, []);
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-    const params = new URLSearchParams();
-    if (selectedCategory) params.set("category", selectedCategory);
-    if (search) params.set("search", search);
-    if (inStock) params.set("in_stock", "true");
-    if (ordering) params.set("ordering", ordering);
-    const qs = params.toString();
-    fetcher<Product[]>(apiUrl(`/products${qs ? `?${qs}` : ""}`))
-      .then(setProducts)
-      .catch((err) => setError(err instanceof Error ? err.message : "Error al cargar el catálogo."))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+
+    void (async () => {
+      setLoading(true);
+      setError(null);
+      const params = new URLSearchParams();
+      if (selectedCategory) params.set("category", selectedCategory);
+      if (search) params.set("search", search);
+      if (inStock) params.set("in_stock", "true");
+      if (ordering) params.set("ordering", ordering);
+      const qs = params.toString();
+
+      try {
+        const data = await fetcher<Product[]>(apiUrl(`/products${qs ? `?${qs}` : ""}`));
+        if (!cancelled) setProducts(data);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Error al cargar el catálogo.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCategory, search, inStock, ordering]);
 
   const hasActiveFilters = Boolean(selectedCategory || search || inStock || ordering);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-
-      {/* Page header */}
       <section className="relative overflow-hidden border-b border-bd-border">
-        <div className="topo-bg absolute inset-0 pointer-events-none" />
-        <div className="dot-grid absolute right-0 top-0 h-64 w-64 opacity-30 pointer-events-none" />
-        <div className="relative mx-auto max-w-7xl px-6 py-16 lg:px-8 lg:py-20">
-          <span className="section-label">Tienda</span>
-          <h1 className="font-display mt-3 text-6xl font-black uppercase leading-[0.9] tracking-tight text-foreground sm:text-7xl">
-            Catálogo<br />de Productos
+        <div className="relative mx-auto max-w-7xl px-6 py-14 lg:px-8 lg:py-20">
+          <span className="section-label">Catálogo</span>
+          <h1 className="mt-3 max-w-3xl font-display text-5xl font-black italic uppercase leading-[0.88] tracking-[-0.05em] text-foreground sm:text-7xl">
+            Productos para elegir con claridad.
           </h1>
-          <p className="mt-4 max-w-lg text-base text-muted">
-            Equipos Apple, accesorios y repuestos con condiciones claras. Envío a todo el Perú.
+          <p className="mt-5 max-w-xl text-sm leading-7 text-muted sm:text-base">
+            Filtra, compara disponibilidad y entra al detalle de cada producto antes de decidir.
           </p>
         </div>
       </section>
 
-      <main className="mx-auto max-w-7xl px-6 py-12 lg:px-8">
-
-        {/* Filters bar */}
-        <div className="mb-10 flex flex-col gap-4">
-
-          {/* Category chips */}
-          <div className="flex flex-wrap gap-2">
+      <div className="mx-auto max-w-7xl px-6 py-10 lg:px-8 lg:py-12">
+        <div className="mb-10 space-y-4 border-b border-bd-border pb-8">
+          <div className="flex flex-wrap gap-2" aria-label="Filtrar por categoría">
             <button
+              type="button"
               onClick={() => updateParam("category", "")}
-              className={`rounded-full px-4 py-2 text-xs font-bold uppercase tracking-widest transition ${
+              aria-pressed={!selectedCategory}
+              className={`min-h-11 rounded-full border px-4 py-2 text-xs font-bold transition ${
                 !selectedCategory
-                  ? "bg-foreground text-background"
-                  : "border border-bd-border bg-surface text-muted hover:border-bd-border hover:text-foreground"
+                  ? "border-primary bg-primary text-background"
+                  : "border-bd-border bg-surface text-muted hover:border-foreground/25 hover:text-foreground"
               }`}
             >
               Todos
@@ -121,11 +152,13 @@ function CatalogContent() {
             {categories.map((cat) => (
               <button
                 key={cat.id}
+                type="button"
                 onClick={() => updateParam("category", selectedCategory === cat.slug ? "" : cat.slug)}
-                className={`rounded-full px-4 py-2 text-xs font-bold uppercase tracking-widest transition ${
+                aria-pressed={selectedCategory === cat.slug}
+                className={`min-h-11 rounded-full border px-4 py-2 text-xs font-bold transition ${
                   selectedCategory === cat.slug
-                    ? "bg-foreground text-background"
-                    : "border border-bd-border bg-surface text-muted hover:border-bd-border hover:text-foreground"
+                    ? "border-primary bg-primary text-background"
+                    : "border-bd-border bg-surface text-muted hover:border-foreground/25 hover:text-foreground"
                 }`}
               >
                 {cat.name}
@@ -133,98 +166,103 @@ function CatalogContent() {
             ))}
           </div>
 
-          {/* Search + stock + ordering row */}
-          <div className="flex flex-wrap items-center gap-3">
+          {categoryError ? (
+            <p className="text-xs text-warning">
+              No se pudieron cargar las categorías. Aún puedes buscar y ordenar productos.
+            </p>
+          ) : null}
 
-            {/* Search */}
-            <div className="relative flex-1 min-w-48">
-              <svg className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+            <label className="relative block">
+              <span className="sr-only">Buscar productos</span>
+              <svg className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
               <input
                 type="search"
-                placeholder="Buscar productos..."
-                value={search}
-                onChange={(e) => updateParam("search", e.target.value)}
-                className="w-full rounded-full border border-bd-border bg-surface py-2.5 pl-10 pr-4 text-sm text-foreground placeholder-muted focus:border-bd-border focus:outline-none"
+                placeholder="Buscar por nombre o descripción"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                className="w-full rounded-xl border border-bd-border bg-surface py-3 pl-10 pr-4 text-sm text-foreground placeholder:text-muted/70 focus:border-foreground/25 focus:outline-none"
               />
-            </div>
+            </label>
 
-            {/* In-stock toggle */}
             <button
+              type="button"
               onClick={() => updateParam("in_stock", inStock ? "" : "true")}
-              className={`rounded-full px-4 py-2.5 text-xs font-bold uppercase tracking-widest transition ${
+              aria-pressed={inStock}
+              className={`rounded-xl border px-4 py-3 text-xs font-bold uppercase tracking-[0.06em] transition ${
                 inStock
-                  ? "bg-foreground text-background"
-                  : "border border-bd-border bg-surface text-muted hover:border-bd-border hover:text-foreground"
+                  ? "border-primary bg-primary text-background"
+                  : "border-bd-border bg-surface text-muted hover:border-foreground/25 hover:text-foreground"
               }`}
             >
               Solo en stock
             </button>
 
-            {/* Ordering */}
-            <select
-              value={ordering}
-              onChange={(e) => updateParam("ordering", e.target.value)}
-              className="rounded-full border border-bd-border bg-surface py-2.5 pl-4 pr-8 text-xs font-bold uppercase tracking-widest text-muted focus:border-bd-border focus:outline-none"
-            >
-              {ORDERING_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-
-            {/* Clear filters */}
-            {hasActiveFilters && (
-              <button
-                onClick={clearFilters}
-                className="text-xs font-bold uppercase tracking-widest text-muted transition hover:text-foreground"
+            <label>
+              <span className="sr-only">Ordenar catálogo</span>
+              <select
+                value={ordering}
+                onChange={(e) => updateParam("ordering", e.target.value)}
+                className="h-full min-h-12 rounded-xl border border-bd-border bg-surface px-4 text-xs font-bold text-muted focus:border-foreground/25 focus:outline-none"
               >
-                × Limpiar
-              </button>
-            )}
+                {ORDERING_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
-        </div>
 
-        {/* Count */}
-        {!loading && !error && (
-          <p className="mb-8 text-xs uppercase tracking-widest text-muted">
-            {products.length} {products.length === 1 ? "producto" : "productos"}
-            {hasActiveFilters ? " encontrados" : " en catálogo"}
-          </p>
-        )}
-
-        {/* Grid */}
-        {error ? (
-          <div className="rounded-2xl border border-danger-border bg-danger-surface p-6 text-sm text-danger">
-            Error al cargar: {error}
-          </div>
-        ) : loading ? (
-          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div key={i} className="h-72 animate-pulse rounded-2xl bg-surface" />
-            ))}
-          </div>
-        ) : products.length === 0 ? (
-          <div className="flex flex-col items-center gap-6 rounded-3xl border border-dashed border-bd-border p-16 text-center">
-            <img src="/assets/branding/logo-icon.png" alt="" className="h-14 w-14 opacity-[0.06] invert" />
-            <div>
-              <p className="font-display text-2xl font-black uppercase text-muted">Sin resultados</p>
-              <p className="mt-1 text-sm text-muted">
-                {search
-                  ? `No hay productos para "${search}"`
-                  : "No hay productos en esta categoría."}
+          <div className="flex min-h-6 items-center justify-between gap-4">
+            {!loading && !error ? (
+              <p className="text-xs text-muted" aria-live="polite">
+                {products.length} {products.length === 1 ? "producto" : "productos"}
+                {hasActiveFilters ? " encontrados" : " en catálogo"}
               </p>
-            </div>
-            {hasActiveFilters && (
+            ) : <span />}
+
+            {hasActiveFilters ? (
               <button
+                type="button"
                 onClick={clearFilters}
-                className="rounded-full border border-bd-border px-5 py-2 text-xs font-bold uppercase tracking-widest text-muted transition hover:border-bd-border hover:text-foreground"
+                className="text-xs font-bold text-muted transition hover:text-foreground"
               >
                 Limpiar filtros
               </button>
-            )}
+            ) : null}
+          </div>
+        </div>
+
+        {error ? (
+          <div className="rounded-2xl border border-danger-border bg-danger-surface p-6 text-sm text-danger" role="alert">
+            No pudimos cargar el catálogo. {error}
+          </div>
+        ) : loading ? (
+          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3" aria-label="Cargando productos">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="aspect-[4/3] animate-pulse rounded-2xl bg-surface" />
+            ))}
+          </div>
+        ) : products.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-bd-border px-6 py-16 text-center">
+            <p className="font-display text-2xl font-extrabold uppercase text-foreground">Sin resultados</p>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">
+              {search
+                ? `No encontramos productos para “${search}”.`
+                : "No hay productos disponibles con estos filtros."}
+            </p>
+            {hasActiveFilters ? (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="mt-6 rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25"
+              >
+                Limpiar filtros
+              </button>
+            ) : null}
           </div>
         ) : (
           <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
@@ -234,43 +272,46 @@ function CatalogContent() {
           </div>
         )}
 
-        {/* CTA */}
-        <div className="mt-16 overflow-hidden rounded-3xl border border-bd-border bg-surface">
-          <div className="flex flex-col items-center gap-4 px-8 py-12 text-center sm:px-12">
-            <p className="font-display text-3xl font-black uppercase text-foreground sm:text-4xl">
-              ¿No encuentras lo que buscas?
-            </p>
-            <p className="text-sm text-muted">Escríbenos y te ayudamos a conseguirlo.</p>
-            <a
-              href={whatsappLink || "#"}
-              className="mt-2 inline-flex items-center gap-2.5 rounded-full bg-foreground px-7 py-3.5 text-xs font-black uppercase tracking-widest text-background transition hover:bg-foreground/90"
-            >
-              <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-              </svg>
-              Consultar por WhatsApp
-            </a>
+        <div className="mt-16 border-t border-bd-border pt-10">
+          <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-center">
+            <div>
+              <p className="font-display text-2xl font-extrabold uppercase text-foreground sm:text-3xl">
+                ¿No encuentras lo que buscas?
+              </p>
+              <p className="mt-2 text-sm text-muted">Consulta disponibilidad o alternativas directamente con la tienda.</p>
+            </div>
+            {whatsappLink ? (
+              <a
+                href={whatsappLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-12 items-center justify-center rounded-xl bg-primary px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
+              >
+                Consultar por WhatsApp
+              </a>
+            ) : null}
           </div>
         </div>
-
-      </main>
+      </div>
     </div>
   );
 }
 
 export default function CatalogPage() {
   return (
-    <Suspense fallback={
-      <div className="min-h-screen bg-background">
-        <div className="mx-auto max-w-7xl px-6 py-12 lg:px-8">
-          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div key={i} className="h-72 animate-pulse rounded-2xl bg-surface" />
-            ))}
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-background">
+          <div className="mx-auto max-w-7xl px-6 py-12 lg:px-8">
+            <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
+                <div key={i} className="aspect-[4/3] animate-pulse rounded-2xl bg-surface" />
+              ))}
+            </div>
           </div>
         </div>
-      </div>
-    }>
+      }
+    >
       <CatalogContent />
     </Suspense>
   );

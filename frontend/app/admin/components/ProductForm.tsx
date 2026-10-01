@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { AdminProduct, AdminCategory, createAdminProduct, patchAdminProduct } from "../../lib/admin";
+import { internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type FormData = {
   name: string;
@@ -84,17 +85,18 @@ export function ProductForm({ product, categories, onSaved }: Props) {
     }
   }
 
-  const inputCls =
-    "w-full bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border disabled:opacity-50";
+  const inputCls = internalInputClass;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <div>
-          <label htmlFor="admin-components-productform-nombre" className="block text-xs text-muted mb-1.5">
+          <label htmlFor="product-name" className="block text-xs text-muted mb-1.5">
             Nombre <span className="text-danger">*</span>
           </label>
-          <input id="admin-components-productform-nombre"
+          <input
+            id="product-name"
+            name="name"
             type="text"
             value={form.name}
             onChange={(e) => set("name", e.target.value)}
@@ -104,10 +106,12 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           />
         </div>
         <div>
-          <label htmlFor="admin-components-productform-slug-opcional-se-genera-automaticamente" className="block text-xs text-muted mb-1.5">
+          <label htmlFor="product-slug" className="block text-xs text-muted mb-1.5">
             Slug (opcional — se genera automáticamente)
           </label>
-          <input id="admin-components-productform-slug-opcional-se-genera-automaticamente"
+          <input
+            id="product-slug"
+            name="slug"
             type="text"
             value={form.slug}
             onChange={(e) => set("slug", e.target.value)}
@@ -116,10 +120,12 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           />
         </div>
         <div>
-          <label htmlFor="admin-components-productform-precio-s" className="block text-xs text-muted mb-1.5">
+          <label htmlFor="product-price" className="block text-xs text-muted mb-1.5">
             Precio (S/) <span className="text-danger">*</span>
           </label>
-          <input id="admin-components-productform-precio-s"
+          <input
+            id="product-price"
+            name="price"
             type="number"
             step="0.01"
             min="0.01"
@@ -131,12 +137,16 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           />
         </div>
         <div>
-          <label className="block text-xs text-muted mb-1.5">
-            {product ? "Stock" : "Stock inicial"}
-          </label>
+          {product ? (
+            <p className="block text-xs text-muted mb-1.5">Stock</p>
+          ) : (
+            <label htmlFor="product-inventory" className="block text-xs text-muted mb-1.5">
+              Stock inicial
+            </label>
+          )}
           {product ? (
             <div className="flex items-center gap-3">
-              <span className="text-sm tabular-nums text-foreground/85">
+              <span className="text-sm tabular-nums text-foreground">
                 {product.inventory} u.
               </span>
               <Link
@@ -148,6 +158,8 @@ export function ProductForm({ product, categories, onSaved }: Props) {
             </div>
           ) : (
             <input
+              id="product-inventory"
+              name="inventory"
               type="number"
               min="0"
               value={form.inventory}
@@ -163,8 +175,10 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           </p>
         </div>
         <div>
-          <label htmlFor="admin-components-productform-categoria" className="block text-xs text-muted mb-1.5">Categoría</label>
-          <select id="admin-components-productform-categoria"
+          <label htmlFor="product-category" className="block text-xs text-muted mb-1.5">Categoría</label>
+          <select
+            id="product-category"
+            name="category"
             value={form.category}
             onChange={(e) => set("category", e.target.value)}
             disabled={saving}
@@ -179,8 +193,10 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           </select>
         </div>
         <div>
-          <label htmlFor="admin-components-productform-url-de-imagen" className="block text-xs text-muted mb-1.5">URL de imagen</label>
-          <input id="admin-components-productform-url-de-imagen"
+          <label htmlFor="product-image-url" className="block text-xs text-muted mb-1.5">URL de imagen</label>
+          <input
+            id="product-image-url"
+            name="image_url"
             type="url"
             value={form.image_url}
             onChange={(e) => set("image_url", e.target.value)}
@@ -190,8 +206,10 @@ export function ProductForm({ product, categories, onSaved }: Props) {
         </div>
       </div>
       <div>
-        <label htmlFor="admin-components-productform-descripcion" className="block text-xs text-muted mb-1.5">Descripción</label>
-        <textarea id="admin-components-productform-descripcion"
+        <label htmlFor="product-description" className="block text-xs text-muted mb-1.5">Descripción</label>
+        <textarea
+          id="product-description"
+          name="description"
           value={form.description}
           onChange={(e) => set("description", e.target.value)}
           rows={3}
@@ -206,19 +224,19 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           checked={form.is_active}
           onChange={(e) => set("is_active", e.target.checked)}
           disabled={saving}
-          className="accent-white"
+          className="accent-current"
         />
-        <label htmlFor="is_active" className="text-sm text-foreground/85">
+        <label htmlFor="is_active" className="text-sm text-foreground">
           Producto activo (visible en catálogo y disponible en checkout)
         </label>
       </div>
 
-      {error && <p className="text-sm text-danger">{error}</p>}
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
 
       <button
         type="submit"
         disabled={saving}
-        className="px-5 py-2 bg-foreground text-background text-sm font-medium rounded hover:bg-foreground/90 disabled:opacity-50 transition-colors"
+        className={internalPrimaryButtonClass}
       >
         {saving ? "Guardando…" : product ? "Guardar cambios" : "Crear producto"}
       </button>

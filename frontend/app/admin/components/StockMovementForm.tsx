@@ -19,6 +19,7 @@ import {
   type StockMovement,
 } from "../../lib/inventory";
 import { ErrorBox } from "./InventoryUi";
+import { internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type ProductOption = { id: number; name: string; inventory: number };
 type BranchOption = { id: number; name: string };
@@ -108,9 +109,7 @@ export function StockMovementForm({
     }
   }
 
-  const fieldClass =
-    "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground " +
-    "outline-none transition focus:border-bd-border disabled:opacity-50";
+  const fieldClass = internalInputClass;
   const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
   return (
@@ -213,7 +212,7 @@ export function StockMovementForm({
       ) : null}
       {error ? <ErrorBox message={error} /> : null}
       {success ? (
-        <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+        <div className="rounded-lg border border-foreground/20 bg-foreground/[0.05] px-4 py-3">
           <p className="text-sm text-foreground">{success}</p>
         </div>
       ) : null}
@@ -225,7 +224,7 @@ export function StockMovementForm({
       <button
         type="submit"
         disabled={!canSubmit}
-        className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
+        className={internalPrimaryButtonClass}
       >
         {submitting ? "Registrando…" : "Registrar movimiento"}
       </button>

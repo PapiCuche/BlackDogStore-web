@@ -20,6 +20,13 @@ navegador del flujo caja → técnico → cobro y reparación de prueba sembrada
 (`9b59a31`). Migraciones `0094` y `0095` (sólo roles estándar sin modificar).
 Backend 4643 pruebas, 0 fallos, en PostgreSQL; frontend 428 pruebas, typecheck,
 lint 0/33 y build OK (50 páginas); Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min.
+## 2026-10-01 — Integración en master y reconciliación UX/UI
+
+ERP + F1/F2 integrados en `master` por el PR #42 (`ef9890f`). Reconciliación de la rama
+UX/UI (#39) en `reconcile/uxui-after-f2` (`1fea6b9`): diseño del control interno,
+carrito, catálogo y detalle adoptado; portada, cabecera, pie, servicios e inicio de
+sesión se quedan como estaban en `master`. Frontend 411 pruebas OK, typecheck, lint
+0/26, build OK y Playwright 118/118. Sin backend ni migraciones.
 
 ## 2026-09-30 — F2 completada
 

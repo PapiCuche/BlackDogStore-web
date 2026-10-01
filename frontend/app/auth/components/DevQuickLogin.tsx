@@ -101,7 +101,7 @@ export function DevQuickLogin({ onUse }: Props) {
         {data.accounts.map((account) => (
           <li
             key={account.username}
-            className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-bd-border px-2.5 py-2"
+            className="rounded-lg border border-bd-border bg-background p-3"
           >
             <div className="min-w-0">
               <p className="truncate text-xs font-semibold text-foreground">

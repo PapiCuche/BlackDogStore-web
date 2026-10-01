@@ -37,10 +37,10 @@ export function Stepper({ labels, current }: { labels: string[]; current: number
             className={
               "rounded-full px-3 py-1.5 " +
               (state === "actual"
-                ? "bg-surface-2 text-foreground"
+                ? "bg-foreground/15 text-foreground"
                 : state === "hecho"
                   ? "bg-success-surface text-success"
-                  : "bg-surface text-muted")
+                  : "bg-foreground/[0.03] text-muted/70")
             }
           >
             {index + 1}. {label}
@@ -54,7 +54,7 @@ export function Stepper({ labels, current }: { labels: string[]; current: number
 const ACTION_STYLE: Record<string, string> = {
   create: "bg-success-surface text-success",
   update: "bg-info-surface text-info",
-  no_change: "bg-surface text-muted",
+  no_change: "bg-foreground/[0.04] text-muted",
   skip: "bg-warning-surface text-warning",
   error: "bg-danger-surface text-danger",
 };
@@ -72,7 +72,7 @@ function ActionTag({ action }: { action: string }) {
     <span
       className={
         "inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider " +
-        (ACTION_STYLE[action] ?? "bg-surface text-muted")
+        (ACTION_STYLE[action] ?? "bg-foreground/[0.04] text-muted")
       }
     >
       {ACTION_LABEL[action] ?? action}
@@ -82,7 +82,7 @@ function ActionTag({ action }: { action: string }) {
 
 export function CountsBar({ job }: { job: ImportJob }) {
   const items: [string, number, string][] = [
-    ["Total", job.counts.total, "text-foreground/85"],
+    ["Total", job.counts.total, "text-foreground"],
     ["Crear", job.counts.create, "text-success"],
     ["Actualizar", job.counts.update, "text-info"],
     ["Sin cambios", job.counts.no_change, "text-muted"],
@@ -94,7 +94,7 @@ export function CountsBar({ job }: { job: ImportJob }) {
       {items.map(([label, value, tone]) => (
         <div
           key={label}
-          className="rounded-xl border border-bd-border bg-background/30 px-3 py-2"
+          className="rounded-xl border border-bd-border bg-surface px-3 py-2"
         >
           <div className="text-[10px] uppercase tracking-widest text-muted">
             {label}
@@ -121,14 +121,14 @@ export function Notices({ job }: { job: ImportJob }) {
       {[...reader, ...format].map((note) => (
         <p
           key={note}
-          className="rounded-lg border border-info-border bg-sky-500/[0.06] px-3 py-2 text-info"
+          className="rounded-lg border border-info-border bg-info-surface px-3 py-2 text-info"
         >
           {note}
         </p>
       ))}
       {unmapped.length > 0 && (
-        <details className="rounded-lg border border-bd-border bg-background/30 px-3 py-2 text-muted">
-          <summary className="cursor-pointer text-foreground/85">
+        <details className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-muted">
+          <summary className="cursor-pointer text-foreground">
             {unmapped.length} columna(s) reconocidas que NO se importan
           </summary>
           <ul className="mt-2 space-y-1">
@@ -155,15 +155,15 @@ export function PreviewTable({
 }) {
   if (!rows.length) {
     return (
-      <p className="rounded-xl border border-bd-border bg-background/30 px-4 py-6 text-center text-sm text-muted">
+      <p className="rounded-xl border border-bd-border bg-surface px-4 py-6 text-center text-sm text-muted">
         El archivo no tiene filas de datos.
       </p>
     );
   }
   return (
-    <div className="overflow-x-auto rounded-xl border border-bd-border">
+    <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
       <table className="w-full min-w-[720px] text-left text-xs">
-        <thead className="bg-surface text-[10px] uppercase tracking-widest text-muted">
+        <thead className="bg-surface-2 text-[10px] uppercase tracking-widest text-muted">
           <tr>
             <th className="px-3 py-2">Fila</th>
             {columns.map((column) => (
@@ -180,13 +180,13 @@ export function PreviewTable({
             <tr
               key={`${row.sheet}-${row.row}-${row.match_key}-${row.action}`}
               className={
-                "border-t border-bd-border " +
-                (row.action === "error" ? "bg-rose-500/[0.04]" : "")
+                "border-t border-bd-border/70 " +
+                (row.action === "error" ? "bg-danger-surface" : "")
               }
             >
               <td className="px-3 py-2 tabular-nums text-muted">{row.row}</td>
               {columns.map((column) => (
-                <td key={column.key} className="px-3 py-2 text-foreground/85">
+                <td key={column.key} className="px-3 py-2 text-foreground">
                   {column.get(row)}
                 </td>
               ))}
@@ -210,7 +210,7 @@ export function PreviewTable({
         </tbody>
       </table>
       {truncated && (
-        <p className="border-t border-bd-border px-3 py-2 text-[11px] text-muted">
+        <p className="border-t border-bd-border/70 px-3 py-2 text-[11px] text-muted">
           Se muestran las primeras filas. Los errores se listan primero, así que
           si no ves ninguno arriba, no hay ninguno.
         </p>
@@ -226,9 +226,9 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
     );
   }
   return (
-    <div className="overflow-x-auto rounded-xl border border-bd-border">
+    <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
       <table className="w-full min-w-[760px] text-left text-xs">
-        <thead className="bg-surface text-[10px] uppercase tracking-widest text-muted">
+        <thead className="bg-surface-2 text-[10px] uppercase tracking-widest text-muted">
           <tr>
             <th className="px-3 py-2">Fecha</th>
             <th className="px-3 py-2">Tipo</th>
@@ -244,11 +244,11 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
         </thead>
         <tbody>
           {jobs.map((job) => (
-            <tr key={job.id} className="border-t border-bd-border">
+            <tr key={job.id} className="border-t border-bd-border/70">
               <td className="px-3 py-2 text-muted">
                 {new Date(job.created_at).toLocaleString("es-PE")}
               </td>
-              <td className="px-3 py-2 text-foreground/85">
+              <td className="px-3 py-2 text-foreground">
                 {job.import_type === "products" ? "Productos" : "Inventario"}
               </td>
               <td className="px-3 py-2 text-muted">{job.original_filename}</td>
@@ -271,7 +271,7 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
                       : "Sólo previsualizado"}
                 </span>
               </td>
-              <td className="px-3 py-2 tabular-nums text-foreground/85">{job.counts.total}</td>
+              <td className="px-3 py-2 tabular-nums text-foreground">{job.counts.total}</td>
               <td className="px-3 py-2 tabular-nums text-success">
                 {job.counts.create}
               </td>
