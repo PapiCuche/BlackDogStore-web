@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import { MobileSidebar } from '@/app/admin/components/InternalSidebar';
 
@@ -54,7 +54,7 @@ describe('MobileSidebar accessibility', () => {
     expect(screen.getByRole('link', { name: /Volver a la tienda/ })).toHaveFocus();
 
     fireEvent.keyDown(window, { key: 'Tab' });
-    expect(screen.getByRole('button', { name: 'Cerrar menú' })).toHaveFocus();
+    expect(within(panel!).getByRole('button', { name: 'Cerrar menú' })).toHaveFocus();
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
