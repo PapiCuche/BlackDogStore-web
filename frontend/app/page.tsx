@@ -7,6 +7,8 @@ import { ProductCard } from "./components/ProductCard";
 import Hero from "./components/Hero";
 import { fetcher, apiUrl } from "./lib/api";
 
+type Category = { id: number; name: string; slug: string };
+
 type Product = {
   id: number;
   slug: string;
@@ -17,17 +19,8 @@ type Product = {
   image_url?: string;
   average_rating?: number | null;
   review_count?: number;
-  category?: { id: number; name: string; slug: string };
+  category?: Category;
 };
-
-const CATALOG_SECTIONS = [
-  { label: "iPhone", slug: "iphone", code: "01" },
-  { label: "Apple Watch", slug: "apple-watch", code: "02" },
-  { label: "iPad", slug: "ipad", code: "03" },
-  { label: "Mac", slug: "mac", code: "04" },
-  { label: "Accesorios", slug: "accesorios", code: "05" },
-  { label: "Audífonos", slug: "audifonos", code: "06" },
-];
 
 const REPAIR_SERVICES = [
   {
@@ -78,6 +71,9 @@ export default function Home() {
   // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
   const { whatsapp_link: whatsappLink } = useStorefront().contact;
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const [categoryError, setCategoryError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -86,10 +82,21 @@ export default function Home() {
       .then(setProducts)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
+
+    fetcher<Category[]>(apiUrl("/categories"))
+      .then((data) => {
+        setCategories(data);
+        setCategoryError(false);
+      })
+      .catch(() => {
+        setCategories([]);
+        setCategoryError(true);
+      })
+      .finally(() => setCategoriesLoading(false));
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#080808] text-white">
+    <div className="min-h-screen bg-background text-foreground">
       <Hero />
 
       <main className="mx-auto max-w-7xl px-6 lg:px-8">
@@ -113,23 +120,39 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3">
-            {CATALOG_SECTIONS.map((section) => (
-              <Link
-                key={section.slug}
-                href={`/product?category=${section.slug}`}
-                className="group flex min-h-28 items-end justify-between gap-4 border-b border-bd-border py-5 transition hover:bg-surface sm:px-5 lg:min-h-36 lg:border-r lg:px-6"
-              >
-                <span>
-                  <span className="block text-[10px] font-bold tracking-[0.18em] text-muted">{section.code}</span>
-                  <span className="mt-2 block font-display text-xl font-extrabold uppercase tracking-[-0.02em] text-foreground sm:text-2xl">
-                    {section.label}
+          {categoriesLoading ? (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3" aria-label="Cargando categorías">
+              {[1, 2, 3, 4, 5, 6].map((item) => (
+                <div key={item} className="min-h-28 animate-pulse border-b border-bd-border bg-foreground/[0.02] sm:px-5 lg:min-h-36 lg:border-r lg:px-6" />
+              ))}
+            </div>
+          ) : categories.length > 0 ? (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3">
+              {categories.slice(0, 6).map((category, index) => (
+                <Link
+                  key={category.id}
+                  href={`/product?category=${category.slug}`}
+                  className="group flex min-h-28 items-end justify-between gap-4 border-b border-bd-border py-5 transition hover:bg-surface sm:px-5 lg:min-h-36 lg:border-r lg:px-6"
+                >
+                  <span>
+                    <span className="block text-[10px] font-bold tracking-[0.18em] text-muted">
+                      {String(index + 1).padStart(2, "0")}
+                    </span>
+                    <span className="mt-2 block font-display text-xl font-extrabold uppercase tracking-[-0.02em] text-foreground sm:text-2xl">
+                      {category.name}
+                    </span>
                   </span>
-                </span>
-                <span className="text-xl text-muted transition-transform group-hover:translate-x-1 group-hover:text-foreground" aria-hidden="true">→</span>
-              </Link>
-            ))}
-          </div>
+                  <span className="text-xl text-muted transition-transform group-hover:translate-x-1 group-hover:text-foreground" aria-hidden="true">→</span>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <div className="border-b border-bd-border py-8 text-sm text-muted">
+              {categoryError
+                ? "No se pudieron cargar las categorías. El catálogo completo sigue disponible."
+                : "Todavía no hay categorías publicadas."}
+            </div>
+          )}
         </section>
 
         {/* Services section */}
@@ -229,7 +252,7 @@ export default function Home() {
           ) : loading ? (
             <div className="mt-10 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
               {[1, 2, 3].map((i) => (
-                <div key={i} className="h-72 animate-pulse rounded-2xl bg-white/[0.04]" />
+                <div key={i} className="h-72 animate-pulse rounded-2xl bg-foreground/[0.04]" />
               ))}
             </div>
           ) : products.length === 0 ? (
