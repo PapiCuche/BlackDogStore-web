@@ -538,7 +538,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
                   href={module.href!}
                   className="group flex items-start gap-3.5 rounded-xl border border-bd-border bg-surface p-5 transition hover:border-foreground/25"
                 >
-                  <span className="mt-0.5 rounded-lg border border-bd-border bg-white/[0.03] p-2 text-muted transition group-hover:text-foreground">
+                  <span className="mt-0.5 rounded-lg border border-bd-border bg-foreground/[0.03] p-2 text-muted transition group-hover:text-foreground">
                     <Icon />
                   </span>
                   <span className="min-w-0">
@@ -565,7 +565,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
             type="button"
             onClick={() => setShowRoadmap((v) => !v)}
             aria-expanded={showRoadmap}
-            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-muted transition hover:border-foreground/25 hover:text-foreground"
+            className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-muted transition hover:border-foreground/25 hover:text-foreground"
           >
             {showRoadmap ? "Ocultar mapa" : "Ver mapa completo"}
           </button>
