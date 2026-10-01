@@ -10,11 +10,11 @@
 
 > Esta sección actualiza exclusivamente el frontend de la rama `uxui/header-hero-foundations`; el resto de este documento conserva contenido histórico y debe seguir contrastándose con código, migraciones y tests.
 
-- **IMPLEMENTADO en rama:** foundations visuales semánticos, Montserrat, Header, Hero, Home, ProductCard, catálogo, servicios, Footer, Auth, carrito y presentación del checkout.
+- **IMPLEMENTADO en rama:** foundations visuales semánticos, storefront con rol tipográfico de marca, Header, Hero, Home, ProductCard, catálogo, servicios, Footer, Auth, carrito y presentación del checkout. Home obtiene las categorías desde el catálogo del tenant; ya no contiene una matriz Apple fija.
 - **PARCIAL:** branding multiempresa. Los seis colores del tenant siguen siendo la fuente de datos, pero aún existen superficies no migradas y contenido comercial hardcodeado fuera del bloque intervenido.
-- **IMPLEMENTADO EN RAMA / PENDIENTE DE QA:** design system unificado del panel SaaS interno. Shell, navegación, componentes compartidos, superficies principales, administración secundaria, inventario, ventas, RBAC y detalles operativos ya consumen foundations comunes. Falta validación visual/runtime completa antes de merge.
-- **PENDIENTE DE VERIFICACIÓN:** tests, lint y build de esta rama; no pudieron ejecutarse desde este entorno porque el contenedor no resolvió `github.com` para obtener el repositorio/dependencias.
-- **PARCIAL accesibilidad:** foco visible, reduced-motion, drawer interno con Escape/semántica de diálogo y advertencia de contraste WCAG en Branding. Falta QA real de teclado, lector de pantalla y breakpoints.
+- **IMPLEMENTADO EN RAMA / PENDIENTE DE QA VISUAL:** design system unificado del panel SaaS interno. Shell, navegación, componentes compartidos, superficies principales, administración secundaria, inventario, ventas, RBAC y detalles operativos ya consumen foundations comunes. El SaaS usa Inter como rol tipográfico neutral separado del storefront.
+- **VALIDADO POR CI:** GitHub Actions sobre `794e8cc`: 6 suites / 45 tests PASS; ESLint PASS con 0 errores y 14 warnings; `next build` PASS; 38/38 rutas generadas. Los warnings restantes son `react-hooks/set-state-in-effect` y quedan como deuda no bloqueante para revisión individual.
+- **PARCIAL accesibilidad:** foco visible, reduced-motion, drawer interno con semántica de diálogo, foco inicial, bloqueo de scroll y Escape (cubierto por test), más advertencia de contraste WCAG en Branding. Falta QA real de teclado completo, lector de pantalla y breakpoints.
 - **Sin cambios** en autenticación, roles, endpoints, base de datos, migraciones o flujo de pago.
 
 ---
@@ -105,13 +105,13 @@ La separación principal entre frontend y backend es correcta para la etapa actu
 
 ### Frontend
 
-- Next.js `16.2.9`.
+- Next.js `16.3.4`.
 - React `19.2.4`.
 - React DOM `19.2.4`.
 - TypeScript 5.
 - Tailwind CSS 4.
 - App Router.
-- `next/font` con Montserrat en la rama UX/UI; `master` debe verificarse antes de merge.
+- `next/font` con Montserrat para el rol de marca del storefront e Inter para la superficie SaaS interna en la rama UX/UI.
 
 ### Backend
 
