@@ -141,7 +141,7 @@ function CatalogContent() {
               type="button"
               onClick={() => updateParam("category", "")}
               aria-pressed={!selectedCategory}
-              className={`rounded-full border px-4 py-2 text-xs font-bold transition ${
+              className={`min-h-11 rounded-full border px-4 py-2 text-xs font-bold transition ${
                 !selectedCategory
                   ? "border-primary bg-primary text-background"
                   : "border-bd-border bg-surface text-muted hover:border-foreground/25 hover:text-foreground"
@@ -155,7 +155,7 @@ function CatalogContent() {
                 type="button"
                 onClick={() => updateParam("category", selectedCategory === cat.slug ? "" : cat.slug)}
                 aria-pressed={selectedCategory === cat.slug}
-                className={`rounded-full border px-4 py-2 text-xs font-bold transition ${
+                className={`min-h-11 rounded-full border px-4 py-2 text-xs font-bold transition ${
                   selectedCategory === cat.slug
                     ? "border-primary bg-primary text-background"
                     : "border-bd-border bg-surface text-muted hover:border-foreground/25 hover:text-foreground"
