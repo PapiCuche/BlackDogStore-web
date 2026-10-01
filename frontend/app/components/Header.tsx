@@ -156,7 +156,7 @@ export function Header() {
           <Link
             href="/cart"
             aria-label={cartCount ? `Carrito, ${cartCount} unidades` : "Carrito"}
-            className="relative flex h-10 w-10 items-center justify-center rounded-lg text-muted transition hover:bg-foreground/[0.05] hover:text-foreground"
+            className="relative flex h-11 w-11 items-center justify-center rounded-lg text-muted transition hover:bg-foreground/[0.05] hover:text-foreground"
           >
             {CART_ICON}
             {cartCount > 0 ? (
@@ -186,7 +186,7 @@ export function Header() {
           <button
             type="button"
             onClick={() => setMenuOpen((open) => !open)}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-muted transition hover:bg-foreground/[0.05] hover:text-foreground md:hidden"
+            className="flex h-11 w-11 items-center justify-center rounded-lg text-muted transition hover:bg-foreground/[0.05] hover:text-foreground md:hidden"
             aria-label={menuOpen ? "Cerrar menú" : "Abrir menú"}
             aria-expanded={menuOpen}
             aria-controls="mobile-navigation"
