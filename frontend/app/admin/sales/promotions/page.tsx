@@ -374,7 +374,7 @@ function ComboForm({
             type="button"
             disabled={saving || picked.length < 2 || !name.trim()}
             onClick={() => void save()}
-            className="rounded-lg border border-foreground/20 px-4 py-2 text-sm text-foreground transition hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-lg border border-foreground/20 px-4 py-2 text-sm text-foreground transition hover:border-foreground/30 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Creando…" : "Crear promoción"}
           </button>
@@ -490,7 +490,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                 <button
                   type="button"
                   onClick={() => setCreating(true)}
-                  className="rounded-lg border border-foreground/20 px-3 py-1.5 text-sm text-foreground transition hover:border-white/30"
+                  className="rounded-lg border border-foreground/20 px-3 py-1.5 text-sm text-foreground transition hover:border-foreground/30"
                 >
                   Nuevo combo
                 </button>
@@ -589,7 +589,7 @@ function PromotionsContent({ ctx }: { ctx: InternalContext }) {
                       }
                     })();
                   }}
-                  className="rounded-lg border border-foreground/20 px-4 py-2 text-sm text-foreground transition hover:border-white/30"
+                  className="rounded-lg border border-foreground/20 px-4 py-2 text-sm text-foreground transition hover:border-foreground/30"
                 >
                   Crear código
                 </button>
