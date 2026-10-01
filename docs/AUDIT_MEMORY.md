@@ -244,6 +244,19 @@ Tests: `SvcIntakeWithAssignmentTest.test_it_touches_nothing_of_the_shop`,
 `SvcCustomServiceLineTest.test_it_is_not_a_sale`.
 Estado: VERIFICADO @ `1d35b7d`.
 
+**UX-RECON-SVC-01** — Al traer la interfaz de #43 sobre el master con SVC-FUNC-01,
+master decide comportamiento y #43 presentación. `/admin/service` es sólo una
+redirección; las seis colas tienen ruta y entrada propia; la caja conserva
+`PosModeSwitch` y `PosServiceIntake`; el detalle de la orden conserva
+`mayAssignTechnician`, `mayCollectPayment`, «Quitar» sólo con `service.orders.manage` y
+«Reversar» sólo con `service.payments.manage`. `branch-authority.ts`,
+`internal-modules.ts`, `InternalControlGuard.tsx`, `auth.ts`, `service-console.ts`, el
+proxy y `backend/` quedan idénticos a master `d98d70c`.
+Tests: `service-navigation.test.tsx`, `service-authority-console.test.tsx`,
+`pos-service-intake.test.tsx`, suites F2 de frontend, Playwright 121/121 (incluye
+`service-pos`).
+Estado: VERIFICADO @ `ee3a8d3` (rama `reconcile/uxui-after-svc`, pendiente de merge).
+
 **PROXY-01** — El proxy Next nunca sale de `${BACKEND_API}/`.
 Autoridad: `frontend/app/api/[...path]/route.ts` (rechaza con 400 segmentos `.`, `..` o con `/` `\` tras decodificar).
 Tests: `frontend/__tests__/api-proxy-scope.test.ts` (11/11).
@@ -463,7 +476,8 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - **F1 — Security / tenancy / authorization**: COMPLETED @ `4a9dd5c`. Un fix (FE-AUTH-01). Backend sin cambios. Checkpoint completo en la transcripción de la sesión `acdf85aa`; artefactos en su scratchpad (`audit_f1_investigation.json`, `audit_security_sweep.json`, `demo_branch_scope.py`).
 - **F2 — Eje DÓNDE: delegación y alcance por sucursal**: COMPLETADA @ `c191a84`. F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`), F-CAP-01 (`c042fea`), RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`), WRITE-SCOPE-01 (`fa85d41`, `c076120`), DRIFT-01 (`a4be03b`), DRIFT-07 (`6958ec0`, `f6dc9ca`), E2E-02 (`9c3445f`), E2E-01 (`c191a84`). Sin push. Siguiente fase: por decidir.
 - **Integración**: ERP + F1/F2 en `master` por el PR #42 (merge `ef9890f`).
-- **SVC-FUNC-01 — Servicio técnico operativo e integración con la caja**: código @ `9b59a31` en `feature/service-pos-functional-integration` (desde `ef9890f`). SVC-NAV-01 (`937cf82`), SVC-ASSIGN-01 y SVC-TX-01 (`1928b05`), SVC-PAY-01 (`d62fa30`), POS-SVC-01 (`6caa88c`), pruebas del flujo y fixture E2E (`1d35b7d`), SVC-ASSIGN-UNASSIGN (`4796db0`), SVC-ASSIGN-VIEW-01 (`9b59a31`). Draft PR #44 contra `master`, sin mergear. Backend 4643 pruebas, 0 fallos; frontend 428; Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min.
+- **SVC-FUNC-01 — Servicio técnico operativo e integración con la caja**: código @ `9b59a31` en `feature/service-pos-functional-integration` (desde `ef9890f`). SVC-NAV-01 (`937cf82`), SVC-ASSIGN-01 y SVC-TX-01 (`1928b05`), SVC-PAY-01 (`d62fa30`), POS-SVC-01 (`6caa88c`), pruebas del flujo y fixture E2E (`1d35b7d`), SVC-ASSIGN-UNASSIGN (`4796db0`), SVC-ASSIGN-VIEW-01 (`9b59a31`). Integrado en `master` por el PR #44 (merge `d98d70c`, árbol `b7d570e` idéntico al validado). Backend 4643 pruebas, 0 fallos; frontend 428; Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min.
+- **UX-RECON-SVC-01 — Interfaz de #43 sobre el master con servicio y caja**: merge `ee3a8d3` en `reconcile/uxui-after-svc` (padres `d98d70c` y `9c1486b`; 5 conflictos de texto, 1 archivo fusionado sin conflicto y revisado; 0 backend, 0 migraciones). Frontend 437 pruebas en 43 suites, lint 0/26, build 50 páginas, Playwright 121/121. #43 queda abierto como referencia. Pendiente de merge.
 - **Integración**: ERP + F1/F2 en `master` por PR #42 (merge `ef9890f`, árbol `44cfffd` idéntico al validado). Reconciliación UX/UI de #39: merge `1fea6b9` en `reconcile/uxui-after-f2` (75 archivos en conflicto, 0 backend, 0 migraciones), PARCIAL, pendiente de merge.
 
 ---

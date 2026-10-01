@@ -3,6 +3,45 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-01 — UX-RECON-SVC-01: la interfaz de #43 sobre el master con servicio y caja
+
+Rama `reconcile/uxui-after-svc`, sobre `master` `d98d70c` (que ya incluye SVC-FUNC-01
+por el PR #44). Merge de reconciliación `ee3a8d3`, con padres `d98d70c` y `9c1486b`
+(la cabeza del PR #43). El PR #43 no se modifica: se reconcilió contra un `master`
+anterior a la navegación del servicio, a las autoridades de asignación y cobro y a
+la recepción desde la caja.
+
+Regla aplicada: `master` decide comportamiento, seguridad y flujo; #43 decide la
+presentación donde es compatible.
+
+- `/admin/service` sigue siendo una redirección a `/admin/service/orders`. #43 traía
+  ahí la consola antigua de una sola pantalla; no vuelve.
+- Las seis colas (`intake`, `orders`, `diagnostics`, `repairs`, `quality`, `delivery`)
+  conservan su ruta y su entrada propia en la barra lateral. La presentación que #43
+  dio a aquella consola (cabecera, barra de filtros, tabla, estilos compartidos y
+  búsqueda con pausa) se aplicó a `ServiceQueue`, que es lo que dibujan las seis.
+- La caja conserva «Productos / Servicio técnico» y la recepción de servicio con
+  técnico obligatorio, con la cabecera y los estilos de #43. El flujo de productos
+  no cambia.
+- El detalle de la orden conserva `mayAssignTechnician`, `mayCollectPayment`,
+  «Quitar» sólo con `service.orders.manage` y «Reversar» sólo con
+  `service.payments.manage`; sólo cambia la cabecera.
+- Las seis pantallas de F2 y `branch-authority.ts`, `internal-modules.ts`,
+  `InternalControlGuard.tsx`, `auth.ts` y `service-console.ts` quedan como en `master`
+  en lo que deciden. Ningún archivo de `master` se elimina.
+
+Sin backend ni migraciones: el subárbol `backend/` es idéntico al de `master`
+(`736690e`), así que vale su medición: 4643 pruebas, 0 fallos, 3 omitidas.
+
+Validación sobre el árbol del merge (`99dbca6`): frontend 437 pruebas en 43 suites,
+OK; typecheck OK; lint 0 errores y 26 advertencias; build OK (50 páginas);
+Playwright 121 de 121, sin fallos, omitidas ni reintentos, 7,9 min.
+
+Sigue sin adoptarse lo que ya quedó fuera en la primera reconciliación (portada,
+cabecera, pie, servicios, inicio de sesión de la tienda). La deuda de SVC-FUNC-01
+se mantiene: POS-CUSTOM-PRODUCT (propuesta), FISCAL-SERVICE y SVC-QUOTE-INSHOP
+(pendientes), MIG-ADMIN-LIVE, SVC-POS-DRAFT y SVC-ELIGIBLE-COST.
+
 ## 2026-10-01 — SVC-FUNC-01: servicio técnico operativo e integrado con la caja
 
 Rama `feature/service-pos-functional-integration`, sobre `master` `ef9890f`. Código
