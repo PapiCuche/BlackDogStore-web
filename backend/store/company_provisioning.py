@@ -214,6 +214,10 @@ _TECHNICIAN_CAPS = (
     # grants this to its own role and narrows the technical one — the preset is
     # a default, never a hardcoded authorization.
     'service.delivery.manage',
+    # SVC-PAY-01: a technician may record what the customer paid for the repair
+    # they attend. NOT `service.payments.manage`: reversing a payment stays an
+    # accounting correction.
+    'service.payments.collect',
 )
 
 # M11 — SUPERVISOR TÉCNICO. Everything the technician preset has, plus running

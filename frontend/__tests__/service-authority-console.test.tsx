@@ -90,3 +90,23 @@ describe('asignación de técnico', () => {
     expect(calls.some((c) => c.path.endsWith('/assignment/'))).toBe(false);
   });
 });
+
+describe('cobro del servicio', () => {
+  it('con collect se puede registrar un pago, no reversarlo', async () => {
+    await openOrderAs(['service.orders.view', 'service.payments.collect']);
+    expect(screen.getByRole('button', { name: 'Registrar pago' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reversar' })).not.toBeInTheDocument();
+  });
+
+  it('con manage se puede registrar y reversar', async () => {
+    await openOrderAs(['service.orders.view', 'service.payments.manage']);
+    expect(screen.getByRole('button', { name: 'Registrar pago' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reversar' })).toBeInTheDocument();
+  });
+
+  it('sin ninguna de las dos no se ofrece ninguna acción', async () => {
+    await openOrderAs(['service.orders.view']);
+    expect(screen.queryByRole('button', { name: 'Registrar pago' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reversar' })).not.toBeInTheDocument();
+  });
+});

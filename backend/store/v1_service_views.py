@@ -1588,6 +1588,11 @@ class V1ServiceDeliveryView(V1ServiceSurfaceMixin, APIView):
 # ---------------------------------------------------------------------------
 
 CAP_PAYMENTS_MANAGE = 'service.payments.manage'
+CAP_PAYMENTS_COLLECT = 'service.payments.collect'
+#: SVC-PAY-01. Recording money has its own capability so a technician can take
+#: a payment; `service.payments.manage` keeps implying it. REVERSING is not in
+#: this tuple: it stays with `service.payments.manage` alone.
+COLLECT_AUTHORITY = (CAP_PAYMENTS_COLLECT, CAP_PAYMENTS_MANAGE)
 
 
 class V1ServicePaymentView(V1ServiceSurfaceMixin, APIView):
@@ -1626,7 +1631,7 @@ class V1ServicePaymentView(V1ServiceSurfaceMixin, APIView):
 
     def post(self, request, company_slug=None, pk=None):
         company = self.get_internal_company()
-        self.require_capability(company, CAP_PAYMENTS_MANAGE)
+        self.require_any_capability(company, *COLLECT_AUTHORITY)
         order = self.get_order(company, pk)
 
         serializer = V1ServicePaymentWriteSerializer(data=request.data)

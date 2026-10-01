@@ -59,6 +59,7 @@ import {
   fetchServiceQuotes,
   makeIdempotencyKey,
   mayAssignTechnician,
+  mayCollectPayment,
   passQualityCheck,
   pauseForParts,
   publishQuote,
@@ -1084,7 +1085,9 @@ const PAYMENT_STATUS_LABEL: Record<string, { label: string; tone: "neutral" | "g
  * the customer, and this platform cannot return any.
  */
 function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
-  const canManage = may(CAP_PAYMENTS_MANAGE);
+  // Two authorities, not one: taking money in, and declaring a payment a mistake.
+  const canCollect = mayCollectPayment(may);
+  const canReverse = may(CAP_PAYMENTS_MANAGE);
   const summary = data.paymentSummary;
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<string>(PAYMENT_METHODS[0].value);
@@ -1146,7 +1149,7 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
         </p>
       ) : null}
 
-      {canManage && canPayMore ? (
+      {canCollect && canPayMore ? (
         <div className="mt-4 space-y-3 border-t border-bd-border pt-4">
           <div className="grid gap-3 sm:grid-cols-3">
             <Field label={`Importe (${summary.currency})`} value={amount} onChange={setAmount} />
@@ -1201,7 +1204,7 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                 {payment.received_by_name ? ` · ${payment.received_by_name}` : ""}
                 {payment.is_reversed ? (
                   <Pill label="Reversado" tone="bad" />
-                ) : canManage ? (
+                ) : canReverse ? (
                   <Confirm
                     label="Reversar"
                     question="¿Marcar este pago como registrado por error? No devuelve dinero."

@@ -36384,6 +36384,7 @@ class H1BTechnicianPresetParityTest(TestCase):
         for migration in (
             '0050_quality_capability_for_untouched_presets',
             '0053_delivery_capability_for_untouched_presets',
+            '0095_service_payments_collect',
         ):
             importlib.import_module(
                 f'store.migrations.{migration}',
@@ -39586,6 +39587,26 @@ class G3DeactivationEscalationTest(TestCase):
         self.assertFalse(has_capability(other, self.company, 'inventory.adjust'))
 
 
+def _rewind_technician_preset_to_0057(preset):
+    """
+    Put a freshly provisioned technician preset back to the moment 0057 ran.
+
+    0057 compares against a FROZEN set, on purpose, and later migrations extend
+    that same untouched preset (0095 adds `service.payments.collect`). Running
+    0057 against today's preset would be asking it to see the future; a tenant
+    upgrading meets these two nodes in this order.
+    """
+    import importlib
+
+    frozen = importlib.import_module(
+        'store.migrations.0057_migrate_legacy_technicians_to_rbac',
+    ).UNTOUCHED_TECHNICIAN_PRESET
+    preset.capabilities = sorted(frozen)
+    preset.save(update_fields=['capabilities'])
+    cache.clear()
+    return preset
+
+
 class M12ALegacyTechnicianAccessTest(TestCase):
     """The gap itself, and the shape of the fix."""
 
@@ -39600,6 +39621,7 @@ class M12ALegacyTechnicianAccessTest(TestCase):
         self.company = _saas_company('Taller M12', 'm12a-taller', tax_id='20780030001')
         provision_company_access_defaults(self.company)
         self.preset = self.company.roles.get(slug='servicio-tecnico')
+        _rewind_technician_preset_to_0057(self.preset)
 
     def _legacy_technician(self, username='m12a_legacy_tech'):
         user = _saas_user(username)
@@ -39615,6 +39637,10 @@ class M12ALegacyTechnicianAccessTest(TestCase):
             'store.migrations.0057_migrate_legacy_technicians_to_rbac',
         )
         module.migrate_legacy_technicians(django_apps, None)
+        # …and what the chain grants to that same untouched preset afterwards.
+        importlib.import_module(
+            'store.migrations.0095_service_payments_collect',
+        ).grant(django_apps, None)
 
     # -- el hueco ----------------------------------------------------------
 
@@ -39764,6 +39790,7 @@ class M12ALegacyTechnicianAccessTest(TestCase):
     def test_it_never_crosses_into_another_company(self):
         other = _saas_company('Ajena M12', 'm12a-ajena', tax_id='20780030002')
         provision_company_access_defaults(other)
+        _rewind_technician_preset_to_0057(other.roles.get(slug='servicio-tecnico'))
         user = _saas_user('m12a_cross')
         m_other = Membership.objects.create(
             user=user, company=other, role='technician', is_active=True,
@@ -39926,6 +39953,7 @@ class G3TechnicianMigrationFreezeTest(TestCase):
         cache.clear()
         self.company = _saas_company('Congelado SA', 'g3-freeze', tax_id='20780031000')
         provision_company_access_defaults(self.company)
+        _rewind_technician_preset_to_0057(self.company.roles.get(slug='servicio-tecnico'))
 
     def _module(self):
         import importlib
@@ -39954,10 +39982,18 @@ class G3TechnicianMigrationFreezeTest(TestCase):
         # capability, this fails and points at the migration that has to decide
         # what to do about it — instead of the migration quietly skipping every
         # tenant and blaming them for it.
+        #
+        # It fired for SVC-PAY-01, and the decision was: 0057 keeps its moment,
+        # and 0095 extends the same untouched preset afterwards. So today's
+        # preset is the frozen set PLUS what later nodes grant — and each of
+        # those nodes starts exactly where the previous one left off.
+        import importlib
         from .company_provisioning import _TECHNICIAN_CAPS
-        self.assertEqual(
-            self._module().UNTOUCHED_TECHNICIAN_PRESET, frozenset(_TECHNICIAN_CAPS),
-        )
+
+        later = importlib.import_module('store.migrations.0095_service_payments_collect')
+        before_0095, granted_by_0095 = later.PRESETS['servicio-tecnico']
+        self.assertEqual(self._module().UNTOUCHED_TECHNICIAN_PRESET, before_0095)
+        self.assertEqual(before_0095 | granted_by_0095, frozenset(_TECHNICIAN_CAPS))
 
     def test_it_includes_the_capability_delivery_added(self):
         self.assertIn(
@@ -61864,5 +61900,190 @@ class SvcAssignPresetTest(TestCase):
     def test_it_is_idempotent(self):
         self.run_migration()
         first = {slug: sorted(self.caps(slug)) for slug in ('ventas', 'administrador')}
+        self.run_migration()
+        self.assertEqual(first, {slug: sorted(self.caps(slug)) for slug in first})
+
+# -- SVC-FUNC-01 · SVC-PAY-01 --------------------------------------------------
+
+class SvcPaymentCollectTest(M12BPaymentBase):
+    """
+    SVC-PAY-01. Taking money and correcting the ledger are different acts: a
+    technician may record what the customer paid; reversing stays with
+    `service.payments.manage`.
+    """
+
+    BASE = ('company.view', 'service.orders.view')
+
+    def _url(self, tail='payments/'):
+        return _m12b_url('m8-taller', self.order.pk, tail)
+
+    def pay_over_http(self, client, key):
+        return client.post(self._url(), {
+            'amount': '100.00', 'method': 'cash', 'idempotency_key': key,
+        }, format='json')
+
+    def test_collect_records_a_payment(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        res = self.pay_over_http(client, 'svc-collect-1')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['amount'], '100.00')
+
+    def test_collect_is_idempotent_like_manage(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        first = self.pay_over_http(client, 'svc-collect-key')
+        second = self.pay_over_http(client, 'svc-collect-key')
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.data['id'], first.data['id'])
+        self.assertEqual(_M12BPayment.objects.filter(repair_order=self.order).count(), 1)
+
+    def test_collect_cannot_reverse(self):
+        self.quoted()
+        payment = self.pay('100.00')
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        res = client.post(
+            self._url(f'payments/{payment.pk}/reverse/'), {'reason': 'Error'}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        payment.refresh_from_db()
+        self.assertFalse(payment.is_reversed)
+
+    def test_manage_records_and_reverses(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, 'service.payments.manage', slug='svc-manage')
+        paid = self.pay_over_http(client, 'svc-manage-1')
+        self.assertEqual(paid.status_code, 201, paid.data)
+        res = client.post(
+            self._url(f"payments/{paid.data['id']}/reverse/"), {'reason': 'Error de caja'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def test_neither_is_refused(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, slug='svc-nada')
+        self.assertEqual(self.pay_over_http(client, 'svc-nada-1').status_code, 403)
+        self.assertFalse(_M12BPayment.objects.filter(repair_order=self.order).exists())
+
+    def test_collect_still_needs_an_approved_quote(self):
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        self.assertEqual(self.pay_over_http(client, 'svc-sin-cotizacion').status_code, 400)
+
+    def test_collect_does_not_cross_tenants_or_branches(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        foreign = _m8_service.create_repair_order(
+            company=self.other, branch=self.foreign_branch, customer=self.foreign_customer,
+            device=self.foreign_device, reported_issue='Ajeno',
+        )
+        res = client.post(_m12b_url('m8-taller', foreign.pk, 'payments/'), {
+            'amount': '1.00', 'method': 'cash',
+        }, format='json')
+        self.assertEqual(res.status_code, 404)
+
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        _M7BranchAccess.objects.create(membership=self.membership, branch=self.branch_b)
+        cache.clear()
+        self.assertEqual(self.pay_over_http(_m7_login('recepcion'), 'svc-otra-sucursal').status_code, 404)
+
+
+class SvcCollectPresetTest(TestCase):
+    """Who holds `service.payments.collect`, on a new company and on a migrated one."""
+
+    PRESETS = ('servicio-tecnico', 'supervisor-tecnico')
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Presets cobro', 'svc-presets-cobro', tax_id='20900000903')
+        provision_company_access_defaults(self.company)
+
+    def caps(self, slug):
+        return set(self.company.roles.get(slug=slug).capabilities)
+
+    def migration(self, name='0095_service_payments_collect'):
+        from importlib import import_module
+
+        return import_module(f'store.migrations.{name}')
+
+    def run_migration(self):
+        from django.apps import apps
+
+        self.migration().grant(apps, None)
+
+    def test_fresh_presets(self):
+        for slug in self.PRESETS:
+            self.assertIn('service.payments.collect', self.caps(slug))
+            # Reversing a payment is not something the workshop receives.
+            self.assertNotIn('service.payments.manage', self.caps(slug))
+        self.assertIn('service.payments.collect', self.caps('administrador'))
+
+    def test_untouched_presets_are_extended(self):
+        module = self.migration()
+        for slug, previous in (('servicio-tecnico', module.TECHNICIAN_PREVIOUS),
+                               ('supervisor-tecnico', module.SUPERVISOR_PREVIOUS),
+                               ('administrador', module.ADMIN_PREVIOUS)):
+            self.company.roles.filter(slug=slug).update(capabilities=sorted(previous))
+        sales = self.caps('ventas')
+
+        self.run_migration()
+
+        self.assertEqual(
+            self.caps('servicio-tecnico'),
+            module.TECHNICIAN_PREVIOUS | {'service.payments.collect'},
+        )
+        self.assertEqual(
+            self.caps('supervisor-tecnico'),
+            module.SUPERVISOR_PREVIOUS | {'service.payments.collect'},
+        )
+        self.assertEqual(
+            self.caps('administrador'), module.ADMIN_PREVIOUS | {'service.payments.collect'},
+        )
+        # The counter already collects through `service.payments.manage`.
+        self.assertEqual(self.caps('ventas'), sales)
+
+    def test_the_expected_sets_are_frozen_and_chained(self):
+        import inspect
+
+        module = self.migration()
+        source = inspect.getsource(module)
+        self.assertNotIn('from store.capabilities import', source)
+        self.assertNotIn('from store.company_provisioning import', source)
+
+        # Each node starts exactly where the previous one left `Administrador`…
+        before = self.migration('0094_service_orders_assign')
+        self.assertEqual(
+            before.ADMIN_PREVIOUS | set(before.NEW_CAPABILITIES), module.ADMIN_PREVIOUS,
+        )
+        # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
+        # when the catalogue grows, and the node that grows it is the one that
+        # has to say what happens to this preset.
+        self.assertEqual(
+            module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES),
+            frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+
+    def test_customised_roles_are_left_alone(self):
+        module = self.migration()
+        custom = {
+            'servicio-tecnico': sorted(module.TECHNICIAN_PREVIOUS | {'reports.view'}),
+            'supervisor-tecnico': sorted(module.SUPERVISOR_PREVIOUS - {'reports.view'}),
+        }
+        for slug, capabilities in custom.items():
+            self.company.roles.filter(slug=slug).update(capabilities=capabilities)
+        own = _role(self.company, 'Técnico propio', capabilities=sorted(module.TECHNICIAN_PREVIOUS),
+                    slug='tecnico-propio')
+
+        self.run_migration()
+
+        for slug, capabilities in custom.items():
+            self.assertEqual(sorted(self.caps(slug)), capabilities, slug)
+        own.refresh_from_db()
+        self.assertEqual(sorted(own.capabilities), sorted(module.TECHNICIAN_PREVIOUS))
+
+    def test_it_is_idempotent(self):
+        self.run_migration()
+        first = {slug: sorted(self.caps(slug)) for slug in (*self.PRESETS, 'administrador')}
         self.run_migration()
         self.assertEqual(first, {slug: sorted(self.caps(slug)) for slug in first})

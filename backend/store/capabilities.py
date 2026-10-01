@@ -313,6 +313,13 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('service.payments.manage', 'service', 'Cobro del servicio',
          'Registrar y reversar pagos recibidos por una reparación.',
          STATUS_ACTIVE),
+    # SVC-PAY-01. TAKING money and CORRECTING the ledger are different acts.
+    # A technician who hands a repaired device over can record what the
+    # customer paid; undoing a recorded payment is an accounting correction and
+    # stays with `service.payments.manage`, which keeps implying this one.
+    _cap('service.payments.collect', 'service', 'Registrar cobro del servicio',
+         'Registrar el dinero recibido por una reparación. No permite reversar.',
+         STATUS_ACTIVE),
 
     # --- communications (M12C) ---
     #
