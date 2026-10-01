@@ -42,7 +42,7 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       ...(config.branding.logo_url ? { images: [config.branding.logo_url] } : {}),
     },
-    icons: { icon: "/assets/branding/favicon.svg" },
+    ...(config.branding.logo_url ? { icons: { icon: config.branding.logo_url } } : {}),
   };
 }
 
