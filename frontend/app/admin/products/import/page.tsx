@@ -254,7 +254,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 min={1}
                 value={headerRow}
                 onChange={(event) => setHeaderRow(Number(event.target.value) || 1)}
-                className="ml-2 w-20 rounded-lg border border-bd-border bg-background px-2 py-1 text-sm text-zinc-200"
+                className="ml-2 w-20 rounded-xl border border-bd-border bg-background px-2 py-1 text-sm text-foreground"
               />
             </label>
 
@@ -273,7 +273,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                       else next[field] = Number(event.target.value);
                       setMapping(next);
                     }}
-                    className="w-full rounded-lg border border-bd-border bg-background px-3 py-2 text-sm text-zinc-200"
+                    className="w-full rounded-xl border border-bd-border bg-background px-3 py-2 text-sm text-foreground"
                   >
                     <option value="">— no importar —</option>
                     {sheet.headers.map((header, index) => (
