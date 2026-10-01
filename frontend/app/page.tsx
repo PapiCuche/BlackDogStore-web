@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useStoreName, useStorefront } from "./components/StorefrontProvider";
+import { useStorefront } from "./components/StorefrontProvider";
 import { ProductCard } from "./components/ProductCard";
 import Hero from "./components/Hero";
 import { fetcher, apiUrl } from "./lib/api";
@@ -77,9 +77,6 @@ const REPAIR_SERVICES = [
 export default function Home() {
   // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
   const { whatsapp_link: whatsappLink } = useStorefront().contact;
-  // Phase 3: the shop's own name. The claims around it are still the pilot's
-  // marketing copy — per-tenant landing content is a separate concern.
-  const storeName = useStoreName();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
