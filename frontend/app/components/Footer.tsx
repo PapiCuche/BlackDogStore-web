@@ -81,10 +81,9 @@ export function Footer() {
             <ul className="mt-4 space-y-3">
               {[
                 { href: "/product", label: "Catálogo" },
-                { href: "/product?category=iphone", label: "iPhone" },
-                { href: "/product?category=accesorios", label: "Accesorios" },
                 { href: "/services", label: "Servicio técnico" },
                 { href: "/cart", label: "Carrito" },
+                { href: "/auth", label: "Mi cuenta" },
               ].map((link) => (
                 <li key={link.href}>
                   <Link href={link.href} className="text-sm text-muted transition hover:text-foreground">
