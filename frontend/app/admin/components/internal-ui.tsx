@@ -27,26 +27,26 @@ export function PageHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <header className="flex flex-col gap-4 border-b border-bd-border pb-6 sm:flex-row sm:items-end sm:justify-between">
+    <header className="grid gap-5 border-b border-bd-border pb-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
       <div className="min-w-0">
         {eyebrow ? (
           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted">{eyebrow}</p>
         ) : null}
-        <h1 className="mt-1 font-display text-2xl font-extrabold tracking-[-0.025em] text-foreground sm:text-3xl">
+        <h1 className="mt-1.5 font-display text-2xl font-extrabold tracking-[-0.03em] text-foreground sm:text-[2rem]">
           {title}
         </h1>
         {description ? (
           <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">{description}</p>
         ) : null}
       </div>
-      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+      {actions ? <div className="flex flex-wrap items-center gap-2 lg:justify-end">{actions}</div> : null}
     </header>
   );
 }
 
 export function FilterBar({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-2xl border border-bd-border bg-surface p-4 sm:p-5">
+    <div className="rounded-xl border border-bd-border bg-surface p-4 sm:p-5">
       {children}
     </div>
   );
@@ -54,20 +54,20 @@ export function FilterBar({ children }: { children: React.ReactNode }) {
 
 export function TableShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+    <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
       {children}
     </div>
   );
 }
 
 export const internalInputClass =
-  "w-full rounded-xl border border-bd-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted/60 outline-none transition focus:border-foreground/25";
+  "w-full rounded-lg border border-bd-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted/60 outline-none transition focus:border-foreground/30 focus:ring-2 focus:ring-foreground/[0.05]";
 
 export const internalButtonClass =
-  "rounded-xl border border-bd-border px-3.5 py-2.5 text-sm font-semibold text-foreground transition hover:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-40";
+  "rounded-lg border border-bd-border bg-background px-3.5 py-2.5 text-sm font-semibold text-foreground transition hover:border-foreground/25 hover:bg-foreground/[0.03] disabled:cursor-not-allowed disabled:opacity-40";
 
 export const internalPrimaryButtonClass =
-  "rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40";
+  "rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40";
 
 // ---------------------------------------------------------------------------
 // Metrics
