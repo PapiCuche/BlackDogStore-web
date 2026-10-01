@@ -122,7 +122,7 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
         />
 
         {creating ? (
-          <section className="rounded-2xl border border-bd-border bg-surface p-5 sm:p-6">
+          <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
             <CustomerForm
               companyId={companyId}
               customer={null}
@@ -204,11 +204,11 @@ function CustomersContent({ ctx }: { ctx: InternalContext }) {
             {error}
           </div>
         ) : loading ? (
-          <div className="rounded-2xl border border-bd-border bg-surface px-5 py-8 text-sm text-muted">
+          <div className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-sm text-muted">
             Cargando clientes…
           </div>
         ) : !data || data.results.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-bd-border px-5 py-10 text-center text-sm text-muted">
+          <div className="rounded-xl border border-dashed border-bd-border px-5 py-10 text-center text-sm text-muted">
             {debounced
               ? "Ningún cliente coincide con esa búsqueda."
               : "Todavía no hay clientes registrados en esta empresa."}
