@@ -1,20 +1,10 @@
 "use client";
 
 /**
- * Branch selector for the inventory screens — Phase 2D.
+ * Branch selector for inventory screens.
  *
- * THIS IS UX, NOT AUTHORISATION.
- * The options come from `/admin/inventory/branches/`, which returns only the
- * branches the caller may operate. Choosing one re-requests the data with
- * `?branch=`, and the backend re-resolves that id against the caller's own
- * grants: an invented id answers 404, not another shop's stock. Nothing is
- * persisted — no localStorage, no cookie. Authority must not be cacheable on the
- * client, and a stale selection is worse than re-resolving.
- *
- * "Todas las sucursales" is offered only when the caller reaches more than one
- * AND the screen can actually aggregate. It means "everything I can see", which
- * for a restricted operator is NOT the whole company — the caller-visible label
- * under the selector says so, so no heading claims more than it counted.
+ * This is UX, never authority. Options are server-filtered and every selected
+ * id is re-validated by the backend. Nothing is persisted on the client.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -27,7 +17,6 @@ type Props = {
   access: BranchAccessInfo | null;
   value: BranchParam;
   onChange: (value: BranchParam) => void;
-  /** False on screens where an aggregate makes no sense (a stock movement). */
   allowAll?: boolean;
 };
 
@@ -43,12 +32,14 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
 
   useEffect(() => {
     if (!open) return;
+
     function onDocumentClick(event: MouseEvent) {
       if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
     }
     function onEscape(event: KeyboardEvent) {
       if (event.key === "Escape") setOpen(false);
     }
+
     document.addEventListener("mousedown", onDocumentClick);
     document.addEventListener("keydown", onEscape);
     return () => {
@@ -62,20 +53,18 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
 
   if (branches.length === 0) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-amber-400/20 bg-amber-400/[0.06] px-3 py-2">
-        <IconBranch className="h-4 w-4 text-amber-300/70" />
-        <span className="text-sm text-amber-100/80">Sin sucursales asignadas</span>
+      <div className="flex items-center gap-2 rounded-lg border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2">
+        <IconBranch className="h-4 w-4 text-amber-300" />
+        <span className="text-sm text-amber-200">Sin sucursales asignadas</span>
       </div>
     );
   }
 
-  // One branch and nothing to aggregate: a dropdown with a single option is
-  // noise, not a choice.
   if (branches.length === 1 && !canAggregate) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2">
-        <IconBranch className="h-4 w-4 text-zinc-500" />
-        <span className="truncate text-sm font-medium text-zinc-200">{branches[0].name}</span>
+      <div className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2">
+        <IconBranch className="h-4 w-4 text-muted-foreground" />
+        <span className="truncate text-sm font-medium text-foreground">{branches[0].name}</span>
       </div>
     );
   }
@@ -91,20 +80,21 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
     <div ref={containerRef} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen((value) => !value)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-sm text-zinc-200 transition hover:border-white/20"
+        className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm text-foreground transition hover:border-foreground/20 hover:bg-surface-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
-        <IconBranch className="h-4 w-4 text-zinc-500" />
+        <IconBranch className="h-4 w-4 text-muted-foreground" />
         <span className="max-w-[12rem] truncate font-medium">{labelFor(access, value)}</span>
-        <IconChevronDown className="h-3.5 w-3.5 text-zinc-500" />
+        <IconChevronDown className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
-      {open && (
+      {open ? (
         <div
           role="listbox"
-          className="absolute right-0 z-50 mt-1.5 min-w-[14rem] overflow-hidden rounded-xl border border-white/10 bg-[#0d0d0d] py-1 shadow-2xl"
+          aria-label="Sucursales disponibles"
+          className="absolute right-0 z-50 mt-2 min-w-[15rem] overflow-hidden rounded-xl border border-bd-border bg-surface p-1.5 shadow-2xl shadow-black/30"
         >
           {options.map((option) => {
             const selected = option.value === value;
@@ -118,33 +108,28 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
                   onChange(option.value);
                   setOpen(false);
                 }}
-                className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-sm transition hover:bg-white/5 ${
-                  selected ? "text-white" : "text-zinc-400"
+                className={`flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent ${
+                  selected
+                    ? "bg-surface-elevated text-foreground"
+                    : "text-muted-foreground hover:bg-background hover:text-foreground"
                 }`}
               >
                 <span className="truncate">{option.label}</span>
-                {selected && <span className="ml-auto text-xs text-zinc-500">✓</span>}
+                {selected ? <span className="ml-auto text-xs text-muted-foreground">✓</span> : null}
               </button>
             );
           })}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
 
-/**
- * One line naming the branches a figure actually covers.
- *
- * Rendered under an aggregate so nobody reads a company-wide heading over a
- * two-shop total. Silent when the scope is a single branch: the selector
- * already says which one.
- */
 export function ScopeNote({ scope }: { scope: InventoryScope | null | undefined }) {
   if (!scope || !scope.is_aggregate) return null;
   const names = scope.branches.map((b) => b.name).join(" · ");
   return (
-    <p className="text-xs text-zinc-600">
+    <p className="text-xs leading-5 text-muted-foreground">
       {scope.branches.length === 0
         ? "Sin sucursales visibles."
         : `Agregado de ${scope.branches.length} sucursal${
