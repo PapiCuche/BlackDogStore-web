@@ -299,7 +299,7 @@ function MemberCard({
                             disabled={busy}
                             className={`rounded-md border px-2 py-1 text-[10px] disabled:opacity-40 ${assignment.is_active
                               ? "border-bd-border text-muted hover:border-red-500/40 hover:text-red-300"
-                              : "border-emerald-500/25 text-emerald-300/80 hover:border-emerald-400/60 hover:text-emerald-200"}`}
+                              : "border-bd-border text-foreground hover:border-foreground/25"}`}
                           >
                             {assignment.is_active ? "Quitar" : "Reactivar"}
                           </button>
