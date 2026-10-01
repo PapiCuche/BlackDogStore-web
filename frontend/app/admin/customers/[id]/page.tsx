@@ -212,7 +212,7 @@ function CustomerDetailContent({
           }
         >
           {editing ? (
-            <div className="rounded-2xl border border-bd-border bg-surface p-5">
+            <div className="rounded-xl border border-bd-border bg-surface p-5">
               <CustomerForm
                 companyId={companyId}
                 customer={customer}
@@ -224,7 +224,7 @@ function CustomerDetailContent({
               />
             </div>
           ) : (
-            <div className="grid gap-5 rounded-2xl border border-bd-border bg-surface p-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-5 rounded-xl border border-bd-border bg-surface p-5 sm:grid-cols-2 lg:grid-cols-3">
               <Field
                 label="Tipo"
                 value={customer.customer_type === "business" ? "Empresa" : "Persona"}
@@ -340,7 +340,7 @@ function CustomerDetailContent({
           title="Notas internas"
           description="Sólo para el equipo. El cliente nunca las ve."
         >
-          <div className="rounded-2xl border border-bd-border bg-surface p-5">
+          <div className="rounded-xl border border-bd-border bg-surface p-5">
             {customer.notes ? (
               <p className="whitespace-pre-wrap text-sm text-foreground">{customer.notes}</p>
             ) : (
