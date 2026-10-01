@@ -9,6 +9,17 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## UXUI-04C — Superficies administrativas secundarias
+
+**Estado: PARCIAL.**
+
+- Pedidos, Productos, Roles, Usuarios y Auditoría normalizan paneles y radios contra el UI Kit interno.
+- Sucursales ya estaba alineado con el patrón actual y no requirió una modificación adicional en esta pasada.
+- No se modificaron guards, lógica de rol, capabilities, endpoints ni contratos de datos.
+- Verificación adicional: sin fondos legacy `#080808/#111111`, sin `dot-grid`, PageHeader/internalInput conservados y guards presentes.
+
+---
+
 ## UXUI-04B — Densidad operativa SaaS
 
 **Estado: PARCIAL.** Sin migraciones ni cambios de permisos.
