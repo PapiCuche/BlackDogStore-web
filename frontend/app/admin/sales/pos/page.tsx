@@ -631,18 +631,18 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       );
                       focusScan();
                     }}
-                    className="flex w-full items-center justify-between rounded-xl border border-bd-border bg-surface px-4 py-3 text-left text-sm transition hover:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex w-full min-w-0 items-start justify-between gap-3 rounded-xl border border-bd-border bg-surface px-4 py-3 text-left text-sm transition hover:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <span>
-                      <span className="text-foreground">{combo.name}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block break-words text-foreground">{combo.name}</span>
                       <span className="block text-[11px] text-muted">
                         {combo.components
                           .map((c) => `${c.quantity}× ${c.product_name}`)
                           .join(" + ")}
                       </span>
                     </span>
-                    <span className="text-right">
-                      <span className="block font-mono text-foreground">
+                    <span className="shrink-0 text-right">
+                      <span className="block whitespace-nowrap font-mono text-foreground">
                         {money(combo.combo_amount)}
                       </span>
                       <span className="block text-[11px] text-emerald-400/80">
@@ -674,10 +674,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       setTerm("");
                       focusScan();
                     }}
-                    className="flex w-full items-center justify-between border-b border-bd-border/70 px-4 py-3 text-left text-sm transition last:border-0 hover:bg-foreground/[0.03]"
+                    className="flex w-full min-w-0 items-center justify-between gap-3 border-b border-bd-border/70 px-4 py-3 text-left text-sm transition last:border-0 hover:bg-foreground/[0.03]"
                   >
-                    <span className="text-foreground">{p.name}</span>
-                    <span className="flex items-center gap-4 text-xs">
+                    <span className="min-w-0 flex-1 break-words text-foreground">{p.name}</span>
+                    <span className="flex shrink-0 items-center gap-3 text-xs">
                       <span
                         className={p.available > 0 ? "text-muted" : "text-red-400/80"}
                       >
