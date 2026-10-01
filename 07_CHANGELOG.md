@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-09-30 — F2 completada
+
+Cierre de la fase «dónde» de la auditoría (`c191a84`): E2E-02 (`9c3445f`,
+trabajador desechable para las pruebas de personal, `seed_demo_users
+--e2e-fixtures`) y E2E-01 (`c191a84`, la prueba fiscal afirma «Preparar factura» y
+«Enviar a SUNAT» como dos pasos). Backend 4569 pruebas, 0 fallos, en PostgreSQL;
+frontend 402 pruebas, typecheck, lint 0/33 y build OK; Playwright 118/118. Sin
+migraciones en toda la fase.
+
 ## 2026-09-30 — F2 · DRIFT-01 y DRIFT-07
 
 Consola de servicio: el selector de técnicos lee `candidates` (`a4be03b`). Panel de

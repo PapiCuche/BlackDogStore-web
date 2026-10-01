@@ -3,6 +3,36 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-09-30 — F2 completada: delegación y alcance por sucursal
+
+La fase F2 de la auditoría queda cerrada sobre `c191a84`. Qué puede hacer una persona
+(capacidades) y dónde puede hacerlo (alcance por sucursal) se exigen juntos, en el
+servidor y reflejados en la interfaz: nadie concede, retira ni modifica lo que no
+alcanza; abrir saldo exige autoridad de inventario; pertenecer a una empresa no
+basta para leerla; las modificaciones de nivel empresa exigen alcance sobre toda la
+empresa; y ningún identificador de sucursal sirve para sondear si existe.
+
+Últimos dos cierres. E2E-02: la prueba de personal desactivaba una cuenta demo
+compartida y la dejaba sin capacidades para la corrida siguiente; ahora usa un
+trabajador propio (`seed_demo_users --e2e-fixtures`, `9c3445f`). E2E-01: la prueba
+fiscal esperaba «Emitir factura»; el panel dice «Preparar factura» porque ese paso
+numera y firma sin hablar con SUNAT, y el envío es otro botón. Era la prueba la que
+estaba desfasada, y al corregirla volvieron a ejecutarse cuatro pruebas que no
+corrían (`c191a84`).
+
+Validación final: backend PostgreSQL 4569 pruebas (4566 OK, 3 omitidas, 0
+fallos), 1544,8 s; `check` sin problemas; 0 migraciones nuevas en toda la fase.
+Frontend 402 pruebas en 37 suites, OK; typecheck OK; lint 0 errores y 33
+advertencias (las mismas del baseline); build de producción OK (44 páginas).
+Playwright 118 de 118, sin omitidas ni reintentos. Nada se ha empujado al remoto.
+
+Deuda que sigue abierta: `BranchAccessPanel.tsx` sin uso; el botón «Añadir
+trabajador» no comprueba capacidad (RBAC-F4); el admin de Django permite editar
+`Product.inventory` sin Kardex; `C15InitialRaceTest` falla aislado (TEST-ENV-01);
+`storefront_content_views` sin auditar bajo WRITE-SCOPE-01; una persona con
+sucursales seleccionadas no puede reactivar una sucursal propia inactiva. Detalle:
+[docs/AUDIT_MEMORY.md](docs/AUDIT_MEMORY.md).
+
 ## 2026-09-30 — F2 · DRIFT-01 y DRIFT-07: la interfaz refleja el contrato
 
 Asignar técnico desde la web vuelve a funcionar: la consola leía `technicians` y el

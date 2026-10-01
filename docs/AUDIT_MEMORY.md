@@ -23,16 +23,16 @@ Comprobar con `git diff <SHA>..HEAD -- <archivos>` y revalidar sólo ese subárb
 | Branch | `audit/full-system-2026-09` (local; `origin/master` es el master autoritativo) |
 | Baseline medido | `65aa8c1` (merge de `origin/master` `2dca0a3` sobre `9525b08`) |
 | HEAD al sembrar | `4a9dd5c` — delta vs baseline: sólo `02_`, `07_`, `frontend/app/api/[...path]/route.ts`, `frontend/__tests__/api-proxy-scope.test.ts` |
-| Último SHA verificado | `c076120` (F2: F-BRANCH-01/02/03, F-CAP-01, RBAC-01/02, WRITE-SCOPE-01). Backend cambia en `tenancy.py`, `tenant_views.py`, `staff_views.py`, `promotion_views.py`, `settings_views.py`, `tests.py` |
+| Último SHA verificado | `c191a84` (F2 completa: F-BRANCH-01/02/03, F-CAP-01, RBAC-01/02, WRITE-SCOPE-01, DRIFT-01/07, E2E-02/01). Backend cambia en `tenancy.py`, `tenant_views.py`, `staff_views.py`, `promotion_views.py`, `settings_views.py`, `tests.py` |
 | Fecha | 2026-09-30 |
 | Working tree | limpio |
 | Migraciones | 105 aplicadas / 0 pendientes / 0 por generar (`store` llega a `0093_sales_service_delivery`) |
-| Backend tests | 4563 ejecutadas, 4560 OK, 3 skipped, 0 fallos, PostgreSQL 14, 1519,8 s @ `c076120` (baseline: 4489 @ `65aa8c1`) |
-| Frontend tests | 400/400 OK, 37 suites, @ `f6dc9ca` |
-| TypeScript | `tsc --noEmit` OK @ `f6dc9ca` |
-| Lint | 0 errores / 33 advertencias @ `f6dc9ca` |
-| Build | OK (44 páginas) @ `f6dc9ca` |
-| E2E | 113/118 @ `65aa8c1`; E2E-01 falla, 4 serie no ejecutadas |
+| Backend tests | 4569 ejecutadas, 4566 OK, 3 skipped, 0 fallos, PostgreSQL 14, 1544,8 s @ `c191a84` (baseline: 4489 @ `65aa8c1`) |
+| Frontend tests | 402/402 OK, 37 suites, @ `c191a84` |
+| TypeScript | `tsc --noEmit` OK @ `c191a84` |
+| Lint | 0 errores / 33 advertencias @ `c191a84` |
+| Build | OK (44 páginas) @ `c191a84` |
+| E2E | Playwright 118/118, 0 omitidas, sin reintentos, 7,6 min, 1 worker @ `c191a84` |
 
 Reglas de medición: suite backend completa sólo en PostgreSQL y un proceso a la
 vez; Playwright contra los dev servers :3000/:8000 (SQLite dev, `FISCAL_ENABLED=True`
@@ -109,6 +109,21 @@ Un SELECTED ya no puede reactivar una sucursal inactiva (no está en `visible_br
 Tests: `F2SelectedBranchWriteScopeTest` (10), `F2SelectedCompanySettingsScopeTest` (8).
 Estado: VERIFICADO @ `c076120`.
 
+**E2E-FIXTURE-01** — Las pruebas de navegador no mutan las cuentas demo con las que otras
+suites inician sesión. Quien necesita desactivar personal usa `dev_e2e_staff`
+(`seed_demo_users --e2e-fixtures`; constante `DEMO_E2E_STAFF_USERNAME`): no es cuenta de
+acceso, no está en `ALL_DEMO_USERNAMES` ni en la tarjeta de desarrollo, `--purge` lo elimina
+y volver a sembrar lo restaura. El seed sin la bandera no cambia.
+Tests: `F2E2eFixtureSeedTest` (6), `DemoUsersCommandTest`; spec `e2e/staff-personnel.spec.ts` test I.
+Estado: VERIFICADO @ `9c3445f`.
+
+**FISCAL-FLOW-01** — Emitir son dos pasos con dos nombres. `POST /admin/orders/<pk>/fiscal-document/`
+numera y firma y NO habla con SUNAT («Preparar factura|boleta»; «Firmar comprobante» si existe
+sin XML); el envío es otra llamada («Enviar a SUNAT», sólo factura firmada con `can_submit`).
+Autoridad: `fiscal_views.AdminOrderFiscalDocumentView`, `FiscalDocumentPanel.tsx`.
+Tests: `fiscal-document-panel.test.tsx`, `e2e/fiscal-invoice.spec.ts`.
+Estado: VERIFICADO @ `c191a84`.
+
 **UI-SCOPE-01** — La UI representa conjuntamente capabilities (QUÉ) y branch scope (DÓNDE);
 el backend sigue siendo la autoridad. Leer un recurso de nivel empresa no implica que un
 SELECTED pueda modificarlo.
@@ -150,7 +165,7 @@ Estado: VERIFICADO @ `4a9dd5c`. Equivalente del eje DÓNDE: BRANCH-03.
 **RBAC-DEACT** — Desactivar una membresía retira sus asignaciones de rol.
 Autoridad: `tenant_views.py::AdminMembershipDetailView.patch` (`role_assignments...update(is_active=False)`), `staff_views.py` (guarda «No puedes desactivar tu propio acceso.»).
 Tests: `H41StaffDeactivationTest`, `G3DeactivationEscalationTest`.
-Estado: VERIFICADO @ `4a9dd5c`. Consecuencia en E2E: E2E-02.
+Estado: VERIFICADO @ `4a9dd5c`. Por eso ninguna prueba de navegador desactiva una cuenta demo: E2E-FIXTURE-01.
 
 **CAP-STOCK-01** — Abrir saldo exige autoridad sobre existencias, no sólo sobre catálogo.
 Autoridad: `admin_views.py::AdminProductListView.post` — con `inventory > 0` llama a
@@ -235,8 +250,6 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | ID | Sev. | Dominio | Símbolo | Reproducción |
 |---|---|---|---|---|
 | F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post` + `serializers.py::MembershipSerializer` | POST membresía con `user` de otra plataforma → 201 devuelve su `username` |
-| E2E-02 | MEDIUM | TESTS | `frontend/e2e/staff-personnel.spec.ts` (test I) | desactiva la primera ficha; cuenta queda con 0 capacidades |
-| E2E-01 | MEDIUM | TESTS/FISCAL | `frontend/e2e/fiscal-invoice.spec.ts` | espera «Emitir factura», UI dice «Preparar factura» desde `b3b1cfc` |
 | SEC-SET-04-A | MEDIUM | AUTH | `auth_views.py` refresh, `v1_auth_views.py` refresh | refresh sin throttle; filas `OutstandingToken` sin límite |
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
 | SEC-SET-02 | MEDIUM | INFRA/AUTH | `backend/backend/urls.py` `admin/` | admin Django sin limitador/bloqueo/MFA en origen backend |
@@ -258,6 +271,8 @@ Presets vigentes (`company_provisioning.PRESET_ROLES` @ `c042fea`): sólo `admin
 
 DEUDA (surgida en F-CAP-01): Django admin `ProductAdmin` deja editar `Product.inventory` a
 un superusuario de plataforma sin línea de Kardex (fuera de RBAC de empresa).
+E2E bajo `--repeat-each`: `fiscal-invoice` se omite en la segunda pasada por el limitador
+`admin_orders` (120/min, E2E-FISCAL-THROTTLE documentado en el spec); una pasada normal no se omite.
 TEST-ENV-01: `C15InitialRaceTest.test_a_deactivated_branch_is_refused_at_preview_too` da
 `IntegrityError store_company_pkey` si se ejecuta aislado (también @ `7977d53`); pasa en la
 suite completa. Además, tras una `TransactionTestCase` una BD `--keepdb` queda sin datos
@@ -291,6 +306,8 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | F-BRANCH-01 | MEDIUM | `20d110c` | `tenancy.can_delegate_branch_scope`; `tenant_views` membership create/patch; `staff_views` invitaciones (mismo hueco, hallado en F2) | `F2BranchDelegationTest` | CORREGIDO |
 | F-BRANCH-01 · escritura parcial | LOW | `20d110c` | `AdminMembershipDetailView.patch` en `transaction.atomic` | `F2BranchDelegationTest.test_a_rejected_grant_list_rolls_the_whole_update_back` | CORREGIDO |
 | F-BRANCH-02 | MEDIUM | `cccb4d2` | `promotion_views._write_promotion` | `F2PromotionBranchScopeTest` | CORREGIDO |
+| E2E-02 | MEDIUM | `9c3445f` | `seed_demo_users --e2e-fixtures` + `staff-personnel.spec.ts` test I | `F2E2eFixtureSeedTest`; Playwright 118/118 | CORREGIDO |
+| E2E-01 | MEDIUM | `c191a84` | `fiscal-invoice.spec.ts` (deriva del test; el producto era correcto) | `fiscal-document-panel.test.tsx`; Playwright 118/118 | CORREGIDO |
 | DRIFT-01 | MEDIUM | `a4be03b` | `service-console.fetchServiceAssignmentOptions`, `service/orders/[id]/page.tsx` | `service-assignment-contract.test.tsx` | CORREGIDO |
 | DRIFT-07 | LOW | `6958ec0`, `f6dc9ca` | `branch-authority.ts` + 6 pantallas | `admin-write-scope.test.tsx` | CORREGIDO |
 | WRITE-SCOPE-01 · sucursales | MEDIUM | `fa85d41` | `tenant_views` crear/editar sucursal, sucursal de despacho | `F2SelectedBranchWriteScopeTest` | CORREGIDO |
@@ -331,7 +348,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - SERVICE: `M8*`, `M9*`, `M10CapabilitySeparationTest`, `P0CServiceTransitionIsolationTest`.
 - STAFF: `H41Staff*`.
 - FRONTEND: `api-proxy-scope.test.ts`, `service-assignment-contract.test.tsx`, `admin-write-scope.test.tsx`, `branch-authority.test.ts`.
-- E2E: `h411-auth-interop`, `pos-ticket`, `pos-receipt-options`, `staff-personnel` (E2E-02), `fiscal-invoice` (E2E-01).
+- E2E: `h411-auth-interop`, `pos-ticket`, `pos-receipt-options`, `staff-personnel`, `fiscal-invoice` (requieren `seed_demo_users --company-slug <slug> --e2e-fixtures --fiscal-beta` y los dev servers :3000/:8000).
 
 ---
 
@@ -368,7 +385,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 - **F0 — Baseline**: medido @ `65aa8c1`; docs @ `d383806`.
 - **F1 — Security / tenancy / authorization**: COMPLETED @ `4a9dd5c`. Un fix (FE-AUTH-01). Backend sin cambios. Checkpoint completo en la transcripción de la sesión `acdf85aa`; artefactos en su scratchpad (`audit_f1_investigation.json`, `audit_security_sweep.json`, `demo_branch_scope.py`).
-- **F2 — Eje DÓNDE: delegación y alcance por sucursal**: EN CURSO. Cerrados F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`). F-CAP-01 (`c042fea`). RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`), WRITE-SCOPE-01 (`fa85d41`, `c076120`). DRIFT-01 (`a4be03b`), DRIFT-07 (`6958ec0`, `f6dc9ca`). Pendiente: E2E-02 → E2E-01 → gates finales F2.
+- **F2 — Eje DÓNDE: delegación y alcance por sucursal**: COMPLETADA @ `c191a84`. F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`), F-CAP-01 (`c042fea`), RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`), WRITE-SCOPE-01 (`fa85d41`, `c076120`), DRIFT-01 (`a4be03b`), DRIFT-07 (`6958ec0`, `f6dc9ca`), E2E-02 (`9c3445f`), E2E-01 (`c191a84`). Sin push. Siguiente fase: por decidir.
 
 ---
 
