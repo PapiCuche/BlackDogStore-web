@@ -194,7 +194,7 @@ function RoleCard({
   }
 
   return (
-    <article className="rounded-2xl border border-bd-border bg-surface">
+    <article className="rounded-xl border border-bd-border bg-surface">
       <button type="button" onClick={() => setOpen((value) => !value)} className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -373,12 +373,12 @@ function RolesContent({ ctx }: { ctx: InternalContext }) {
         {companyId && catalog && !loading && !error ? (
           <>
             <div className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-2xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Roles activos</p><p className="mt-1 text-2xl font-semibold text-foreground">{roles.filter((role) => role.is_active).length}</p></div>
-              <div className="rounded-2xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Capacidades asignables</p><p className="mt-1 text-2xl font-semibold text-foreground">{catalog.capabilities.filter((cap) => cap.assignable).length}</p></div>
-              <div className="rounded-2xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Mi alcance delegable</p><p className="mt-1 text-2xl font-semibold text-foreground">{catalog.is_platform_admin ? catalog.capabilities.filter((cap) => cap.assignable).length : catalog.held_by_me.length}</p></div>
+              <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Roles activos</p><p className="mt-1 text-2xl font-semibold text-foreground">{roles.filter((role) => role.is_active).length}</p></div>
+              <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Capacidades asignables</p><p className="mt-1 text-2xl font-semibold text-foreground">{catalog.capabilities.filter((cap) => cap.assignable).length}</p></div>
+              <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Mi alcance delegable</p><p className="mt-1 text-2xl font-semibold text-foreground">{catalog.is_platform_admin ? catalog.capabilities.filter((cap) => cap.assignable).length : catalog.held_by_me.length}</p></div>
             </div>
 
-            <div className="rounded-2xl border border-bd-border bg-surface p-4 text-xs leading-5 text-muted"><strong className="text-foreground">Leyenda:</strong> Activo gobierna endpoints actuales; Transición todavía convive con compatibilidad legacy; Reservado describe funcionalidad futura y no puede asignarse.</div>
+            <div className="rounded-xl border border-bd-border bg-surface p-4 text-xs leading-5 text-muted"><strong className="text-foreground">Leyenda:</strong> Activo gobierna endpoints actuales; Transición todavía convive con compatibilidad legacy; Reservado describe funcionalidad futura y no puede asignarse.</div>
 
             <div className="space-y-3">
               {roles.map((role) => <RoleCard key={role.id} role={role} catalog={catalog} canManage={canManage} onSaved={load} />)}
